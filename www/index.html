@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0f0a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GC" />
+  <title>GROUND CONTROL</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="stat">
+    <span class="mark">GC</span>
+    <button type="button" id="privacy-tog" class="privacy-chip leaky" title="SECURE blocks LENS. LEAKY: cloud keys + vision.">LEAKY</button>
+    <span class="spacer"></span>
+    <button type="button" id="comm-tog">RADIO</button>
+  </header>
+  <main id="view"></main>
+  <div id="status"></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="lens" class="on">LENS</button>
+    <button data-tab="wx">WX</button>
+    <button data-tab="radio">RADIO</button>
+    <button data-tab="jobs">JOBS</button>
+    <button data-tab="keys">KEYS</button>
+  </nav>
+  <aside id="comm">
+    <header class="stat">
+      <span class="mark">RADIO</span>
+      <span class="spacer"></span>
+      <button type="button" id="comm-close">CLOSE</button>
+    </header>
+    <div id="log"></div>
+    <div class="composer">
+      <div id="chat-attach" class="chat-attach" hidden></div>
+      <textarea id="input" rows="2" placeholder="Ground Control…"></textarea>
+      <div class="composer-tools">
+        <button type="button" id="agent-trig" class="agent-trig" aria-haspopup="dialog" aria-expanded="false" title="Who answers">
+          <span class="agent-trig-dot" aria-hidden="true"></span>
+          <span class="agent-trig-lab" id="agent-trig-lab">GC</span>
+          <span class="agent-trig-chev" aria-hidden="true"></span>
+        </button>
+        <button type="button" id="attach-btn" class="attach-btn" title="Attach photos" aria-label="Attach photos">
+          <svg class="attach-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 1 1-2 0V6h-1.5v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6H16.5z"/>
+          </svg>
+        </button>
+        <button type="button" id="lens-btn" title="Open shingle lens">LENS</button>
+        <button type="button" id="send" class="primary">SEND</button>
+      </div>
+    </div>
+    <div id="agent-sheet" class="agent-sheet" hidden>
+      <button type="button" class="agent-sheet-bg" id="agent-sheet-bg" aria-label="Close agent picker"></button>
+      <div class="agent-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="agent-sheet-title">
+        <header class="agent-sheet-head">
+          <div>
+            <div class="agent-sheet-kicker">ROUTE</div>
+            <div class="agent-sheet-title" id="agent-sheet-title">WHO ANSWERS</div>
+          </div>
+          <button type="button" id="agent-sheet-close" class="agent-sheet-close">DONE</button>
+        </header>
+        <div class="agent-sheet-list" id="agent-sheet-list"></div>
+      </div>
+    </div>
+  </aside>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script type="module" src="./boot.js"></script>
+</body>
+</html>

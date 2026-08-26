@@ -1,0 +1,10 @@
+{
+  "name": "Ground Control",
+  "install": "bash scripts/cloud-install.sh",
+  "terminals": [
+    {
+      "name": "gc-www",
+      "command": "python3 -m http.server 4173 --directory www"
+    }
+  ]
+}
