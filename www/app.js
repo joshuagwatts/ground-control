@@ -25,29 +25,18 @@ import {
   mountMap,
   destroyMap,
   setMapLayer,
-  renderWxPanels,
-  layerButtons,
-  researchPin,
-  quickPin,
-  drawHailMarkers,
-  resolveMapCenter,
-  renderWeatherBoot,
-  renderRoofDossier,
   pinDossier,
   refetchDossier,
-  startWeatherWatch,
-  filterDossier,
   filterHailRaw,
   selectStormDate,
-  bindWxLiveControls,
-  bindWxMapExpand,
-  fetchWeatherBundle,
-  paintLiveWeather,
+  drawHailMarkers,
+  resolveMapCenter,
   geocodeAddress,
   flyToPin,
-  wxLiveControlsHtml,
-  collapseHailByDate,
   setWxPin,
+  setHailScopeMode,
+  renderHailScopeSheet,
+  baseLayerButtons,
 } from "./wx.js";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
@@ -57,7 +46,7 @@ import { openMarkEditor } from "./damage.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
-let tab = "lens";
+let tab = "hailscope";
 const keyCheckTimers = {};
 let pendingChatImages = [];
 let wxState = { lat: null, lon: null, address: "", data: null };
@@ -85,13 +74,18 @@ function setStatus(msg) {
   if (el) el.textContent = msg || "";
 }
 
+function isHailTab() {
+  return tab === "hailscope" || tab === "wx";
+}
+
 function leaveWx() {
   if (wxWatch && typeof wxWatch.stop === "function") {
     wxWatch.stop();
     wxWatch = null;
   }
+  setHailScopeMode(false);
   destroyMap();
-  document.body.classList.remove("wx-tab");
+  document.body.classList.remove("wx-tab", "hs-tab");
 }
 
 function renderPrivacy() {
@@ -100,7 +94,10 @@ function renderPrivacy() {
   if (tog) {
     tog.classList.toggle("on", secure);
     tog.classList.toggle("leaky", !secure);
-    tog.textContent = secure ? "SECURE" : "LEAKY";
+    tog.textContent = secure ? "On-device" : "Cloud";
+    tog.title = secure
+      ? "Vision stays on this device. Lens needs cloud."
+      : "Cloud vision is on for Lens.";
   }
 }
 
@@ -663,38 +660,38 @@ function renderLens() {
   const marksN = damageCount(L.photos);
   const blurb =
     mode === "damage"
-      ? "Damage circle mode. Snap a roof, then tap-and-scale red circles or arrows. SCAN auto-marks bruises, granule loss, lifts. Does not decide a claim."
+      ? "Mark damage on a roof photo. Tap and scale circles or arrows. Scan finds bruises, granule loss, and lifts. It does not decide a claim."
       : mode === "field"
         ? "Field ID — flashing, vents, penetrations, plants, hardware, whatever is in the shot. Honest when unsure."
         : "Certain-only shingle ID. Will not name a product until the catalog match is unique and the shots exist. Date stays blank without a back stamp or wrapper.";
   const statusLine =
     mode === "damage"
-      ? `${L.photos.length ? `${L.photos.length} FRAMES` : "NO FRAMES"}${marksN ? ` · ${marksN} MARKS` : ""}`
+      ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
       : mode === "field"
         ? L.field?.id
           ? `ID · ${L.field.id}`
           : L.photos.length
-            ? `${L.photos.length} FRAMES`
-            : "NEED A SHOT"
-        : `${status.replace("_", " ")}${L.photos.length ? ` · ${L.photos.length} SHOTS` : ""}`;
+            ? `${L.photos.length} frames`
+            : "Need a shot"
+        : `${status.replace("_", " ")}${L.photos.length ? ` · ${L.photos.length} shots` : ""}`;
   const cardHtml =
     mode === "damage"
       ? formatChatBody(
           marksN
             ? `${marksN} damage mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit. Red circles = impacts / granule loss. Arrows = lifts / missing / direction.`
-            : "NO MARKS yet. Snap the damaged area, then tap to drop a circle and drag to scale. SCAN will auto-ring hail bruises if a vision key is in KEYS.",
+            : "No marks yet. Snap the damaged area, then tap to drop a circle and drag to scale. Scan will auto-ring hail bruises if a vision key is saved.",
         )
       : mode === "field"
-        ? formatChatBody(L.field?.text || "Snap anything on the roof or job site. LENS IDs the subject — not just shingles.")
+        ? formatChatBody(L.field?.text || "Snap anything on the roof or job site. Lens IDs the subject — not just shingles.")
         : last
           ? formatChatBody(formatVerdict(last))
-          : formatChatBody("NO ID yet. Snap granule close-up, full tab, overlay. LENS stays silent until it knows.");
+          : formatChatBody("No ID yet. Snap a granule close-up, a full tab, and the overlay. Lens stays silent until it knows.");
   $("#view").innerHTML = `
     <div class="lens-wrap">
       <div class="lens-modes" id="lens-modes">
-        <button type="button" data-lmode="shingle" class="${mode === "shingle" ? "on" : ""}">SHINGLE</button>
-        <button type="button" data-lmode="damage" class="${mode === "damage" ? "on" : ""}">DAMAGE</button>
-        <button type="button" data-lmode="field" class="${mode === "field" ? "on" : ""}">FIELD</button>
+        <button type="button" data-lmode="shingle" class="${mode === "shingle" ? "on" : ""}">Shingle</button>
+        <button type="button" data-lmode="damage" class="${mode === "damage" ? "on" : ""}">Damage</button>
+        <button type="button" data-lmode="field" class="${mode === "field" ? "on" : ""}">Field</button>
       </div>
       <p class="muted">${esc(blurb)}</p>
       <div class="lens-status ${statusCls}">${esc(statusLine)}</div>
@@ -704,13 +701,13 @@ function renderLens() {
         ${SHOTS.map((s) => `<button type="button" class="shot-chip${pendingShot === s.id ? " on" : ""}${L.shots.includes(s.id) ? " have" : ""}" data-shot="${s.id}">${esc(s.label)}</button>`).join("")}
       </div>
       <p class="muted" id="shot-why">${esc((SHOTS.find((s) => s.id === pendingShot) || SHOTS[0]).why)}</p>`
-          : `<p class="muted">${mode === "damage" ? "After SNAP the photo opens for marking. Tap a saved thumb to re-edit." : "One clear shot is enough for FIELD ID."}</p>`
+          : `<p class="muted">${mode === "damage" ? "After Snap, the photo opens for marking. Tap a saved thumb to re-edit." : "One clear shot is enough for field ID."}</p>`
       }
       <div class="actions">
-        <button type="button" id="lens-snap" class="primary">SNAP</button>
-        <button type="button" id="lens-gallery">GALLERY</button>
-        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "RE-SCAN LAST" : "READ LENS"}</button>
-        <button type="button" id="lens-clear">CLEAR</button>
+        <button type="button" id="lens-snap" class="primary">Snap</button>
+        <button type="button" id="lens-gallery">Gallery</button>
+        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "Re-scan last" : "Identify"}</button>
+        <button type="button" id="lens-clear">Clear</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos
         .map(
@@ -721,25 +718,25 @@ function renderLens() {
       <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
         mode === "shingle" && status === "KNOW" && k.discontinued
-          ? `<div class="lens-disc">DISCONTINUED · ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? ` · current: ${esc(k.replacedBy)}` : ""}</div>`
+          ? `<div class="lens-disc">Discontinued · ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? ` · current: ${esc(k.replacedBy)}` : ""}</div>`
           : ""
       }
       ${
         mode === "shingle" && needed.length && status !== "KNOW"
-          ? `<div class="lens-need"><h3>STILL NEED</h3>${needed
+          ? `<div class="lens-need"><h3>Still need</h3>${needed
               .map((s) => `<p><strong>${esc(s.label)}</strong> — ${esc(s.why)}</p>`)
               .join("")}</div>`
           : ""
       }
       ${
         mode === "shingle" && n.candidates?.length && status !== "KNOW"
-          ? `<div class="lens-cands"><h3>CANDIDATES (NOT CLAIMED)</h3>${n.candidates
-              .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? " · DISCONTINUED" : ""}</p>`)
+          ? `<div class="lens-cands"><h3>Candidates (not claimed)</h3>${n.candidates
+              .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? " · discontinued" : ""}</p>`)
               .join("")}</div>`
           : ""
       }
       <div class="actions">
-        <button type="button" id="lens-to-job">SAVE TO JOB</button>
+        <button type="button" id="lens-to-job">Save to job</button>
       </div>
     </div>`;
   $("#lens-modes")?.querySelectorAll("[data-lmode]").forEach((b) => {
@@ -818,7 +815,7 @@ function renderLens() {
     db.lens = { mode: keepMode, photos: [], shots: [], last: null, field: null };
     persist();
     renderLens();
-    setStatus("LENS CLEARED");
+    setStatus("Lens cleared");
   };
   $("#lens-read").onclick = () => runLens();
   $("#lens-to-job").onclick = () => {
@@ -839,7 +836,7 @@ function renderLens() {
     persist();
     tab = "jobs";
     render();
-    setStatus("JOB SAVED");
+    setStatus("Job saved");
   };
 }
 
@@ -884,133 +881,80 @@ async function runLens() {
 
 async function renderWx() {
   document.body.classList.remove("comm");
-  document.body.classList.add("wx-tab");
   leaveWx();
-  document.body.classList.add("wx-tab");
+  setHailScopeMode(true);
+  document.body.classList.add("hs-tab", "wx-tab");
   setStatus("");
   $("#view").innerHTML = `
-    <div class="wx-wrap">
-      <form class="wx-search" id="wx-search" autocomplete="off">
-        <input type="search" id="wx-addr-q" placeholder="Job address or place…" enterkeyhint="search" />
-        <button type="submit" class="primary">GO</button>
-      </form>
-      <div class="wx-layers" id="wx-layers"></div>
-      <div id="wx-panel" class="wx-panel"><p class="muted">Locating…</p></div>
-      <div class="wx-map-shell" id="wx-map-shell">
-        <div id="wx-map-hud" class="wx-map-hud" hidden></div>
-        <span class="wx-map-hint">NOW = live radar · HAIL = storm trace · DOUBLE-TAP EXPAND</span>
+    <div class="hs-wrap">
+      <div class="hs-map-shell" id="hs-map-shell">
+        <form class="hs-search" id="hs-search" autocomplete="off">
+          <input type="search" id="hs-addr-q" placeholder="Search an address" enterkeyhint="search" />
+        </form>
+        <div class="hs-styles" id="hs-styles"></div>
         <div id="wx-map"></div>
       </div>
-      <div id="wx-roof-panel" class="wx-roof-panel"></div>
+      <div class="hs-sheet" id="hs-sheet">
+        <p class="hs-empty">Tap the map or search an address. Storm dates show up here.</p>
+      </div>
     </div>`;
-  const refreshLayers = (cfg) => {
-    const el = $("#wx-layers");
-    if (!el || !cfg) return;
-    el.innerHTML = layerButtons(cfg, esc) + wxLiveControlsHtml();
-    bindWxLiveControls(document);
-  };
   try {
     const center = await resolveMapCenter(db.settings);
-    if (tab !== "wx") return;
+    if (!isHailTab()) return;
     persist();
     const cfg = await loadMapConfig(db.settings);
-    if (tab !== "wx") return;
+    if (!isHailTab()) return;
     cfg.center = { ...cfg.center, ...center };
-    refreshLayers(cfg);
-    $("#wx-layers").onclick = (e) => {
-      const b = e.target.closest("button[data-layer]");
-      if (!b) return;
-      const id = b.dataset.layer;
-      const isWx = b.classList.contains("wx-product") || b.classList.contains("overlay");
-      setMapLayer(id);
-      if (isWx) {
-        $("#wx-layers").querySelectorAll("button.wx-product, button.overlay").forEach((x) => x.classList.toggle("on", x === b));
-        refreshLayers(cfg);
-      } else {
-        $("#wx-layers").querySelectorAll("button[data-layer]:not(.wx-product):not(.overlay)").forEach((x) => x.classList.toggle("on", x === b));
-      }
-    };
-    mountMap($("#wx-map"), cfg, { center, onTap: onWxTap });
-    bindWxMapExpand($("#wx-map-shell"));
-    bindWxLiveControls(document);
-    const searchForm = $("#wx-search");
+    const styles = $("#hs-styles");
+    if (styles) {
+      styles.innerHTML = baseLayerButtons(cfg, esc);
+      styles.onclick = (e) => {
+        const b = e.target.closest("button[data-layer]");
+        if (!b) return;
+        setMapLayer(b.dataset.layer);
+        styles.querySelectorAll("button[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
+      };
+    }
+    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, product: "hail", base: "dark" });
+    const searchForm = $("#hs-search");
     if (searchForm) {
       searchForm.onsubmit = async (e) => {
         e.preventDefault();
-        const q = ($("#wx-addr-q")?.value || "").trim();
+        e.stopPropagation();
+        const q = ($("#hs-addr-q")?.value || "").trim();
         if (!q) return;
-        setStatus("GEOCODING…");
+        setStatus("Finding place…");
         try {
           const hits = await geocodeAddress(q);
           const hit = hits[0];
           if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
           flyToPin(hit.lat, hit.lon, 14);
-          setStatus(`PINNED · ${String(hit.city || hit.address || q).slice(0, 40)}`);
-          await onWxTap(hit.lat, hit.lon);
+          await onHailTap(hit.lat, hit.lon);
         } catch (err) {
-          setStatus(String(err.message || err).slice(0, 48).toUpperCase());
+          setStatus(String(err.message || err).slice(0, 48));
         }
       };
+      searchForm.addEventListener("click", (e) => e.stopPropagation());
+      searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
+      searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
     }
-    wxWatch = startWeatherWatch(
-      () => (tab === "wx" ? resolveMapCenter(db.settings) : Promise.resolve(null)),
-      (live) => {
-        if (tab !== "wx") return;
-        const line = (live.outlook && live.outlook.line) || "";
-        if (!line) return;
-        window.__pipWxLine = line;
-        setStatus("WX ALERT");
-      },
-    );
-    quickPin(db.settings, center.lat, center.lon)
-      .then(async (hit) => {
-        if (tab !== "wx") return;
-        selectStormDate(null, { fit: false });
-        const data = { ...hit, lat: hit.lat ?? center.lat, lon: hit.lon ?? center.lon, address: hit.address || hit.geo?.address || "" };
-        renderWeatherBoot($("#wx-panel"), hit.geo, hit.weather || cfg.weather, hit.hail, esc);
-        renderRoofDossier($("#wx-roof-panel"), data, esc, null, null);
-        try {
-          const bundle = await fetchWeatherBundle(center.lat, center.lon);
-          paintLiveWeather($("#wx-panel"), bundle, collapseHailByDate(hit.hail || []), esc);
-        } catch {
-          /* optional */
-        }
-      })
-      .catch(() => {
-        if (tab !== "wx") return;
-        $("#wx-panel").innerHTML = `<p class="muted">Search an address or tap the map for hail zones.</p>`;
-      });
+    if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+      await onHailTap(center.lat, center.lon);
+    }
   } catch (e) {
-    if (tab !== "wx") return;
+    if (!isHailTab()) return;
     $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
   }
 }
 
-async function onWxTap(lat, lon) {
+async function onHailTap(lat, lon) {
   wxState.lat = lat;
   wxState.lon = lon;
   setWxPin(lat, lon);
-  selectStormDate(null, { fit: false });
-  setStatus("PINNED · ADDRESS…");
-  const panel = $("#wx-panel");
-  const roofPanel = $("#wx-roof-panel");
-  const paintHail = (data) => {
-    const f = filterDossier(data);
-    drawHailMarkers(filterHailRaw(data), f.wind, { fit: false });
-  };
-  const onDeep = async () => {
-    setStatus("DEEP RESEARCH…");
-    try {
-      const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
-      wxState.data = deep;
-      paintHail(deep);
-      renderWxPanels(deep, esc, onDeep, onRefetch);
-      setStatus("DOSSIER UPDATED");
-    } catch (e) {
-      if (panel) panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
-      setStatus("WX ERROR");
-    }
-  };
+  selectStormDate(null, { fit: false, requireDate: true });
+  const sheet = $("#hs-sheet");
+  if (sheet) sheet.innerHTML = `<p class="hs-empty">Finding storms…</p>`;
+  setStatus("Finding storms…");
   const onRefetch = async (filters) => {
     const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
     wxState.data = fresh;
@@ -1019,21 +963,37 @@ async function onWxTap(lat, lon) {
   try {
     const data = await pinDossier(db.settings, lat, lon, {
       onPartial: (partial) => {
+        if (!isHailTab()) return;
         wxState.address = partial.address || "";
-        renderWxPanels(partial, esc, onDeep, onRefetch);
-        setStatus("PINNED · HAIL NEARBY…");
+        wxState.data = partial;
+        renderHailScopeSheet($("#hs-sheet"), partial, esc, { onRefetch });
       },
     });
+    if (!isHailTab()) return;
     wxState.address = data.address || "";
     wxState.data = data;
-    paintHail(data);
-    renderWxPanels(data, esc, onDeep, onRefetch);
-    void roofPanel;
-    setStatus("WX DOSSIER");
+    drawHailMarkers(filterHailRaw(data), [], { requireDate: true });
+    renderHailScopeSheet($("#hs-sheet"), data, esc, { onRefetch });
+    if (sheet && !(data.hail || []).length) {
+      const loading = sheet.querySelector(".hs-empty");
+      if (loading) loading.textContent = "Searching a longer hail window…";
+    }
+    const full = await onRefetch({ ...data._meta, days: 365 });
+    if (!isHailTab()) return;
+    if (full) {
+      wxState.data = full;
+      drawHailMarkers(filterHailRaw(full), [], { requireDate: true });
+      renderHailScopeSheet($("#hs-sheet"), full, esc, { onRefetch });
+    }
+    setStatus("");
   } catch (e) {
-    if (panel) panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
-    setStatus("WX ERROR");
+    if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try another pin.</p>`;
+    setStatus("");
   }
+}
+
+async function onWxTap(lat, lon) {
+  return onHailTap(lat, lon);
 }
 
 function renderJobs() {
@@ -1041,9 +1001,9 @@ function renderJobs() {
   document.body.classList.remove("comm");
   const jobs = db.jobs || [];
   $("#view").innerHTML = `
-    <h3>JOBS</h3>
-    <p class="muted">Roof inspections. Save a LENS read or hail pin onto a job.</p>
-    <div class="actions"><button type="button" id="job-new" class="primary">NEW JOB</button></div>
+    <h3>Jobs</h3>
+    <p class="muted">Roof inspections. Save a Lens read or a HailScope pin onto a job.</p>
+    <div class="actions"><button type="button" id="job-new" class="primary">New job</button></div>
     <div class="job-list">${
       jobs.length
         ? jobs
@@ -1052,7 +1012,7 @@ function renderJobs() {
                 `<article class="job-card" data-id="${esc(j.id)}"><strong>${esc(j.address || "Unpinned")}</strong><p class="muted">${esc(jobSummary(j))}</p><p class="muted">${esc(String(j.created || "").slice(0, 10))}</p></article>`,
             )
             .join("")
-        : `<p class="muted">No jobs yet. LENS a shingle, mark damage, or pin hail — then SAVE TO JOB.</p>`
+        : `<p class="muted">No jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>`;
   $("#job-new").onclick = () => {
     const job = newJob({ address: wxState.address || "", lat: wxState.lat, lon: wxState.lon });
@@ -1073,26 +1033,26 @@ function renderKeys() {
     const info = keyTag(s, p, health[p.id]);
     const hint = keyHint(s, p);
     const has = Boolean(normalizeApiKey(s[p.field]));
-    const get = p.keyUrl ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener">GET KEY</a>` : "";
+    const get = p.keyUrl ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Get key</a>` : "";
     return `<div class="key-row ${esc(info.state)}">
-      <div class="key-meta"><span class="key-name">${esc(p.label.toUpperCase())}</span><span class="key-tag">${esc(info.tag)}${hint ? ` · ${esc(hint)}` : ""}</span></div>
-      <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` · <button type="button" class="key-clear" data-field="${esc(p.field)}">CLEAR</button>` : ""}</p>
-      <input id="set-${esc(p.field)}" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(has ? "paste to replace" : "paste key — saves as you type")}" data-field="${esc(p.field)}" />
+      <div class="key-meta"><span class="key-name">${esc(p.label)}</span><span class="key-tag">${esc(info.tag)}${hint ? ` · ${esc(hint)}` : ""}</span></div>
+      <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` · <button type="button" class="key-clear" data-field="${esc(p.field)}">Clear</button>` : ""}</p>
+      <input id="set-${esc(p.field)}" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(has ? "Paste to replace" : "Paste key — saves as you type")}" data-field="${esc(p.field)}" />
     </div>`;
   }).join("");
   $("#view").innerHTML = `
-    <h3>GROUND CONTROL</h3>
-    <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
-    <div class="field"><span>COMPANY</span><input id="set-co" value="${esc(s.company || "")}" /></div>
-    <p class="muted">HTTP: ${diag.nativeHttp ? "NATIVE OK" : "WEB FETCH"} · ${esc(diag.platform)}</p>
-    <p class="muted">${keyedNow.length ? `IN MEMORY: ${esc(keyedNow.join(" · "))}` : "NO KEYS — paste Gemini or OpenAI for LENS"}</p>
-    <h3>BRAIN KEYS</h3>
-    <p class="muted">Super Chat uses every keyed API. LENS needs a vision key (Gemini / OpenAI / Anthropic / OpenRouter). SECURE blocks LENS.</p>
+    <h3>Settings</h3>
+    <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
+    <div class="field"><span>Company</span><input id="set-co" value="${esc(s.company || "")}" /></div>
+    <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
+    <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "No keys yet — paste Gemini or OpenAI for Lens."}</p>
+    <h3>API keys</h3>
+    <p class="muted">Chat can use every keyed API. Lens needs a vision key (Gemini, OpenAI, Anthropic, or OpenRouter). On-device mode blocks Lens.</p>
     <div class="key-list">${keyRows}</div>
-    <div class="actions"><button type="button" id="keys-test">TEST KEYS</button></div>
-    <h3>DISCONTINUED LOOKUP</h3>
-    <p class="muted">Catalog includes GAF Timberline HD, CT Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. LENS will only claim a discontinued line when the match is unique.</p>
-    <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on device.</p>`;
+    <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
+    <h3>Discontinued lookup</h3>
+    <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>
+    <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on this device.</p>`;
   const op = $("#set-op");
   if (op) op.oninput = () => {
     db.settings.operator = op.value;
@@ -1115,13 +1075,13 @@ function renderKeys() {
     b.onclick = () => clearProviderKey(b.dataset.field);
   });
   $("#keys-test").onclick = async () => {
-    setStatus("CHECKING KEYS…");
+    setStatus("Checking keys…");
     try {
       await validateKeyed(db.settings);
       db.settings.brain_health = providerHealth();
       persist();
       renderKeys();
-      setStatus("KEYS CHECKED");
+      setStatus("Keys checked");
     } catch (e) {
       setStatus(String(e.message || e).slice(0, 50).toUpperCase());
     }
@@ -1129,11 +1089,12 @@ function renderKeys() {
 }
 
 function render() {
-  document.body.classList.toggle("wx-tab", tab === "wx");
-  $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  if (tab !== "wx") leaveWx();
+  document.body.classList.toggle("wx-tab", isHailTab());
+  document.body.classList.toggle("hs-tab", isHailTab());
+  $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab || (isHailTab() && b.dataset.tab === "hailscope" && tab === "wx")));
+  if (!isHailTab()) leaveWx();
   if (tab === "lens") renderLens();
-  else if (tab === "wx") renderWx();
+  else if (isHailTab()) renderWx();
   else if (tab === "jobs") renderJobs();
   else if (tab === "keys") renderKeys();
   renderPrivacy();
@@ -1147,13 +1108,16 @@ function boot() {
     db.settings.privacy_mode = secure ? "leaky" : "secure";
     persist();
     renderPrivacy();
-    setStatus(privacyOn(db.settings) ? "SECURE · LENS BLOCKED" : "LEAKY · CLOUD ON");
+    setStatus(privacyOn(db.settings) ? "On-device · Lens blocked" : "Cloud · Lens on");
   };
-  $("#comm-tog").onclick = () => {
-    document.body.classList.add("comm");
-    renderChatLog();
-    $("#input")?.focus();
-  };
+  const commTog = $("#comm-tog");
+  if (commTog) {
+    commTog.onclick = () => {
+      document.body.classList.add("comm");
+      renderChatLog();
+      $("#input")?.focus();
+    };
+  }
   $("#comm-close").onclick = () => document.body.classList.remove("comm");
   $("#tabs").onclick = (e) => {
     const b = e.target.closest("[data-tab]");
@@ -1196,7 +1160,7 @@ function boot() {
     paintChatAttach();
   });
   render();
-  setStatus("GROUND CONTROL");
+  setStatus("");
 }
 
 void matchCatalog;

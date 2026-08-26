@@ -3,45 +3,59 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0a0f0a" />
+  <meta name="theme-color" content="#0b0b0d" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="GC" />
-  <title>GROUND CONTROL</title>
+  <meta name="apple-mobile-web-app-title" content="Ground Control" />
+  <title>Ground Control</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <header class="stat">
-    <span class="mark">GC</span>
-    <button type="button" id="privacy-tog" class="privacy-chip leaky" title="SECURE blocks LENS. LEAKY: cloud keys + vision.">LEAKY</button>
+    <span class="mark" id="app-title">Ground Control</span>
+    <button type="button" id="privacy-tog" class="privacy-chip leaky" title="On-device keeps vision local. Cloud vision is required for Lens.">Cloud</button>
     <span class="spacer"></span>
-    <button type="button" id="comm-tog">CHAT</button>
   </header>
   <main id="view"></main>
   <div id="status"></div>
   <nav class="tabs" id="tabs">
-    <button data-tab="lens" class="on">LENS</button>
-    <button data-tab="wx">WX</button>
-    <button data-tab="chat">CHAT</button>
-    <button data-tab="jobs">JOBS</button>
-    <button data-tab="keys">KEYS</button>
+    <button data-tab="hailscope" class="on">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      HailScope
+    </button>
+    <button data-tab="lens">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/></svg>
+      Lens
+    </button>
+    <button data-tab="chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 6h14v10H8l-3 3V6z"/></svg>
+      Chat
+    </button>
+    <button data-tab="jobs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5V4h8v1M8 11h8M8 15h5"/></svg>
+      Jobs
+    </button>
+    <button data-tab="keys">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M6 19c.6-3 3-5 6-5s5.4 2 6 5"/></svg>
+      Settings
+    </button>
   </nav>
   <aside id="comm">
     <header class="stat">
-      <span class="mark">CHAT</span>
+      <span class="mark">Chat</span>
       <span class="spacer"></span>
-      <button type="button" id="comm-close">CLOSE</button>
+      <button type="button" id="comm-close">Done</button>
     </header>
     <div id="log"></div>
     <div class="composer">
       <div id="chat-attach" class="chat-attach" hidden></div>
-      <textarea id="input" rows="2" placeholder="Ground Control…"></textarea>
+      <textarea id="input" rows="2" placeholder="Message…"></textarea>
       <div class="composer-tools">
         <button type="button" id="agent-trig" class="agent-trig" aria-haspopup="dialog" aria-expanded="false" title="Who answers">
           <span class="agent-trig-dot" aria-hidden="true"></span>
-          <span class="agent-trig-lab" id="agent-trig-lab">GC</span>
+          <span class="agent-trig-lab" id="agent-trig-lab">Auto</span>
           <span class="agent-trig-chev" aria-hidden="true"></span>
         </button>
         <button type="button" id="attach-btn" class="attach-btn" title="Attach photos" aria-label="Attach photos">
@@ -49,8 +63,8 @@
             <path fill="currentColor" d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 1 1-2 0V6h-1.5v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6H16.5z"/>
           </svg>
         </button>
-        <button type="button" id="lens-btn" title="Open lens">LENS</button>
-        <button type="button" id="send" class="primary">SEND</button>
+        <button type="button" id="lens-btn" title="Open lens">Lens</button>
+        <button type="button" id="send" class="primary">Send</button>
       </div>
     </div>
     <div id="agent-sheet" class="agent-sheet" hidden>
@@ -58,10 +72,10 @@
       <div class="agent-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="agent-sheet-title">
         <header class="agent-sheet-head">
           <div>
-            <div class="agent-sheet-kicker">ROUTE</div>
-            <div class="agent-sheet-title" id="agent-sheet-title">WHO ANSWERS</div>
+            <div class="agent-sheet-kicker">Model</div>
+            <div class="agent-sheet-title" id="agent-sheet-title">Who answers</div>
           </div>
-          <button type="button" id="agent-sheet-close" class="agent-sheet-close">DONE</button>
+          <button type="button" id="agent-sheet-close" class="agent-sheet-close">Done</button>
         </header>
         <div class="agent-sheet-list" id="agent-sheet-list"></div>
       </div>
@@ -69,22 +83,22 @@
   </aside>
   <aside id="mark-editor" class="mark-editor" hidden>
     <header class="stat">
-      <span class="mark">MARK</span>
+      <span class="mark">Mark damage</span>
       <span class="spacer"></span>
-      <button type="button" id="mark-scan">SCAN</button>
-      <button type="button" id="mark-done" class="primary">DONE</button>
-      <button type="button" id="mark-cancel">SKIP</button>
+      <button type="button" id="mark-scan">Scan</button>
+      <button type="button" id="mark-done" class="primary">Done</button>
+      <button type="button" id="mark-cancel">Skip</button>
     </header>
     <div class="mark-stage">
       <canvas id="mark-canvas"></canvas>
     </div>
     <div class="mark-tools">
-      <button type="button" data-tool="circle" class="on">CIRCLE</button>
-      <button type="button" data-tool="arrow">ARROW</button>
-      <button type="button" id="mark-undo">UNDO</button>
-      <button type="button" id="mark-clear">CLEAR MARKS</button>
+      <button type="button" data-tool="circle" class="on">Circle</button>
+      <button type="button" data-tool="arrow">Arrow</button>
+      <button type="button" id="mark-undo">Undo</button>
+      <button type="button" id="mark-clear">Clear marks</button>
     </div>
-    <p class="muted mark-hint" id="mark-hint">Tap to drop a red circle. Drag to scale. SCAN auto-marks hail bruises.</p>
+    <p class="muted mark-hint" id="mark-hint">Tap to drop a circle. Drag to scale. Scan finds bruises automatically.</p>
   </aside>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script type="module" src="./boot.js"></script>
