@@ -32,14 +32,15 @@ DAMAGE: <none|granule loss|cracking|curling|impact/hail dents|missing|unknown>
 NOTE: <one practical sentence for an adjuster/homeowner. Hail-like bruises ≠ proof of claim.>
 Don't Panic. Be honest when the photo is unclear.`,
 
-  lens: `You are Pip's pocket lens (Google-Lens style, Hitchhiker tone).
-Identify the main subject. Reply plain text:
+  lens: `You are Ground Control's field lens (Google-Lens style, Hitchhiker tone).
+Identify the main subject on a roofing / construction job — flashing, vents, pipe boots, penetrations, plants, hardware, materials, or whatever is actually in the shot.
+Reply plain text:
 ID: <what it is>
 CONF: <high|med|low>
-KIND: <rock|shingle|plant|animal|object|text|scene|other>
+KIND: <roofing|flashing|penetration|plant|animal|object|text|scene|other>
 TELLS: <2 short visual tells>
-NOTE: <one useful sentence>
-Don't Panic. Say when unsure.`,
+NOTE: <one useful sentence for a crew on a roof>
+Don't Panic. Say when unsure. Do not invent a shingle product line.`,
 };
 
 function providerKey(settings, prov) {

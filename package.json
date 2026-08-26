@@ -1,12 +1,22 @@
 {
   "name": "ground-control",
   "private": true,
-  "version": "0.1.0",
-  "description": "Ground Control — roofing field app: Super Chat, certain-only shingle LENS, hail WX",
+  "version": "0.1.2",
+  "description": "Ground Control — roofing field app: Super Chat, LENS (shingle / damage / field), hail WX",
   "type": "module",
   "scripts": {
-    "start": "python3 -m http.server 4173 --directory www",
-    "test": "node tests/shingle-gate.test.mjs",
-    "check": "node --check www/boot.js && node --check www/app.js && node --check www/catalog.js && node --check www/shingle.js && node --input-type=module -e \"import './www/catalog.js'; import './www/shingle.js'; console.log('modules ok')\""
+    "start": "python -m http.server 4173 --directory www",
+    "test": "node tests/shingle-gate.test.mjs && node tests/damage-marks.test.mjs",
+    "check": "node --check www/boot.js && node --check www/app.js && node --check www/catalog.js && node --check www/shingle.js && node --check www/damage.js && node --input-type=module -e \"import './www/catalog.js'; import './www/shingle.js'; import './www/damage.js'; console.log('modules ok')\"",
+    "sync": "cap sync",
+    "sync:android": "cap sync android",
+    "open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/haptics": "^8.0.2"
   }
 }

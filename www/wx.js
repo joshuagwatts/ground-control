@@ -7,7 +7,7 @@ let map = null;
 let pin = null;
 let hailLayer = null;
 let layers = {};
-let activeLayer = "osm";
+let activeLayer = "sat";
 
 const WMO = {
   0: "Clear",
@@ -1249,6 +1249,20 @@ export function weatherSummaryHtml(bundle, hailDays, esc) {
   </div>`;
 }
 
+export function paintWxMapHud(bundle) {
+  const hud = document.getElementById("wx-map-hud");
+  if (!hud) return;
+  const cur = bundle?.current;
+  if (!cur?.ok || cur.temp_f == null) {
+    hud.hidden = true;
+    hud.innerHTML = "";
+    return;
+  }
+  const wind = cur.wind_mph != null ? `${Math.round(cur.wind_mph)} mph` : "";
+  hud.hidden = false;
+  hud.innerHTML = `<strong>${Math.round(cur.temp_f)}°</strong><span>${String(cur.label || "Now").replace(/</g, "")}</span>${wind ? `<em>${wind}</em>` : ""}`;
+}
+
 /** Refresh hero + daily + hourly blocks inside a WX panel root. */
 export function paintLiveWeather(root, bundle, hailDays, esc) {
   if (!root || !bundle) return;
@@ -1265,6 +1279,7 @@ export function paintLiveWeather(root, bundle, hailDays, esc) {
     if (sum.id === "wx-summary" || sum.classList.contains("wx-summary-host")) sum.innerHTML = html;
     else sum.outerHTML = html;
   }
+  paintWxMapHud(bundle);
   const daily = root.querySelector("#wx-daily");
   if (daily) daily.innerHTML = renderDailyForecast(bundle.days, esc);
   const hourly = root.querySelector("#wx-hourly");
@@ -2243,7 +2258,7 @@ export function mountMap(container, config, { onTap, center }) {
       if (layer.id === "precip") overlays.radar = tile;
     } else layers[layer.id] = tile;
   }
-  const startId = layers[activeLayer] ? activeLayer : layers.osm ? "osm" : Object.keys(layers)[0];
+  const startId = layers.sat ? "sat" : layers[activeLayer] ? activeLayer : layers.osm ? "osm" : Object.keys(layers)[0];
   layers[startId]?.addTo(map);
   if (startId) activeLayer = startId;
   activeWxProduct = overlays.precip ? "precip" : WX_PRODUCTS.find((id) => overlays[id]) || "precip";
@@ -2727,7 +2742,8 @@ export function layerButtons(config, esc) {
     .map((l) => {
       const id = l.id === "radar" ? "precip" : l.id === "clouds" ? "cloud" : l.id;
       const on = activeWxProduct === id;
-      return `<button type="button" data-layer="${esc(id)}" class="wx-product ${on ? "on" : ""}">${esc(l.label)}</button>`;
+      const label = id === "precip" ? "NOW" : l.label;
+      return `<button type="button" data-layer="${esc(id)}" class="wx-product ${on ? "on" : ""}">${esc(label)}</button>`;
     })
     .join("");
   const row = wxBtns ? `${baseBtns}<span class="wx-split"></span>${wxBtns}` : baseBtns;

@@ -1,0 +1,111 @@
+name: Ship
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npx cap sync android
+      - name: Ensure CapacitorHttp native plugin
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("android/app/src/main/assets/capacitor.plugins.json")
+          data = json.loads(p.read_text())
+          hit = {"pkg": "@capacitor/core", "classpath": "com.getcapacitor.plugin.CapacitorHttp"}
+          if not any(x.get("classpath") == hit["classpath"] for x in data):
+              data.append(hit)
+              p.write_text(json.dumps(data, indent="\t") + "\n")
+              print("added CapacitorHttp")
+          else:
+              print("CapacitorHttp already registered")
+          PY
+      - name: Stamp Android version
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, os, re
+          pkg = json.loads(Path("package.json").read_text())
+          name = str(pkg.get("version") or "0.1.0")
+          code = max(1, int(os.environ.get("GITHUB_RUN_NUMBER") or "1"))
+          p = Path("android/app/build.gradle")
+          t = p.read_text()
+          t = re.sub(r"versionCode \d+", f"versionCode {code}", t)
+          t = re.sub(r'versionName "[^"]+"', f'versionName "{name}"', t)
+          p.write_text(t)
+          print(f"Android {name} ({code})")
+          PY
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+      - name: Build debug APK
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug
+      - name: Name the file GroundControl.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk GroundControl.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GroundControl-apk
+          path: GroundControl.apk
+          if-no-files-found: error
+
+  release:
+    needs: [android]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release gate
+        id: gate
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "publish=false" >> $GITHUB_OUTPUT
+          else
+            echo "publish=true" >> $GITHUB_OUTPUT
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.publish == 'true'
+      - name: Flatten downloads
+        if: steps.gate.outputs.publish == 'true'
+        run: mv GroundControl-apk/GroundControl.apk GroundControl.apk
+      - uses: softprops/action-gh-release@v2
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
+        with:
+          tag_name: ${{ steps.gate.outputs.tag }}
+          name: Ground Control ${{ steps.gate.outputs.tag }}
+          body: |
+            Field APK for the roofing crew.
+
+            - **LENS** — SHINGLE (certain-only ID), DAMAGE (red circles / arrows), FIELD
+            - **WX** — NOW live radar + HAIL trace (SPC / SWDI / IEM)
+            - **CHAT** — Super Chat with COMPARE and multi-photo
+
+            Install **GroundControl.apk** over the last build. Keys stay on the phone.
+          files: |
+            GroundControl.apk
+          fail_on_unmatched_files: true

@@ -49,10 +49,11 @@ import {
   collapseHailByDate,
   setWxPin,
 } from "./wx.js";
-import { pickImageFiles, fileToDataUrl, MAX_CHAT_PHOTOS } from "./vision.js";
+import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
+import { openMarkEditor } from "./damage.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -588,7 +589,7 @@ function renderChatLog() {
   if (!log) return;
   log.innerHTML = "";
   if (!db.chat.length) {
-    addLog("pip", "RADIO is Super Chat. Paste keys in KEYS. COMPARE tabs every keyed API. LENS will not name a shingle until it knows.");
+    addLog("pip", "CHAT is Super Chat. Paste keys in KEYS. COMPARE tabs every keyed API. LENS IDs shingles, marks damage, or IDs whatever is in the shot.");
   }
   for (const m of db.chat.slice(-80)) {
     if (m.compare) {
@@ -605,58 +606,133 @@ function renderChatLog() {
 }
 
 function lensPhotos() {
-  if (!db.lens) db.lens = { photos: [], shots: [], last: null };
+  if (!db.lens) db.lens = { mode: "shingle", photos: [], shots: [], last: null, field: null };
+  if (!db.lens.mode) db.lens.mode = "shingle";
   if (!Array.isArray(db.lens.photos)) db.lens.photos = [];
   if (!Array.isArray(db.lens.shots)) db.lens.shots = [];
   return db.lens;
+}
+
+function lensMode() {
+  return String(lensPhotos().mode || "shingle");
+}
+
+function setLensMode(mode) {
+  const L = lensPhotos();
+  L.mode = mode === "damage" || mode === "field" ? mode : "shingle";
+  persist();
+  renderLens();
+}
+
+function damageCount(photos = []) {
+  return photos.reduce((n, p) => n + (Array.isArray(p.marks) ? p.marks.length : 0), 0);
+}
+
+function editDamagePhoto(index, opts = {}) {
+  const L = lensPhotos();
+  const photo = L.photos[index];
+  if (!photo) return;
+  const autoScan = opts.autoScan ?? !(photo.marks && photo.marks.length);
+  openMarkEditor({
+    url: photo.url,
+    marks: photo.marks || [],
+    settings: db.settings,
+    autoScan,
+    onSave: ({ url, markedUrl, marks }) => {
+      L.photos[index] = { ...photo, url, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() };
+      persist();
+      renderLens();
+      setStatus(marks.length ? `MARKED · ${marks.length}` : "SAVED FRAME");
+    },
+    onCancel: () => setStatus("MARK SKIPPED"),
+  });
 }
 
 function renderLens() {
   leaveWx();
   document.body.classList.remove("comm");
   const L = lensPhotos();
+  const mode = lensMode();
   const last = L.last;
   const v = last?.verdict;
   const needed = v?.needed || SHOTS.slice(0, 3).map((s) => ({ id: s.id, label: s.label, why: s.why }));
   const status = last?.status || (L.photos.length ? "READY" : "NEED_SHOTS");
-  const statusCls = status === "KNOW" ? "know" : status === "NARROWED" ? "narrow" : "need";
+  const statusCls = status === "KNOW" || status === "ID" ? "know" : status === "NARROWED" ? "narrow" : "need";
   const k = v?.known || {};
   const n = v?.narrowed || {};
+  const marksN = damageCount(L.photos);
+  const blurb =
+    mode === "damage"
+      ? "Damage circle mode. Snap a roof, then tap-and-scale red circles or arrows. SCAN auto-marks bruises, granule loss, lifts. Does not decide a claim."
+      : mode === "field"
+        ? "Field ID — flashing, vents, penetrations, plants, hardware, whatever is in the shot. Honest when unsure."
+        : "Certain-only shingle ID. Will not name a product until the catalog match is unique and the shots exist. Date stays blank without a back stamp or wrapper.";
+  const statusLine =
+    mode === "damage"
+      ? `${L.photos.length ? `${L.photos.length} FRAMES` : "NO FRAMES"}${marksN ? ` · ${marksN} MARKS` : ""}`
+      : mode === "field"
+        ? L.field?.id
+          ? `ID · ${L.field.id}`
+          : L.photos.length
+            ? `${L.photos.length} FRAMES`
+            : "NEED A SHOT"
+        : `${status.replace("_", " ")}${L.photos.length ? ` · ${L.photos.length} SHOTS` : ""}`;
+  const cardHtml =
+    mode === "damage"
+      ? formatChatBody(
+          marksN
+            ? `${marksN} damage mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit. Red circles = impacts / granule loss. Arrows = lifts / missing / direction.`
+            : "NO MARKS yet. Snap the damaged area, then tap to drop a circle and drag to scale. SCAN will auto-ring hail bruises if a vision key is in KEYS.",
+        )
+      : mode === "field"
+        ? formatChatBody(L.field?.text || "Snap anything on the roof or job site. LENS IDs the subject — not just shingles.")
+        : last
+          ? formatChatBody(formatVerdict(last))
+          : formatChatBody("NO ID yet. Snap granule close-up, full tab, overlay. LENS stays silent until it knows.");
   $("#view").innerHTML = `
     <div class="lens-wrap">
-      <p class="muted">Certain-only shingle ID. Ground Control will not name a product until the catalog match is unique and the shots exist. Date stays blank without a back stamp or wrapper.</p>
-      <div class="lens-status ${statusCls}">${esc(status.replace("_", " "))}${L.photos.length ? ` · ${L.photos.length} SHOTS` : ""}</div>
-      <div class="shot-chips" id="shot-chips">
+      <div class="lens-modes" id="lens-modes">
+        <button type="button" data-lmode="shingle" class="${mode === "shingle" ? "on" : ""}">SHINGLE</button>
+        <button type="button" data-lmode="damage" class="${mode === "damage" ? "on" : ""}">DAMAGE</button>
+        <button type="button" data-lmode="field" class="${mode === "field" ? "on" : ""}">FIELD</button>
+      </div>
+      <p class="muted">${esc(blurb)}</p>
+      <div class="lens-status ${statusCls}">${esc(statusLine)}</div>
+      ${
+        mode === "shingle"
+          ? `<div class="shot-chips" id="shot-chips">
         ${SHOTS.map((s) => `<button type="button" class="shot-chip${pendingShot === s.id ? " on" : ""}${L.shots.includes(s.id) ? " have" : ""}" data-shot="${s.id}">${esc(s.label)}</button>`).join("")}
       </div>
-      <p class="muted" id="shot-why">${esc((SHOTS.find((s) => s.id === pendingShot) || SHOTS[0]).why)}</p>
+      <p class="muted" id="shot-why">${esc((SHOTS.find((s) => s.id === pendingShot) || SHOTS[0]).why)}</p>`
+          : `<p class="muted">${mode === "damage" ? "After SNAP the photo opens for marking. Tap a saved thumb to re-edit." : "One clear shot is enough for FIELD ID."}</p>`
+      }
       <div class="actions">
         <button type="button" id="lens-snap" class="primary">SNAP</button>
         <button type="button" id="lens-gallery">GALLERY</button>
-        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>READ LENS</button>
+        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "RE-SCAN LAST" : "READ LENS"}</button>
         <button type="button" id="lens-clear">CLEAR</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos
         .map(
           (p, i) =>
-            `<span class="lens-thumb"><img src="${p.url}" alt=""><em>${esc(p.shot || "?")}</em><button type="button" data-drop="${i}">×</button></span>`,
+            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em>${esc(p.shot || p.mode || "?")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
         )
         .join("")}</div>
-      <div class="lens-card" id="lens-card">${last ? formatChatBody(formatVerdict(last)) : formatChatBody("NO ID yet. Snap granule close-up, full tab, overlay. LENS stays silent until it knows.")}</div>
+      <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
-        status === "KNOW" && k.discontinued
+        mode === "shingle" && status === "KNOW" && k.discontinued
           ? `<div class="lens-disc">DISCONTINUED · ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? ` · current: ${esc(k.replacedBy)}` : ""}</div>`
           : ""
       }
       ${
-        needed.length && status !== "KNOW"
+        mode === "shingle" && needed.length && status !== "KNOW"
           ? `<div class="lens-need"><h3>STILL NEED</h3>${needed
               .map((s) => `<p><strong>${esc(s.label)}</strong> — ${esc(s.why)}</p>`)
               .join("")}</div>`
           : ""
       }
       ${
-        n.candidates?.length && status !== "KNOW"
+        mode === "shingle" && n.candidates?.length && status !== "KNOW"
           ? `<div class="lens-cands"><h3>CANDIDATES (NOT CLAIMED)</h3>${n.candidates
               .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? " · DISCONTINUED" : ""}</p>`)
               .join("")}</div>`
@@ -666,6 +742,9 @@ function renderLens() {
         <button type="button" id="lens-to-job">SAVE TO JOB</button>
       </div>
     </div>`;
+  $("#lens-modes")?.querySelectorAll("[data-lmode]").forEach((b) => {
+    b.onclick = () => setLensMode(b.dataset.lmode);
+  });
   $("#shot-chips")?.querySelectorAll("[data-shot]").forEach((b) => {
     b.onclick = () => {
       pendingShot = b.dataset.shot;
@@ -673,7 +752,8 @@ function renderLens() {
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-drop]").forEach((b) => {
-    b.onclick = () => {
+    b.onclick = (e) => {
+      e.stopPropagation();
       const i = Number(b.dataset.drop);
       L.photos.splice(i, 1);
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
@@ -681,11 +761,47 @@ function renderLens() {
       renderLens();
     };
   });
+  $("#lens-strip")?.querySelectorAll("[data-edit]").forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.edit);
+      if (lensMode() === "damage") editDamagePhoto(i);
+    };
+  });
   const addFiles = async ({ capture }) => {
     try {
       const files = await pickImageFiles({ capture, multiple: !capture });
-      for (const file of files.slice(0, MAX_CHAT_PHOTOS - L.photos.length)) {
-        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot: pendingShot, at: Date.now() });
+      const room = MAX_CHAT_PHOTOS - L.photos.length;
+      const picked = files.slice(0, room);
+      if (mode === "damage") {
+        for (const file of picked) {
+          const url = await fileToDataUrl(file, 1400, 0.78);
+          await new Promise((resolve) => {
+            openMarkEditor({
+              url,
+              marks: [],
+              settings: db.settings,
+              autoScan: true,
+              onSave: ({ url: raw, markedUrl, marks }) => {
+                L.photos.push({ url: raw, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() });
+                persist();
+                renderLens();
+                setStatus(marks.length ? `LENS · ${marks.length} MARKS` : `LENS · ${L.photos.length} FRAMES`);
+                resolve();
+              },
+              onCancel: () => {
+                L.photos.push({ url, markedUrl: url, marks: [], shot: "damage", mode: "damage", at: Date.now() });
+                persist();
+                renderLens();
+                resolve();
+              },
+            });
+          });
+        }
+        return;
+      }
+      const shot = mode === "field" ? "field" : pendingShot;
+      for (const file of picked) {
+        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot, mode, at: Date.now() });
       }
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
       persist();
@@ -698,7 +814,8 @@ function renderLens() {
   $("#lens-snap").onclick = () => addFiles({ capture: true });
   $("#lens-gallery").onclick = () => addFiles({ capture: false });
   $("#lens-clear").onclick = () => {
-    db.lens = { photos: [], shots: [], last: null };
+    const keepMode = lensMode();
+    db.lens = { mode: keepMode, photos: [], shots: [], last: null, field: null };
     persist();
     renderLens();
     setStatus("LENS CLEARED");
@@ -709,9 +826,13 @@ function renderLens() {
       address: wxState.address || db.settings.city || "",
       lat: wxState.lat || db.settings.lat,
       lon: wxState.lon || db.settings.lon,
-      lens: last
-        ? { status: last.status, known: last.verdict?.known, needed: last.verdict?.needed, at: new Date().toISOString() }
-        : null,
+      lens:
+        mode === "field" && L.field
+          ? { status: "ID", id: L.field.id, text: L.field.text, at: new Date().toISOString() }
+          : last
+            ? { status: last.status, known: last.verdict?.known, needed: last.verdict?.needed, at: new Date().toISOString() }
+            : null,
+      damage_marks: marksN || undefined,
       photos: L.photos.map((p) => p.shot),
     });
     upsertJob(db, job);
@@ -724,10 +845,25 @@ function renderLens() {
 
 async function runLens() {
   const L = lensPhotos();
+  const mode = lensMode();
   if (!L.photos.length || lensBusy) return;
   lensBusy = true;
   setStatus("LENS READING…");
   try {
+    if (mode === "damage") {
+      editDamagePhoto(L.photos.length - 1, { autoScan: true });
+      setStatus("MARK LAST FRAME");
+      return;
+    }
+    if (mode === "field") {
+      const hit = await identifyImage(db.settings, L.photos[L.photos.length - 1].url, "lens");
+      const idLine = String(hit.text || "").match(/^ID:\s*(.+)$/im);
+      L.field = { id: (idLine && idLine[1].trim()) || "subject", text: hit.text, provider: hit.provider };
+      persist();
+      renderLens();
+      setStatus(`LENS · ${String(hit.provider || "ID").toUpperCase()}`);
+      return;
+    }
     const hit = await identifyShingles(
       db.settings,
       L.photos.map((p) => p.url),
@@ -761,7 +897,8 @@ async function renderWx() {
       <div class="wx-layers" id="wx-layers"></div>
       <div id="wx-panel" class="wx-panel"><p class="muted">Locating…</p></div>
       <div class="wx-map-shell" id="wx-map-shell">
-        <span class="wx-map-hint">DOUBLE-TAP · EXPAND MAP</span>
+        <div id="wx-map-hud" class="wx-map-hud" hidden></div>
+        <span class="wx-map-hint">NOW = live radar · HAIL = storm trace · DOUBLE-TAP EXPAND</span>
         <div id="wx-map"></div>
       </div>
       <div id="wx-roof-panel" class="wx-roof-panel"></div>
@@ -915,7 +1052,7 @@ function renderJobs() {
                 `<article class="job-card" data-id="${esc(j.id)}"><strong>${esc(j.address || "Unpinned")}</strong><p class="muted">${esc(jobSummary(j))}</p><p class="muted">${esc(String(j.created || "").slice(0, 10))}</p></article>`,
             )
             .join("")
-        : `<p class="muted">No jobs yet. ID a shingle in LENS, then SAVE TO JOB.</p>`
+        : `<p class="muted">No jobs yet. LENS a shingle, mark damage, or pin hail — then SAVE TO JOB.</p>`
     }</div>`;
   $("#job-new").onclick = () => {
     const job = newJob({ address: wxState.address || "", lat: wxState.lat, lon: wxState.lon });
@@ -1022,8 +1159,8 @@ function boot() {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
     tab = b.dataset.tab;
-    if (tab === "radio") {
-      $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === "radio"));
+    if (tab === "chat" || tab === "radio") {
+      $("#tabs").querySelectorAll("[data-tab]").forEach((btn) => btn.classList.toggle("on", btn.dataset.tab === "chat"));
       document.body.classList.add("comm");
       renderChatLog();
       return;

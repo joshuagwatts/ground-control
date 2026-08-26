@@ -36,8 +36,10 @@ export function jobSummary(job) {
     const k = lens.known || {};
     bits.push(`${k.manufacturer || ""} ${k.product || ""} ${k.color || ""}`.trim());
     if (k.discontinued) bits.push("DISCONTINUED");
-  } else if (lens?.status === "NARROWED") bits.push("LENS NARROWED");
+  }   else if (lens?.status === "NARROWED") bits.push("LENS NARROWED");
+  else if (lens?.status === "ID") bits.push(lens.id || "FIELD ID");
   else if (lens) bits.push("LENS OPEN");
+  if (job.damage_marks) bits.push(`${job.damage_marks} damage marks`);
   if (job.hail?.days) bits.push(`${job.hail.days} hail days`);
   return bits.filter(Boolean).join(" · ");
 }

@@ -4,7 +4,7 @@ function blank() {
   return {
     chat: [],
     jobs: [],
-    lens: { photos: [], shots: [], last: null },
+    lens: { mode: "shingle", photos: [], shots: [], last: null, field: null },
     settings: {
       operator: "Joshua",
       company: "Ground Control",

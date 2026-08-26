@@ -2,5 +2,13 @@ node_modules/
 .DS_Store
 dist/
 *.apk
+*.aab
 .env
 .env.*
+.gradle/
+build/
+local.properties
+*.jks
+*.keystore
+.idea/
+android/app/src/main/assets/public/

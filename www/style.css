@@ -1373,3 +1373,53 @@ body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
   font: inherit; background: var(--inset); color: var(--text);
   border: 1px solid var(--line); padding: 0.55rem 0.6rem;
 }
+
+.lens-modes { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.lens-modes button { font-size: 10px; letter-spacing: 0.14em; padding: 0.4rem 0.55rem; }
+.lens-modes button.on { background: var(--phos); color: var(--black); border-color: var(--phos); }
+.lens-thumb.marked img { border-color: var(--leak); }
+.wx-map-hud {
+  position: absolute; z-index: 500; top: 0.45rem; left: 0.55rem;
+  display: flex; align-items: baseline; gap: 0.45rem;
+  background: rgba(5,8,5,0.82); border: 1px solid var(--line);
+  padding: 0.35rem 0.55rem; pointer-events: none;
+  letter-spacing: 0.08em;
+}
+.wx-map-hud[hidden] { display: none; }
+.wx-map-hud strong { font-size: 1.35rem; color: var(--phos); line-height: 1; }
+.wx-map-hud span { font-size: 11px; color: var(--text); }
+.wx-map-hud em { font-style: normal; font-size: 10px; color: var(--amber); }
+.wx-layers button.wx-product[data-layer="hail"].on { color: var(--leak); border-color: var(--leak); }
+
+.mark-editor {
+  position: fixed; inset: 0; z-index: 12;
+  background: rgba(5, 8, 5, 0.97);
+  display: none;
+  flex-direction: column;
+  pointer-events: none;
+}
+body.marking .mark-editor:not([hidden]) {
+  display: flex;
+  pointer-events: auto;
+}
+.mark-editor[hidden] {
+  display: none !important;
+  pointer-events: none !important;
+}
+.mark-stage {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 0.4rem; background: #050805;
+}
+.mark-stage canvas {
+  max-width: 100%; max-height: 100%;
+  touch-action: none;
+  border: 1px solid var(--line);
+  cursor: crosshair;
+}
+.mark-tools {
+  display: flex; flex-wrap: wrap; gap: 0.35rem;
+  padding: 0.45rem 0.7rem;
+  border-top: 1px solid var(--line);
+}
+.mark-tools button { font-size: 10px; letter-spacing: 0.12em; padding: 0.4rem 0.55rem; }
+.mark-hint { padding: 0 0.8rem calc(0.5rem + var(--safe-bottom)); margin: 0; }

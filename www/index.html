@@ -17,20 +17,20 @@
     <span class="mark">GC</span>
     <button type="button" id="privacy-tog" class="privacy-chip leaky" title="SECURE blocks LENS. LEAKY: cloud keys + vision.">LEAKY</button>
     <span class="spacer"></span>
-    <button type="button" id="comm-tog">RADIO</button>
+    <button type="button" id="comm-tog">CHAT</button>
   </header>
   <main id="view"></main>
   <div id="status"></div>
   <nav class="tabs" id="tabs">
     <button data-tab="lens" class="on">LENS</button>
     <button data-tab="wx">WX</button>
-    <button data-tab="radio">RADIO</button>
+    <button data-tab="chat">CHAT</button>
     <button data-tab="jobs">JOBS</button>
     <button data-tab="keys">KEYS</button>
   </nav>
   <aside id="comm">
     <header class="stat">
-      <span class="mark">RADIO</span>
+      <span class="mark">CHAT</span>
       <span class="spacer"></span>
       <button type="button" id="comm-close">CLOSE</button>
     </header>
@@ -49,7 +49,7 @@
             <path fill="currentColor" d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 1 1-2 0V6h-1.5v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6H16.5z"/>
           </svg>
         </button>
-        <button type="button" id="lens-btn" title="Open shingle lens">LENS</button>
+        <button type="button" id="lens-btn" title="Open lens">LENS</button>
         <button type="button" id="send" class="primary">SEND</button>
       </div>
     </div>
@@ -66,6 +66,25 @@
         <div class="agent-sheet-list" id="agent-sheet-list"></div>
       </div>
     </div>
+  </aside>
+  <aside id="mark-editor" class="mark-editor" hidden>
+    <header class="stat">
+      <span class="mark">MARK</span>
+      <span class="spacer"></span>
+      <button type="button" id="mark-scan">SCAN</button>
+      <button type="button" id="mark-done" class="primary">DONE</button>
+      <button type="button" id="mark-cancel">SKIP</button>
+    </header>
+    <div class="mark-stage">
+      <canvas id="mark-canvas"></canvas>
+    </div>
+    <div class="mark-tools">
+      <button type="button" data-tool="circle" class="on">CIRCLE</button>
+      <button type="button" data-tool="arrow">ARROW</button>
+      <button type="button" id="mark-undo">UNDO</button>
+      <button type="button" id="mark-clear">CLEAR MARKS</button>
+    </div>
+    <p class="muted mark-hint" id="mark-hint">Tap to drop a red circle. Drag to scale. SCAN auto-marks hail bruises.</p>
   </aside>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script type="module" src="./boot.js"></script>
