@@ -37,10 +37,11 @@ import {
   setHailScopeMode,
   renderHailScopeSheet,
   baseLayerButtons,
+  bindWxMapExpand,
 } from "./wx.js";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
-import { matchCatalog, discontinuedFor } from "./catalog.js";
+import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 
@@ -85,7 +86,7 @@ function leaveWx() {
   }
   setHailScopeMode(false);
   destroyMap();
-  document.body.classList.remove("wx-tab", "hs-tab");
+  document.body.classList.remove("wx-tab", "hs-tab", "wx-map-expanded");
 }
 
 function renderPrivacy() {
@@ -614,11 +615,32 @@ function lensMode() {
   return String(lensPhotos().mode || "shingle");
 }
 
-function setLensMode(mode) {
+function shotSpec(id) {
+  return SHOTS.find((s) => s.id === id) || SHOTS[0];
+}
+
+function haveShots(L) {
+  return new Set((L.photos || []).map((p) => p.shot).filter(Boolean));
+}
+
+function nextShingleShot(L) {
+  const have = haveShots(L);
+  return SHINGLE_CORE.find((id) => !have.has(id)) || SHINGLE_EXTRA.find((id) => !have.has(id)) || null;
+}
+
+function shingleCoreDone(L) {
+  const have = haveShots(L);
+  return SHINGLE_CORE.every((id) => have.has(id));
+}
+
+function setLensMode(mode, { openCamera = false } = {}) {
   const L = lensPhotos();
-  L.mode = mode === "damage" || mode === "field" ? mode : "shingle";
+  L.mode = mode === "damage" ? "damage" : "shingle";
+  L.session = true;
   persist();
+  pendingShot = L.mode === "shingle" ? nextShingleShot(L) || SHINGLE_CORE[0] : "damage";
   renderLens();
+  if (openCamera) $("#lens-snap")?.click();
 }
 
 function damageCount(photos = []) {
@@ -639,9 +661,9 @@ function editDamagePhoto(index, opts = {}) {
       L.photos[index] = { ...photo, url, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() };
       persist();
       renderLens();
-      setStatus(marks.length ? `MARKED · ${marks.length}` : "SAVED FRAME");
+      setStatus(marks.length ? `Marked · ${marks.length}` : "Saved frame");
     },
-    onCancel: () => setStatus("MARK SKIPPED"),
+    onCancel: () => setStatus("Skipped marks"),
   });
 }
 
@@ -652,80 +674,92 @@ function renderLens() {
   const mode = lensMode();
   const last = L.last;
   const v = last?.verdict;
-  const needed = v?.needed || SHOTS.slice(0, 3).map((s) => ({ id: s.id, label: s.label, why: s.why }));
-  const status = last?.status || (L.photos.length ? "READY" : "NEED_SHOTS");
-  const statusCls = status === "KNOW" || status === "ID" ? "know" : status === "NARROWED" ? "narrow" : "need";
   const k = v?.known || {};
   const n = v?.narrowed || {};
   const marksN = damageCount(L.photos);
-  const blurb =
-    mode === "damage"
-      ? "Mark damage on a roof photo. Tap and scale circles or arrows. Scan finds bruises, granule loss, and lifts. It does not decide a claim."
-      : mode === "field"
-        ? "Field ID — flashing, vents, penetrations, plants, hardware, whatever is in the shot. Honest when unsure."
-        : "Certain-only shingle ID. Will not name a product until the catalog match is unique and the shots exist. Date stays blank without a back stamp or wrapper.";
-  const statusLine =
-    mode === "damage"
-      ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
-      : mode === "field"
-        ? L.field?.id
-          ? `ID · ${L.field.id}`
-          : L.photos.length
-            ? `${L.photos.length} frames`
-            : "Need a shot"
-        : `${status.replace("_", " ")}${L.photos.length ? ` · ${L.photos.length} shots` : ""}`;
+  const coreDone = shingleCoreDone(L);
+  const nextId = mode === "shingle" ? nextShingleShot(L) : null;
+  const next = nextId ? shotSpec(nextId) : null;
+  pendingShot = nextId || pendingShot || SHINGLE_CORE[0];
+  const have = haveShots(L);
+  const coreHave = SHINGLE_CORE.filter((id) => have.has(id)).length;
+
+  if (!L.session) {
+    $("#view").innerHTML = `
+      <div class="lens-pick">
+        <h3>Lens</h3>
+        <p class="muted">What are you shooting?</p>
+        <button type="button" class="lens-pick-card" id="pick-shingle">
+          <strong>Shingle identifier</strong>
+          <span>Four guided shots: granule close-up, full tab, overlay, nailing strip. We will not name a product until those are in.</span>
+        </button>
+        <button type="button" class="lens-pick-card" id="pick-damage">
+          <strong>Damage highlighter</strong>
+          <span>Circle bruises, granule loss, and lifts. We’ll tighten this later.</span>
+        </button>
+      </div>`;
+    $("#pick-shingle").onclick = () => setLensMode("shingle", { openCamera: true });
+    $("#pick-damage").onclick = () => setLensMode("damage", { openCamera: true });
+    return;
+  }
+
+  const status = last?.status || (coreDone ? "READY" : "NEED_SHOTS");
+  const statusCls = status === "KNOW" || status === "ID" ? "know" : status === "NARROWED" ? "narrow" : "need";
   const cardHtml =
     mode === "damage"
       ? formatChatBody(
           marksN
-            ? `${marksN} damage mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit. Red circles = impacts / granule loss. Arrows = lifts / missing / direction.`
-            : "No marks yet. Snap the damaged area, then tap to drop a circle and drag to scale. Scan will auto-ring hail bruises if a vision key is saved.",
+            ? `${marksN} mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit.`
+            : "Snap the damaged area. Circles and arrows come next — we’ll dial this in later.",
         )
-      : mode === "field"
-        ? formatChatBody(L.field?.text || "Snap anything on the roof or job site. Lens IDs the subject — not just shingles.")
-        : last
-          ? formatChatBody(formatVerdict(last))
-          : formatChatBody("No ID yet. Snap a granule close-up, a full tab, and the overlay. Lens stays silent until it knows.");
+      : last
+        ? formatChatBody(formatVerdict(last))
+        : formatChatBody(
+            coreDone
+              ? "Four required shots are in. Identify when you’re ready, or add a back stamp if you have a loose shingle."
+              : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}: ${next ? next.label : "next angle"}.`,
+          );
+
   $("#view").innerHTML = `
     <div class="lens-wrap">
-      <div class="lens-modes" id="lens-modes">
-        <button type="button" data-lmode="shingle" class="${mode === "shingle" ? "on" : ""}">Shingle</button>
-        <button type="button" data-lmode="damage" class="${mode === "damage" ? "on" : ""}">Damage</button>
-        <button type="button" data-lmode="field" class="${mode === "field" ? "on" : ""}">Field</button>
+      <div class="lens-session-head">
+        <button type="button" id="lens-back">Back</button>
+        <strong>${mode === "damage" ? "Damage highlighter" : "Shingle identifier"}</strong>
       </div>
-      <p class="muted">${esc(blurb)}</p>
-      <div class="lens-status ${statusCls}">${esc(statusLine)}</div>
       ${
         mode === "shingle"
-          ? `<div class="shot-chips" id="shot-chips">
-        ${SHOTS.map((s) => `<button type="button" class="shot-chip${pendingShot === s.id ? " on" : ""}${L.shots.includes(s.id) ? " have" : ""}" data-shot="${s.id}">${esc(s.label)}</button>`).join("")}
-      </div>
-      <p class="muted" id="shot-why">${esc((SHOTS.find((s) => s.id === pendingShot) || SHOTS[0]).why)}</p>`
-          : `<p class="muted">${mode === "damage" ? "After Snap, the photo opens for marking. Tap a saved thumb to re-edit." : "One clear shot is enough for field ID."}</p>`
+          ? `<div class="lens-progress" aria-label="${coreHave} of ${SHINGLE_CORE.length} required shots">
+              ${SHINGLE_CORE.map((id) => `<i class="${have.has(id) ? "have" : pendingShot === id ? "now" : ""}" title="${esc(shotSpec(id).label)}"></i>`).join("")}
+            </div>
+            <div class="lens-shot-card">
+              <div class="lens-shot-kicker">${coreDone ? "Required shots done" : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
+              <h3>${esc((next || shotSpec(pendingShot)).label)}</h3>
+              <p class="muted">${esc((next || shotSpec(pendingShot)).how || (next || shotSpec(pendingShot)).why)}</p>
+            </div>`
+          : `<p class="muted">Snap the damaged area. Marking tools come after the photo.</p>`
       }
       <div class="actions">
-        <button type="button" id="lens-snap" class="primary">Snap</button>
-        <button type="button" id="lens-gallery">Gallery</button>
-        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "Re-scan last" : "Identify"}</button>
-        <button type="button" id="lens-clear">Clear</button>
+        <button type="button" id="lens-snap" class="primary">${mode === "shingle" && coreDone && next ? "Add extra shot" : "Snap"}</button>
+        <button type="button" id="lens-read" ${mode === "shingle" && !coreDone ? "disabled" : L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "Mark last" : "Identify"}</button>
+        <button type="button" id="lens-clear">Start over</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos
         .map(
           (p, i) =>
-            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em>${esc(p.shot || p.mode || "?")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
+            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em>${esc(p.shot === "damage" ? "Damage" : shotSpec(p.shot).label || p.shot || "?")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
         )
         .join("")}</div>
+      <div class="lens-status ${statusCls}">${esc(
+        mode === "damage"
+          ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
+          : coreDone
+            ? `${status.replace("_", " ")} · ${L.photos.length} shots`
+            : `${coreHave} / ${SHINGLE_CORE.length} required`,
+      )}</div>
       <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
         mode === "shingle" && status === "KNOW" && k.discontinued
           ? `<div class="lens-disc">Discontinued · ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? ` · current: ${esc(k.replacedBy)}` : ""}</div>`
-          : ""
-      }
-      ${
-        mode === "shingle" && needed.length && status !== "KNOW"
-          ? `<div class="lens-need"><h3>Still need</h3>${needed
-              .map((s) => `<p><strong>${esc(s.label)}</strong> — ${esc(s.why)}</p>`)
-              .join("")}</div>`
           : ""
       }
       ${
@@ -739,21 +773,18 @@ function renderLens() {
         <button type="button" id="lens-to-job">Save to job</button>
       </div>
     </div>`;
-  $("#lens-modes")?.querySelectorAll("[data-lmode]").forEach((b) => {
-    b.onclick = () => setLensMode(b.dataset.lmode);
-  });
-  $("#shot-chips")?.querySelectorAll("[data-shot]").forEach((b) => {
-    b.onclick = () => {
-      pendingShot = b.dataset.shot;
-      renderLens();
-    };
-  });
+  $("#lens-back").onclick = () => {
+    L.session = false;
+    persist();
+    renderLens();
+  };
   $("#lens-strip")?.querySelectorAll("[data-drop]").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
       const i = Number(b.dataset.drop);
       L.photos.splice(i, 1);
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
+      L.last = null;
       persist();
       renderLens();
     };
@@ -766,9 +797,10 @@ function renderLens() {
   });
   const addFiles = async ({ capture }) => {
     try {
-      const files = await pickImageFiles({ capture, multiple: !capture });
+      const files = await pickImageFiles({ capture, multiple: false });
       const room = MAX_CHAT_PHOTOS - L.photos.length;
       const picked = files.slice(0, room);
+      if (!picked.length) return;
       if (mode === "damage") {
         for (const file of picked) {
           const url = await fileToDataUrl(file, 1400, 0.78);
@@ -782,7 +814,6 @@ function renderLens() {
                 L.photos.push({ url: raw, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() });
                 persist();
                 renderLens();
-                setStatus(marks.length ? `LENS · ${marks.length} MARKS` : `LENS · ${L.photos.length} FRAMES`);
                 resolve();
               },
               onCancel: () => {
@@ -796,26 +827,29 @@ function renderLens() {
         }
         return;
       }
-      const shot = mode === "field" ? "field" : pendingShot;
+      const shot = nextShingleShot(L) || pendingShot || SHINGLE_CORE[0];
+      const wasDone = shingleCoreDone(L);
       for (const file of picked) {
-        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot, mode, at: Date.now() });
+        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot, mode: "shingle", at: Date.now() });
       }
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
       persist();
+      const justFinishedCore = !wasDone && shingleCoreDone(L);
       renderLens();
-      setStatus(`LENS · ${L.photos.length} FRAMES`);
+      if (justFinishedCore) {
+        setStatus("Required shots in — identifying…");
+        runLens();
+      }
     } catch (e) {
-      if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 50).toUpperCase());
+      if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 50));
     }
   };
   $("#lens-snap").onclick = () => addFiles({ capture: true });
-  $("#lens-gallery").onclick = () => addFiles({ capture: false });
   $("#lens-clear").onclick = () => {
-    const keepMode = lensMode();
-    db.lens = { mode: keepMode, photos: [], shots: [], last: null, field: null };
+    db.lens = { mode: lensMode(), photos: [], shots: [], last: null, field: null, session: true };
     persist();
+    pendingShot = SHINGLE_CORE[0];
     renderLens();
-    setStatus("Lens cleared");
   };
   $("#lens-read").onclick = () => runLens();
   $("#lens-to-job").onclick = () => {
@@ -823,12 +857,9 @@ function renderLens() {
       address: wxState.address || db.settings.city || "",
       lat: wxState.lat || db.settings.lat,
       lon: wxState.lon || db.settings.lon,
-      lens:
-        mode === "field" && L.field
-          ? { status: "ID", id: L.field.id, text: L.field.text, at: new Date().toISOString() }
-          : last
-            ? { status: last.status, known: last.verdict?.known, needed: last.verdict?.needed, at: new Date().toISOString() }
-            : null,
+      lens: last
+        ? { status: last.status, known: last.verdict?.known, needed: last.verdict?.needed, at: new Date().toISOString() }
+        : null,
       damage_marks: marksN || undefined,
       photos: L.photos.map((p) => p.shot),
     });
@@ -840,12 +871,17 @@ function renderLens() {
   };
 }
 
+
 async function runLens() {
   const L = lensPhotos();
   const mode = lensMode();
   if (!L.photos.length || lensBusy) return;
+  if (mode === "shingle" && !shingleCoreDone(L)) {
+    setStatus(`Need ${SHINGLE_CORE.length} guided shots first`);
+    return;
+  }
   lensBusy = true;
-  setStatus("LENS READING…");
+  setStatus("Reading shots…");
   try {
     if (mode === "damage") {
       editDamagePhoto(L.photos.length - 1, { autoScan: true });
@@ -892,6 +928,7 @@ async function renderWx() {
           <input type="search" id="hs-addr-q" placeholder="Search an address" enterkeyhint="search" />
         </form>
         <div class="hs-styles" id="hs-styles"></div>
+        <span class="hs-map-hint">Double-tap to expand</span>
         <div id="wx-map"></div>
       </div>
       <div class="hs-sheet" id="hs-sheet">
@@ -916,6 +953,7 @@ async function renderWx() {
       };
     }
     mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, product: "hail", base: "dark" });
+    bindWxMapExpand($("#hs-map-shell"));
     const searchForm = $("#hs-search");
     if (searchForm) {
       searchForm.onsubmit = async (e) => {

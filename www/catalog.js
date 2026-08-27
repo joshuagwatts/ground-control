@@ -10,59 +10,72 @@ function C(names, extra = {}) {
 export const SHOTS = [
   {
     id: "granules_close",
-    label: "GRANULE CLOSE-UP",
+    label: "Granule close-up",
+    how: "Fill the frame with the color blend. Get close enough to see individual granules.",
     why: "Color blend, granule size, ceramic-coated vs painted, algae-resistant copper specks",
     need: ["color", "manufacturer"],
   },
   {
     id: "tab_pattern",
-    label: "FULL TAB / CUTOUT",
+    label: "Full tab",
+    how: "One whole tab and the cutout, square to the camera. No extreme angle.",
     why: "3-tab vs laminate vs designer; cutout shape; overlay drop",
     need: ["construction", "product"],
   },
   {
     id: "overlay_shadow",
-    label: "OVERLAY + SHADOW LINE",
+    label: "Overlay and shadow line",
+    how: "Step back a little. Show how the overlay drops and the shadow line runs.",
     why: "Timberline dual-shadow vs OC Duration vs Landmark overlay geometry",
     need: ["product", "manufacturer"],
   },
   {
     id: "nailing_strip",
-    label: "NAILING STRIP",
+    label: "Nailing strip",
+    how: "Lift a tab or shoot an exposed strip. Look for pink SureNail, DuraGrip, or a plant stamp.",
     why: "OC SureNail pink/coral strip, GAF Dura Grip, CT oversize zone, plant stamps",
     need: ["manufacturer", "product"],
   },
   {
     id: "thickness_edge",
-    label: "EDGE / THICKNESS",
+    label: "Edge / thickness",
+    how: "Shoot the butt edge so you can see layers and thickness.",
     why: "Single-layer 3-tab vs laminated dual-layer vs designer thickness",
     need: ["construction"],
   },
   {
     id: "backstamp",
-    label: "BACK STAMP / DATE CODE",
+    label: "Back stamp / date code",
+    how: "If you have a loose shingle, shoot the back stamp. This is the only honest date.",
     why: "Plant, week/year, brand mold — the only honest path to an exact date",
     need: ["date", "manufacturer"],
   },
   {
     id: "wrapper",
-    label: "BUNDLE WRAPPER",
+    label: "Bundle wrapper",
+    how: "Garage, attic, leftover bundle — printed product, color, lot, date.",
     why: "Printed product, color, lot, date — gold standard if leftover in garage/attic",
     need: ["date", "product", "color", "manufacturer"],
   },
   {
     id: "slope_context",
-    label: "SLOPE CONTEXT",
+    label: "Slope context",
+    how: "A few feet back. Show the field, weathering, and how many layers if you can.",
     why: "Install era, weathering pattern, hip/ridge, how many layers",
     need: ["era"],
   },
   {
     id: "ridge_cap",
-    label: "HIP / RIDGE CAP",
+    label: "Hip / ridge cap",
+    how: "The cap along the hip or ridge. Often a branded piece.",
     why: "Often a branded cap (Seal-A-Ridge, Duration hip, Landmark hip)",
     need: ["manufacturer"],
   },
 ];
+
+/** Required sequence before Lens will try to name a product. */
+export const SHINGLE_CORE = ["granules_close", "tab_pattern", "overlay_shadow", "nailing_strip"];
+export const SHINGLE_EXTRA = ["thickness_edge", "slope_context", "backstamp", "wrapper", "ridge_cap"];
 
 export const CONSTRUCTIONS = ["3-tab", "architectural laminate", "designer", "luxury designer", "metal", "tile", "slate", "wood", "other"];
 
@@ -683,21 +696,14 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
   const needed = [];
   const pushShot = (id) => {
     const spec = SHOTS.find((s) => s.id === id);
-    if (spec && !has(id) && !needed.some((x) => x.id === id)) needed.push({ id, label: spec.label, why: spec.why });
+    if (spec && !has(id) && !needed.some((x) => x.id === id)) needed.push({ id, label: spec.label, why: spec.how || spec.why });
   };
 
-  if (n < 2) {
-    pushShot("granules_close");
-    pushShot("tab_pattern");
-    pushShot("overlay_shadow");
+  for (const id of SHINGLE_CORE) {
+    if (!has(id)) pushShot(id);
   }
-  if (!has("granules_close")) pushShot("granules_close");
-  if (!has("tab_pattern") && !has("overlay_shadow")) {
-    pushShot("tab_pattern");
-    pushShot("overlay_shadow");
-  }
-  if (manufacturer.conf < KNOW && !has("nailing_strip") && !has("backstamp") && !has("wrapper")) {
-    pushShot("nailing_strip");
+  if (n < SHINGLE_CORE.length) {
+    for (const id of SHINGLE_CORE) pushShot(id);
   }
   if (color.conf < KNOW) pushShot("granules_close");
   if (dateCode.conf < KNOW) {
@@ -715,8 +721,14 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
     (manufacturer.value && manufacturer.conf >= NARROW && !hit.top) ||
     (product.value && product.conf >= NARROW && hit.top && hit.top.p < 0.7);
 
-  const knowMaker = manufacturer.conf >= KNOW && hit.top && hit.top.m >= 0.88 && n >= 2;
-  const knowLine = knowMaker && product.conf >= KNOW && hit.unique && (has("tab_pattern") || has("overlay_shadow") || has("wrapper") || has("nailing_strip"));
+  const coreIn =
+    has("granules_close") &&
+    has("tab_pattern") &&
+    has("overlay_shadow") &&
+    (has("nailing_strip") || has("wrapper")) &&
+    n >= SHINGLE_CORE.length;
+  const knowMaker = manufacturer.conf >= KNOW && hit.top && hit.top.m >= 0.88 && coreIn;
+  const knowLine = knowMaker && product.conf >= KNOW && hit.unique;
   const knowColor = knowLine && color.conf >= KNOW && hit.colorUnique && has("granules_close");
   const knowDate = dateCode.conf >= KNOW && (has("backstamp") || has("wrapper")) && String(dateCode.value).match(/\d{4}|\b\d{1,2}\/\d{2,4}\b|\bweek\s*\d+/i);
 
@@ -726,7 +738,7 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
     status = knowColor || knowDate ? "KNOW" : "NARROWED";
     if (knowLine && knowColor) status = "KNOW";
     else if (knowLine && !color.value) status = "NARROWED";
-  } else if (knowMaker || (hit.top && manufacturer.conf >= NARROW && n >= 2)) {
+  } else if (knowMaker || (hit.top && manufacturer.conf >= NARROW && coreIn)) {
     status = "NARROWED";
   } else {
     status = "NEED_SHOTS";

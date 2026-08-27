@@ -946,7 +946,7 @@ export function bindRadarScrubber(root = document) {
 
 const BASE_LAYERS = [
   { id: "osm", label: "Street", kind: "base", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
-  { id: "dark", label: "Night", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
+  { id: "dark", label: "Night", kind: "base", url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attribution: "© OSM © CARTO" },
   { id: "sat", label: "Sat", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
 ];
 
@@ -1613,6 +1613,18 @@ export async function refetchDossier(settings, lat, lon, address, filters = wxFi
   return localResearch(lat, lon, address, { deep: true, filters: f });
 }
 
+function applyBaseLayers(config) {
+  if (!config) return config;
+  const layers = [...(config.layers || [])];
+  for (const base of BASE_LAYERS) {
+    const i = layers.findIndex((l) => l.id === base.id);
+    if (i >= 0) layers[i] = { ...layers[i], ...base };
+    else layers.unshift({ ...base });
+  }
+  config.layers = layers;
+  return config;
+}
+
 export async function loadMapConfig(settings) {
   if (mapConfigCache) {
     const layers = mapConfigCache.layers || [];
@@ -1623,12 +1635,12 @@ export async function loadMapConfig(settings) {
       layers.push({ id: "wind", label: "Wind", kind: "wx", synthetic: true });
     }
     mapConfigCache.layers = layers;
-    return mapConfigCache;
+    return applyBaseLayers(mapConfigCache);
   }
   const center = await resolveMapCenter(settings);
   const remote = await api("/api/storm/map", { settings, timeout: 8000 }).catch(() => null);
   mapConfigCache = remote ? { ...remote, center: { ...remote.center, ...center } } : await localMapConfig(settings, center);
-  return mapConfigCache;
+  return applyBaseLayers(mapConfigCache);
 }
 
 export async function researchPin(settings, lat, lon, address = "", deep = true) {
@@ -2358,7 +2370,7 @@ export function bindWxMapExpand(shell) {
   shell.addEventListener(
     "click",
     (e) => {
-      if (e.target.closest(".leaflet-control")) return;
+      if (e.target.closest(".leaflet-control, .hs-search, .hs-styles, input, select, textarea, button, a")) return;
       const now = Date.now();
       if (now - lastTap < 360) {
         e.stopPropagation();
@@ -2367,8 +2379,8 @@ export function bindWxMapExpand(shell) {
         wxSuppressMapTap = true;
         const on = shell.classList.toggle("expanded");
         document.body.classList.toggle("wx-map-expanded", on);
-        const hint = shell.querySelector(".wx-map-hint");
-        if (hint) hint.textContent = on ? "DOUBLE-TAP · COLLAPSE" : "DOUBLE-TAP · EXPAND MAP";
+        const hint = shell.querySelector(".wx-map-hint, .hs-map-hint");
+        if (hint) hint.textContent = on ? "Double-tap to close" : "Double-tap to expand";
         setTimeout(() => {
           try {
             map?.invalidateSize?.(true);
