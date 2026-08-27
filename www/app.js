@@ -38,6 +38,7 @@ import {
   renderHailScopeSheet,
   baseLayerButtons,
   bindWxMapExpand,
+  setWxUnits,
 } from "./wx.js";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
@@ -47,6 +48,7 @@ import { openMarkEditor } from "./damage.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
+setWxUnits(db.settings.units || "imperial");
 let tab = "hailscope";
 const keyCheckTimers = {};
 let pendingChatImages = [];
@@ -1082,6 +1084,12 @@ function renderKeys() {
     <h3>Settings</h3>
     <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>Company</span><input id="set-co" value="${esc(s.company || "")}" /></div>
+    <div class="field"><span>Units</span>
+      <select id="set-units">
+        <option value="imperial"${(s.units || "imperial") === "imperial" ? " selected" : ""}>Imperial — miles</option>
+        <option value="metric"${s.units === "metric" ? " selected" : ""}>Metric — kilometers</option>
+      </select>
+    </div>
     <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
     <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "No keys yet — paste Gemini or OpenAI for Lens."}</p>
     <h3>API keys</h3>
@@ -1101,6 +1109,14 @@ function renderKeys() {
     db.settings.company = co.value;
     persist();
   };
+  const units = $("#set-units");
+  if (units) {
+    units.onchange = () => {
+      db.settings.units = units.value === "metric" ? "metric" : "imperial";
+      setWxUnits(db.settings.units);
+      persist();
+    };
+  }
   document.querySelectorAll(".key-row input[data-field]").forEach((inp) => {
     inp.oninput = () => {
       const field = inp.dataset.field;

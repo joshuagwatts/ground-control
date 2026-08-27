@@ -30,6 +30,7 @@ function blank() {
       lat: "",
       lon: "",
       city: "",
+      units: "imperial",
       brain_health: {},
     },
   };

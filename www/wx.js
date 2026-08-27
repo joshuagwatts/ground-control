@@ -25,8 +25,50 @@ const WMO = {
   99: "Severe thunder + hail",
 };
 
-export const DEFAULT_FILTERS = { km: 25, hailIn: 0.75, windMph: 38, days: 365, year: "all", sort: "date" };
+export const DEFAULT_FILTERS = { km: 10, hailIn: 0.75, windMph: 38, days: 365, year: "all", sort: "date" };
 let wxFilters = { ...DEFAULT_FILTERS };
+const RADIUS_KM = [5, 10, 16, 25, 40, 50];
+let wxUnits = "imperial";
+
+export function setWxUnits(units) {
+  wxUnits = String(units || "").toLowerCase() === "metric" ? "metric" : "imperial";
+}
+
+export function getWxUnits() {
+  return wxUnits;
+}
+
+function filterKm(filters = wxFilters) {
+  const n = Number(filters.km);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_FILTERS.km;
+}
+
+function kmToMi(km) {
+  return Number(km) * 0.621371;
+}
+
+export function formatDistance(km) {
+  const n = Number(km);
+  if (!Number.isFinite(n)) return "—";
+  if (wxUnits === "metric") {
+    const s = Math.abs(n) >= 10 ? n.toFixed(0) : n.toFixed(1);
+    return `${s} km`;
+  }
+  const mi = kmToMi(n);
+  const s = Math.abs(mi) >= 10 ? mi.toFixed(0) : mi.toFixed(1);
+  return `${s} mi`;
+}
+
+function radiusLabel(km) {
+  if (wxUnits === "metric") return `${km} km`;
+  return `${Math.round(kmToMi(km))} mi`;
+}
+
+function radiusOptionHtml() {
+  const cur = filterKm();
+  const vals = RADIUS_KM.includes(cur) ? RADIUS_KM : [cur, ...RADIUS_KM].sort((a, b) => a - b);
+  return vals.map((km) => `<option value="${km}"${Number(km) === Number(cur) ? " selected" : ""}>${radiusLabel(km)}</option>`).join("");
+}
 /** Current map pin — storm zones and graph are scoped to this point. */
 let pinLat = null;
 let pinLon = null;
@@ -81,7 +123,87 @@ function hailSizeIn(raw) {
 }
 
 function zillowUrl(address) {
-  return `https://www.zillow.com/homes/${encodeURIComponent(String(address || "").trim())}_rb/`;
+  const q = String(address || "").trim();
+  if (!q || /^-?\d+\.\d+\s*,\s*-?\d+\.\d+$/.test(q)) return "";
+  return `https://www.zillow.com/homes/${encodeURIComponent(q)}_rb/`;
+}
+
+function firstPhone(raw) {
+  return String(raw || "")
+    .split(/[;,/|]/)
+    .map((s) => s.trim())
+    .find(Boolean) || "";
+}
+
+function phoneDigits(raw) {
+  const d = String(firstPhone(raw)).replace(/\D/g, "");
+  if (d.length === 10) return `+1${d}`;
+  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
+  if (String(raw || "").trim().startsWith("+") && d.length >= 10) return `+${d}`;
+  return "";
+}
+
+function formatPhone(raw) {
+  const e164 = phoneDigits(raw);
+  const d = e164.replace(/\D/g, "");
+  const ten = d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+  if (ten.length === 10) return `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}`;
+  return firstPhone(raw);
+}
+
+function extractPhones(text) {
+  const out = [];
+  const re = /(?:\+?1[-.\s]?)?(?:\(?[2-9]\d{2}\)?[-.\s])[2-9]\d{2}[-.\s]\d{4}/g;
+  const blob = String(text || "");
+  let m;
+  while ((m = re.exec(blob)) && out.length < 4) {
+    const digits = phoneDigits(m[0]);
+    if (digits && !out.includes(digits)) out.push(digits);
+  }
+  return out;
+}
+
+function extractEmails(text) {
+  const out = [];
+  const re = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  const blob = String(text || "");
+  let m;
+  while ((m = re.exec(blob)) && out.length < 4) {
+    const e = m[0].toLowerCase();
+    if (/example\.com$|noreply|no-reply|privacy|support@duckduckgo/i.test(e)) continue;
+    if (!out.includes(e)) out.push(e);
+  }
+  return out;
+}
+
+function mergeContacts(...parts) {
+  const hit = { name: "", phone: "", email: "", website: "" };
+  for (const p of parts) {
+    if (!p) continue;
+    if (!hit.name && (p.name || p.owner_name)) hit.name = String(p.name || p.owner_name).trim();
+    if (!hit.phone && (p.phone || p.owner_phone)) hit.phone = formatPhone(p.phone || p.owner_phone);
+    if (!hit.email && (p.email || p.owner_email)) hit.email = String(p.email || p.owner_email).trim();
+    if (!hit.website && p.website) hit.website = String(p.website).trim();
+  }
+  return hit;
+}
+
+function placeContactHtml(data, esc) {
+  const addr = data.address || "";
+  const zurl = data.zillow_url || zillowUrl(addr);
+  const phone = formatPhone(data.owner_phone || "");
+  const email = String(data.owner_email || "").trim();
+  const name = String(data.owner_name || "").trim();
+  const e164 = phoneDigits(phone);
+  const bits = [];
+  if (zurl) bits.push(`<a class="hs-zillow" href="${esc(zurl)}" target="_blank" rel="noopener">Zillow</a>`);
+  if (e164) {
+    bits.push(`<a class="hs-tel" href="tel:${esc(e164)}">${esc(phone)}</a>`);
+    bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
+  }
+  if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
+  const miss = !e164 && !email ? `<span class="hs-place-miss">No listed phone or email</span>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }
 
 async function api(path, opts = {}) {
@@ -99,11 +221,15 @@ async function api(path, opts = {}) {
 }
 
 async function reverseNominatim(lat, lon) {
-  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&zoom=18`;
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&extratags=1&namedetails=1&zoom=18`;
   try {
-    const { body } = await httpGet(url, 9000, { "Accept-Language": "en" });
+    const { body } = await httpGet(url, 9000, {
+      "Accept-Language": "en",
+      "User-Agent": "GroundControl/1.0 (joshuagwatts)",
+    });
     const data = JSON.parse(body || "{}");
     const a = data.address || {};
+    const extra = data.extratags || {};
     let house = "";
     if (a.house_number && a.road) house = `${a.house_number} ${a.road}`;
     else if (a.road) house = a.road;
@@ -114,7 +240,18 @@ async function reverseNominatim(lat, lon) {
     const parts = [house, city, state, zip].filter(Boolean);
     const line = parts.join(", ") || String(data.display_name || "").split(",").slice(0, 3).join(", ");
     if (!line.trim()) return { ok: false };
-    return { ok: true, address: line, city: city || line.split(",")[0], lat, lon, source: "nominatim" };
+    return {
+      ok: true,
+      address: line,
+      city: city || line.split(",")[0],
+      lat,
+      lon,
+      source: "nominatim",
+      name: data.name || extra.operator || "",
+      phone: firstPhone(extra.phone || extra["contact:phone"] || extra["contact:mobile"] || ""),
+      email: extra.email || extra["contact:email"] || "",
+      website: extra.website || extra["contact:website"] || extra.url || "",
+    };
   } catch {
     return { ok: false };
   }
@@ -135,6 +272,87 @@ async function reverseGeocode(lat, lon) {
   } catch {
     return { ok: false, address: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon };
   }
+}
+
+async function overpassContacts(lat, lon) {
+  const q = `[out:json][timeout:12];(
+    nwr(around:60,${lat},${lon})["phone"];
+    nwr(around:60,${lat},${lon})["contact:phone"];
+    nwr(around:60,${lat},${lon})["email"];
+    nwr(around:60,${lat},${lon})["contact:email"];
+  );out tags center 12;`;
+  try {
+    const { body } = await httpGet(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`, 14000);
+    const data = JSON.parse(body || "{}");
+    const scored = [];
+    for (const el of data.elements || []) {
+      const tags = el.tags || {};
+      const phone = firstPhone(tags.phone || tags["contact:phone"] || tags["contact:mobile"] || "");
+      const email = tags.email || tags["contact:email"] || "";
+      const website = tags.website || tags["contact:website"] || "";
+      if (!phone && !email) continue;
+      const elat = Number(el.lat || el.center?.lat);
+      const elon = Number(el.lon || el.center?.lon);
+      const dist = Number.isFinite(elat) && Number.isFinite(elon) ? haversineKm(lat, lon, elat, elon) : 0.06;
+      scored.push({ dist, name: tags.name || tags.operator || "", phone, email, website });
+    }
+    scored.sort((a, b) => a.dist - b.dist);
+    return scored[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function contactsFromWebsite(url) {
+  const href = String(url || "").trim();
+  if (!/^https?:\/\//i.test(href)) return null;
+  if (/zillow|facebook|instagram|twitter|x\.com|linkedin/i.test(href)) return null;
+  try {
+    const { body } = await httpGet(href, 8000);
+    const html = String(body || "").slice(0, 80000);
+    const tel = html.match(/tel:(\+?[0-9().\-\s]{7,})/i);
+    const mail = html.match(/mailto:([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+    return {
+      phone: tel ? tel[1] : extractPhones(html)[0] || "",
+      email: mail ? mail[1] : extractEmails(html)[0] || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function searchListedContact(address) {
+  const q = String(address || "").trim();
+  if (q.length < 8 || /^-?\d+\.\d+/.test(q)) return null;
+  try {
+    const { body } = await httpGet(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(`"${q}" phone`)}`, 10000);
+    const html = String(body || "");
+    const phones = extractPhones(html);
+    const emails = extractEmails(html);
+    if (!phones.length && !emails.length) return null;
+    return { phone: phones[0] || "", email: emails[0] || "" };
+  } catch {
+    return null;
+  }
+}
+
+async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
+  let hit = mergeContacts(seed);
+  if (!hit.phone || !hit.email) {
+    const osm = await overpassContacts(lat, lon).catch(() => null);
+    hit = mergeContacts(hit, osm);
+  }
+  if ((!hit.phone || !hit.email) && hit.website) {
+    hit = mergeContacts(hit, await contactsFromWebsite(hit.website));
+  }
+  if (!hit.phone && !hit.email) {
+    hit = mergeContacts(hit, await searchListedContact(address));
+  }
+  return {
+    owner_name: hit.name || "",
+    owner_phone: hit.phone || "",
+    owner_email: hit.email || "",
+  };
 }
 
 async function historicalStorms(lat, lon, days = 540) {
@@ -1262,7 +1480,7 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
     .sort((a, b) => String(a.date).localeCompare(String(b.date)))
     .slice(-24);
   if (!rows.length) {
-    return `<div class="wx-storm-graph empty"><p class="muted">No hail days within ${wxFilters.km} km of this pin — widen NEAR / WINDOW or run DEEP RESEARCH.</p></div>`;
+    return `<div class="wx-storm-graph empty"><p class="muted">No hail days within ${formatDistance(filterKm())} of this pin — widen NEAR / WINDOW or run DEEP RESEARCH.</p></div>`;
   }
   const maxSz = Math.max(...rows.map((h) => parseFloat(h.size_in) || 0), 1);
   const maxHits = Math.max(...rows.map((h) => Number(h.hits) || 1), 1);
@@ -1282,7 +1500,7 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
       const col = hailZoneColor(sz);
       const label = String(row.date || "").slice(5);
       const on = selectedDate && selectedDate === row.date;
-      const dist = row.distance_km != null ? `${row.distance_km}km` : "";
+      const dist = row.distance_km != null ? formatDistance(row.distance_km) : "";
       return `<g class="wx-sg-bar${on ? " on" : ""}" data-storm-date="${esc(row.date)}" role="button" tabindex="0">
         <rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${bh}" fill="${col.fill}" stroke="${on ? "var(--phos)" : col.stroke}" stroke-width="${on ? 1.8 : 0.6}" opacity="${on ? 1 : 0.88}" />
         <text x="${(x + bw / 2).toFixed(1)}" y="${Math.max(10, y - 3)}" text-anchor="middle" class="wx-sg-v">${esc(String(sz))}"</text>
@@ -1296,10 +1514,10 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
   return `<div class="wx-storm-graph">
     <div class="wx-storm-graph-head">
       <span>HAIL ZONES · THIS PIN</span>
-      <span class="wx-storm-graph-peak">${esc(selLabel)} · ${rows.length} day(s) · ${wxFilters.km} km</span>
+      <span class="wx-storm-graph-peak">${esc(selLabel)} · ${rows.length} day(s) · ${esc(formatDistance(filterKm()))}</span>
     </div>
     <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hail size by storm date near pin">${bars}</svg>
-    <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · height = max inches · width = signatures · label = km from pin</div>
+    <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · height = max inches · width = signatures · label = distance from pin</div>
   </div>`;
 }
 
@@ -1668,18 +1886,23 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const filterDays = Number(filters.days) || 180;
   const archiveDays = Math.min(filterDays, 730);
   const swdiDays = Math.min(filterDays, 180);
-  const km = Number(filters.km) || 15;
+  const km = filterKm(filters);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
-  const [geo, wxNow, archiveStorms, spc, swdi, lsr] = await Promise.all([
+  const [geo, wxNow, archiveStorms, spc, swdi, lsr, contacts] = await Promise.all([
     geoP,
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     historicalStorms(lat, lon, archiveDays),
     fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, swdiDays),
     fetchIemLsrHail(lat, lon, km, filterDays).catch(() => []),
+    lookupPlaceContacts(lat, lon, address).catch(() => ({})),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
+  let people = mergeContacts(geo, contacts);
+  if (!people.phone && !people.email && addr && addr !== address) {
+    people = mergeContacts(people, await searchListedContact(addr).catch(() => null));
+  }
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   const storms = enrichStormDates(archiveStorms, hail, wind);
@@ -1702,9 +1925,9 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     wind,
     news: newsHits,
     zillow_url: zillowUrl(addr),
-    owner_name: "",
-    owner_phone: "",
-    owner_email: "",
+    owner_name: people.name || "",
+    owner_phone: people.phone || "",
+    owner_email: people.email || "",
     _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
 }
@@ -1712,6 +1935,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
 export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
   const geo = await reverseGeocode(lat, lon);
   const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const people0 = mergeContacts(geo);
   const partial = {
     ok: true,
     address: addr,
@@ -1722,27 +1946,32 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
     hail: [],
     wind: [],
     news: [],
-    owner_name: "",
-    owner_phone: "",
-    owner_email: "",
+    owner_name: people0.name || "",
+    owner_phone: people0.phone || "",
+    owner_email: people0.email || "",
   };
   if (onPartial) onPartial(partial);
-  const km = Number(wxFilters.km) || 25;
+  const km = filterKm();
   const lsrDays = Number(wxFilters.days) || 365;
-  const [wxNow, spc, swdi, lsr] = await Promise.all([
+  const [wxNow, spc, swdi, lsr, contacts] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     fetchSpcReports(lat, lon, km, 30),
     fetchSwdiHail(lat, lon, km, 60),
     fetchIemLsrHail(lat, lon, km, lsrDays).catch(() => []),
+    lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
   ]);
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
+  const people = mergeContacts(people0, contacts);
   return {
     ...partial,
     weather: wxNow,
     hail,
     wind,
     storms: enrichStormDates([], hail, wind),
+    owner_name: people.name || "",
+    owner_phone: people.phone || "",
+    owner_email: people.email || "",
     _meta: { fetchedDays: Math.max(60, lsrDays), fetchedKm: km, deep: false },
   };
 }
@@ -1799,7 +2028,7 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
     const norm = normalizeDossier(remote) || local;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, Number(wxFilters.km) || 25);
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, filterKm());
     if ((local.hail?.length || 0) > (norm.hail?.length || 0)) {
       norm.hail = local.hail;
       norm.wind = local.wind || [];
@@ -1817,6 +2046,7 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false }
   }
   const geo = await reverseGeocode(lat, lon);
   const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const people0 = mergeContacts(geo);
   const partial = {
     ok: true,
     address: addr,
@@ -1826,9 +2056,9 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false }
     storms: [],
     hail: [],
     news: [],
-    owner_name: "",
-    owner_phone: "",
-    owner_email: "",
+    owner_name: people0.name || "",
+    owner_phone: people0.phone || "",
+    owner_email: people0.email || "",
   };
   if (onPartial) onPartial(partial);
   const full = await researchPin(settings, lat, lon, addr, true);
@@ -1856,7 +2086,7 @@ export async function quickPin(settings, lat, lon) {
       if ((local.hail?.length || 0) >= (r.hail?.length || 0)) {
         /* keep local pin-filtered hail */
       } else if (r.hail?.length) {
-        norm.hail = pinFilterHailRows(r.hail, lat, lon, Number(wxFilters.km) || 25);
+        norm.hail = pinFilterHailRows(r.hail, lat, lon, filterKm());
       }
     }
     return norm;
@@ -1865,7 +2095,7 @@ export async function quickPin(settings, lat, lon) {
     const norm = normalizeDossier(remote) || remote;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, Number(wxFilters.km) || 25);
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, filterKm());
     return norm;
   }
   const [geo, wx] = await Promise.all([
@@ -1875,10 +2105,10 @@ export async function quickPin(settings, lat, lon) {
   return { ok: true, geo, lat, lon, address: geo?.address || "", weather: wx, hail: [], recent_storms: [] };
 }
 
-function pinFilterHailRows(rows, lat, lon, km = 15) {
+function pinFilterHailRows(rows, lat, lon, km = DEFAULT_FILTERS.km) {
   const pinLat = Number(lat);
   const pinLon = Number(lon);
-  const radius = Number(km) || 25;
+  const radius = Number(km) || DEFAULT_FILTERS.km;
   return (rows || [])
     .map((h) => {
       if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon) || !Number.isFinite(h.lat) || !Number.isFinite(h.lon)) {
@@ -1896,7 +2126,7 @@ function pinFilterHailRows(rows, lat, lon, km = 15) {
 
 function hailNearPin(rows, day = null) {
   if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return rows || [];
-  const km = Number(wxFilters.km) || 15;
+  const km = filterKm();
   return (rows || []).filter((h) => {
     const d = String(h.date || "").slice(0, 10);
     if (day && d !== day) return false;
@@ -1908,7 +2138,7 @@ function hailNearPin(rows, day = null) {
 
 function windNearPin(rows, day = null) {
   if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return rows || [];
-  const km = Number(wxFilters.km) || 15;
+  const km = filterKm();
   return (rows || []).filter((w) => {
     const d = String(w.date || "").slice(0, 10);
     if (day && d !== day) return false;
@@ -1938,7 +2168,7 @@ function drawPinRadius() {
     pinRadiusLayer = null;
   }
   if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return;
-  const km = Number(wxFilters.km) || 15;
+  const km = filterKm();
   pinRadiusLayer = window.L.circle([pinLat, pinLon], {
     radius: km * 1000,
     color: "#ffcc00",
@@ -2119,7 +2349,7 @@ function hailPopupHtml(h, day) {
         : h.source === "iem-lsr"
           ? "LSR"
           : "spotter";
-  return `<b>${stars} ${sev}</b><br>${h.date || day || ""}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> (${src})<br>${h.hits || 1} signature${(h.hits || 1) === 1 ? "" : "s"} · zone ~${h.zone_r_km || "?"} km<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}${h.distance_km != null ? `<br>${h.distance_km} km from pin` : ""}`;
+  return `<b>${stars} ${sev}</b><br>${h.date || day || ""}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> (${src})<br>${h.hits || 1} signature${(h.hits || 1) === 1 ? "" : "s"} · zone ~${h.zone_r_km != null ? formatDistance(h.zone_r_km) : "?"}<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}${h.distance_km != null ? `<br>${formatDistance(h.distance_km)} from pin` : ""}`;
 }
 
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
@@ -2224,7 +2454,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
       })
         .bindPopup(
-          `<b>${isSpot ? "SPOTTER" : "RADAR"}</b> · ${p.date}${p.time ? ` ${p.time}` : ""}<br><b>${p.size_in}"</b> · ${p.location || ""}${p.distance_km != null ? `<br>${p.distance_km} km from pin` : ""}`,
+          `<b>${isSpot ? "SPOTTER" : "RADAR"}</b> · ${p.date}${p.time ? ` ${p.time}` : ""}<br><b>${p.size_in}"</b> · ${p.location || ""}${p.distance_km != null ? `<br>${formatDistance(p.distance_km)} from pin` : ""}`,
         )
         .addTo(hailLayer);
     }
@@ -2252,7 +2482,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       dashArray: "5 6",
       className: "wx-wind-topo",
     })
-      .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km != null ? `${w.distance_km} km from pin` : ""}`)
+      .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km != null ? `${formatDistance(w.distance_km)} from pin` : ""}`)
       .addTo(windLayer);
   }
   syncHazardLayers();
@@ -2609,7 +2839,7 @@ function cutoffDate(days) {
 
 export function filterHailRaw(data, filters = wxFilters) {
   const since = cutoffDate(filters.days);
-  const km = Number(filters.km) || 15;
+  const km = filterKm(filters);
   const hailMin = Number(filters.hailIn) || 0;
   const year = String(filters.year || "all");
   const pinLat = Number(data.lat ?? data._meta?.lat);
@@ -2633,7 +2863,7 @@ export function filterHailRaw(data, filters = wxFilters) {
 
 export function filterDossier(data, filters = wxFilters) {
   const since = cutoffDate(filters.days);
-  const km = Number(filters.km) || 15;
+  const km = filterKm(filters);
   const windMin = Number(filters.windMph) || 0;
   const year = String(filters.year || "all");
   const sort = String(filters.sort || "date");
@@ -2720,8 +2950,6 @@ export function renderWeatherPanel(root, data, esc) {
 
 function roofDossierHtml(data, esc, onResearch) {
   const news = data.news || [];
-  const addr = data.address || "";
-  const zurl = data.zillow_url || (addr ? zillowUrl(addr) : "");
   const meta = data._meta || {};
   const { hail, wind, storms } = filterDossier(data, wxFilters);
   const years = [
@@ -2733,18 +2961,14 @@ function roofDossierHtml(data, esc, onResearch) {
       <div class="wx-roof-body">
         <p class="muted wx-roof-blurb">Insurance-grade hail trace — tap a date to draw merged zones on the map above. Solid = spotter-confirmed · dashed = radar-only.</p>
         ${renderStormGraph(hail, esc, selectedStormDate)}
+        ${placeContactHtml(data, esc)}
         <div class="wx-links">
-          ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
           ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
         </div>
-        <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm || "?"} km` : "Quick scan · DEEP RESEARCH for full trace + news · Shingle ID → CHAT → LENS"}</p>
+        <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm != null ? formatDistance(meta.fetchedKm) : "?"}` : "Quick scan · DEEP RESEARCH for full trace + news · Shingle ID → CHAT → LENS"}</p>
         <div class="wx-filters">
           <label>NEAR <select id="wx-f-km">
-            <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
-            <option value="15"${wxFilters.km == 15 ? " selected" : ""}>15 km</option>
-            <option value="25"${wxFilters.km == 25 ? " selected" : ""}>25 km</option>
-            <option value="40"${wxFilters.km == 40 ? " selected" : ""}>40 km</option>
-            <option value="50"${wxFilters.km == 50 ? " selected" : ""}>50 km</option>
+            ${radiusOptionHtml()}
           </select></label>
           <label>HAIL ≥ <select id="wx-f-hail">
             <option value="0"${wxFilters.hailIn == 0 ? " selected" : ""}>any</option>
@@ -2774,11 +2998,6 @@ function roofDossierHtml(data, esc, onResearch) {
             <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>extreme ★</option>
           </select></label>
         </div>
-        <div class="wx-contacts">
-          ${data.owner_name ? `<div>Owner: ${esc(data.owner_name)}</div>` : ""}
-          ${data.owner_phone ? `<div>Phone: ${esc(data.owner_phone)}</div>` : ""}
-          ${data.owner_email ? `<div>Email: ${esc(data.owner_email)}</div>` : ""}
-        </div>
         <h4>HAIL TRACE · ${hail.length} DAYS${selectedStormDate ? ` · MAP ${esc(selectedStormDate)}` : ""}</h4>
         <div class="wx-hail-legend muted">Tap date → map zones · red dot = spotter · green = radar sig · ☆→★★★★★</div>
         <div class="wx-hail">${
@@ -2803,8 +3022,8 @@ function roofDossierHtml(data, esc, onResearch) {
             <span class="size">${esc(h.size_in)}"</span>
             <span class="sev">${esc(sev)}</span>
             <span class="src">${esc(src)}</span>
-            <span class="dist">${esc(String(h.distance_km ?? "—"))} km</span>
-            <span class="loc">${esc(h.hits || 1)} sig${(h.hits || 1) === 1 ? "" : "s"}${h.zone_r_km ? ` · ~${esc(String(h.zone_r_km))}km` : ""}</span>
+            <span class="dist">${esc(formatDistance(h.distance_km))}</span>
+            <span class="loc">${esc(h.hits || 1)} sig${(h.hits || 1) === 1 ? "" : "s"}${h.zone_r_km ? ` · ~${esc(formatDistance(h.zone_r_km))}` : ""}</span>
           </div>`;
                 })
                 .join("")
@@ -2819,7 +3038,7 @@ function roofDossierHtml(data, esc, onResearch) {
                   (w) => `
           <div class="wx-hail-row"><span class="date">${esc(w.date)}</span>
           <span class="size">${esc(String(w.wind_mph))} mph</span>
-          <span class="dist">${esc(String(w.distance_km))} km</span>
+          <span class="dist">${esc(formatDistance(w.distance_km))}</span>
           ${esc(w.location)}, ${esc(w.state)}</div>`,
                 )
                 .join("")
@@ -2975,15 +3194,12 @@ function hailScopeHtml(data, days, esc) {
         ? `Showing zones for ${esc(prettyStormDate(selectedStormDate))}`
         : "Tap a storm date to draw hail zones"
     }</p>
+    ${placeContactHtml(data, esc)}
     <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">
-        <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
-        <option value="15"${wxFilters.km == 15 ? " selected" : ""}>15 km</option>
-        <option value="25"${wxFilters.km == 25 ? " selected" : ""}>25 km</option>
-        <option value="40"${wxFilters.km == 40 ? " selected" : ""}>40 km</option>
-        <option value="50"${wxFilters.km == 50 ? " selected" : ""}>50 km</option>
+        ${radiusOptionHtml()}
       </select>
       <select id="hs-f-hail" aria-label="Hail size">
         <option value="0"${wxFilters.hailIn == 0 ? " selected" : ""}>Any size</option>
@@ -3047,7 +3263,7 @@ function hailScopeDateRows(days, esc) {
       return `<button type="button" class="hs-date${on}" data-storm-date="${esc(h.date)}">
                 <span class="when">${esc(prettyStormDate(h.date))}</span>
                 <span class="size">${esc(h.size_in)}″</span>
-                <span class="meta">${esc(sev)} · ${esc(src)} · ${esc(String(h.hits || 1))} hit${(h.hits || 1) === 1 ? "" : "s"} · ${esc(String(h.distance_km ?? "—"))} km</span>
+                <span class="meta">${esc(sev)} · ${esc(src)} · ${esc(String(h.hits || 1))} hit${(h.hits || 1) === 1 ? "" : "s"} · ${esc(formatDistance(h.distance_km))}</span>
               </button>`;
     })
     .join("");
