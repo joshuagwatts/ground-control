@@ -2,6 +2,7 @@
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
 import { desktopConfigured } from "./desktop.js";
 import { locateDevice } from "./geo.js";
+import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts } from "./contacts.js";
 
 let map = null;
 let pin = null;
@@ -128,66 +129,6 @@ function zillowUrl(address) {
   return `https://www.zillow.com/homes/${encodeURIComponent(q)}_rb/`;
 }
 
-function firstPhone(raw) {
-  return String(raw || "")
-    .split(/[;,/|]/)
-    .map((s) => s.trim())
-    .find(Boolean) || "";
-}
-
-function phoneDigits(raw) {
-  const d = String(firstPhone(raw)).replace(/\D/g, "");
-  if (d.length === 10) return `+1${d}`;
-  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
-  if (String(raw || "").trim().startsWith("+") && d.length >= 10) return `+${d}`;
-  return "";
-}
-
-function formatPhone(raw) {
-  const e164 = phoneDigits(raw);
-  const d = e164.replace(/\D/g, "");
-  const ten = d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
-  if (ten.length === 10) return `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}`;
-  return firstPhone(raw);
-}
-
-function extractPhones(text) {
-  const out = [];
-  const re = /(?:\+?1[-.\s]?)?(?:\(?[2-9]\d{2}\)?[-.\s])[2-9]\d{2}[-.\s]\d{4}/g;
-  const blob = String(text || "");
-  let m;
-  while ((m = re.exec(blob)) && out.length < 4) {
-    const digits = phoneDigits(m[0]);
-    if (digits && !out.includes(digits)) out.push(digits);
-  }
-  return out;
-}
-
-function extractEmails(text) {
-  const out = [];
-  const re = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-  const blob = String(text || "");
-  let m;
-  while ((m = re.exec(blob)) && out.length < 4) {
-    const e = m[0].toLowerCase();
-    if (/example\.com$|noreply|no-reply|privacy|support@duckduckgo/i.test(e)) continue;
-    if (!out.includes(e)) out.push(e);
-  }
-  return out;
-}
-
-function mergeContacts(...parts) {
-  const hit = { name: "", phone: "", email: "", website: "" };
-  for (const p of parts) {
-    if (!p) continue;
-    if (!hit.name && (p.name || p.owner_name)) hit.name = String(p.name || p.owner_name).trim();
-    if (!hit.phone && (p.phone || p.owner_phone)) hit.phone = formatPhone(p.phone || p.owner_phone);
-    if (!hit.email && (p.email || p.owner_email)) hit.email = String(p.email || p.owner_email).trim();
-    if (!hit.website && p.website) hit.website = String(p.website).trim();
-  }
-  return hit;
-}
-
 function placeContactHtml(data, esc) {
   const addr = data.address || "";
   const zurl = data.zillow_url || zillowUrl(addr);
@@ -248,9 +189,10 @@ async function reverseNominatim(lat, lon) {
       lon,
       source: "nominatim",
       name: data.name || extra.operator || "",
-      phone: firstPhone(extra.phone || extra["contact:phone"] || extra["contact:mobile"] || ""),
+      phone: extra.phone || extra["contact:phone"] || extra["contact:mobile"] || "",
       email: extra.email || extra["contact:email"] || "",
       website: extra.website || extra["contact:website"] || extra.url || "",
+      wikidata: extra.wikidata || "",
     };
   } catch {
     return { ok: false };
@@ -272,87 +214,6 @@ async function reverseGeocode(lat, lon) {
   } catch {
     return { ok: false, address: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon };
   }
-}
-
-async function overpassContacts(lat, lon) {
-  const q = `[out:json][timeout:12];(
-    nwr(around:60,${lat},${lon})["phone"];
-    nwr(around:60,${lat},${lon})["contact:phone"];
-    nwr(around:60,${lat},${lon})["email"];
-    nwr(around:60,${lat},${lon})["contact:email"];
-  );out tags center 12;`;
-  try {
-    const { body } = await httpGet(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`, 14000);
-    const data = JSON.parse(body || "{}");
-    const scored = [];
-    for (const el of data.elements || []) {
-      const tags = el.tags || {};
-      const phone = firstPhone(tags.phone || tags["contact:phone"] || tags["contact:mobile"] || "");
-      const email = tags.email || tags["contact:email"] || "";
-      const website = tags.website || tags["contact:website"] || "";
-      if (!phone && !email) continue;
-      const elat = Number(el.lat || el.center?.lat);
-      const elon = Number(el.lon || el.center?.lon);
-      const dist = Number.isFinite(elat) && Number.isFinite(elon) ? haversineKm(lat, lon, elat, elon) : 0.06;
-      scored.push({ dist, name: tags.name || tags.operator || "", phone, email, website });
-    }
-    scored.sort((a, b) => a.dist - b.dist);
-    return scored[0] || null;
-  } catch {
-    return null;
-  }
-}
-
-async function contactsFromWebsite(url) {
-  const href = String(url || "").trim();
-  if (!/^https?:\/\//i.test(href)) return null;
-  if (/zillow|facebook|instagram|twitter|x\.com|linkedin/i.test(href)) return null;
-  try {
-    const { body } = await httpGet(href, 8000);
-    const html = String(body || "").slice(0, 80000);
-    const tel = html.match(/tel:(\+?[0-9().\-\s]{7,})/i);
-    const mail = html.match(/mailto:([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
-    return {
-      phone: tel ? tel[1] : extractPhones(html)[0] || "",
-      email: mail ? mail[1] : extractEmails(html)[0] || "",
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function searchListedContact(address) {
-  const q = String(address || "").trim();
-  if (q.length < 8 || /^-?\d+\.\d+/.test(q)) return null;
-  try {
-    const { body } = await httpGet(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(`"${q}" phone`)}`, 10000);
-    const html = String(body || "");
-    const phones = extractPhones(html);
-    const emails = extractEmails(html);
-    if (!phones.length && !emails.length) return null;
-    return { phone: phones[0] || "", email: emails[0] || "" };
-  } catch {
-    return null;
-  }
-}
-
-async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
-  let hit = mergeContacts(seed);
-  if (!hit.phone || !hit.email) {
-    const osm = await overpassContacts(lat, lon).catch(() => null);
-    hit = mergeContacts(hit, osm);
-  }
-  if ((!hit.phone || !hit.email) && hit.website) {
-    hit = mergeContacts(hit, await contactsFromWebsite(hit.website));
-  }
-  if (!hit.phone && !hit.email) {
-    hit = mergeContacts(hit, await searchListedContact(address));
-  }
-  return {
-    owner_name: hit.name || "",
-    owner_phone: hit.phone || "",
-    owner_email: hit.email || "",
-  };
 }
 
 async function historicalStorms(lat, lon, days = 540) {
@@ -1888,21 +1749,18 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const swdiDays = Math.min(filterDays, 180);
   const km = filterKm(filters);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
-  const [geo, wxNow, archiveStorms, spc, swdi, lsr, contacts] = await Promise.all([
-    geoP,
+  const geo = await geoP;
+  const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const [wxNow, archiveStorms, spc, swdi, lsr, contacts] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     historicalStorms(lat, lon, archiveDays),
     fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, swdiDays),
     fetchIemLsrHail(lat, lon, km, filterDays).catch(() => []),
-    lookupPlaceContacts(lat, lon, address).catch(() => ({})),
+    lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
   ]);
-  const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
-  let people = mergeContacts(geo, contacts);
-  if (!people.phone && !people.email && addr && addr !== address) {
-    people = mergeContacts(people, await searchListedContact(addr).catch(() => null));
-  }
+  const people = mergeContacts(geo, contacts);
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   const storms = enrichStormDates(archiveStorms, hail, wind);
