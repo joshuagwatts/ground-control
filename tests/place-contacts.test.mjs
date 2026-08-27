@@ -13,7 +13,7 @@ import {
   sameHouse,
   listingForPin,
 } from "../www/contacts.js";
-import { formatOwnerName, formatMailing, parcelMatchesPin } from "../www/assessor.js";
+import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
 function assert(ok, msg) {
   if (!ok) throw new Error(msg);
@@ -66,6 +66,40 @@ assert(formatOwnerName("SMITH RENTALS LLC") === "Smith Rentals LLC", "keep LLC")
 assert(formatMailing("PO BOX 2970", "EDMOND", "OK", "73083-2970").includes("PO BOX 2970"), "mail po box");
 assert(parcelMatchesPin("400 S Bryant, Edmond, OK", "400 S BRYANT AVE EDMOND"), "assessor situs");
 assert(!parcelMatchesPin("2521 Tredington Way, Edmond, OK", "2501 TREDINGTON WAY EDMOND"), "wrong lot");
+
+const okc = pickParcel({
+  name1: "CITY OF EDMOND",
+  mailingaddress1: "PO BOX 2970",
+  city: "EDMOND",
+  state: "OK",
+  zipcode: "73083-2970",
+  location: "400 S BRYANT AVE EDMOND",
+  propertyid: 284860,
+}, { source: "Oklahoma County", href: (row) => `https://docs.oklahomacounty.org/AssessorWP5/AN-R.asp?PropertyID=${row.propertyid}` });
+assert(okc.name === "City Of Edmond", "ok county name");
+assert(okc.mail.includes("PO BOX"), "ok county mail");
+assert(/PropertyID=284860/.test(okc.url), "ok county card");
+
+const cle = pickParcel({
+  COUNTY_OWNER_1: "CITY OF NORMAN",
+  COUNTY_MAILING_ADDRESS: "PO BOX 370",
+  COUNTY_CITY: "NORMAN",
+  COUNTY_STATE: "OK",
+  COUNTY_ZIP: "73070",
+  LOCATE_ADDRESS: "201 W GRAY ST",
+}, { source: "Cleveland County", href: () => "https://www.clevelandcountyassessor.us/" });
+assert(/Norman/i.test(cle.name), "cleveland name");
+assert(cle.mail.includes("PO BOX 370") && /Norman/i.test(cle.mail), "cleveland packed mail");
+
+const crk = pickParcel({
+  ownername: "CITY OF SAPULPA",
+  situs: "511 E LEE AVE",
+  address1: "PO BOX 1130",
+  citystate: "SAPULPA OK",
+  zipcode: "74067",
+});
+assert(/Sapulpa/i.test(crk.name), "creek name");
+assert(/Sapulpa/i.test(crk.mail), "creek citystate mail");
 
 const pin = "2521 Tredington Way, Edmond, OK 73034";
 const keep = listingForPin({ address: pin, phone: "918-582-0001", name: "Shop" }, pin);
