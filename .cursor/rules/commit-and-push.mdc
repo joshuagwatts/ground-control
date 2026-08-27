@@ -1,0 +1,12 @@
+---
+description: Always commit and push after app work; never ask first
+alwaysApply: true
+---
+
+# Commit and push
+
+- After finishing work, create a git commit and push it. Do not ask whether to commit or push.
+- Push with `git push origin HEAD:main` (local `master` tracks `origin/main`). Do not force-push.
+- PowerShell: pass the commit message with a here-string, not bash HEREDOC.
+- Do not skip hooks. Do not update git config.
+- Contact lookup is for reaching the current homeowner of the pinned house (public listing / assessor-style sources). Do not skip-trace personal Google/Facebook accounts, profile photos, or people-search pages of former residents.

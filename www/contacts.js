@@ -1,4 +1,4 @@
-/** Public contact hunt for a pinned address — OSM, listings, search pages. */
+/** High-confidence listing for a pinned house — OSM/Nominatim at this address only. */
 import { httpGet } from "./net.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
@@ -69,11 +69,37 @@ export function stateAbbr(s) {
   return US_STATES[t] || "";
 }
 
-function slug(s) {
-  return String(s || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+export function sameHouse(a, b) {
+  const pa = a && typeof a === "object" && a.house != null ? a : parseStreetAddress(a);
+  const pb = b && typeof b === "object" && b.house != null ? b : parseStreetAddress(b);
+  if (!pa.house || !pb.house) return false;
+  if (String(pa.house).toLowerCase() !== String(pb.house).toLowerCase()) return false;
+  if (pa.street && pb.street) {
+    const ta = pa.street.split(/\s+/)[0].toLowerCase();
+    const tb = pb.street.split(/\s+/)[0].toLowerCase();
+    if (ta.length >= 4 && tb.length >= 4 && ta !== tb) return false;
+  }
+  return true;
+}
+
+function emptyListing() {
+  return { name: "", phone: "", email: "", website: "", facebook: "", instagram: "" };
+}
+
+/** Keep OSM tags only when they belong to this house number and street. */
+export function listingForPin(seed, pinAddress) {
+  const pin = parseStreetAddress(pinAddress || seed?.address);
+  if (!pin.house) return emptyListing();
+  const seedAddr = seed?.address || pinAddress;
+  if (!sameHouse(pin, seedAddr)) return emptyListing();
+  return mergeContacts({
+    name: seed?.name || "",
+    phone: seed?.phone || seed?.owner_phone || "",
+    email: seed?.email || seed?.owner_email || "",
+    website: seed?.website || "",
+    facebook: seed?.facebook || seed?.facebook_url || "",
+    instagram: seed?.instagram || seed?.instagram_url || "",
+  });
 }
 
 function firstPhone(raw) {
@@ -250,12 +276,12 @@ function itempropContacts(html) {
 }
 
 function pageMentionsAddress(html, parts) {
-  if (!parts?.house) return true;
+  if (!parts?.house) return false;
   const text = decodeEntities(String(html || "")).replace(/<[^>]+>/g, " ");
   if (!text.includes(parts.house)) return false;
   if (parts.street) {
     const token = parts.street.split(/\s+/)[0];
-    if (token && token.length >= 4 && !new RegExp(token, "i").test(text)) return false;
+    if (token && token.length >= 4 && !new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(text)) return false;
   }
   return true;
 }
@@ -316,44 +342,6 @@ export function mergeContacts(...parts) {
   return hit;
 }
 
-function searchResultUrls(html) {
-  const urls = [];
-  const add = (raw) => {
-    try {
-      const href = decodeURIComponent(String(raw || "").replace(/&amp;/g, "&"));
-      const u = new URL(href, "https://example.com");
-      if (u.protocol !== "http:" && u.protocol !== "https:") return;
-      if (SKIP_HOST.test(u.hostname)) return;
-      const clean = `${u.origin}${u.pathname}${u.search}`;
-      if (!urls.includes(clean)) urls.push(clean);
-    } catch {
-      /* ignore */
-    }
-  };
-  const ddg = /uddg=([^&"]+)/g;
-  let m;
-  while ((m = ddg.exec(html || "")) && urls.length < 8) add(m[1]);
-  const hrefs = /<a[^>]+href=["'](https?:\/\/[^"'<>]+)/gi;
-  while ((m = hrefs.exec(html || "")) && urls.length < 10) add(m[1]);
-  return urls.slice(0, 8);
-}
-
-function directoryUrls(parts) {
-  if (!parts.house || !parts.street || !parts.city) return [];
-  const st = parts.state || "ok";
-  const street = `${parts.house} ${parts.street}`;
-  const citySt = `${parts.city} ${st}`;
-  const hy = [parts.house, parts.street, parts.city, st.toUpperCase()].join("-").replace(/\s+/g, "-");
-  const fps = `${slug(`${parts.house} ${parts.street}`)}_${slug(`${parts.city} ${st}`)}`;
-  return [
-    `https://thatsthem.com/address/${hy}`,
-    `https://www.fastpeoplesearch.com/address/${fps}`,
-    `https://www.truepeoplesearch.com/resultaddress?street=${encodeURIComponent(street)}&citystatezip=${encodeURIComponent(citySt)}`,
-    `https://www.yellowpages.com/search?search_terms=${encodeURIComponent(street)}&geo_location_terms=${encodeURIComponent(`${parts.city}, ${st}`)}`,
-    `https://www.whitepages.com/address/${encodeURIComponent(street)}/${encodeURIComponent(`${parts.city}-${st}`)}`,
-  ];
-}
-
 async function fetchHtml(url, ms = 9000) {
   try {
     const { body, url: finalUrl } = await httpGet(url, ms);
@@ -374,9 +362,17 @@ async function huntPages(urls, parts, opts = {}) {
   return hit;
 }
 
-async function nominatimSearchContacts(address) {
+function nominatimHitAddress(h) {
+  const a = h?.address || {};
+  if (a.house_number && a.road) {
+    return `${a.house_number} ${a.road}, ${a.city || a.town || a.village || ""}, ${a.state || ""}`;
+  }
+  return h?.display_name || "";
+}
+
+async function nominatimSearchContacts(address, parts) {
   const q = String(address || "").trim();
-  if (q.length < 8) return null;
+  if (q.length < 8 || !parts?.house) return null;
   try {
     const { body } = await httpGet(
       `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&addressdetails=1&extratags=1&limit=3`,
@@ -385,13 +381,14 @@ async function nominatimSearchContacts(address) {
     );
     const hits = JSON.parse(body || "[]");
     for (const h of hits) {
+      if (!sameHouse(parts, nominatimHitAddress(h))) continue;
       const extra = h.extratags || {};
       const phone = firstPhone(extra.phone || extra["contact:phone"] || extra["contact:mobile"] || "");
       const email = extra.email || extra["contact:email"] || "";
       const website = extra.website || extra["contact:website"] || extra.url || "";
       const social = socialsFromTags(extra);
       if (phone || email || website || social.facebook || social.instagram) {
-        return { name: h.name || extra.operator || "", phone, email, website, ...social };
+        return { name: h.name || extra.operator || "", phone, email, website, ...social, wikidata: extra.wikidata || "" };
       }
     }
   } catch {
@@ -401,15 +398,10 @@ async function nominatimSearchContacts(address) {
 }
 
 async function overpassContacts(lat, lon, parts) {
-  const around = parts.house ? 140 : 50;
-  const houseClause = parts.house
-    ? `nwr(around:${around},${lat},${lon})["addr:housenumber"="${String(parts.house).replace(/"/g, "")}"];`
-    : "";
-  const q = `[out:json][timeout:12];(${houseClause}
-    nwr(around:40,${lat},${lon})["phone"];
-    nwr(around:40,${lat},${lon})["contact:phone"];
-    nwr(around:40,${lat},${lon})["email"];
-    nwr(around:40,${lat},${lon})["contact:email"];
+  if (!parts.house) return null;
+  const hn = String(parts.house).replace(/"/g, "");
+  const q = `[out:json][timeout:12];(
+    nwr(around:140,${lat},${lon})["addr:housenumber"="${hn}"];
   );out tags center 16;`;
   try {
     const { body } = await httpGet(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`, 14000);
@@ -418,6 +410,8 @@ async function overpassContacts(lat, lon, parts) {
     for (const el of data.elements || []) {
       const tags = el.tags || {};
       const house = String(tags["addr:housenumber"] || "");
+      const street = String(tags["addr:street"] || "");
+      if (!sameHouse(parts, `${house} ${street}`.trim())) continue;
       const phone = firstPhone(tags.phone || tags["contact:phone"] || tags["contact:mobile"] || "");
       const email = tags.email || tags["contact:email"] || "";
       const website = tags.website || tags["contact:website"] || "";
@@ -429,7 +423,6 @@ async function overpassContacts(lat, lon, parts) {
       scored.push({
         dist,
         house,
-        same: parts.house && house && house.toLowerCase() === String(parts.house).toLowerCase(),
         name: tags.name || tags.operator || "",
         phone,
         email,
@@ -438,12 +431,7 @@ async function overpassContacts(lat, lon, parts) {
         wikidata: tags.wikidata || "",
       });
     }
-    scored.sort((a, b) => Number(b.same) - Number(a.same) || a.dist - b.dist);
-    if (parts.house) {
-      const match = scored.find((s) => s.same);
-      if (match) return match;
-      return null;
-    }
+    scored.sort((a, b) => a.dist - b.dist);
     return scored[0] || null;
   } catch {
     return null;
@@ -472,36 +460,9 @@ async function wikidataContacts(qid) {
   }
 }
 
-async function searchEngineContacts(address, parts) {
-  const q = String(address || "").trim();
-  if (q.length < 8) return { urls: [] };
-  const queries = [
-    `"${q}" phone`,
-    `"${q}" email`,
-    `"${parts.house || ""} ${parts.street || ""}" ${parts.city || ""} contact`.trim(),
-  ].filter((s) => s.length > 10);
-  const pages = await Promise.all(
-    queries.flatMap((query) => [
-      fetchHtml(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, 10000),
-      fetchHtml(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, 10000),
-    ]),
-  );
-  let hit = { name: "", phone: "", email: "", website: "" };
-  const urls = [];
-  for (const page of pages) {
-    if (!page) continue;
-    const snippet = extractContactsFromHtml(page.html, parts);
-    if (snippet) hit = mergeContacts(hit, snippet);
-    for (const u of searchResultUrls(page.html)) {
-      if (!urls.includes(u)) urls.push(u);
-    }
-  }
-  return { ...hit, urls };
-}
-
 async function contactsFromWebsite(url, parts) {
   const href = String(url || "").trim();
-  if (!/^https?:\/\//i.test(href)) return null;
+  if (!parts?.house || !/^https?:\/\//i.test(href)) return null;
   let base;
   try {
     base = new URL(href);
@@ -514,33 +475,31 @@ async function contactsFromWebsite(url, parts) {
   if (!/contact/i.test(href)) {
     paths.push(`${root}contact`, `${root}contact-us`, `${root}contact.html`);
   }
-  return huntPages(paths, parts, { requireAddress: false });
+  return huntPages(paths, parts);
 }
 
 export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
   const parts = parseStreetAddress(address);
-  let hit = mergeContacts(seed);
-  const [osm, nom, dirs] = await Promise.all([
+  const blank = {
+    owner_name: "",
+    owner_phone: "",
+    owner_email: "",
+    facebook_url: "",
+    instagram_url: "",
+  };
+  if (!parts.house) return blank;
+  let hit = listingForPin(seed, address);
+  const [osm, nom] = await Promise.all([
     Number.isFinite(lat) && Number.isFinite(lon) ? overpassContacts(lat, lon, parts).catch(() => null) : null,
-    nominatimSearchContacts(address).catch(() => null),
-    huntPages(directoryUrls(parts), parts).catch(() => null),
+    nominatimSearchContacts(address, parts).catch(() => null),
   ]);
-  hit = mergeContacts(hit, osm, nom, dirs);
-  if (osm?.website && (!hit.phone || !hit.email || !hit.facebook)) {
-    hit = mergeContacts(hit, await contactsFromWebsite(osm.website, parts));
+  hit = mergeContacts(hit, osm, nom);
+  const site = osm?.website || nom?.website || hit.website;
+  if (site && (!hit.phone || !hit.email || !hit.facebook)) {
+    hit = mergeContacts(hit, await contactsFromWebsite(site, parts));
   }
-  if (hit.website && (!hit.phone || !hit.email || !hit.facebook)) {
-    hit = mergeContacts(hit, await contactsFromWebsite(hit.website, parts));
-  }
-  if (!hit.phone || !hit.email) {
-    const serps = await searchEngineContacts(address, parts).catch(() => ({ urls: [] }));
-    hit = mergeContacts(hit, serps);
-    if (!hit.phone || !hit.email) {
-      hit = mergeContacts(hit, await huntPages(serps.urls || [], parts));
-    }
-  }
-  const qid = osm?.wikidata || seed.wikidata;
-  if ((!hit.phone || !hit.email) && qid) {
+  const qid = osm?.wikidata || nom?.wikidata;
+  if (qid && (!hit.phone || !hit.email)) {
     hit = mergeContacts(hit, await wikidataContacts(qid));
   }
   return {

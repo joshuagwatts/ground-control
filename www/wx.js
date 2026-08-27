@@ -2,7 +2,7 @@
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
 import { desktopConfigured } from "./desktop.js";
 import { locateDevice } from "./geo.js";
-import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts } from "./contacts.js";
+import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
 
 let map = null;
 let pin = null;
@@ -147,7 +147,7 @@ function placeContactHtml(data, esc) {
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
-  const miss = !e164 && !email ? `<span class="hs-place-miss">No listed phone or email</span>` : "";
+  const miss = !e164 && !email ? `<span class="hs-place-miss">No verified listing for this address</span>` : "";
   return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }
 
@@ -1766,7 +1766,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
   ]);
   const city = geo.city || addr.split(",")[0];
-  const people = mergeContacts(geo, contacts);
+  const people = mergeContacts(listingForPin(geo, addr), contacts);
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   const storms = enrichStormDates(archiveStorms, hail, wind);
@@ -1801,7 +1801,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
 export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
   const geo = await reverseGeocode(lat, lon);
   const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  const people0 = mergeContacts(geo);
+  const people0 = listingForPin(geo, addr);
   const partial = {
     ok: true,
     address: addr,
@@ -1916,7 +1916,7 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false }
   }
   const geo = await reverseGeocode(lat, lon);
   const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  const people0 = mergeContacts(geo);
+  const people0 = listingForPin(geo, addr);
   const partial = {
     ok: true,
     address: addr,

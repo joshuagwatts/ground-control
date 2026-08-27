@@ -10,6 +10,8 @@ import {
   isJunkPhone,
   publicFacebookUrl,
   publicInstagramUrl,
+  sameHouse,
+  listingForPin,
 } from "../www/contacts.js";
 
 function assert(ok, msg) {
@@ -52,5 +54,19 @@ assert(mails.includes("desk@shop.test"), "email extract");
 
 const merged = mergeContacts({ phone: "918-582-0001" }, { email: "a@shop.test" });
 assert(merged.phone === "(918) 582-0001" && merged.email === "a@shop.test", "merge");
+
+assert(sameHouse("2521 Tredington Way, Edmond, OK", "2521 Tredington Way"), "same house");
+assert(!sameHouse("2521 Tredington Way", "2501 Tredington Way"), "different house");
+assert(!sameHouse("2521 Tredington Way", "2521 Broadway"), "different street");
+
+const pin = "2521 Tredington Way, Edmond, OK 73034";
+const keep = listingForPin({ address: pin, phone: "918-582-0001", name: "Shop" }, pin);
+assert(keep.phone.includes("582"), "keep listing at this house");
+const drop = listingForPin(
+  { address: "2501 Tredington Way, Edmond, OK 73034", phone: "918-582-0001", name: "Neighbor" },
+  pin,
+);
+assert(!drop.phone && !drop.name, "drop neighbor listing");
+assert(!extractContactsFromHtml(`<a href="tel:9185820001">918-582-0001</a>`, {}), "no house, no harvest");
 
 console.log("place-contacts ok");
