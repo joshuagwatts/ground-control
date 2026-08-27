@@ -97,6 +97,7 @@ let locateBtnEl = null;
 let houseLayer = null;
 let houseTimer = 0;
 let houseGen = 0;
+let houseCache = { key: "", rings: [], nums: [] };
 let markLayer = null;
 let doneLayer = null;
 let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, onMark: null, onDone: null };
@@ -160,24 +161,16 @@ function placeContactHtml(data, esc) {
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
-  const mail = String(data.owner_mail || "").trim();
-  const aurl = String(data.assessor_url || "").trim();
   const e164 = phoneDigits(phone);
   const bits = [];
   if (zurl) bits.push(`<a class="hs-zillow" href="${esc(zurl)}" target="_blank" rel="noopener">Zillow</a>`);
-  if (aurl) bits.push(`<a class="hs-assessor" href="${esc(aurl)}" target="_blank" rel="noopener">Assessor</a>`);
-  const fb = String(data.facebook_url || "").trim();
-  const ig = String(data.instagram_url || "").trim();
-  if (fb) bits.push(`<a class="hs-fb" href="${esc(fb)}" target="_blank" rel="noopener">Facebook</a>`);
-  if (ig) bits.push(`<a class="hs-ig" href="${esc(ig)}" target="_blank" rel="noopener">Instagram</a>`);
   if (e164) {
     bits.push(`<a class="hs-tel" href="tel:${esc(e164)}">${esc(phone)}</a>`);
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
-  const mailLine = mail ? `<span class="hs-mailaddr">Mail: ${esc(mail)}</span>` : "";
-  const miss = !e164 && !email && !mail ? `<span class="hs-place-miss">No verified listing for this address</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${mailLine}${bits.join("")}${miss}</div>`;
+  const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house</span>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }
 
 async function api(path, opts = {}) {
@@ -887,9 +880,13 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
 let mapConfigCache = null;
 const MAP_MAX_ZOOM = 22;
 const HOUSE_NUM_ZOOM = 16;
-const HOUSE_FOOTPRINT_MAX = 500;
+const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const HOUSE_NUM_MAX = 400;
+const FEMA_STRUCTURES =
+  "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0/query";
+const MS_BUILDINGS =
+  "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query";
 const RADAR_NATIVE_ZOOM = 7;
 const RADAR_TILE_SIZE = 512;
 
@@ -2633,6 +2630,7 @@ function stopHouseNumbers() {
     houseTimer = 0;
   }
   houseGen += 1;
+  houseCache = { key: "", rings: [], nums: [] };
   if (houseLayer) {
     try {
       houseLayer.clearLayers();
@@ -2670,10 +2668,11 @@ function buildingStyle() {
   return {
     pane: "houseNums",
     interactive: false,
-    color: sat || night ? "#ffcc00" : "#6b5200",
-    weight: sat ? 1.1 : 1.5,
+    color: "#ffcc00",
+    weight: sat ? 1.15 : 2,
     fillColor: "#ffcc00",
-    fillOpacity: sat ? 0.05 : night ? 0.32 : 0.24,
+    fillOpacity: sat ? 0.04 : night ? 0.2 : 0.1,
+    opacity: 1,
   };
 }
 
@@ -2690,20 +2689,137 @@ function overpassRing(el) {
   return ring;
 }
 
-async function refreshHouseNumbers() {
-  if (!map || !window.L) return;
-  ensureHousePane();
-  const z = map.getZoom();
-  const b = map.getBounds();
-  if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.035 || b.getEast() - b.getWest() > 0.05) {
-    houseLayer.clearLayers();
-    return;
+function esriRingToLatLngs(ring) {
+  if (!Array.isArray(ring) || ring.length < 4) return null;
+  const out = [];
+  for (const pt of ring) {
+    const lon = Number(pt?.[0]);
+    const lat = Number(pt?.[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    out.push([lat, lon]);
   }
-  const south = b.getSouth();
-  const west = b.getWest();
-  const north = b.getNorth();
-  const east = b.getEast();
-  const gen = ++houseGen;
+  return out;
+}
+
+function isOutbuilding(v) {
+  return /^(y|yes|true|1|out|outbuilding)$/i.test(String(v || "").trim());
+}
+
+function houseBoundsKey(b, z) {
+  return `${z}|${b.getSouth().toFixed(4)}|${b.getWest().toFixed(4)}|${b.getNorth().toFixed(4)}|${b.getEast().toFixed(4)}`;
+}
+
+function paintHouseLayer(rings, nums, style) {
+  houseLayer.clearLayers();
+  for (const ring of rings || []) {
+    if (!ring || ring.length < 4) continue;
+    window.L.polygon(ring, style).addTo(houseLayer);
+  }
+  for (const n of nums || []) {
+    const icon = window.L.divIcon({
+      className: "hs-housenum",
+      html: `<span>${n.num}</span>`,
+      iconSize: [44, 16],
+      iconAnchor: [22, 8],
+    });
+    window.L.marker([n.lat, n.lon], {
+      icon,
+      pane: "houseNums",
+      interactive: false,
+      keyboard: false,
+    }).addTo(houseLayer);
+  }
+}
+
+async function arcgisGet(url, timeoutMs = 14000) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`fetch ${res.status}`);
+      return { body: await res.text(), status: res.status };
+    } finally {
+      clearTimeout(t);
+    }
+  } catch {
+    return httpGet(url, timeoutMs);
+  }
+}
+
+function envelopeGeom(south, west, north, east) {
+  return JSON.stringify({
+    xmin: west,
+    ymin: south,
+    xmax: east,
+    ymax: north,
+    spatialReference: { wkid: 4326 },
+  });
+}
+
+async function arcgisObjectIds(url, south, west, north, east) {
+  const q = new URLSearchParams({
+    f: "json",
+    where: "1=1",
+    returnIdsOnly: "true",
+    geometry: envelopeGeom(south, west, north, east),
+    geometryType: "esriGeometryEnvelope",
+    inSR: "4326",
+    spatialRel: "esriSpatialRelIntersects",
+  });
+  const { body } = await arcgisGet(`${url}?${q}`, 12000);
+  const data = JSON.parse(body || "{}");
+  const ids = Array.isArray(data.objectIds) ? data.objectIds : [];
+  return ids.slice(0, HOUSE_FOOTPRINT_MAX);
+}
+
+async function arcgisRingsByIds(url, ids, outFields, keep) {
+  const rings = [];
+  for (let i = 0; i < ids.length; i += 60) {
+    const chunk = ids.slice(i, i + 60);
+    const q = new URLSearchParams({
+      f: "json",
+      objectIds: chunk.join(","),
+      returnGeometry: "true",
+      outSR: "4326",
+      outFields,
+      geometryPrecision: "6",
+    });
+    const { body } = await arcgisGet(`${url}?${q}`, 14000);
+    const data = JSON.parse(body || "{}");
+    for (const f of data.features || []) {
+      if (keep && !keep(f.attributes || {})) continue;
+      const ring = esriRingToLatLngs((f.geometry?.rings || [])[0]);
+      if (ring) rings.push(ring);
+    }
+  }
+  return rings;
+}
+
+async function fetchStructureFootprints(south, west, north, east) {
+  try {
+    const ids = await arcgisObjectIds(FEMA_STRUCTURES, south, west, north, east);
+    if (ids.length) {
+      const rings = await arcgisRingsByIds(FEMA_STRUCTURES, ids, "OBJECTID,OUTBLDG,SQFEET", (a) => {
+        if (isOutbuilding(a.OUTBLDG)) return false;
+        const sq = Number(a.SQFEET);
+        return !Number.isFinite(sq) || sq >= 400;
+      });
+      if (rings.length) return rings;
+    }
+  } catch {
+    /* Microsoft footprints next */
+  }
+  try {
+    const ids = await arcgisObjectIds(MS_BUILDINGS, south, west, north, east);
+    if (!ids.length) return [];
+    return arcgisRingsByIds(MS_BUILDINGS, ids, "OBJECTID", () => true);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchOsmHouseData(south, west, north, east) {
   const q = `[out:json][timeout:15][bbox:${south},${west},${north},${east}];(way["building"];node["addr:housenumber"];way["addr:housenumber"];);out tags center geom;`;
   const urls = [
     `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
@@ -2714,49 +2830,63 @@ async function refreshHouseNumbers() {
   for (const url of urls) {
     try {
       const { body } = await httpGet(url, 14000);
-      if (gen !== houseGen || !map) return;
       data = JSON.parse(body || "{}");
       if (data && Array.isArray(data.elements)) break;
     } catch {
       /* try next Overpass host */
     }
   }
-  if (gen !== houseGen || !map || !data) return;
-  houseLayer.clearLayers();
-  const style = buildingStyle();
-  let footprints = 0;
-  for (const el of data.elements || []) {
-    if (el.type !== "way" || !el.tags?.building) continue;
-    const ring = overpassRing(el);
-    if (!ring) continue;
-    window.L.polygon(ring, style).addTo(houseLayer);
-    if (++footprints >= HOUSE_FOOTPRINT_MAX) break;
-  }
+  const rings = [];
+  const nums = [];
   const seen = new Set();
-  let count = 0;
-  for (const el of data.elements || []) {
+  for (const el of data?.elements || []) {
+    if (el.type === "way" && el.tags?.building && rings.length < HOUSE_FOOTPRINT_MAX) {
+      const ring = overpassRing(el);
+      if (ring) rings.push(ring);
+    }
     const num = escHouseNum(el.tags?.["addr:housenumber"]);
-    if (!num) continue;
+    if (!num || nums.length >= HOUSE_NUM_MAX) continue;
     const lat = Number(el.lat ?? el.center?.lat);
     const lon = Number(el.lon ?? el.center?.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     const key = `${num}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const icon = window.L.divIcon({
-      className: "hs-housenum",
-      html: `<span>${num}</span>`,
-      iconSize: [44, 16],
-      iconAnchor: [22, 8],
-    });
-    window.L.marker([lat, lon], {
-      icon,
-      pane: "houseNums",
-      interactive: false,
-      keyboard: false,
-    }).addTo(houseLayer);
-    if (++count >= HOUSE_NUM_MAX) break;
+    nums.push({ num, lat, lon });
   }
+  return { rings, nums };
+}
+
+async function refreshHouseNumbers() {
+  if (!map || !window.L) return;
+  ensureHousePane();
+  const z = map.getZoom();
+  const b = map.getBounds();
+  if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.035 || b.getEast() - b.getWest() > 0.05) {
+    houseLayer.clearLayers();
+    houseCache = { key: "", rings: [], nums: [] };
+    return;
+  }
+  const style = buildingStyle();
+  const key = houseBoundsKey(b, z);
+  if (houseCache.key === key && (houseCache.rings.length || houseCache.nums.length)) {
+    paintHouseLayer(houseCache.rings, houseCache.nums, style);
+    return;
+  }
+  const south = b.getSouth();
+  const west = b.getWest();
+  const north = b.getNorth();
+  const east = b.getEast();
+  const gen = ++houseGen;
+  const [foot, osm] = await Promise.all([
+    fetchStructureFootprints(south, west, north, east).catch(() => []),
+    fetchOsmHouseData(south, west, north, east).catch(() => ({ rings: [], nums: [] })),
+  ]);
+  if (gen !== houseGen || !map) return;
+  const rings = foot.length ? foot : osm.rings || [];
+  const nums = osm.nums || [];
+  houseCache = { key, rings, nums };
+  paintHouseLayer(rings, nums, style);
 }
 
 function stopFieldOverlay() {
