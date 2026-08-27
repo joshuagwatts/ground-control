@@ -1538,7 +1538,12 @@ body.wx-map-expanded .hs-sheet { display: none; }
   border-radius: 999px;
 }
 .hs-map-shell.expanded .hs-map-hint { color: var(--trim); border-color: var(--trim); }
-.hs-map-shell #wx-map, .hs-map-shell #hs-map { width: 100%; height: 100%; }
+.hs-map-shell #wx-map, .hs-map-shell #hs-map {
+  width: 100%; height: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 .hs-search {
   position: absolute; z-index: 500; left: 12px; right: 12px; top: 12px;
   display: flex; gap: 0.4rem;
@@ -1551,10 +1556,84 @@ body.wx-map-expanded .hs-sheet { display: none; }
   padding: 0.75rem 0.9rem;
   font-size: 15px;
 }
-.hs-styles {
-  position: absolute; z-index: 500; right: 12px; bottom: 12px;
+.hs-layers {
+  position: absolute; z-index: 500; left: 12px; top: 62px;
   display: flex; gap: 0.3rem;
 }
+.hs-layers button {
+  padding: 0.32rem 0.6rem; font-size: 11px;
+  background: rgba(22,22,24,0.92); color: var(--text);
+}
+.hs-layers button.on { background: var(--trim); color: #1c1400; }
+.hs-composer {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 720;
+  padding: 0.55rem 0.7rem 0.75rem;
+  pointer-events: none;
+}
+.hs-composer-card {
+  pointer-events: auto;
+  background: rgba(18,18,20,0.96);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.75rem 0.85rem 0.85rem;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  max-height: min(70vh, 520px);
+  overflow: auto;
+}
+.hs-composer-card header {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+.hs-composer-card label {
+  display: block; font-size: 11px; color: var(--muted); margin: 0.4rem 0;
+}
+.hs-composer-card input, .hs-composer-card textarea {
+  width: 100%; margin-top: 0.2rem;
+  background: var(--inset); border: 1px solid var(--line);
+  padding: 0.55rem 0.7rem; font-size: 15px;
+}
+.hs-kinds { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.35rem; }
+.hs-kind {
+  padding: 0.32rem 0.55rem; font-size: 12px; font-weight: 650;
+  background: var(--inset); color: var(--text); border: 1px solid var(--line);
+}
+.hs-kind.on { background: var(--k, var(--trim)); color: #1c1400; border-color: transparent; }
+.hs-composer-actions { display: flex; gap: 0.4rem; margin-top: 0.55rem; }
+.hs-accu-did { color: var(--trim); font-weight: 650; }
+.hs-field { padding: 0 1rem 1.4rem; }
+.hs-field-head { display: flex; justify-content: space-between; gap: 0.8rem; align-items: baseline; margin: 0.4rem 0 0.45rem; }
+.hs-mark-tools { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.55rem; }
+.hs-mark-tools select, .hs-mark-tools button { width: auto; font-size: 13px; padding: 0.4rem 0.65rem; }
+.hs-mark-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem; }
+.hs-mark-row {
+  display: flex; gap: 0.55rem; align-items: flex-start;
+  text-align: left; width: 100%;
+  background: var(--panel); border: 1px solid transparent;
+  padding: 0.65rem 0.8rem; border-radius: var(--radius);
+}
+.hs-mark-row span { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.hs-mark-row em { font-style: normal; color: var(--muted); font-size: 12px; }
+.leaflet-div-icon.hs-mark {
+  background: transparent !important;
+  border: none !important;
+}
+.hs-mark span {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #0b0b0d;
+  background: #ffcc00;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.45);
+  white-space: nowrap;
+}
+.hs-mark-work span { background: #22c55e; }
+.hs-mark-zone span { background: #86efac; }
+.hs-mark-atlas span { background: #c4b5fd; }
+.hs-mark-disc span { background: #fb923c; }
+.hs-mark-note span { background: #ffcc00; }
 .hs-styles button {
   padding: 0.4rem 0.7rem; font-size: 12px;
   background: rgba(22,22,24,0.92); color: var(--text);

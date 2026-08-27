@@ -4,10 +4,16 @@ function blank() {
   return {
     chat: [],
     jobs: [],
+    marks: [],
+    acculynx: { jobs: [], geo: {}, syncedAt: "" },
     lens: { mode: "shingle", photos: [], shots: [], last: null, field: null },
     settings: {
       operator: "Joshua",
       company: "Ground Control",
+      acculynx: "",
+      marksLastKind: "work",
+      showAccu: true,
+      showMarks: true,
       humor: 40,
       honesty: 98,
       privacy_mode: "leaky",
@@ -48,6 +54,12 @@ export function load() {
       settings: { ...base.settings, ...(raw.settings || {}) },
       chat: Array.isArray(raw.chat) ? raw.chat : [],
       jobs: Array.isArray(raw.jobs) ? raw.jobs : [],
+      marks: Array.isArray(raw.marks) ? raw.marks : [],
+      acculynx: {
+        jobs: Array.isArray(raw.acculynx?.jobs) ? raw.acculynx.jobs : [],
+        geo: raw.acculynx?.geo && typeof raw.acculynx.geo === "object" ? raw.acculynx.geo : {},
+        syncedAt: String(raw.acculynx?.syncedAt || ""),
+      },
     };
   } catch {
     return blank();

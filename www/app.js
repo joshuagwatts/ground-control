@@ -39,12 +39,16 @@ import {
   baseLayerButtons,
   bindWxMapExpand,
   setWxUnits,
+  reverseGeocode,
+  setFieldOverlay,
 } from "./wx.js";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
+import { MARK_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft } from "./marks.js";
+import { accuKey, fetchAccuJobs, geocodeAccuJobs, accuJobsOnMap, accuJobsCsv, jobDidLine } from "./acculynx.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -57,6 +61,8 @@ let wxWatch = null;
 let chatBusy = false;
 let lensBusy = false;
 let pendingShot = "granules_close";
+let markDraft = null;
+let accuBusy = false;
 
 hydrateHealth(db.settings.brain_health || {});
 
@@ -917,6 +923,349 @@ async function runLens() {
   }
 }
 
+function bump() {
+  try {
+    window.Capacitor?.Plugins?.Haptics?.impact?.({ style: "MEDIUM" });
+  } catch {
+    /* web preview */
+  }
+}
+
+async function copyText(text) {
+  const s = String(text || "");
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function fieldMarks() {
+  return Array.isArray(db.marks) ? db.marks : [];
+}
+
+function accuJobs() {
+  return Array.isArray(db.acculynx?.jobs) ? db.acculynx.jobs : [];
+}
+
+function paintFieldMap() {
+  setFieldOverlay({
+    marks: fieldMarks(),
+    jobs: accuJobsOnMap(accuJobs()),
+    showMarks: db.settings.showMarks !== false,
+    showAccu: db.settings.showAccu !== false,
+    onMark: (m) => openMarkComposer(m),
+    onJob: (j) => openAccuCard(j),
+  });
+}
+
+function closeComposer() {
+  markDraft = null;
+  const el = $("#hs-composer");
+  if (el) {
+    el.hidden = true;
+    el.innerHTML = "";
+  }
+}
+
+function composerKindButtons(kind) {
+  return MARK_KINDS.map(
+    (k) =>
+      `<button type="button" class="hs-kind${k.id === kind ? " on" : ""}" data-kind="${esc(k.id)}" style="--k:${k.color}">${esc(k.label)}</button>`,
+  ).join("");
+}
+
+function fillComposer() {
+  const el = $("#hs-composer");
+  if (!el || !markDraft) return;
+  const d = markDraft;
+  const meta = kindMeta(d.kind);
+  const zone = d.kind === "zone";
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="hs-composer-card">
+      <header>
+        <strong>${d.id && fieldMarks().some((m) => m.id === d.id) ? "Edit pin" : "Drop a pin"}</strong>
+        <button type="button" id="hs-comp-x">Close</button>
+      </header>
+      <div class="hs-kinds">${composerKindButtons(d.kind)}</div>
+      <label>Label<input id="hs-comp-label" maxlength="80" value="${esc(d.label || meta.label)}" placeholder="Atlas, GlassMaster…" /></label>
+      <label>Address<input id="hs-comp-addr" value="${esc(d.address || "")}" placeholder="Looking up address…" /></label>
+      <label>Comment<textarea id="hs-comp-note" rows="3" maxlength="800" placeholder="We finished this neighborhood. Discontinued Atlas 3-tab…">${esc(d.note || "")}</textarea></label>
+      ${
+        zone
+          ? `<label>Zone size <span id="hs-comp-rad-lab">${Math.round(Number(d.radiusM) || 160)} m</span>
+              <input id="hs-comp-rad" type="range" min="40" max="800" step="10" value="${esc(String(d.radiusM || 160))}" />
+            </label>`
+          : ""
+      }
+      <div class="hs-composer-actions">
+        <button type="button" class="primary" id="hs-comp-save">Save pin</button>
+        ${fieldMarks().some((m) => m.id === d.id) ? `<button type="button" id="hs-comp-del">Delete</button>` : ""}
+      </div>
+    </div>`;
+  el.querySelectorAll(".hs-kind").forEach((b) => {
+    b.onclick = () => {
+      markDraft.kind = b.dataset.kind;
+      markDraft.label = kindMeta(markDraft.kind).label === markDraft.label || !markDraft.label ? kindMeta(markDraft.kind).label : markDraft.label;
+      if (markDraft.kind === "zone" && !markDraft.radiusM) markDraft.radiusM = 160;
+      db.settings.marksLastKind = markDraft.kind;
+      persist();
+      fillComposer();
+    };
+  });
+  const lab = $("#hs-comp-label");
+  if (lab) lab.oninput = () => {
+    markDraft.label = lab.value;
+  };
+  const addr = $("#hs-comp-addr");
+  if (addr) addr.oninput = () => {
+    markDraft.address = addr.value;
+  };
+  const note = $("#hs-comp-note");
+  if (note) note.oninput = () => {
+    markDraft.note = note.value;
+  };
+  const rad = $("#hs-comp-rad");
+  if (rad) {
+    rad.oninput = () => {
+      markDraft.radiusM = Number(rad.value);
+      const rl = $("#hs-comp-rad-lab");
+      if (rl) rl.textContent = `${Math.round(markDraft.radiusM)} m`;
+    };
+  }
+  $("#hs-comp-x").onclick = () => closeComposer();
+  $("#hs-comp-save").onclick = () => saveMarkDraft();
+  const del = $("#hs-comp-del");
+  if (del) del.onclick = () => {
+    db.marks = removeMark(fieldMarks(), markDraft.id);
+    persist();
+    closeComposer();
+    paintFieldMap();
+    paintFieldSheet();
+    setStatus("Pin removed");
+  };
+}
+
+async function openMarkComposer(seed) {
+  const lat = Number(seed.lat);
+  const lon = Number(seed.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  bump();
+  const existing = seed.id ? fieldMarks().find((m) => m.id === seed.id) : null;
+  markDraft = existing
+    ? { ...existing }
+    : newMark({
+        lat,
+        lon,
+        kind: db.settings.marksLastKind || "work",
+        label: kindMeta(db.settings.marksLastKind || "work").label,
+        address: seed.address || "",
+        note: seed.note || "",
+      });
+  fillComposer();
+  if (!markDraft.address) {
+    try {
+      const geo = await reverseGeocode(lat, lon);
+      if (markDraft && !markDraft.address && geo?.address) {
+        markDraft.address = geo.address;
+        const inp = $("#hs-comp-addr");
+        if (inp && !inp.value) inp.value = geo.address;
+      }
+    } catch {
+      /* address optional */
+    }
+  }
+}
+
+function saveMarkDraft() {
+  if (!markDraft) return;
+  const next = newMark({
+    ...markDraft,
+    label: String(markDraft.label || kindMeta(markDraft.kind).label).trim(),
+    note: String(markDraft.note || "").trim(),
+    address: String(markDraft.address || "").trim(),
+  });
+  const hit = upsertMark(fieldMarks(), next);
+  db.marks = hit.list;
+  db.settings.marksLastKind = next.kind;
+  persist();
+  closeComposer();
+  paintFieldMap();
+  paintFieldSheet();
+  setStatus(`${kindMeta(next.kind).label} saved`);
+}
+
+function openAccuCard(job) {
+  if (!job) return;
+  const el = $("#hs-composer");
+  if (!el) return;
+  markDraft = null;
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="hs-composer-card">
+      <header>
+        <strong>${esc(job.jobNumber || job.jobName || "AccuLynx job")}</strong>
+        <button type="button" id="hs-comp-x">Close</button>
+      </header>
+      <p class="hs-accu-did">${esc(job.did || jobDidLine(job) || job.milestone || "Job")}</p>
+      <p>${esc(job.address || "No address")}</p>
+      ${job.contactName ? `<p class="muted">${esc(job.contactName)}</p>` : ""}
+      <p class="muted">${esc([job.created, job.milestoneDate].filter(Boolean).map((d) => String(d).slice(0, 10)).join(" · "))}</p>
+    </div>`;
+  $("#hs-comp-x").onclick = () => closeComposer();
+}
+
+function selectedMarkKind() {
+  return $("#hs-mark-filter")?.value || "all";
+}
+
+function paintFieldSheet() {
+  const root = $("#hs-field");
+  if (!root) return;
+  const marks = fieldMarks();
+  const kind = selectedMarkKind();
+  const shown = filterMarks(marks, kind);
+  const jobs = accuJobs();
+  const onMap = accuJobsOnMap(jobs);
+  const keyed = Boolean(accuKey(db.settings));
+  const synced = db.acculynx?.syncedAt ? String(db.acculynx.syncedAt).slice(0, 16).replace("T", " ") : "";
+  root.innerHTML = `
+    <div class="hs-field-head">
+      <strong>Field marks</strong>
+      <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"}</span>
+    </div>
+    <div class="hs-mark-tools">
+      <select id="hs-mark-filter" aria-label="Filter marks">
+        <option value="all"${kind === "all" ? " selected" : ""}>All marks</option>
+        ${MARK_KINDS.map((k) => `<option value="${esc(k.id)}"${kind === k.id ? " selected" : ""}>${esc(k.label)}</option>`).join("")}
+      </select>
+      <button type="button" id="hs-mark-copy"${shown.length ? "" : " disabled"}>Copy list</button>
+      <button type="button" id="hs-mark-csv"${shown.length ? "" : " disabled"}>CSV</button>
+      <button type="button" id="hs-mark-letter"${shown.length ? "" : " disabled"}>Draft letter</button>
+    </div>
+    <div class="hs-mark-list">${
+      shown.length
+        ? shown
+            .map(
+              (m) =>
+                `<button type="button" class="hs-mark-row" data-id="${esc(m.id)}"><i class="hs-dot" style="background:${kindMeta(m.kind).color}"></i><span><strong>${esc(m.label || kindMeta(m.kind).label)}</strong>${esc(m.address || `${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}`)}${m.note ? `<em>${esc(m.note)}</em>` : ""}</span></button>`,
+            )
+            .join("")
+        : `<p class="muted">Hold a house to label Atlas, discontinued roofs, finished work, or a whole neighborhood zone.</p>`
+    }</div>
+    <div class="hs-field-head">
+      <strong>AccuLynx</strong>
+      <span class="muted">${jobs.length ? `${onMap.length} on map · ${jobs.length} jobs${synced ? ` · ${esc(synced)}` : ""}` : keyed ? "Key saved · not synced yet" : "Paste API key in Settings"}</span>
+    </div>
+    <div class="hs-mark-tools">
+      <button type="button" id="hs-accu-sync"${keyed ? "" : " disabled"}>${accuBusy ? "Syncing…" : "Sync jobs"}</button>
+      <button type="button" id="hs-accu-copy"${onMap.length ? "" : " disabled"}>Copy jobs</button>
+    </div>`;
+  const filter = $("#hs-mark-filter");
+  if (filter) filter.onchange = () => paintFieldSheet();
+  $("#hs-mark-copy").onclick = async () => {
+    const ok = await copyText(marksPlainList(shown));
+    setStatus(ok ? `Copied ${shown.length} marks` : "Copy failed");
+  };
+  $("#hs-mark-csv").onclick = async () => {
+    const ok = await copyText(marksCsv(shown));
+    setStatus(ok ? "CSV copied" : "Copy failed");
+  };
+  $("#hs-mark-letter").onclick = async () => {
+    const disc = shown.filter((m) => m.kind === "atlas" || m.kind === "disc");
+    const pack = outreachDraft(disc.length ? disc : shown, {
+      company: db.settings.company || "Ground Control",
+      operator: db.settings.operator || "",
+    });
+    const ok = await copyText(`${pack.subject}\n\n${pack.body}`);
+    setStatus(ok ? `Letter drafted for ${pack.count} homes` : "Copy failed");
+  };
+  root.querySelectorAll(".hs-mark-row").forEach((b) => {
+    b.onclick = () => {
+      const m = fieldMarks().find((x) => x.id === b.dataset.id);
+      if (!m) return;
+      flyToPin(m.lat, m.lon, 18);
+      openMarkComposer(m);
+    };
+  });
+  $("#hs-accu-sync").onclick = () => syncAccuLynx({ force: true });
+  $("#hs-accu-copy").onclick = async () => {
+    const ok = await copyText(accuJobsCsv(onMap));
+    setStatus(ok ? `Copied ${onMap.length} AccuLynx jobs` : "Copy failed");
+  };
+}
+
+function paintLayerToggles() {
+  const el = $("#hs-layers");
+  if (!el) return;
+  const accuOn = db.settings.showAccu !== false;
+  const marksOn = db.settings.showMarks !== false;
+  el.innerHTML = `
+    <button type="button" data-ov="accu" class="${accuOn ? "on" : ""}">AccuLynx</button>
+    <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
+  el.onclick = (e) => {
+    const b = e.target.closest("button[data-ov]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.dataset.ov === "accu") db.settings.showAccu = !accuOn;
+    if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
+    persist();
+    paintLayerToggles();
+    paintFieldMap();
+  };
+}
+
+async function syncAccuLynx({ force = false } = {}) {
+  const key = accuKey(db.settings);
+  if (!key) {
+    setStatus("Paste AccuLynx key in Settings");
+    return;
+  }
+  const staleMs = 8 * 60 * 60 * 1000;
+  const age = db.acculynx?.syncedAt ? Date.now() - Date.parse(db.acculynx.syncedAt) : Infinity;
+  if (!force && Number.isFinite(age) && age < staleMs && accuJobs().length) return;
+  if (accuBusy) return;
+  accuBusy = true;
+  paintFieldSheet();
+  setStatus("Pulling AccuLynx jobs…");
+  try {
+    const jobs = await fetchAccuJobs(key, {
+      onPage: ({ count }) => setStatus(`AccuLynx · ${count} jobs`),
+    });
+    const placed = geocodeAccuJobs(jobs, db.acculynx?.geo || {});
+    const { jobs: geoJobs, geo } = await placed;
+    db.acculynx = { jobs: geoJobs, geo, syncedAt: new Date().toISOString() };
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    const n = accuJobsOnMap(geoJobs).length;
+    setStatus(`${n} AccuLynx jobs on the map`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+    paintFieldSheet();
+  } finally {
+    accuBusy = false;
+    paintFieldSheet();
+  }
+}
+
+function onMapHold(lat, lon) {
+  openMarkComposer({ lat, lon });
+}
+
 async function renderWx() {
   document.body.classList.remove("comm");
   leaveWx();
@@ -929,13 +1278,16 @@ async function renderWx() {
         <form class="hs-search" id="hs-search" autocomplete="off">
           <input type="search" id="hs-addr-q" placeholder="Search an address" enterkeyhint="search" />
         </form>
+        <div class="hs-layers" id="hs-layers"></div>
         <div class="hs-styles" id="hs-styles"></div>
-        <span class="hs-map-hint">Double-tap to expand</span>
+        <span class="hs-map-hint">Hold to drop a pin · double-tap to expand</span>
         <div id="wx-map"></div>
+        <div class="hs-composer" id="hs-composer" hidden></div>
       </div>
       <div class="hs-sheet" id="hs-sheet">
         <p class="hs-empty">Tap the map or search an address. Storm dates show up here.</p>
       </div>
+      <div class="hs-field" id="hs-field"></div>
     </div>`;
   try {
     const center = await resolveMapCenter(db.settings);
@@ -954,8 +1306,12 @@ async function renderWx() {
         styles.querySelectorAll("button[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
       };
     }
-    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, product: "hail", base: "dark" });
+    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "dark" });
     bindWxMapExpand($("#hs-map-shell"));
+    paintLayerToggles();
+    paintFieldMap();
+    paintFieldSheet();
+    syncAccuLynx({ force: false });
     const searchForm = $("#hs-search");
     if (searchForm) {
       searchForm.onsubmit = async (e) => {
@@ -977,6 +1333,18 @@ async function renderWx() {
       searchForm.addEventListener("click", (e) => e.stopPropagation());
       searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
       searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    }
+    const layers = $("#hs-layers");
+    if (layers) {
+      layers.addEventListener("click", (e) => e.stopPropagation());
+      layers.addEventListener("mousedown", (e) => e.stopPropagation());
+      layers.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    }
+    const composer = $("#hs-composer");
+    if (composer) {
+      composer.addEventListener("click", (e) => e.stopPropagation());
+      composer.addEventListener("mousedown", (e) => e.stopPropagation());
+      composer.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
     }
     if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
       await onHailTap(center.lat, center.lon);
@@ -1040,9 +1408,12 @@ function renderJobs() {
   leaveWx();
   document.body.classList.remove("comm");
   const jobs = db.jobs || [];
+  const marks = fieldMarks();
+  const accu = accuJobs();
+  const onMap = accuJobsOnMap(accu);
   $("#view").innerHTML = `
     <h3>Jobs</h3>
-    <p class="muted">Roof inspections. Save a Lens read or a HailScope pin onto a job.</p>
+    <p class="muted">Roof inspections on this phone, AccuLynx history, and drive-by field marks.</p>
     <div class="actions"><button type="button" id="job-new" class="primary">New job</button></div>
     <div class="job-list">${
       jobs.length
@@ -1052,8 +1423,27 @@ function renderJobs() {
                 `<article class="job-card" data-id="${esc(j.id)}"><strong>${esc(j.address || "Unpinned")}</strong><p class="muted">${esc(jobSummary(j))}</p><p class="muted">${esc(String(j.created || "").slice(0, 10))}</p></article>`,
             )
             .join("")
-        : `<p class="muted">No jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
-    }</div>`;
+        : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
+    }</div>
+    <h3>AccuLynx</h3>
+    <p class="muted">${accu.length ? `${onMap.length} mapped · ${accu.length} pulled${db.acculynx?.syncedAt ? ` · ${esc(String(db.acculynx.syncedAt).slice(0, 10))}` : ""}` : accuKey(db.settings) ? "Key saved. Open HailScope and tap Sync jobs." : "Paste your AccuLynx API key in Settings to plot every job address."}</p>
+    ${accu
+      .slice(0, 40)
+      .map(
+        (j) =>
+          `<article class="job-card accu-card"><strong>${esc(j.jobNumber || j.jobName || "Job")}</strong><p class="muted">${esc(j.did || jobDidLine(j))}</p><p class="muted">${esc(j.address || "")}</p></article>`,
+      )
+      .join("")}
+    ${accu.length > 40 ? `<p class="muted">${accu.length - 40} more on the HailScope map.</p>` : ""}
+    <h3>Field marks</h3>
+    <p class="muted">${marks.length ? `${marks.length} pins. Hold the HailScope map to add Atlas / work / zone labels.` : "Hold a house on HailScope to drop a custom pin."}</p>
+    ${marks
+      .slice(0, 30)
+      .map(
+        (m) =>
+          `<article class="job-card"><strong>${esc(m.label || kindMeta(m.kind).label)}</strong><p class="muted">${esc(m.address || "")}</p>${m.note ? `<p class="muted">${esc(m.note)}</p>` : ""}</article>`,
+      )
+      .join("")}`;
   $("#job-new").onclick = () => {
     const job = newJob({ address: wxState.address || "", lat: wxState.lat, lon: wxState.lon });
     upsertJob(db, job);
@@ -1092,6 +1482,10 @@ function renderKeys() {
     </div>
     <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
     <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "No keys yet — paste Gemini or OpenAI for Lens."}</p>
+    <h3>AccuLynx</h3>
+    <p class="muted">Company API key from <a href="https://my.acculynx.com/apikeys" target="_blank" rel="noopener">my.acculynx.com/apikeys</a>. HailScope plots job addresses, milestone, and work type. It does not email your customers.</p>
+    <div class="field"><span>API key</span><input id="set-acculynx" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(accuKey(s) ? "Paste to replace" : "Paste AccuLynx API key")}" /></div>
+    <div class="actions"><button type="button" id="accu-sync">${accuBusy ? "Syncing…" : "Sync jobs now"}</button></div>
     <h3>API keys</h3>
     <p class="muted">Chat can use every keyed API. Lens needs a vision key (Gemini, OpenAI, Anthropic, or OpenRouter). On-device mode blocks Lens.</p>
     <div class="key-list">${keyRows}</div>
@@ -1099,6 +1493,20 @@ function renderKeys() {
     <h3>Discontinued lookup</h3>
     <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>
     <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on this device.</p>`;
+  const accuInp = $("#set-acculynx");
+  if (accuInp) {
+    accuInp.oninput = () => {
+      db.settings.acculynx = accuInp.value;
+      persist();
+    };
+  }
+  const accuBtn = $("#accu-sync");
+  if (accuBtn) {
+    accuBtn.onclick = async () => {
+      await syncAccuLynx({ force: true });
+      renderKeys();
+    };
+  }
   const op = $("#set-op");
   if (op) op.oninput = () => {
     db.settings.operator = op.value;

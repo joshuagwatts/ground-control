@@ -4,6 +4,8 @@ import { desktopConfigured } from "./desktop.js";
 import { locateDevice, watchGps } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
 import { lookupAssessorParcel } from "./assessor.js";
+import { kindMeta, validMarkCoord } from "./marks.js";
+import { accuColor, accuDone } from "./acculynx.js";
 
 let map = null;
 let pin = null;
@@ -96,6 +98,9 @@ let locateBtnEl = null;
 let houseLayer = null;
 let houseTimer = 0;
 let houseGen = 0;
+let markLayer = null;
+let accuLayer = null;
+let fieldOverlay = { marks: [], jobs: [], showMarks: true, showAccu: true, onMark: null, onJob: null };
 
 export function setHailScopeMode(on) {
   hailScopeMode = Boolean(on);
@@ -230,7 +235,7 @@ async function reverseNominatim(lat, lon) {
   }
 }
 
-async function reverseGeocode(lat, lon) {
+export async function reverseGeocode(lat, lon) {
   const nom = await reverseNominatim(lat, lon);
   if (nom.ok) return nom;
   try {
@@ -2696,11 +2701,179 @@ async function refreshHouseNumbers() {
   }
 }
 
+function stopFieldOverlay() {
+  if (markLayer) {
+    try {
+      markLayer.clearLayers();
+      markLayer.remove();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (accuLayer) {
+    try {
+      accuLayer.clearLayers();
+      accuLayer.remove();
+    } catch {
+      /* ignore */
+    }
+  }
+  markLayer = null;
+  accuLayer = null;
+}
+
+function ensureFieldPanes() {
+  if (!map.getPane("fieldMarks")) {
+    map.createPane("fieldMarks");
+    map.getPane("fieldMarks").style.zIndex = 660;
+  }
+  if (!map.getPane("accuJobs")) {
+    map.createPane("accuJobs");
+    map.getPane("accuJobs").style.zIndex = 655;
+  }
+}
+
+function markDivIcon(mark) {
+  const meta = kindMeta(mark.kind);
+  const text = String(meta.short || "PIN").replace(/[<>&]/g, "");
+  return window.L.divIcon({
+    className: `hs-mark hs-mark-${meta.id}`,
+    html: `<span>${text}</span>`,
+    iconSize: [46, 22],
+    iconAnchor: [23, 22],
+  });
+}
+
+export function setFieldOverlay({ marks = [], jobs = [], showMarks = true, showAccu = true, onMark, onJob } = {}) {
+  fieldOverlay = { marks, jobs, showMarks, showAccu, onMark, onJob };
+  if (!map || !window.L) return;
+  ensureFieldPanes();
+  if (!markLayer) markLayer = window.L.layerGroup().addTo(map);
+  if (!accuLayer) accuLayer = window.L.layerGroup().addTo(map);
+  markLayer.clearLayers();
+  accuLayer.clearLayers();
+  if (showMarks) {
+    for (const m of marks || []) {
+      if (!validMarkCoord(m.lat, m.lon)) continue;
+      const meta = kindMeta(m.kind);
+      if (m.kind === "zone" && Number(m.radiusM) > 0) {
+        window.L.circle([m.lat, m.lon], {
+          pane: "fieldMarks",
+          radius: Number(m.radiusM),
+          color: meta.color,
+          weight: 2,
+          fillColor: meta.color,
+          fillOpacity: 0.16,
+          interactive: true,
+        })
+          .on("click", (e) => {
+            window.L.DomEvent.stop(e);
+            onMark?.(m);
+          })
+          .addTo(markLayer);
+      }
+      window.L.marker([m.lat, m.lon], {
+        pane: "fieldMarks",
+        icon: markDivIcon(m),
+        keyboard: false,
+      })
+        .on("click", (e) => {
+          window.L.DomEvent.stop(e);
+          onMark?.(m);
+        })
+        .addTo(markLayer);
+    }
+  }
+  if (showAccu) {
+    for (const j of jobs || []) {
+      if (!validMarkCoord(j.lat, j.lon)) continue;
+      const color = accuColor(j.milestone);
+      window.L.circleMarker([j.lat, j.lon], {
+        pane: "accuJobs",
+        radius: accuDone(j.milestone) ? 7 : 5,
+        color: "#0b0b0d",
+        weight: 1,
+        fillColor: color,
+        fillOpacity: 0.92,
+      })
+        .on("click", (e) => {
+          window.L.DomEvent.stop(e);
+          onJob?.(j);
+        })
+        .addTo(accuLayer);
+    }
+  }
+}
+
+function bindLongPress(onHold) {
+  if (!map || typeof onHold !== "function") return;
+  const HOLD_MS = 560;
+  let timer = 0;
+  let startPt = null;
+  let lastFire = 0;
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = 0;
+    }
+    startPt = null;
+  };
+  const fire = (latlng) => {
+    if (!latlng) return;
+    const now = Date.now();
+    if (now - lastFire < 700) return;
+    lastFire = now;
+    wxSuppressMapTap = true;
+    try {
+      onHold(latlng.lat, latlng.lng);
+    } catch {
+      /* composer optional */
+    }
+    setTimeout(() => {
+      wxSuppressMapTap = false;
+    }, 550);
+  };
+  const start = (e) => {
+    const orig = e.originalEvent;
+    if (orig && orig.touches && orig.touches.length > 1) {
+      clear();
+      return;
+    }
+    startPt = e.containerPoint;
+    const ll = e.latlng;
+    timer = setTimeout(() => {
+      timer = 0;
+      fire(ll);
+    }, HOLD_MS);
+  };
+  const move = (e) => {
+    if (!startPt || !e.containerPoint) return;
+    if (e.containerPoint.distanceTo(startPt) > 18) clear();
+  };
+  map.on("mousedown", start);
+  map.on("touchstart", start);
+  map.on("mousemove", move);
+  map.on("touchmove", move);
+  map.on("mouseup", clear);
+  map.on("touchend", clear);
+  map.on("dragstart", clear);
+  map.on("contextmenu", (e) => {
+    try {
+      window.L.DomEvent.preventDefault(e);
+      window.L.DomEvent.stop(e);
+    } catch {
+      /* ignore */
+    }
+    fire(e.latlng);
+  });
+}
+
 export function destroyMap() {
   stopRadarPlay();
   stopHourPlay();
   stopMyLocation();
   stopHouseNumbers();
+  stopFieldOverlay();
   houseLayer = null;
   if (map) {
     try {
@@ -2731,7 +2904,7 @@ export function destroyMap() {
   activeWxProduct = "precip";
 }
 
-export function mountMap(container, config, { onTap, center, product, base } = {}) {
+export function mountMap(container, config, { onTap, onHold, center, product, base } = {}) {
   if (!window.L) throw new Error("Leaflet not loaded");
   destroyMap();
   const c = center || config.center || { lat: 0, lon: 0 };
@@ -2797,6 +2970,8 @@ export function mountMap(container, config, { onTap, center, product, base } = {
   addLocateControl();
   startMyLocation();
   scheduleHouseNumbers();
+  if (onHold) bindLongPress(onHold);
+  setFieldOverlay(fieldOverlay);
   setTimeout(() => {
     try {
       map?.invalidateSize?.(true);
@@ -2846,7 +3021,7 @@ export function bindWxMapExpand(shell) {
   shell.addEventListener(
     "click",
     (e) => {
-      if (e.target.closest(".leaflet-control, .hs-search, .hs-styles, input, select, textarea, button, a")) return;
+      if (e.target.closest(".leaflet-control, .hs-search, .hs-styles, .hs-layers, .hs-composer, .hs-field, input, select, textarea, button, a")) return;
       const now = Date.now();
       if (now - lastTap < 360) {
         e.stopPropagation();
@@ -3294,7 +3469,7 @@ function hailScopeHtml(data, days, esc) {
         : "Tap a storm date to draw hail zones"
     }</p>
     ${placeContactHtml(data, esc)}
-    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only</p>
+    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only <span class="hs-dot" style="background:#22c55e"></span>AccuLynx job <span class="hs-dot" style="background:#c4b5fd"></span>Atlas mark</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">
