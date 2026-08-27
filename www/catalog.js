@@ -118,6 +118,7 @@ export const MAKERS = [
         years: [2006, 2021],
         discontinued: true,
         replaced_by: "timberline-hdz",
+        mailerShort: "GAF HD",
         tells: ["pre-LayerLock Timberline", "dual shadow", "no HDZ badge"],
         colors: C(
           ["Charcoal", "Weathered Wood", "Hickory", "Shakewood", "Barkwood", "Slate", "Hunter Green", "Patriot Red", "Birchwood"],
@@ -176,6 +177,7 @@ export const MAKERS = [
         years: [2003, 2014],
         discontinued: true,
         replaced_by: "camelot-ii",
+        mailerShort: "CAMELOT",
         tells: ["original Camelot cut", "pre-II"],
         colors: C(["Antique Slate", "Charcoal", "Weathered Wood"], { discontinued: true }),
       },
@@ -278,6 +280,7 @@ export const MAKERS = [
         years: [2011, 2020],
         discontinued: true,
         replaced_by: "duration",
+        mailerShort: "OC COOL",
         tells: ["SureNail", "cool-roof color line now folded into Duration"],
         colors: C(["White", "Sandcastle", "Surf"], { discontinued: true }),
       },
@@ -360,6 +363,7 @@ export const MAKERS = [
         years: [1988, 2012],
         discontinued: true,
         replaced_by: "landmark",
+        mailerShort: "INDEP",
         tells: ["older CT laminate", "pre-Landmark overlay"],
         colors: C(["Weathered Wood", "Moire Black", "Burnt Sienna", "Colonial Slate"], { discontinued: true }),
       },
@@ -370,6 +374,7 @@ export const MAKERS = [
         years: [1999, 2016],
         discontinued: true,
         replaced_by: "landmark-pro",
+        mailerShort: "HATTRS",
         tells: ["discontinued CT designer"],
         colors: C(["Weathered Wood", "Moire Black", "Colonial Slate"], { discontinued: true }),
       },
@@ -381,6 +386,17 @@ export const MAKERS = [
         discontinued: false,
         tells: ["super-heavy designer", "slate/shake hybrid"],
         colors: C(["Gatehouse Slate", "Brownstone", "Stonegate Gray", "Sherwood Forest"]),
+      },
+      {
+        id: "belmont",
+        name: "Belmont",
+        kind: "luxury designer",
+        years: [2004, null],
+        discontinued: false,
+        mailer: true,
+        mailerShort: "BELMONT",
+        tells: ["CT slate-look luxury", "large 18x36 tab", "8 inch exposure"],
+        colors: C(["Weathered Wood", "Moire Black", "Colonial Slate", "Heather Blend", "Gatehouse Slate"]),
       },
     ],
   },
@@ -457,6 +473,7 @@ export const MAKERS = [
         years: [1980, 2018],
         discontinued: true,
         replaced_by: "pinnacle-pristine",
+        mailerShort: "ATLAS",
         tells: ["Atlas 3-tab", "discontinued in most markets"],
         colors: C(["Weathered Wood", "Black", "Gray"], { discontinued: true }),
       },
@@ -663,6 +680,49 @@ export function matchCatalog({ manufacturer = "", product = "", color = "" } = {
 
 export function discontinuedFor(makerId, lineId = "") {
   return allRows().filter((r) => r.discontinued && (!makerId || r.makerId === makerId) && (!lineId || r.lineId === lineId));
+}
+
+const MAKER_TINT = {
+  gaf: "#f97316",
+  atlas: "#c4b5fd",
+  certainteed: "#67e8f9",
+  "owens-corning": "#fb7185",
+  tamko: "#fbbf24",
+};
+
+function lineShort(maker, line) {
+  if (line.mailerShort) return String(line.mailerShort).slice(0, 10);
+  const n = String(line.name || "").replace(/shingles?/i, "").trim();
+  if (n.length <= 8) return n.toUpperCase();
+  return n.slice(0, 8).toUpperCase();
+}
+
+/** Drive-by mailer chips: discontinued lines plus anything flagged mailer (e.g. Belmont). */
+export function mailerProducts() {
+  const out = [];
+  for (const maker of MAKERS) {
+    for (const line of maker.lines || []) {
+      if (!line.discontinued && !line.mailer) continue;
+      out.push({
+        id: `${maker.id}-${line.id}`,
+        makerId: maker.id,
+        maker: maker.name,
+        lineId: line.id,
+        line: line.name,
+        short: lineShort(maker, line),
+        label: `${maker.name} ${line.name}`,
+        discontinued: Boolean(line.discontinued),
+        color: MAKER_TINT[maker.id] || "#fb923c",
+      });
+    }
+  }
+  return out;
+}
+
+export function mailerProduct(id) {
+  const key = String(id || "");
+  if (!key) return null;
+  return mailerProducts().find((p) => p.id === key) || null;
 }
 
 export function yearRange(years) {

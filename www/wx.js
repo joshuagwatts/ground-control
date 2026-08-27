@@ -4,7 +4,7 @@ import { desktopConfigured } from "./desktop.js";
 import { locateDevice, watchGps } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
 import { lookupAssessorParcel } from "./assessor.js";
-import { kindMeta, validMarkCoord } from "./marks.js";
+import { kindMeta, validMarkCoord, markBadge, markTint } from "./marks.js";
 import { accuColor, accuDone } from "./acculynx.js";
 
 let map = null;
@@ -2735,12 +2735,13 @@ function ensureFieldPanes() {
 
 function markDivIcon(mark) {
   const meta = kindMeta(mark.kind);
-  const text = String(meta.short || "PIN").replace(/[<>&]/g, "");
+  const prod = String(mark.productId || "").replace(/[^a-z0-9:-]/gi, "");
+  const text = markBadge(mark);
   return window.L.divIcon({
-    className: `hs-mark hs-mark-${meta.id}`,
-    html: `<span>${text}</span>`,
-    iconSize: [46, 22],
-    iconAnchor: [23, 22],
+    className: `hs-mark hs-mark-${meta.id}${prod ? ` hs-mark-p` : ""}`,
+    html: `<span style="background:${markTint(mark)}">${text}</span>`,
+    iconSize: [52, 22],
+    iconAnchor: [26, 22],
   });
 }
 
@@ -2755,14 +2756,14 @@ export function setFieldOverlay({ marks = [], jobs = [], showMarks = true, showA
   if (showMarks) {
     for (const m of marks || []) {
       if (!validMarkCoord(m.lat, m.lon)) continue;
-      const meta = kindMeta(m.kind);
+      const tint = markTint(m);
       if (m.kind === "zone" && Number(m.radiusM) > 0) {
         window.L.circle([m.lat, m.lon], {
           pane: "fieldMarks",
           radius: Number(m.radiusM),
-          color: meta.color,
+          color: tint,
           weight: 2,
-          fillColor: meta.color,
+          fillColor: tint,
           fillOpacity: 0.16,
           interactive: true,
         })
@@ -3469,7 +3470,7 @@ function hailScopeHtml(data, days, esc) {
         : "Tap a storm date to draw hail zones"
     }</p>
     ${placeContactHtml(data, esc)}
-    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only <span class="hs-dot" style="background:#22c55e"></span>AccuLynx job <span class="hs-dot" style="background:#c4b5fd"></span>Atlas mark</p>
+    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only <span class="hs-dot" style="background:#22c55e"></span>AccuLynx job <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">

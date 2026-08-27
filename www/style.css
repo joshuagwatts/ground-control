@@ -1560,6 +1560,10 @@ body.wx-map-expanded .hs-sheet { display: none; }
   position: absolute; z-index: 500; left: 12px; top: 62px;
   display: flex; gap: 0.3rem;
 }
+.hs-styles {
+  position: absolute; z-index: 500; right: 12px; bottom: 12px;
+  display: flex; gap: 0.3rem;
+}
 .hs-layers button {
   padding: 0.32rem 0.6rem; font-size: 11px;
   background: rgba(22,22,24,0.92); color: var(--text);
@@ -1593,11 +1597,12 @@ body.wx-map-expanded .hs-sheet { display: none; }
   padding: 0.55rem 0.7rem; font-size: 15px;
 }
 .hs-kinds { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.35rem; }
-.hs-kind {
+.hs-prods { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.45rem; }
+.hs-kind, .hs-prod {
   padding: 0.32rem 0.55rem; font-size: 12px; font-weight: 650;
   background: var(--inset); color: var(--text); border: 1px solid var(--line);
 }
-.hs-kind.on { background: var(--k, var(--trim)); color: #1c1400; border-color: transparent; }
+.hs-kind.on, .hs-prod.on { background: var(--k, var(--trim)); color: #1c1400; border-color: transparent; }
 .hs-composer-actions { display: flex; gap: 0.4rem; margin-top: 0.55rem; }
 .hs-accu-did { color: var(--trim); font-weight: 650; }
 .hs-field { padding: 0 1rem 1.4rem; }
@@ -1631,8 +1636,7 @@ body.wx-map-expanded .hs-sheet { display: none; }
 }
 .hs-mark-work span { background: #22c55e; }
 .hs-mark-zone span { background: #86efac; }
-.hs-mark-atlas span { background: #c4b5fd; }
-.hs-mark-disc span { background: #fb923c; }
+.hs-mark-atlas span, .hs-mark-ping span, .hs-mark-disc span { background: #fb923c; }
 .hs-mark-note span { background: #ffcc00; }
 .hs-styles button {
   padding: 0.4rem 0.7rem; font-size: 12px;

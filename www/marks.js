@@ -1,21 +1,73 @@
 /** Drive-by field marks — hold the map, label a house or a finished neighborhood. */
 
 import { uid } from "./store.js";
+import { mailerProduct, mailerProducts } from "./catalog.js";
 
 export const MARK_KINDS = [
   { id: "work", label: "Work done", short: "WORK", color: "#22c55e", hint: "We finished this house" },
   { id: "zone", label: "Work zone", short: "ZONE", color: "#86efac", hint: "Neighborhood we already built" },
-  { id: "atlas", label: "Atlas", short: "ATLAS", color: "#c4b5fd", hint: "Discontinued Atlas roof" },
+  { id: "ping", label: "Product", short: "PING", color: "#fb923c", hint: "Mailer ping — Atlas, GAF, Belmont, anything" },
+  { id: "atlas", label: "Atlas", short: "ATLAS", color: "#c4b5fd", hint: "Discontinued Atlas" },
   { id: "disc", label: "Discontinued", short: "DISC", color: "#fb923c", hint: "Other discontinued product" },
   { id: "note", label: "Note", short: "NOTE", color: "#ffcc00", hint: "Comment pin" },
 ];
+
+export const COMPOSE_KINDS = MARK_KINDS.filter((k) => k.id === "work" || k.id === "zone" || k.id === "ping" || k.id === "note");
 
 const KIND_IDS = new Set(MARK_KINDS.map((k) => k.id));
 
 export function kindMeta(id) {
   const key = String(id || "").toLowerCase();
-  return MARK_KINDS.find((k) => k.id === key) || MARK_KINDS[MARK_KINDS.length - 1];
+  return MARK_KINDS.find((k) => k.id === key) || MARK_KINDS.find((k) => k.id === "note");
 }
+
+export function isProductPing(mark) {
+  const k = String(mark?.kind || "");
+  return k === "ping" || k === "atlas" || k === "disc";
+}
+
+export function productIdOf(mark) {
+  if (mark?.productId) return String(mark.productId);
+  if (mark?.kind === "atlas") return "atlas-glassmaster";
+  return "";
+}
+
+export function productForMark(mark) {
+  const id = productIdOf(mark);
+  if (id.startsWith("custom:")) {
+    return {
+      id,
+      short: String(mark?.label || "OTHER").slice(0, 8).toUpperCase(),
+      label: mark?.label || "Other",
+      color: "#fb923c",
+      makerId: "custom",
+    };
+  }
+  return mailerProduct(id);
+}
+
+export function markBadge(mark) {
+  const prod = productForMark(mark);
+  const text = prod?.short || kindMeta(mark?.kind).short || "PIN";
+  return String(text).replace(/[<>&]/g, "").slice(0, 10);
+}
+
+export function markTint(mark) {
+  const prod = productForMark(mark);
+  if (prod?.color) return prod.color;
+  return kindMeta(mark?.kind).color;
+}
+
+export function customProductId(label) {
+  const slug = String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+  return slug ? `custom:${slug}` : "other";
+}
+
+export { mailerProducts, mailerProduct };
 
 export function validMarkCoord(lat, lon) {
   const la = Number(lat);
@@ -28,10 +80,15 @@ export function normalizeMark(raw = {}) {
   const lat = Number(raw.lat);
   const lon = Number(raw.lon);
   const radiusM = kind === "zone" ? Math.min(800, Math.max(40, Number(raw.radiusM) || 160)) : 0;
+  let productId = String(raw.productId || "").trim().slice(0, 80);
+  if (!productId && kind === "atlas") productId = "atlas-glassmaster";
+  const prod = productId ? mailerProduct(productId) : null;
+  const label = String(raw.label || prod?.label || kindMeta(kind).label).trim().slice(0, 80);
   return {
     id: String(raw.id || uid()),
     kind,
-    label: String(raw.label || kindMeta(kind).label).trim().slice(0, 80),
+    productId,
+    label,
     note: String(raw.note || "").trim().slice(0, 800),
     address: String(raw.address || "").trim().slice(0, 200),
     lat,
@@ -70,14 +127,19 @@ export function removeMark(list, id) {
 export function filterMarks(list, kind) {
   const rows = Array.isArray(list) ? list : [];
   if (!kind || kind === "all") return rows;
+  if (kind === "ping") return rows.filter(isProductPing);
+  if (String(kind).startsWith("p:")) {
+    const pid = String(kind).slice(2);
+    return rows.filter((m) => productIdOf(m) === pid);
+  }
   return rows.filter((m) => m.kind === kind);
 }
 
 export function marksCsv(list) {
-  const rows = [["kind", "label", "address", "lat", "lon", "note", "radius_m", "created"]];
+  const rows = [["kind", "product", "label", "address", "lat", "lon", "note", "radius_m", "created"]];
   for (const m of list || []) {
     rows.push(
-      [m.kind, m.label, m.address, m.lat, m.lon, m.note, m.radiusM || "", m.created]
+      [m.kind, productIdOf(m), m.label, m.address, m.lat, m.lon, m.note, m.radiusM || "", m.created]
         .map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`)
         .join(","),
     );

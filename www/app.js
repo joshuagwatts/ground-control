@@ -47,7 +47,7 @@ import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
-import { MARK_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft } from "./marks.js";
+import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts } from "./marks.js";
 import { accuKey, fetchAccuJobs, geocodeAccuJobs, accuJobsOnMap, accuJobsCsv, jobDidLine } from "./acculynx.js";
 
 const $ = (s) => document.querySelector(s);
@@ -980,10 +980,36 @@ function closeComposer() {
 }
 
 function composerKindButtons(kind) {
-  return MARK_KINDS.map(
-    (k) =>
-      `<button type="button" class="hs-kind${k.id === kind ? " on" : ""}" data-kind="${esc(k.id)}" style="--k:${k.color}">${esc(k.label)}</button>`,
+  const k = kind === "atlas" || kind === "disc" ? "ping" : kind;
+  return COMPOSE_KINDS.map(
+    (x) =>
+      `<button type="button" class="hs-kind${x.id === k ? " on" : ""}" data-kind="${esc(x.id)}" style="--k:${x.color}">${esc(x.label)}</button>`,
   ).join("");
+}
+
+function composerProductButtons(d) {
+  const pid = productIdOf(d) || db.settings.marksLastProduct || "";
+  const chips = mailerProducts()
+    .map(
+      (p) =>
+        `<button type="button" class="hs-prod${pid === p.id ? " on" : ""}" data-product="${esc(p.id)}" style="--k:${p.color}">${esc(p.short)}${p.discontinued ? "" : ""}</button>`,
+    )
+    .join("");
+  const otherOn = pid.startsWith("custom:") || pid === "other";
+  return `${chips}<button type="button" class="hs-prod${otherOn ? " on" : ""}" data-product="other">Other</button>`;
+}
+
+function applyProductToDraft(productId) {
+  if (!markDraft) return;
+  markDraft.kind = "ping";
+  if (productId === "other") {
+    markDraft.productId = markDraft.productId?.startsWith("custom:") ? markDraft.productId : "other";
+    if (!markDraft.label || mailerProducts().some((p) => p.label === markDraft.label)) markDraft.label = "";
+    return;
+  }
+  const prod = mailerProducts().find((p) => p.id === productId);
+  markDraft.productId = productId;
+  if (prod) markDraft.label = prod.label;
 }
 
 function fillComposer() {
@@ -992,6 +1018,8 @@ function fillComposer() {
   const d = markDraft;
   const meta = kindMeta(d.kind);
   const zone = d.kind === "zone";
+  const ping = isProductPing(d);
+  const prod = productForMark(d);
   el.hidden = false;
   el.innerHTML = `
     <div class="hs-composer-card">
@@ -1000,7 +1028,8 @@ function fillComposer() {
         <button type="button" id="hs-comp-x">Close</button>
       </header>
       <div class="hs-kinds">${composerKindButtons(d.kind)}</div>
-      <label>Label<input id="hs-comp-label" maxlength="80" value="${esc(d.label || meta.label)}" placeholder="Atlas, GlassMaster…" /></label>
+      ${ping ? `<div class="hs-prods">${composerProductButtons(d)}</div>` : ""}
+      <label>${ping ? "Product" : "Label"}<input id="hs-comp-label" maxlength="80" value="${esc(d.label || prod?.label || meta.label)}" placeholder="GAF Timberline HD, Belmont, GlassMaster…" /></label>
       <label>Address<input id="hs-comp-addr" value="${esc(d.address || "")}" placeholder="Looking up address…" /></label>
       <label>Comment<textarea id="hs-comp-note" rows="3" maxlength="800" placeholder="We finished this neighborhood. Discontinued Atlas 3-tab…">${esc(d.note || "")}</textarea></label>
       ${
@@ -1018,9 +1047,23 @@ function fillComposer() {
   el.querySelectorAll(".hs-kind").forEach((b) => {
     b.onclick = () => {
       markDraft.kind = b.dataset.kind;
-      markDraft.label = kindMeta(markDraft.kind).label === markDraft.label || !markDraft.label ? kindMeta(markDraft.kind).label : markDraft.label;
+      if (markDraft.kind === "ping") {
+        applyProductToDraft(db.settings.marksLastProduct || "atlas-glassmaster");
+      } else {
+        markDraft.productId = "";
+        markDraft.label = kindMeta(markDraft.kind).label;
+      }
       if (markDraft.kind === "zone" && !markDraft.radiusM) markDraft.radiusM = 160;
       db.settings.marksLastKind = markDraft.kind;
+      persist();
+      fillComposer();
+    };
+  });
+  el.querySelectorAll(".hs-prod").forEach((b) => {
+    b.onclick = () => {
+      applyProductToDraft(b.dataset.product);
+      db.settings.marksLastKind = "ping";
+      db.settings.marksLastProduct = markDraft.productId || b.dataset.product;
       persist();
       fillComposer();
     };
@@ -1064,13 +1107,18 @@ async function openMarkComposer(seed) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   bump();
   const existing = seed.id ? fieldMarks().find((m) => m.id === seed.id) : null;
+  let kind = existing?.kind || db.settings.marksLastKind || "ping";
+  if (kind === "atlas" || kind === "disc") kind = "ping";
+  const productId = existing?.productId || (kind === "ping" ? db.settings.marksLastProduct || "atlas-glassmaster" : "");
+  const prod = productId ? mailerProducts().find((p) => p.id === productId) : null;
   markDraft = existing
     ? { ...existing }
     : newMark({
         lat,
         lon,
-        kind: db.settings.marksLastKind || "work",
-        label: kindMeta(db.settings.marksLastKind || "work").label,
+        kind,
+        productId,
+        label: prod?.label || kindMeta(kind).label,
         address: seed.address || "",
         note: seed.note || "",
       });
@@ -1091,15 +1139,22 @@ async function openMarkComposer(seed) {
 
 function saveMarkDraft() {
   if (!markDraft) return;
+  if (isProductPing(markDraft)) {
+    markDraft.kind = "ping";
+    if (!markDraft.productId || markDraft.productId === "other") {
+      markDraft.productId = customProductId(markDraft.label || "other");
+    }
+  }
   const next = newMark({
     ...markDraft,
-    label: String(markDraft.label || kindMeta(markDraft.kind).label).trim(),
+    label: String(markDraft.label || productForMark(markDraft)?.label || kindMeta(markDraft.kind).label).trim(),
     note: String(markDraft.note || "").trim(),
     address: String(markDraft.address || "").trim(),
   });
   const hit = upsertMark(fieldMarks(), next);
   db.marks = hit.list;
   db.settings.marksLastKind = next.kind;
+  if (next.productId) db.settings.marksLastProduct = next.productId;
   persist();
   closeComposer();
   paintFieldMap();
@@ -1149,7 +1204,13 @@ function paintFieldSheet() {
     <div class="hs-mark-tools">
       <select id="hs-mark-filter" aria-label="Filter marks">
         <option value="all"${kind === "all" ? " selected" : ""}>All marks</option>
-        ${MARK_KINDS.map((k) => `<option value="${esc(k.id)}"${kind === k.id ? " selected" : ""}>${esc(k.label)}</option>`).join("")}
+        <option value="work"${kind === "work" ? " selected" : ""}>Work done</option>
+        <option value="zone"${kind === "zone" ? " selected" : ""}>Work zone</option>
+        <option value="note"${kind === "note" ? " selected" : ""}>Notes</option>
+        <option value="ping"${kind === "ping" ? " selected" : ""}>All product pings</option>
+        ${mailerProducts()
+          .map((p) => `<option value="p:${esc(p.id)}"${kind === `p:${p.id}` ? " selected" : ""}>${esc(p.label)}</option>`)
+          .join("")}
       </select>
       <button type="button" id="hs-mark-copy"${shown.length ? "" : " disabled"}>Copy list</button>
       <button type="button" id="hs-mark-csv"${shown.length ? "" : " disabled"}>CSV</button>
@@ -1163,7 +1224,7 @@ function paintFieldSheet() {
                 `<button type="button" class="hs-mark-row" data-id="${esc(m.id)}"><i class="hs-dot" style="background:${kindMeta(m.kind).color}"></i><span><strong>${esc(m.label || kindMeta(m.kind).label)}</strong>${esc(m.address || `${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}`)}${m.note ? `<em>${esc(m.note)}</em>` : ""}</span></button>`,
             )
             .join("")
-        : `<p class="muted">Hold a house to label Atlas, discontinued roofs, finished work, or a whole neighborhood zone.</p>`
+        : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product. Filter this list later when you build a mailer.</p>`
     }</div>
     <div class="hs-field-head">
       <strong>AccuLynx</strong>
@@ -1184,8 +1245,8 @@ function paintFieldSheet() {
     setStatus(ok ? "CSV copied" : "Copy failed");
   };
   $("#hs-mark-letter").onclick = async () => {
-    const disc = shown.filter((m) => m.kind === "atlas" || m.kind === "disc");
-    const pack = outreachDraft(disc.length ? disc : shown, {
+    const targets = shown.filter(isProductPing);
+    const pack = outreachDraft(targets.length ? targets : shown, {
       company: db.settings.company || "Ground Control",
       operator: db.settings.operator || "",
     });
@@ -1483,7 +1544,7 @@ function renderKeys() {
     <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
     <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "No keys yet — paste Gemini or OpenAI for Lens."}</p>
     <h3>AccuLynx</h3>
-    <p class="muted">Company API key from <a href="https://my.acculynx.com/apikeys" target="_blank" rel="noopener">my.acculynx.com/apikeys</a>. HailScope plots job addresses, milestone, and work type. It does not email your customers.</p>
+    <p class="muted">Company API key from <a href="https://my.acculynx.com/apikeys" target="_blank" rel="noopener">my.acculynx.com/apikeys</a> (admin). The key itself is free to mint. AccuLynx only issues keys if the <strong>AppConnections</strong> add-on is on — that add-on is extra on top of your AccuLynx plan. They do not publish the price; it shows in Market → Add-ons when you enable it. If Zapier/AppConnections is already enabled, you likely already have it. HailScope plots job addresses, milestone, and work type. It does not email your customers.</p>
     <div class="field"><span>API key</span><input id="set-acculynx" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(accuKey(s) ? "Paste to replace" : "Paste AccuLynx API key")}" /></div>
     <div class="actions"><button type="button" id="accu-sync">${accuBusy ? "Syncing…" : "Sync jobs now"}</button></div>
     <h3>API keys</h3>

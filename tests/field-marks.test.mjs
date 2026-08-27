@@ -1,4 +1,5 @@
-import { MARK_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, validMarkCoord } from "../www/marks.js";
+import { MARK_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, validMarkCoord, isProductPing, productIdOf, markBadge, customProductId } from "../www/marks.js";
+import { mailerProducts, mailerProduct } from "../www/catalog.js";
 import { formatAccuAddress, normalizeAccuJob, jobDidLine, accuColor, accuDone, accuJobsOnMap, accuJobsCsv } from "../www/acculynx.js";
 
 function assert(ok, msg) {
@@ -47,5 +48,17 @@ assert(accuDone("Closed"), "closed is done");
 assert(accuJobsOnMap([job]).length === 1, "on map");
 assert(formatAccuAddress({ street: "1 Main", city: "Tulsa", state: "OK" }).includes("Tulsa"), "street alias");
 assert(accuJobsCsv([job]).includes("HG-100"), "accu csv");
+
+assert(isProductPing(pin), "atlas is a product ping");
+assert(productIdOf(pin) === "atlas-glassmaster", "infer atlas product");
+assert(markBadge(pin) === "ATLAS", "atlas badge");
+const gaf = newMark({ lat: 35.5, lon: -97.5, kind: "ping", productId: "gaf-timberline-hd" });
+assert(/Timberline HD/i.test(gaf.label), "gaf label");
+assert(filterMarks([pin, gaf], "ping").length === 2, "all pings");
+assert(filterMarks([pin, gaf], "p:gaf-timberline-hd").length === 1, "filter gaf");
+const belmont = mailerProduct("certainteed-belmont");
+assert(belmont && belmont.short === "BELMONT" && !belmont.discontinued, "belmont mailer chip");
+assert(mailerProducts().some((p) => p.id === "gaf-timberline-hd"), "gaf hd chip");
+assert(customProductId("GAF Grand Sequoia") === "custom:gaf-grand-sequoia", "custom id");
 
 console.log("field-marks ok");
