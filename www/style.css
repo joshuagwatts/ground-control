@@ -1610,32 +1610,6 @@ body.wx-map-expanded .hs-sheet { display: none; }
   background: var(--inset); border: 1px solid var(--line);
   padding: 0.55rem 0.7rem; font-size: 14px; line-height: 1.4;
 }
-.hs-pack-list { display: flex; flex-direction: column; gap: 0.35rem; margin: 0 0 0.7rem; }
-.hs-pack-row {
-  display: flex; gap: 0.55rem; align-items: flex-start;
-  text-align: left; width: 100%;
-  background: var(--panel); border: 1px solid transparent;
-  padding: 0.65rem 0.8rem; border-radius: var(--radius);
-}
-.hs-pack-row.warm { border-color: rgba(255, 204, 0, 0.45); }
-.hs-pack-row span { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
-.leaflet-div-icon.hs-pack {
-  background: transparent !important;
-  border: none !important;
-}
-.hs-pack span {
-  display: inline-block;
-  padding: 1px 6px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  color: #1c1400;
-  background: #ffcc00;
-  border-radius: 4px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.45);
-  white-space: nowrap;
-}
-.hs-pack.warm span { background: #f5d76e; }
 .hs-field-head { display: flex; justify-content: space-between; gap: 0.8rem; align-items: baseline; margin: 0.4rem 0 0.45rem; }
 .hs-mark-tools { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.55rem; }
 .hs-mark-tools select, .hs-mark-tools button { width: auto; font-size: 13px; padding: 0.4rem 0.65rem; }

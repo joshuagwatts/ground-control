@@ -48,7 +48,7 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts } from "./marks.js";
-import { parseDoneList, withCity, clusterSixPacks, packLine, MAX_DONE } from "./done.js";
+import { parseDoneList, withCity, MAX_DONE } from "./done.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -960,19 +960,13 @@ function doneHouses() {
 }
 
 function paintFieldMap() {
-  const houses = doneHouses();
   setFieldOverlay({
     marks: fieldMarks(),
-    done: houses,
-    packs: clusterSixPacks(houses),
+    done: doneHouses(),
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
     onMark: (m) => openMarkComposer(m),
-    onDone: (h, pack) => {
-      if (pack) {
-        setStatus(packLine(pack));
-        return;
-      }
+    onDone: (h) => {
       if (h?.address) setStatus(h.address);
       if (h && Number.isFinite(Number(h.lat))) flyToPin(h.lat, h.lon, 18);
     },
@@ -1183,32 +1177,18 @@ function paintFieldSheet() {
   const shown = filterMarks(marks, kind);
   const houses = doneHouses();
   const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
-  const packs = clusterSixPacks(houses);
-  const warm = packs.filter((p) => p.warm);
-  const full = packs.filter((p) => p.full);
   const rawText = String(db.done?.text || "");
   root.innerHTML = `
     <div class="hs-field-head">
       <strong>Completed jobs</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow on map` : "Paste the houses you already built"}</span>
     </div>
-    <p class="muted">One address per line. We drop a yellow marker on each and group nearby houses into 6-packs so you can see which pockets are still short. Lines without a city use Settings city.</p>
+    <p class="muted">One address per line. Load them to drop a yellow marker on each finished house. Lines without a city use Settings city.</p>
     <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>
       <button type="button" id="hs-done-clear"${houses.length ? "" : " disabled"}>Clear</button>
     </div>
-    <div class="hs-pack-list">${
-      packs.length
-        ? packs
-            .map(
-              (p) =>
-                `<button type="button" class="hs-pack-row${p.warm ? " warm" : " full"}" data-pack="${esc(p.id)}"><i class="hs-dot" style="background:#ffcc00"></i><span><strong>${esc(p.label)}</strong>${esc(packLine(p))}</span></button>`,
-            )
-            .join("")
-        : `<p class="muted">${houses.length ? "Addresses are in, but none geocoded yet. Tap Load on map." : ""}</p>`
-    }</div>
-    ${warm.length || full.length ? `<p class="muted">${full.length} complete 6-pack${full.length === 1 ? "" : "s"} · ${warm.length} still warm</p>` : ""}
     <div class="hs-field-head">
       <strong>Field marks</strong>
       <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"}</span>
@@ -1285,14 +1265,6 @@ function paintFieldSheet() {
       openMarkComposer(m);
     };
   });
-  root.querySelectorAll(".hs-pack-row").forEach((b) => {
-    b.onclick = () => {
-      const pack = packs.find((p) => p.id === b.dataset.pack);
-      if (!pack || !Number.isFinite(pack.lat)) return;
-      flyToPin(pack.lat, pack.lon, 17);
-      setStatus(packLine(pack));
-    };
-  });
 }
 
 function paintLayerToggles() {
@@ -1360,10 +1332,8 @@ async function loadDoneAddresses() {
     paintFieldMap();
     paintFieldSheet();
     const n = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
-    const packs = clusterSixPacks(houses);
-    const warm = packs.filter((p) => p.warm).length;
     const capped = parsed.length > MAX_DONE ? ` · first ${MAX_DONE}` : "";
-    setStatus(`${n} yellow markers · ${warm} warm 6-pack${warm === 1 ? "" : "s"}${miss ? ` · ${miss} not found` : ""}${capped}`);
+    setStatus(`${n} yellow marker${n === 1 ? "" : "s"}${miss ? ` · ${miss} not found` : ""}${capped}`);
   } catch (e) {
     setStatus(String(e.message || e).slice(0, 64));
   } finally {
@@ -1519,11 +1489,10 @@ function renderJobs() {
   const jobs = db.jobs || [];
   const marks = fieldMarks();
   const houses = doneHouses();
-  const packs = clusterSixPacks(houses);
-  const warm = packs.filter((p) => p.warm);
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
   $("#view").innerHTML = `
     <h3>Jobs</h3>
-    <p class="muted">Roof inspections on this phone, completed 6-packs, and drive-by field marks.</p>
+    <p class="muted">Roof inspections on this phone, completed houses, and drive-by field marks.</p>
     <div class="actions"><button type="button" id="job-new" class="primary">New job</button></div>
     <div class="job-list">${
       jobs.length
@@ -1535,14 +1504,11 @@ function renderJobs() {
             .join("")
         : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
-    <h3>Completed 6-packs</h3>
-    <p class="muted">${houses.length ? `${houses.filter((h) => Number.isFinite(Number(h.lat))).length} yellow on HailScope · ${packs.filter((p) => p.full).length} complete · ${warm.length} still warm. Paste more addresses on HailScope.` : "Paste finished house addresses on HailScope to plot yellow markers and see which 6-packs are still short."}</p>
-    ${warm
+    <h3>Completed jobs</h3>
+    <p class="muted">${placed.length ? `${placed.length} yellow markers on HailScope. Paste more addresses there to add houses.` : "Paste finished house addresses on HailScope to plot yellow markers."}</p>
+    ${placed
       .slice(0, 20)
-      .map(
-        (p) =>
-          `<article class="job-card"><strong>${esc(p.label)}</strong><p class="muted">${esc(packLine(p))}</p></article>`,
-      )
+      .map((h) => `<article class="job-card"><strong>${esc(h.address || "House")}</strong></article>`)
       .join("")}
     <h3>Field marks</h3>
     <p class="muted">${marks.length ? `${marks.length} pins. Hold the HailScope map to add Atlas / work / zone labels.` : "Hold a house on HailScope to drop a custom pin."}</p>

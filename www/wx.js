@@ -99,7 +99,7 @@ let houseTimer = 0;
 let houseGen = 0;
 let markLayer = null;
 let doneLayer = null;
-let fieldOverlay = { marks: [], done: [], packs: [], showMarks: true, showDone: true, onMark: null, onDone: null };
+let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, onMark: null, onDone: null };
 
 export function setHailScopeMode(on) {
   hailScopeMode = Boolean(on);
@@ -2744,8 +2744,8 @@ function markDivIcon(mark) {
   });
 }
 
-export function setFieldOverlay({ marks = [], done = [], packs = [], showMarks = true, showDone = true, onMark, onDone } = {}) {
-  fieldOverlay = { marks, done, packs, showMarks, showDone, onMark, onDone };
+export function setFieldOverlay({ marks = [], done = [], showMarks = true, showDone = true, onMark, onDone } = {}) {
+  fieldOverlay = { marks, done, showMarks, showDone, onMark, onDone };
   if (!map || !window.L) return;
   ensureFieldPanes();
   if (!markLayer) markLayer = window.L.layerGroup().addTo(map);
@@ -2785,36 +2785,6 @@ export function setFieldOverlay({ marks = [], done = [], packs = [], showMarks =
     }
   }
   if (showDone) {
-    for (const pack of packs || []) {
-      if (!validMarkCoord(pack.lat, pack.lon)) continue;
-      window.L.circle([pack.lat, pack.lon], {
-        pane: "doneHouses",
-        radius: Number(pack.radiusM) || 60,
-        color: pack.full ? "#ffcc00" : "#f5d76e",
-        weight: pack.full ? 2 : 2,
-        dashArray: pack.full ? null : "7 5",
-        fillColor: "#ffcc00",
-        fillOpacity: pack.full ? 0.08 : 0.14,
-        interactive: true,
-      })
-        .on("click", (e) => {
-          window.L.DomEvent.stop(e);
-          onDone?.(pack.houses?.[0], pack);
-        })
-        .addTo(doneLayer);
-      const badge = pack.full ? "6/6" : `${pack.count}/6`;
-      window.L.marker([pack.lat, pack.lon], {
-        pane: "doneHouses",
-        interactive: false,
-        keyboard: false,
-        icon: window.L.divIcon({
-          className: `hs-pack${pack.full ? " full" : " warm"}`,
-          html: `<span>${badge}</span>`,
-          iconSize: [36, 18],
-          iconAnchor: [18, 9],
-        }),
-      }).addTo(doneLayer);
-    }
     for (const h of done || []) {
       if (!validMarkCoord(h.lat, h.lon)) continue;
       window.L.circleMarker([h.lat, h.lon], {
