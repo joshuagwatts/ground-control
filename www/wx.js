@@ -10,7 +10,7 @@ let map = null;
 let pin = null;
 let hailLayer = null;
 let layers = {};
-let activeLayer = "dark";
+let activeLayer = "sat";
 
 const WMO = {
   0: "Clear",
@@ -885,8 +885,10 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
 }
 
 let mapConfigCache = null;
-const MAP_MAX_ZOOM = 21;
+const MAP_MAX_ZOOM = 22;
 const HOUSE_NUM_ZOOM = 16;
+const HOUSE_FOOTPRINT_MAX = 500;
+const HOUSE_ZOOM = 20;
 const HOUSE_NUM_MAX = 400;
 const RADAR_NATIVE_ZOOM = 7;
 const RADAR_TILE_SIZE = 512;
@@ -1192,7 +1194,7 @@ export function bindRadarScrubber(root = document) {
   }
 }
 
-const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&x={x}&y={y}&z={z}";
+const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&scale=2&x={x}&y={y}&z={z}";
 const GOOGLE_SUBDOMAINS = "0123";
 
 const BASE_LAYERS = [
@@ -1202,7 +1204,7 @@ const BASE_LAYERS = [
     kind: "base",
     url: GOOGLE_TILES.replace("{lyrs}", "m"),
     subdomains: GOOGLE_SUBDOMAINS,
-    maxNativeZoom: 21,
+    maxNativeZoom: 22,
     attribution: "© Google",
   },
   {
@@ -1211,7 +1213,7 @@ const BASE_LAYERS = [
     kind: "base",
     url: GOOGLE_TILES.replace("{lyrs}", "m"),
     subdomains: GOOGLE_SUBDOMAINS,
-    maxNativeZoom: 21,
+    maxNativeZoom: 22,
     attribution: "© Google",
     className: "hs-night-tiles",
   },
@@ -1219,7 +1221,7 @@ const BASE_LAYERS = [
     id: "sat",
     label: "Sat",
     kind: "base",
-    url: GOOGLE_TILES.replace("{lyrs}", "s"),
+    url: GOOGLE_TILES.replace("{lyrs}", "y"),
     subdomains: GOOGLE_SUBDOMAINS,
     maxNativeZoom: 21,
     attribution: "© Google",
@@ -2585,7 +2587,7 @@ function updateMyLocation(hit) {
 
 function panToMe() {
   if (!map || !lastMe) return;
-  const z = Math.max(map.getZoom(), HOUSE_NUM_ZOOM);
+  const z = Math.max(map.getZoom(), HOUSE_ZOOM);
   map.setView([lastMe.lat, lastMe.lon], z, { animate: true });
 }
 
@@ -2662,6 +2664,32 @@ function scheduleHouseNumbers() {
   }, 220);
 }
 
+function buildingStyle() {
+  const sat = activeLayer === "sat";
+  const night = activeLayer === "dark";
+  return {
+    pane: "houseNums",
+    interactive: false,
+    color: sat || night ? "#ffcc00" : "#6b5200",
+    weight: sat ? 1.1 : 1.5,
+    fillColor: "#ffcc00",
+    fillOpacity: sat ? 0.05 : night ? 0.32 : 0.24,
+  };
+}
+
+function overpassRing(el) {
+  const g = el?.geometry;
+  if (!Array.isArray(g) || g.length < 4) return null;
+  const ring = [];
+  for (const p of g) {
+    const lat = Number(p.lat);
+    const lon = Number(p.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    ring.push([lat, lon]);
+  }
+  return ring;
+}
+
 async function refreshHouseNumbers() {
   if (!map || !window.L) return;
   ensureHousePane();
@@ -2676,7 +2704,7 @@ async function refreshHouseNumbers() {
   const north = b.getNorth();
   const east = b.getEast();
   const gen = ++houseGen;
-  const q = `[out:json][timeout:12][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];relation["addr:housenumber"];);out tags center;`;
+  const q = `[out:json][timeout:15][bbox:${south},${west},${north},${east}];(way["building"];node["addr:housenumber"];way["addr:housenumber"];);out tags center geom;`;
   const urls = [
     `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
     `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
@@ -2685,7 +2713,7 @@ async function refreshHouseNumbers() {
   let data = null;
   for (const url of urls) {
     try {
-      const { body } = await httpGet(url, 12000);
+      const { body } = await httpGet(url, 14000);
       if (gen !== houseGen || !map) return;
       data = JSON.parse(body || "{}");
       if (data && Array.isArray(data.elements)) break;
@@ -2695,6 +2723,15 @@ async function refreshHouseNumbers() {
   }
   if (gen !== houseGen || !map || !data) return;
   houseLayer.clearLayers();
+  const style = buildingStyle();
+  let footprints = 0;
+  for (const el of data.elements || []) {
+    if (el.type !== "way" || !el.tags?.building) continue;
+    const ring = overpassRing(el);
+    if (!ring) continue;
+    window.L.polygon(ring, style).addTo(houseLayer);
+    if (++footprints >= HOUSE_FOOTPRINT_MAX) break;
+  }
   const seen = new Set();
   let count = 0;
   for (const el of data.elements || []) {
@@ -2929,7 +2966,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   if (!window.L) throw new Error("Leaflet not loaded");
   destroyMap();
   const c = center || config.center || { lat: 0, lon: 0 };
-  const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : 12;
+  const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : HOUSE_ZOOM;
   map = window.L.map(container, {
     zoomControl: true,
     preferCanvas: true,
@@ -2950,16 +2987,17 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       maxNativeZoom: isWx ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : layer.maxNativeZoom ?? MAP_MAX_ZOOM,
       subdomains: layer.subdomains || "abc",
       tileSize: 256,
+      detectRetina: false,
       updateWhenIdle: true,
       updateWhenZooming: false,
-      keepBuffer: 1,
+      keepBuffer: 2,
     });
     if (isWx) {
       overlays[layer.id] = tile;
       if (layer.id === "precip") overlays.radar = tile;
     } else layers[layer.id] = tile;
   }
-  const prefer = base || (product === "hail" ? "dark" : null);
+  const prefer = base || (product === "hail" ? "sat" : null);
   const startId =
     (prefer && layers[prefer] && prefer) ||
     (layers[activeLayer] && activeLayer) ||
@@ -3027,7 +3065,7 @@ export function setMapLayer(id) {
   scheduleHouseNumbers();
 }
 
-export function flyToPin(lat, lon, zoom = 13) {
+export function flyToPin(lat, lon, zoom = HOUSE_ZOOM) {
   if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
   setWxPin(lat, lon);
   map.setView([lat, lon], zoom);

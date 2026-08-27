@@ -968,7 +968,7 @@ function paintFieldMap() {
     onMark: (m) => openMarkComposer(m),
     onDone: (h) => {
       if (h?.address) setStatus(h.address);
-      if (h && Number.isFinite(Number(h.lat))) flyToPin(h.lat, h.lon, 18);
+      if (h && Number.isFinite(Number(h.lat))) flyToPin(h.lat, h.lon, 20);
     },
   });
 }
@@ -1261,7 +1261,7 @@ function paintFieldSheet() {
     b.onclick = () => {
       const m = fieldMarks().find((x) => x.id === b.dataset.id);
       if (!m) return;
-      flyToPin(m.lat, m.lon, 18);
+      flyToPin(m.lat, m.lon, 20);
       openMarkComposer(m);
     };
   });
@@ -1386,7 +1386,7 @@ async function renderWx() {
         styles.querySelectorAll("button[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
       };
     }
-    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "dark" });
+    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat" });
     bindWxMapExpand($("#hs-map-shell"));
     paintLayerToggles();
     paintFieldMap();
@@ -1403,7 +1403,7 @@ async function renderWx() {
           const hits = await geocodeAddress(q);
           const hit = hits[0];
           if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
-          flyToPin(hit.lat, hit.lon, 18);
+          flyToPin(hit.lat, hit.lon, 20);
           await onHailTap(hit.lat, hit.lon);
         } catch (err) {
           setStatus(String(err.message || err).slice(0, 48));
