@@ -1018,7 +1018,7 @@ async function onHailTap(lat, lon) {
       const loading = sheet.querySelector(".hs-empty");
       if (loading) loading.textContent = "Searching a longer hail window…";
     }
-    const full = await onRefetch({ ...data._meta, days: 365 });
+    const full = await onRefetch({ ...data._meta, days: 730 });
     if (!isHailTab()) return;
     if (full) {
       wxState.data = full;

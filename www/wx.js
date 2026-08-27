@@ -27,7 +27,7 @@ const WMO = {
   99: "Severe thunder + hail",
 };
 
-export const DEFAULT_FILTERS = { km: 10, hailIn: 0.75, windMph: 38, days: 365, year: "all", sort: "date" };
+export const DEFAULT_FILTERS = { km: 10, hailIn: 0.75, windMph: 38, days: 730, year: "all", sort: "date" };
 let wxFilters = { ...DEFAULT_FILTERS };
 const RADIUS_KM = [5, 10, 16, 25, 40, 50];
 let wxUnits = "imperial";
@@ -391,18 +391,19 @@ function parseSwdiShape(shape) {
 
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 180);
+  const days = Math.min(Math.max(daysBack, 7), 730);
   const km = Math.min(Math.max(radiusKm, 3), 50);
   const bbox = bboxForKm(lat, lon, km);
   const startLimit = new Date(today);
   startLimit.setDate(startLimit.getDate() - days);
   const chunks = [];
   let cursor = new Date(today);
-  const maxChunks = days > 120 ? 14 : 10;
+  const span = days > 365 ? 21 : 13;
+  const maxChunks = Math.min(40, Math.ceil(days / span) + 1);
   while (cursor > startLimit && chunks.length < maxChunks) {
     const chunkEnd = new Date(cursor);
     const chunkStart = new Date(cursor);
-    chunkStart.setDate(chunkStart.getDate() - 13);
+    chunkStart.setDate(chunkStart.getDate() - span);
     if (chunkStart < startLimit) chunkStart.setTime(startLimit.getTime());
     chunks.push({ start: chunkStart, end: chunkEnd });
     cursor = new Date(chunkStart);
@@ -1767,9 +1768,9 @@ async function localMapConfig(settings, center) {
 
 async function localResearch(lat, lon, address = "", { deep = true, filters = wxFilters, news = false } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
-  const filterDays = Number(filters.days) || 180;
+  const filterDays = Number(filters.days) || 730;
   const archiveDays = Math.min(filterDays, 730);
-  const swdiDays = Math.min(filterDays, 180);
+  const swdiDays = Math.min(filterDays, 730);
   const km = filterKm(filters);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const geo = await geoP;
@@ -1830,7 +1831,7 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
   };
   if (onPartial) onPartial(partial);
   const km = filterKm();
-  const lsrDays = Number(wxFilters.days) || 365;
+  const lsrDays = Number(wxFilters.days) || 730;
   const [wxNow, spc, swdi, lsr, contacts, assessor] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     fetchSpcReports(lat, lon, km, 30),
@@ -2708,7 +2709,7 @@ export async function geocodeAddress(query) {
 
 function cutoffDate(days) {
   const d = new Date();
-  d.setDate(d.getDate() - Number(days || 180));
+  d.setDate(d.getDate() - Number(days || 730));
   return d.toISOString().slice(0, 10);
 }
 
@@ -2863,6 +2864,7 @@ function roofDossierHtml(data, esc, onResearch) {
             <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90d</option>
             <option value="180"${wxFilters.days == 180 ? " selected" : ""}>180d</option>
             <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1y</option>
+            <option value="730"${wxFilters.days == 730 ? " selected" : ""}>2y</option>
           </select></label>
           <label>YEAR <select id="wx-f-year">
             <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>all</option>
@@ -3088,6 +3090,7 @@ function hailScopeHtml(data, days, esc) {
         <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90 days</option>
         <option value="180"${wxFilters.days == 180 ? " selected" : ""}>6 months</option>
         <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1 year</option>
+        <option value="730"${wxFilters.days == 730 ? " selected" : ""}>2 years</option>
       </select>
       <select id="hs-f-year" aria-label="Year">
         <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>All years</option>
