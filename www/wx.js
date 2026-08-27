@@ -246,6 +246,24 @@ function bboxForKm(lat, lon, radiusKm) {
   return `${(lon - dLon).toFixed(4)},${(lat - dLat).toFixed(4)},${(lon + dLon).toFixed(4)},${(lat + dLat).toFixed(4)}`;
 }
 
+function iemBboxQuery(lat, lon, radiusKm) {
+  const pad = Math.max(radiusKm * 1.25, 8);
+  const dLat = pad / 111;
+  const dLon = pad / (111 * Math.max(0.25, Math.cos((lat * Math.PI) / 180)));
+  return [
+    `west=${(lon - dLon).toFixed(4)}`,
+    `east=${(lon + dLon).toFixed(4)}`,
+    `south=${(lat - dLat).toFixed(4)}`,
+    `north=${(lat + dLat).toFixed(4)}`,
+  ].join("&");
+}
+
+function isSpotterHail(p) {
+  const src = String(p?.source || "");
+  if (/swdi|radar/i.test(src)) return false;
+  return /spc|lsr|spot|iem/i.test(src);
+}
+
 function parseSwdiShape(shape) {
   const s = String(shape || "");
   const pt = s.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
@@ -351,55 +369,158 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
 }
 
 /** Live Local Storm Reports (IEM) — CORS-friendly spotter hail near pin. */
-async function fetchIemLsrHail(lat, lon, radiusKm = 40, hours = 72) {
+function lsrValidStamp(valid) {
+  const s = String(valid || "").trim();
+  const iso = s.match(/(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/);
+  if (iso) return { day: iso[1], time: iso[2] || "" };
+  const slash = s.match(/(\d{4})\/(\d{2})\/(\d{2})(?:\s+(\d{2}:\d{2}))?/);
+  if (slash) return { day: `${slash[1]}-${slash[2]}-${slash[3]}`, time: slash[4] || "" };
+  const compact = s.match(/^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/);
+  if (compact) {
+    return {
+      day: `${compact[1]}-${compact[2]}-${compact[3]}`,
+      time: compact[4] && compact[5] ? `${compact[4]}:${compact[5]}` : "",
+    };
+  }
+  return { day: new Date().toISOString().slice(0, 10), time: "" };
+}
+
+function lsrHailRow(lat, lon, km, { rlat, rlon, mag, valid, city, county, state, remark }) {
+  if (!Number.isFinite(rlat) || !Number.isFinite(rlon)) return null;
+  const dist = haversineKm(lat, lon, rlat, rlon);
+  if (dist > km) return null;
+  const when = lsrValidStamp(valid);
+  const size = mag > 0 ? mag.toFixed(2) : "UNK";
+  return {
+    kind: "hail",
+    date: when.day,
+    time: when.time,
+    lat: rlat,
+    lon: rlon,
+    size_in: size,
+    location: city || county || "LSR hail",
+    county: county || "",
+    state: state || "",
+    comments: String(remark || "IEM LSR").slice(0, 120),
+    source: "iem-lsr",
+    distance_km: Math.round(dist * 10) / 10,
+    score: mag >= 1 ? 5 : 3,
+  };
+}
+
+function parseIemLsrGeojson(body, lat, lon, km) {
+  let data;
+  try {
+    data = JSON.parse(body || "{}");
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const f of data.features || []) {
+    const p = f.properties || {};
+    const typ = String(p.type || p.typetext || p.typecode || "").toUpperCase();
+    if (!(typ === "H" || /HAIL/.test(typ) || /HAIL/.test(String(p.typetext || "")))) continue;
+    const coords = (f.geometry && f.geometry.coordinates) || [];
+    const row = lsrHailRow(lat, lon, km, {
+      rlon: Number(coords[0]),
+      rlat: Number(coords[1]),
+      mag: Number(p.magf != null ? p.magf : p.magnitude) || 0,
+      valid: String(p.valid || p.utcvalid || p.wfo_valid || ""),
+      city: p.city || "",
+      county: p.county || "",
+      state: p.state || "",
+      remark: p.remark || p.source || "IEM LSR",
+    });
+    if (row) out.push(row);
+  }
+  return out;
+}
+
+function parseIemLsrCsv(body, lat, lon, km) {
+  const text = String(body || "");
+  const nl = text.indexOf("\n");
+  if (nl < 0 || !/VALID|TYPETEXT|LAT/i.test(text.slice(0, nl))) return [];
+  const split = (line) => {
+    const out = [];
+    let cur = "";
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        if (q && line[i + 1] === '"') {
+          cur += '"';
+          i += 1;
+          continue;
+        }
+        q = !q;
+        continue;
+      }
+      if (c === "," && !q) {
+        out.push(cur);
+        cur = "";
+        continue;
+      }
+      cur += c;
+    }
+    out.push(cur);
+    return out;
+  };
+  const header = split(text.slice(0, nl)).map((h) => h.trim().toLowerCase());
+  const col = (name) => header.indexOf(name);
+  const iLat = col("lat");
+  const iLon = col("lon");
+  const iType = col("typetext") >= 0 ? col("typetext") : col("typecode");
+  const iMag = col("mag") >= 0 ? col("mag") : col("magnitude");
+  const iValid = col("valid");
+  if (iLat < 0 || iLon < 0) return [];
+  const out = [];
+  for (const line of text.slice(nl + 1).split("\n")) {
+    if (!line.trim()) continue;
+    const parts = split(line);
+    const typ = String(parts[iType] || "").toUpperCase();
+    if (!(typ === "H" || /HAIL/.test(typ))) continue;
+    const row = lsrHailRow(lat, lon, km, {
+      rlat: Number(parts[iLat]),
+      rlon: Number(parts[iLon]),
+      mag: Number(parts[iMag]) || 0,
+      valid: String(parts[col("valid2")] || parts[iValid] || ""),
+      city: parts[col("city")] || "",
+      county: parts[col("county")] || "",
+      state: parts[col("state")] || "",
+      remark: parts[col("remark")] || parts[col("source")] || "IEM LSR",
+    });
+    if (row) out.push(row);
+  }
+  return out;
+}
+
+async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
   const km = Math.min(Math.max(radiusKm, 5), 80);
-  const hrs = Math.min(Math.max(hours, 6), 168);
+  const days = Math.min(Math.max(Number(daysBack) || 365, 7), 730);
+  const end = new Date();
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - days);
+  const sts = `${start.toISOString().slice(0, 19)}Z`;
+  const ets = `${end.toISOString().slice(0, 19)}Z`;
+  const box = iemBboxQuery(lat, lon, km);
+  const range = `sts=${encodeURIComponent(sts)}&ets=${encodeURIComponent(ets)}`;
   const urls = [
-    `https://mesonet.agron.iastate.edu/geojson/lsr.py?hours=${hrs}&lat0=${lat}&lon0=${lon}`,
-    `https://mesonet.agron.iastate.edu/geojson/lsr.py?hours=${hrs}`,
+    `https://mesonet.agron.iastate.edu/cgi-bin/request/gis/lsr.py?${range}&type=HAIL&fmt=csv&${box}`,
+    `https://mesonet.agron.iastate.edu/geojson/lsr.py?${range}&${box}`,
+    `https://mesonet.agron.iastate.edu/geojson/lsr.geojson?${range}&${box}`,
   ];
-  let features = [];
   for (const url of urls) {
     try {
-      const { body } = await httpGet(url, 12000);
-      const data = JSON.parse(body || "{}");
-      features = data.features || [];
-      if (features.length) break;
+      const { body } = await httpGet(url, 20000);
+      const rows = /"features"|FeatureCollection/i.test(body || "")
+        ? parseIemLsrGeojson(body, lat, lon, km)
+        : parseIemLsrCsv(body, lat, lon, km);
+      if (rows.length) return rows;
     } catch {
       /* try next */
     }
   }
-  const out = [];
-  for (const f of features) {
-    const p = f.properties || {};
-    const typ = String(p.type || p.typetext || "").toUpperCase();
-    if (!(typ === "H" || /HAIL/.test(typ) || /HAIL/.test(String(p.typetext || "")))) continue;
-    const coords = (f.geometry && f.geometry.coordinates) || [];
-    const rlon = Number(coords[0]);
-    const rlat = Number(coords[1]);
-    if (!Number.isFinite(rlat) || !Number.isFinite(rlon)) continue;
-    const dist = haversineKm(lat, lon, rlat, rlon);
-    if (dist > km) continue;
-    const mag = Number(p.magf != null ? p.magf : p.magnitude) || 0;
-    const valid = String(p.valid || p.utcvalid || "");
-    const day = valid.slice(0, 10) || new Date().toISOString().slice(0, 10);
-    out.push({
-      kind: "hail",
-      date: day,
-      time: valid.slice(11, 16) || "",
-      lat: rlat,
-      lon: rlon,
-      size_in: mag > 0 ? mag.toFixed(2) : "UNK",
-      location: p.city || p.county || "LSR hail",
-      county: p.county || "",
-      state: p.state || "",
-      comments: String(p.remark || p.source || "IEM LSR").slice(0, 120),
-      source: "iem-lsr",
-      distance_km: Math.round(dist * 10) / 10,
-      score: mag >= 1 ? 5 : 3,
-    });
-  }
-  return out;
+  return [];
 }
 
 function hailZoneColor(sizeIn) {
@@ -414,13 +535,23 @@ function hailZoneColor(sizeIn) {
 }
 
 function mergeHailRows(...groups) {
-  const merged = groups.flat();
-  merged.sort((a, b) => {
-    const ds = b.date.localeCompare(a.date);
+  const seen = new Set();
+  const uniq = [];
+  for (const h of groups.flat()) {
+    if (!h) continue;
+    const key = `${String(h.date || "").slice(0, 10)}|${Number(h.lat).toFixed(3)}|${Number(h.lon).toFixed(3)}|${h.size_in}|${isSpotterHail(h) ? "s" : "r"}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniq.push(h);
+  }
+  uniq.sort((a, b) => {
+    const ds = String(b.date || "").localeCompare(String(a.date || ""));
     if (ds) return ds;
-    return parseFloat(b.size_in) - parseFloat(a.size_in);
+    return (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
   });
-  return merged.slice(0, 200);
+  const spots = uniq.filter(isSpotterHail);
+  const radar = uniq.filter((h) => !isSpotterHail(h));
+  return [...spots, ...radar].slice(0, 400);
 }
 
 /**
@@ -1545,7 +1676,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     historicalStorms(lat, lon, archiveDays),
     fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, swdiDays),
-    fetchIemLsrHail(lat, lon, km, deep ? 120 : 72).catch(() => []),
+    fetchIemLsrHail(lat, lon, km, filterDays).catch(() => []),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
@@ -1574,7 +1705,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     owner_name: "",
     owner_phone: "",
     owner_email: "",
-    _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
+    _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
 }
 
@@ -1597,11 +1728,12 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
   };
   if (onPartial) onPartial(partial);
   const km = Number(wxFilters.km) || 25;
+  const lsrDays = Number(wxFilters.days) || 365;
   const [wxNow, spc, swdi, lsr] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     fetchSpcReports(lat, lon, km, 30),
     fetchSwdiHail(lat, lon, km, 60),
-    fetchIemLsrHail(lat, lon, km, 72).catch(() => []),
+    fetchIemLsrHail(lat, lon, km, lsrDays).catch(() => []),
   ]);
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
@@ -1611,7 +1743,7 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
     hail,
     wind,
     storms: enrichStormDates([], hail, wind),
-    _meta: { fetchedDays: 60, fetchedKm: km, deep: false },
+    _meta: { fetchedDays: Math.max(60, lsrDays), fetchedKm: km, deep: false },
   };
 }
 
@@ -2011,6 +2143,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   }
   hailLayer = window.L.layerGroup();
   windLayer = window.L.layerGroup();
+  if (!map.getPane("hailSpotters")) {
+    map.createPane("hailSpotters");
+    map.getPane("hailSpotters").style.zIndex = 650;
+  }
 
   const day = selectedStormDate;
   const nearHail = hailNearPin(hailRows || [], null);
@@ -2073,14 +2209,18 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         }).addTo(hailLayer);
       }
     }
-    for (const p of dayHits.slice(0, 32)) {
-      const isSpot = /spc|lsr|spot|iem/i.test(String(p.source || ""));
+    const spots = dayHits.filter(isSpotterHail);
+    const radar = dayHits.filter((p) => !isSpotterHail(p));
+    const toDraw = [...radar.slice(0, 24), ...spots.slice(0, 48)];
+    for (const p of toDraw) {
+      const isSpot = isSpotterHail(p);
       window.L.circleMarker([p.lat, p.lon], {
-        radius: isSpot ? 6 : 4,
-        color: isSpot ? "#ff6b6b" : "#7dff5a",
-        fillColor: isSpot ? "#ff3a3a" : "#3f8f32",
-        fillOpacity: 0.85,
-        weight: 1.2,
+        radius: isSpot ? 8 : 4,
+        color: isSpot ? "#ffffff" : "#7dff5a",
+        fillColor: isSpot ? "#ff2d2d" : "#3f8f32",
+        fillOpacity: isSpot ? 0.95 : 0.85,
+        weight: isSpot ? 2 : 1.2,
+        pane: isSpot ? "hailSpotters" : "overlayPane",
         className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
       })
         .bindPopup(
@@ -2835,6 +2975,7 @@ function hailScopeHtml(data, days, esc) {
         ? `Showing zones for ${esc(prettyStormDate(selectedStormDate))}`
         : "Tap a storm date to draw hail zones"
     }</p>
+    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">
