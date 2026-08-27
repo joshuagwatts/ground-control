@@ -3,6 +3,7 @@ import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
 import { desktopConfigured } from "./desktop.js";
 import { locateDevice } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
+import { lookupAssessorParcel } from "./assessor.js";
 
 let map = null;
 let pin = null;
@@ -129,15 +130,30 @@ function zillowUrl(address) {
   return `https://www.zillow.com/homes/${encodeURIComponent(q)}_rb/`;
 }
 
+function ownerFields(people = {}, assessor = null) {
+  return {
+    owner_name: (assessor && assessor.name) || people.name || "",
+    owner_phone: people.phone || "",
+    owner_email: people.email || "",
+    owner_mail: (assessor && assessor.mail) || "",
+    assessor_url: (assessor && assessor.url) || "",
+    facebook_url: people.facebook || "",
+    instagram_url: people.instagram || "",
+  };
+}
+
 function placeContactHtml(data, esc) {
   const addr = data.address || "";
   const zurl = data.zillow_url || zillowUrl(addr);
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
+  const mail = String(data.owner_mail || "").trim();
+  const aurl = String(data.assessor_url || "").trim();
   const e164 = phoneDigits(phone);
   const bits = [];
   if (zurl) bits.push(`<a class="hs-zillow" href="${esc(zurl)}" target="_blank" rel="noopener">Zillow</a>`);
+  if (aurl) bits.push(`<a class="hs-assessor" href="${esc(aurl)}" target="_blank" rel="noopener">Assessor</a>`);
   const fb = String(data.facebook_url || "").trim();
   const ig = String(data.instagram_url || "").trim();
   if (fb) bits.push(`<a class="hs-fb" href="${esc(fb)}" target="_blank" rel="noopener">Facebook</a>`);
@@ -147,8 +163,9 @@ function placeContactHtml(data, esc) {
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
-  const miss = !e164 && !email ? `<span class="hs-place-miss">No verified listing for this address</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
+  const mailLine = mail ? `<span class="hs-mailaddr">Mail: ${esc(mail)}</span>` : "";
+  const miss = !e164 && !email && !mail ? `<span class="hs-place-miss">No verified listing for this address</span>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${mailLine}${bits.join("")}${miss}</div>`;
 }
 
 async function api(path, opts = {}) {
@@ -1757,13 +1774,14 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const geo = await geoP;
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  const [wxNow, archiveStorms, spc, swdi, lsr, contacts] = await Promise.all([
+  const [wxNow, archiveStorms, spc, swdi, lsr, contacts, assessor] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     historicalStorms(lat, lon, archiveDays),
     fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, swdiDays),
     fetchIemLsrHail(lat, lon, km, filterDays).catch(() => []),
     lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
+    lookupAssessorParcel(lat, lon, addr).catch(() => null),
   ]);
   const city = geo.city || addr.split(",")[0];
   const people = mergeContacts(listingForPin(geo, addr), contacts);
@@ -1789,11 +1807,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     wind,
     news: newsHits,
     zillow_url: zillowUrl(addr),
-    owner_name: people.name || "",
-    owner_phone: people.phone || "",
-    owner_email: people.email || "",
-    facebook_url: people.facebook || "",
-    instagram_url: people.instagram || "",
+    ...ownerFields(people, assessor),
     _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
 }
@@ -1812,21 +1826,18 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
     hail: [],
     wind: [],
     news: [],
-    owner_name: people0.name || "",
-    owner_phone: people0.phone || "",
-    owner_email: people0.email || "",
-    facebook_url: people0.facebook || "",
-    instagram_url: people0.instagram || "",
+    ...ownerFields(people0),
   };
   if (onPartial) onPartial(partial);
   const km = filterKm();
   const lsrDays = Number(wxFilters.days) || 365;
-  const [wxNow, spc, swdi, lsr, contacts] = await Promise.all([
+  const [wxNow, spc, swdi, lsr, contacts, assessor] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     fetchSpcReports(lat, lon, km, 30),
     fetchSwdiHail(lat, lon, km, 60),
     fetchIemLsrHail(lat, lon, km, lsrDays).catch(() => []),
     lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
+    lookupAssessorParcel(lat, lon, addr).catch(() => null),
   ]);
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
@@ -1837,11 +1848,7 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
     hail,
     wind,
     storms: enrichStormDates([], hail, wind),
-    owner_name: people.name || "",
-    owner_phone: people.phone || "",
-    owner_email: people.email || "",
-    facebook_url: people.facebook || "",
-    instagram_url: people.instagram || "",
+    ...ownerFields(people, assessor),
     _meta: { fetchedDays: Math.max(60, lsrDays), fetchedKm: km, deep: false },
   };
 }
@@ -1926,11 +1933,7 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false }
     storms: [],
     hail: [],
     news: [],
-    owner_name: people0.name || "",
-    owner_phone: people0.phone || "",
-    owner_email: people0.email || "",
-    facebook_url: people0.facebook || "",
-    instagram_url: people0.instagram || "",
+    ...ownerFields(people0),
   };
   if (onPartial) onPartial(partial);
   const full = await researchPin(settings, lat, lon, addr, true);

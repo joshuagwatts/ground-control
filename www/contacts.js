@@ -69,16 +69,26 @@ export function stateAbbr(s) {
   return US_STATES[t] || "";
 }
 
+export function streetKey(street) {
+  const skip =
+    /^(n|s|e|w|ne|nw|se|sw|north|south|east|west|st|ave|dr|ln|rd|blvd|way|ct|pl|cir|pkwy|hwy|street|avenue|drive|lane|road|court|place|circle)$/i;
+  const bits = String(street || "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((b) => !skip.test(b));
+  return bits.find((b) => b.length >= 4) || bits[0] || "";
+}
+
 export function sameHouse(a, b) {
   const pa = a && typeof a === "object" && a.house != null ? a : parseStreetAddress(a);
   const pb = b && typeof b === "object" && b.house != null ? b : parseStreetAddress(b);
   if (!pa.house || !pb.house) return false;
   if (String(pa.house).toLowerCase() !== String(pb.house).toLowerCase()) return false;
-  if (pa.street && pb.street) {
-    const ta = pa.street.split(/\s+/)[0].toLowerCase();
-    const tb = pb.street.split(/\s+/)[0].toLowerCase();
-    if (ta.length >= 4 && tb.length >= 4 && ta !== tb) return false;
-  }
+  const ka = streetKey(pa.street);
+  const kb = streetKey(pb.street);
+  if (ka && kb && ka !== kb) return false;
   return true;
 }
 

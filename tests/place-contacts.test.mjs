@@ -13,6 +13,7 @@ import {
   sameHouse,
   listingForPin,
 } from "../www/contacts.js";
+import { formatOwnerName, formatMailing, parcelMatchesPin } from "../www/assessor.js";
 
 function assert(ok, msg) {
   if (!ok) throw new Error(msg);
@@ -58,6 +59,13 @@ assert(merged.phone === "(918) 582-0001" && merged.email === "a@shop.test", "mer
 assert(sameHouse("2521 Tredington Way, Edmond, OK", "2521 Tredington Way"), "same house");
 assert(!sameHouse("2521 Tredington Way", "2501 Tredington Way"), "different house");
 assert(!sameHouse("2521 Tredington Way", "2521 Broadway"), "different street");
+assert(!sameHouse("400 S Bryant", "400 S Broadway"), "direction prefix is not the street");
+
+assert(formatOwnerName("CITY OF EDMOND") === "City Of Edmond", "owner caps");
+assert(formatOwnerName("SMITH RENTALS LLC") === "Smith Rentals LLC", "keep LLC");
+assert(formatMailing("PO BOX 2970", "EDMOND", "OK", "73083-2970").includes("PO BOX 2970"), "mail po box");
+assert(parcelMatchesPin("400 S Bryant, Edmond, OK", "400 S BRYANT AVE EDMOND"), "assessor situs");
+assert(!parcelMatchesPin("2521 Tredington Way, Edmond, OK", "2501 TREDINGTON WAY EDMOND"), "wrong lot");
 
 const pin = "2521 Tredington Way, Edmond, OK 73034";
 const keep = listingForPin({ address: pin, phone: "918-582-0001", name: "Shop" }, pin);
