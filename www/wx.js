@@ -2874,7 +2874,7 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     row.onclick = () => {
       const date = row.getAttribute("data-storm-date");
       if (selectedStormDate === date) selectStormDate(null, { fit: false, requireDate: true });
-      else selectStormDate(date, { fit: true, requireDate: true });
+      else selectStormDate(date, { fit: false, requireDate: true });
       const pin = root.querySelector(".hs-pin");
       if (pin) {
         const addr = data.address || "Dropped pin";
