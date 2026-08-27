@@ -23,6 +23,14 @@ export function persistCoords(settings, hit) {
   return hit;
 }
 
+function gpsHit(p) {
+  if (!p?.coords) return null;
+  const lat = p.coords.latitude;
+  const lon = p.coords.longitude;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon, acc: p.coords.accuracy, city: "", source: "gps" };
+}
+
 async function gpsFix(timeoutMs = 12000) {
   if (typeof navigator === "undefined" || !navigator.geolocation) return null;
   return new Promise((resolve) => {
@@ -31,7 +39,7 @@ async function gpsFix(timeoutMs = 12000) {
     navigator.geolocation.getCurrentPosition(
       (p) => {
         clearTimeout(timer);
-        done({ lat: p.coords.latitude, lon: p.coords.longitude, city: "", source: "gps" });
+        done(gpsHit(p));
       },
       () => {
         clearTimeout(timer);
@@ -40,6 +48,34 @@ async function gpsFix(timeoutMs = 12000) {
       { timeout: timeoutMs, maximumAge: 300000, enableHighAccuracy: false },
     );
   });
+}
+
+/** Live GPS for the map blue-dot. Does not pan. Returns a stop function. */
+export function watchGps(onFix) {
+  if (typeof navigator === "undefined" || !navigator.geolocation || typeof onFix !== "function") {
+    return () => {};
+  }
+  const emit = (p) => {
+    const hit = gpsHit(p);
+    if (hit) onFix(hit);
+  };
+  navigator.geolocation.getCurrentPosition(emit, () => {}, {
+    enableHighAccuracy: false,
+    maximumAge: 60000,
+    timeout: 8000,
+  });
+  const id = navigator.geolocation.watchPosition(emit, () => {}, {
+    enableHighAccuracy: true,
+    maximumAge: 4000,
+    timeout: 20000,
+  });
+  return () => {
+    try {
+      navigator.geolocation.clearWatch(id);
+    } catch {
+      /* ignore */
+    }
+  };
 }
 
 async function ipFix(httpGet) {

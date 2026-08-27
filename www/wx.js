@@ -1,7 +1,7 @@
 /** WX map + storm dossier — runs on phone standalone (public APIs) or via paired desktop. */
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
 import { desktopConfigured } from "./desktop.js";
-import { locateDevice } from "./geo.js";
+import { locateDevice, watchGps } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
 import { lookupAssessorParcel } from "./assessor.js";
 
@@ -88,6 +88,14 @@ let selectedStormDate = null;
 /** HailScope: never auto-pick a storm date; zones wait for a tap. */
 let hailScopeMode = false;
 let hailSearchQ = "";
+let meMarker = null;
+let meRing = null;
+let meStop = null;
+let lastMe = null;
+let locateBtnEl = null;
+let houseLayer = null;
+let houseTimer = 0;
+let houseGen = 0;
 
 export function setHailScopeMode(on) {
   hailScopeMode = Boolean(on);
@@ -873,7 +881,9 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
 }
 
 let mapConfigCache = null;
-const MAP_MAX_ZOOM = 18;
+const MAP_MAX_ZOOM = 19;
+const HOUSE_NUM_ZOOM = 16;
+const HOUSE_NUM_MAX = 280;
 const RADAR_NATIVE_ZOOM = 7;
 const RADAR_TILE_SIZE = 512;
 
@@ -2481,9 +2491,217 @@ async function refreshWindField() {
   }
 }
 
+function stopMyLocation() {
+  if (typeof meStop === "function") {
+    try {
+      meStop();
+    } catch {
+      /* ignore */
+    }
+  }
+  meStop = null;
+  meMarker = null;
+  meRing = null;
+  lastMe = null;
+  locateBtnEl = null;
+}
+
+function ensureMePane() {
+  if (!map.getPane("meDot")) {
+    map.createPane("meDot");
+    map.getPane("meDot").style.zIndex = 680;
+  }
+  if (!map.getPane("meRing")) {
+    map.createPane("meRing");
+    map.getPane("meRing").style.zIndex = 455;
+    map.getPane("meRing").style.pointerEvents = "none";
+  }
+}
+
+function updateMyLocation(hit) {
+  if (!map || !window.L || !hit) return;
+  const { lat, lon } = hit;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  lastMe = hit;
+  ensureMePane();
+  const acc = Number(hit.acc);
+  const radius = Number.isFinite(acc) && acc > 8 && acc < 400 ? acc : 0;
+  if (radius) {
+    if (meRing) meRing.setLatLng([lat, lon]).setRadius(radius);
+    else {
+      meRing = window.L.circle([lat, lon], {
+        pane: "meRing",
+        radius,
+        color: "#3b82f6",
+        weight: 1,
+        fillColor: "#3b82f6",
+        fillOpacity: 0.14,
+        interactive: false,
+      }).addTo(map);
+    }
+  }
+  if (meMarker) meMarker.setLatLng([lat, lon]);
+  else {
+    meMarker = window.L.marker([lat, lon], {
+      pane: "meDot",
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 800,
+      icon: window.L.divIcon({
+        className: "hs-me",
+        html: "<i></i>",
+        iconSize: [18, 18],
+        iconAnchor: [9, 9],
+      }),
+    }).addTo(map);
+  }
+  if (locateBtnEl) locateBtnEl.classList.add("on");
+}
+
+function panToMe() {
+  if (!map || !lastMe) return;
+  const z = Math.max(map.getZoom(), HOUSE_NUM_ZOOM);
+  map.setView([lastMe.lat, lastMe.lon], z, { animate: true });
+}
+
+function addLocateControl() {
+  if (!map || !window.L) return;
+  const Ctl = window.L.Control.extend({
+    options: { position: "topleft" },
+    onAdd() {
+      const wrap = window.L.DomUtil.create("div", "leaflet-bar hs-locate-ctl");
+      const btn = window.L.DomUtil.create("a", "hs-locate-btn", wrap);
+      btn.href = "#";
+      btn.title = "My location";
+      btn.setAttribute("aria-label", "My location");
+      btn.innerHTML = "<span></span>";
+      window.L.DomEvent.disableClickPropagation(wrap);
+      window.L.DomEvent.on(btn, "click", (e) => {
+        window.L.DomEvent.stop(e);
+        panToMe();
+      });
+      locateBtnEl = btn;
+      if (lastMe) btn.classList.add("on");
+      return wrap;
+    },
+  });
+  new Ctl().addTo(map);
+}
+
+function startMyLocation() {
+  if (typeof meStop === "function") {
+    try {
+      meStop();
+    } catch {
+      /* ignore */
+    }
+    meStop = null;
+  }
+  meStop = watchGps(updateMyLocation);
+}
+
+function stopHouseNumbers() {
+  if (houseTimer) {
+    clearTimeout(houseTimer);
+    houseTimer = 0;
+  }
+  houseGen += 1;
+  if (houseLayer) {
+    try {
+      houseLayer.clearLayers();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function ensureHousePane() {
+  if (!map.getPane("houseNums")) {
+    map.createPane("houseNums");
+    const pane = map.getPane("houseNums");
+    pane.style.zIndex = 460;
+    pane.style.pointerEvents = "none";
+  }
+  if (!houseLayer) houseLayer = window.L.layerGroup().addTo(map);
+}
+
+function escHouseNum(s) {
+  return String(s || "").replace(/[<>&"'`]/g, "").slice(0, 10);
+}
+
+function scheduleHouseNumbers() {
+  if (houseTimer) clearTimeout(houseTimer);
+  houseTimer = setTimeout(() => {
+    houseTimer = 0;
+    refreshHouseNumbers();
+  }, 380);
+}
+
+async function refreshHouseNumbers() {
+  if (!map || !window.L) return;
+  ensureHousePane();
+  const z = map.getZoom();
+  const b = map.getBounds();
+  if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.035 || b.getEast() - b.getWest() > 0.05) {
+    houseLayer.clearLayers();
+    return;
+  }
+  const south = b.getSouth();
+  const west = b.getWest();
+  const north = b.getNorth();
+  const east = b.getEast();
+  const gen = ++houseGen;
+  const q = `[out:json][timeout:10][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
+  const urls = [
+    `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
+    `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
+  ];
+  let data = null;
+  for (const url of urls) {
+    try {
+      const { body } = await httpGet(url, 12000);
+      if (gen !== houseGen || !map) return;
+      data = JSON.parse(body || "{}");
+      if (data && Array.isArray(data.elements)) break;
+    } catch {
+      /* try next Overpass host */
+    }
+  }
+  if (gen !== houseGen || !map || !data) return;
+  houseLayer.clearLayers();
+  const seen = new Set();
+  let count = 0;
+  for (const el of data.elements || []) {
+    const num = escHouseNum(el.tags?.["addr:housenumber"]);
+    if (!num) continue;
+    const lat = Number(el.lat ?? el.center?.lat);
+    const lon = Number(el.lon ?? el.center?.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const key = `${num}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const icon = window.L.divIcon({
+      className: "hs-housenum",
+      html: `<span>${num}</span>`,
+      iconSize: [0, 0],
+      iconAnchor: [0, 0],
+    });
+    window.L.marker([lat, lon], {
+      icon,
+      pane: "houseNums",
+      interactive: false,
+      keyboard: false,
+    }).addTo(houseLayer);
+    if (++count >= HOUSE_NUM_MAX) break;
+  }
+}
+
 export function destroyMap() {
   stopRadarPlay();
   stopHourPlay();
+  stopMyLocation();
+  stopHouseNumbers();
+  houseLayer = null;
   if (map) {
     try {
       map.off();
@@ -2572,9 +2790,13 @@ export function mountMap(container, config, { onTap, center, product, base } = {
     else pin = window.L.marker(e.latlng).addTo(map);
     if (onTap) onTap(lat, lng);
   });
-  map.on("moveend", () => {
+  map.on("moveend zoomend", () => {
     if (activeWxProduct === "wind") refreshWindField();
+    scheduleHouseNumbers();
   });
+  addLocateControl();
+  startMyLocation();
+  scheduleHouseNumbers();
   setTimeout(() => {
     try {
       map?.invalidateSize?.(true);

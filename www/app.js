@@ -968,7 +968,7 @@ async function renderWx() {
           const hits = await geocodeAddress(q);
           const hit = hits[0];
           if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
-          flyToPin(hit.lat, hit.lon, 14);
+          flyToPin(hit.lat, hit.lon, 18);
           await onHailTap(hit.lat, hit.lon);
         } catch (err) {
           setStatus(String(err.message || err).slice(0, 48));
