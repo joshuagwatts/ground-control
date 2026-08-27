@@ -967,8 +967,12 @@ function paintFieldMap() {
     showDone: db.settings.showDone !== false,
     onMark: (m) => openMarkComposer(m),
     onDone: (h) => {
-      if (h?.address) setStatus(h.address);
-      if (h && Number.isFinite(Number(h.lat))) flyToPin(h.lat, h.lon, 20);
+      if (!h || !Number.isFinite(Number(h.lat))) return;
+      const box = $("#hs-addr-q");
+      if (box && h.address) box.value = h.address;
+      if (h.address) setStatus(h.address);
+      flyToPin(h.lat, h.lon, 20);
+      onHailTap(h.lat, h.lon);
     },
   });
 }
@@ -1181,9 +1185,9 @@ function paintFieldSheet() {
   root.innerHTML = `
     <div class="hs-field-head">
       <strong>Completed jobs</strong>
-      <span class="muted">${placed.length ? `${placed.length} yellow on map` : "Paste the houses you already built"}</span>
+      <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "Paste the houses you already built"}</span>
     </div>
-    <p class="muted">One address per line. Load them to drop a yellow marker on each finished house. Lines without a city use Settings city.</p>
+    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to select it. Lines without a city use Settings city.</p>
     <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>

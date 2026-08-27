@@ -2803,6 +2803,35 @@ function markDivIcon(mark) {
   });
 }
 
+function donePinIcon() {
+  return window.L.divIcon({
+    className: "hs-done-pin",
+    html: `<svg viewBox="0 0 32 48" aria-hidden="true"><path fill="#ffcc00" fill-rule="evenodd" d="M16 0C7.16 0 0 7.16 0 16c0 11.2 16 32 16 32s16-20.8 16-32C32 7.16 24.84 0 16 0zm0 21.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11z"/></svg>`,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+  });
+}
+
+function ensureSelectPane() {
+  if (!map.getPane("selectPin")) {
+    map.createPane("selectPin");
+    map.getPane("selectPin").style.zIndex = 670;
+  }
+}
+
+function placeSelectPin(latlng) {
+  if (!map || !window.L || !latlng) return;
+  ensureSelectPane();
+  if (pin) pin.setLatLng(latlng);
+  else {
+    pin = window.L.marker(latlng, {
+      pane: "selectPin",
+      keyboard: false,
+      zIndexOffset: 900,
+    }).addTo(map);
+  }
+}
+
 export function setFieldOverlay({ marks = [], done = [], showMarks = true, showDone = true, onMark, onDone } = {}) {
   fieldOverlay = { marks, done, showMarks, showDone, onMark, onDone };
   if (!map || !window.L) return;
@@ -2846,13 +2875,11 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
   if (showDone) {
     for (const h of done || []) {
       if (!validMarkCoord(h.lat, h.lon)) continue;
-      window.L.circleMarker([h.lat, h.lon], {
+      window.L.marker([h.lat, h.lon], {
         pane: "doneHouses",
-        radius: 6,
-        color: "#5c4a00",
-        weight: 1,
-        fillColor: "#ffcc00",
-        fillOpacity: 1,
+        icon: donePinIcon(),
+        keyboard: false,
+        title: h.address || "Completed house",
       })
         .on("click", (e) => {
           window.L.DomEvent.stop(e);
@@ -3019,8 +3046,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     if (wxSuppressMapTap) return;
     const { lat, lng } = e.latlng;
     setWxPin(lat, lng);
-    if (pin) pin.setLatLng(e.latlng);
-    else pin = window.L.marker(e.latlng).addTo(map);
+    placeSelectPin(e.latlng);
     if (onTap) onTap(lat, lng);
   });
   map.on("moveend zoomend", () => {
@@ -3069,8 +3095,7 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM) {
   if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
   setWxPin(lat, lon);
   map.setView([lat, lon], zoom);
-  if (pin) pin.setLatLng([lat, lon]);
-  else pin = window.L.marker([lat, lon]).addTo(map);
+  placeSelectPin([lat, lon]);
 }
 
 /** Double-tap map shell to expand / collapse — keeps address pin zoom separate from hail fit. */
