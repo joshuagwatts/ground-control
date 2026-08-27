@@ -36,6 +36,19 @@ jobs:
           else:
               print("CapacitorHttp already registered")
           PY
+      - name: Decode upload keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import os, base64, pathlib, sys
+          raw = (os.environ.get("ANDROID_KEYSTORE_BASE64") or "").strip()
+          if not raw:
+              print("Missing ANDROID_KEYSTORE_BASE64 secret — cannot sign a phone update.")
+              sys.exit(1)
+          pathlib.Path("android/app/upload.jks").write_bytes(base64.b64decode(raw))
+          print("upload.jks ready")
+          PY
       - name: Stamp Android version
         run: |
           python3 - <<'PY'
@@ -43,13 +56,14 @@ jobs:
           import json, os, re
           pkg = json.loads(Path("package.json").read_text())
           name = str(pkg.get("version") or "0.1.0")
-          code = max(1, int(os.environ.get("GITHUB_RUN_NUMBER") or "1"))
+          run = max(1, int(os.environ.get("GITHUB_RUN_NUMBER") or "1"))
+          code = 1000 + run
           p = Path("android/app/build.gradle")
           t = p.read_text()
           t = re.sub(r"versionCode \d+", f"versionCode {code}", t)
-          t = re.sub(r'versionName "[^"]+"', f'versionName "{name}"', t)
+          t = re.sub(r'versionName "[^"]+"', f'versionName "{name}.{run}"', t)
           p.write_text(t)
-          print(f"Android {name} ({code})")
+          print(f"Android {name}.{run} ({code})")
           PY
       - uses: actions/setup-java@v5
         with:
@@ -58,11 +72,19 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
-      - name: Build debug APK
+      - name: Build signed release APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          chmod +x gradlew && ./gradlew assembleRelease
       - name: Name the file GroundControl.apk
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk GroundControl.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk GroundControl.apk
       - uses: actions/upload-artifact@v4
         with:
           name: GroundControl-apk
@@ -76,36 +98,25 @@ jobs:
       GH_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
-      - name: Release gate
-        id: gate
-        run: |
-          TAG="v$(node -p "require('./package.json').version")"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "publish=false" >> $GITHUB_OUTPUT
-          else
-            echo "publish=true" >> $GITHUB_OUTPUT
-          fi
       - uses: actions/download-artifact@v4
-        if: steps.gate.outputs.publish == 'true'
       - name: Flatten downloads
-        if: steps.gate.outputs.publish == 'true'
         run: mv GroundControl-apk/GroundControl.apk GroundControl.apk
       - uses: softprops/action-gh-release@v2
-        if: steps.gate.outputs.publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
         with:
-          tag_name: ${{ steps.gate.outputs.tag }}
-          name: Ground Control ${{ steps.gate.outputs.tag }}
+          tag_name: phone
+          name: Ground Control
+          make_latest: true
+          overwrite_files: true
           body: |
-            Field APK for the roofing crew.
+            Sideload **GroundControl.apk**. After the first signed build, tap the APK to **update** — do not uninstall.
 
-            - **LENS** — SHINGLE (certain-only ID), DAMAGE (red circles / arrows), FIELD
-            - **WX** — NOW live radar + HAIL trace (SPC / SWDI / IEM)
-            - **CHAT** — Super Chat with COMPARE and multi-photo
+            Same package (`com.holowatts.groundcontrol`) and the same signing key every ship. Keys and jobs stay on the phone.
 
-            Install **GroundControl.apk** over the last build. Keys stay on the phone.
+            - **HailScope** — pin a place, filter storm dates, tap a date for hail zones
+            - **Lens** — shingle ID, damage marks, field ID
+            - **Chat** — Super Chat with COMPARE and multi-photo
           files: |
             GroundControl.apk
           fail_on_unmatched_files: true

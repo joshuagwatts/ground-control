@@ -8,7 +8,9 @@ dist/
 .gradle/
 build/
 local.properties
+# Keystore files — never commit. CI writes upload.jks from GitHub secrets.
 *.jks
 *.keystore
+android/app/upload.jks
 .idea/
 android/app/src/main/assets/public/

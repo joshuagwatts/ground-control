@@ -34,6 +34,8 @@ Lens is not a guessing model with a roof prompt. A local gate throws out any pro
 
 ## Android APK
 
-**[Latest release](https://github.com/joshuagwatts/ground-control/releases/latest)** — `GroundControl.apk`
+**[Latest phone build](https://github.com/joshuagwatts/ground-control/releases/latest)** — `GroundControl.apk`
 
-Install over the last build. Keys stay on the phone. Push to `main` (or run **Ship**) builds a new APK.
+After the first signed install, **tap the APK to update**. Do not uninstall. Your keys stay on the phone.
+
+Every push to `main` (or **Ship**) builds a new APK with a higher version code, signed with the same key.
