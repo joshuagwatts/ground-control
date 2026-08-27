@@ -1611,5 +1611,8 @@ body.wx-map-expanded .hs-sheet { display: none; }
   opacity: 0.5;
   background: transparent !important;
 }
+.hs-night-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.35) contrast(0.95);
+}
 .mark-editor { background: rgba(11, 11, 13, 0.97); }
 .mark-stage { background: #0b0b0d; }

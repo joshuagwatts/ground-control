@@ -946,7 +946,14 @@ export function bindRadarScrubber(root = document) {
 
 const BASE_LAYERS = [
   { id: "osm", label: "Street", kind: "base", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
-  { id: "dark", label: "Night", kind: "base", url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attribution: "© OSM © CARTO" },
+  {
+    id: "dark",
+    label: "Night",
+    kind: "base",
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "© OSM",
+    className: "hs-night-tiles",
+  },
   { id: "sat", label: "Sat", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
 ];
 
@@ -2280,6 +2287,7 @@ export function mountMap(container, config, { onTap, center, product, base } = {
     const tile = window.L.tileLayer(layer.url, {
       attribution: layer.attribution || "",
       opacity: layer.opacity ?? 1,
+      className: layer.className || "",
       maxZoom: MAP_MAX_ZOOM,
       maxNativeZoom: isWx ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : 19,
       tileSize: 256,
