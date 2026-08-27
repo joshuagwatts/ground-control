@@ -48,7 +48,7 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts } from "./marks.js";
-import { accuKey, fetchAccuJobs, geocodeAccuJobs, accuJobsOnMap, accuJobsCsv, jobDidLine } from "./acculynx.js";
+import { parseDoneList, withCity, clusterSixPacks, packLine, MAX_DONE } from "./done.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -62,7 +62,7 @@ let chatBusy = false;
 let lensBusy = false;
 let pendingShot = "granules_close";
 let markDraft = null;
-let accuBusy = false;
+let doneBusy = false;
 
 hydrateHealth(db.settings.brain_health || {});
 
@@ -955,18 +955,27 @@ function fieldMarks() {
   return Array.isArray(db.marks) ? db.marks : [];
 }
 
-function accuJobs() {
-  return Array.isArray(db.acculynx?.jobs) ? db.acculynx.jobs : [];
+function doneHouses() {
+  return Array.isArray(db.done?.houses) ? db.done.houses : [];
 }
 
 function paintFieldMap() {
+  const houses = doneHouses();
   setFieldOverlay({
     marks: fieldMarks(),
-    jobs: accuJobsOnMap(accuJobs()),
+    done: houses,
+    packs: clusterSixPacks(houses),
     showMarks: db.settings.showMarks !== false,
-    showAccu: db.settings.showAccu !== false,
+    showDone: db.settings.showDone !== false,
     onMark: (m) => openMarkComposer(m),
-    onJob: (j) => openAccuCard(j),
+    onDone: (h, pack) => {
+      if (pack) {
+        setStatus(packLine(pack));
+        return;
+      }
+      if (h?.address) setStatus(h.address);
+      if (h && Number.isFinite(Number(h.lat))) flyToPin(h.lat, h.lon, 18);
+    },
   });
 }
 
@@ -1162,26 +1171,6 @@ function saveMarkDraft() {
   setStatus(`${kindMeta(next.kind).label} saved`);
 }
 
-function openAccuCard(job) {
-  if (!job) return;
-  const el = $("#hs-composer");
-  if (!el) return;
-  markDraft = null;
-  el.hidden = false;
-  el.innerHTML = `
-    <div class="hs-composer-card">
-      <header>
-        <strong>${esc(job.jobNumber || job.jobName || "AccuLynx job")}</strong>
-        <button type="button" id="hs-comp-x">Close</button>
-      </header>
-      <p class="hs-accu-did">${esc(job.did || jobDidLine(job) || job.milestone || "Job")}</p>
-      <p>${esc(job.address || "No address")}</p>
-      ${job.contactName ? `<p class="muted">${esc(job.contactName)}</p>` : ""}
-      <p class="muted">${esc([job.created, job.milestoneDate].filter(Boolean).map((d) => String(d).slice(0, 10)).join(" · "))}</p>
-    </div>`;
-  $("#hs-comp-x").onclick = () => closeComposer();
-}
-
 function selectedMarkKind() {
   return $("#hs-mark-filter")?.value || "all";
 }
@@ -1192,11 +1181,34 @@ function paintFieldSheet() {
   const marks = fieldMarks();
   const kind = selectedMarkKind();
   const shown = filterMarks(marks, kind);
-  const jobs = accuJobs();
-  const onMap = accuJobsOnMap(jobs);
-  const keyed = Boolean(accuKey(db.settings));
-  const synced = db.acculynx?.syncedAt ? String(db.acculynx.syncedAt).slice(0, 16).replace("T", " ") : "";
+  const houses = doneHouses();
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
+  const packs = clusterSixPacks(houses);
+  const warm = packs.filter((p) => p.warm);
+  const full = packs.filter((p) => p.full);
+  const rawText = String(db.done?.text || "");
   root.innerHTML = `
+    <div class="hs-field-head">
+      <strong>Completed jobs</strong>
+      <span class="muted">${placed.length ? `${placed.length} yellow on map` : "Paste the houses you already built"}</span>
+    </div>
+    <p class="muted">One address per line. We drop a yellow marker on each and group nearby houses into 6-packs so you can see which pockets are still short. Lines without a city use Settings city.</p>
+    <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
+    <div class="hs-mark-tools">
+      <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>
+      <button type="button" id="hs-done-clear"${houses.length ? "" : " disabled"}>Clear</button>
+    </div>
+    <div class="hs-pack-list">${
+      packs.length
+        ? packs
+            .map(
+              (p) =>
+                `<button type="button" class="hs-pack-row${p.warm ? " warm" : " full"}" data-pack="${esc(p.id)}"><i class="hs-dot" style="background:#ffcc00"></i><span><strong>${esc(p.label)}</strong>${esc(packLine(p))}</span></button>`,
+            )
+            .join("")
+        : `<p class="muted">${houses.length ? "Addresses are in, but none geocoded yet. Tap Load on map." : ""}</p>`
+    }</div>
+    ${warm.length || full.length ? `<p class="muted">${full.length} complete 6-pack${full.length === 1 ? "" : "s"} · ${warm.length} still warm</p>` : ""}
     <div class="hs-field-head">
       <strong>Field marks</strong>
       <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"}</span>
@@ -1224,18 +1236,30 @@ function paintFieldSheet() {
                 `<button type="button" class="hs-mark-row" data-id="${esc(m.id)}"><i class="hs-dot" style="background:${kindMeta(m.kind).color}"></i><span><strong>${esc(m.label || kindMeta(m.kind).label)}</strong>${esc(m.address || `${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}`)}${m.note ? `<em>${esc(m.note)}</em>` : ""}</span></button>`,
             )
             .join("")
-        : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product. Filter this list later when you build a mailer.</p>`
-    }</div>
-    <div class="hs-field-head">
-      <strong>AccuLynx</strong>
-      <span class="muted">${jobs.length ? `${onMap.length} on map · ${jobs.length} jobs${synced ? ` · ${esc(synced)}` : ""}` : keyed ? "Key saved · not synced yet" : "Paste API key in Settings"}</span>
-    </div>
-    <div class="hs-mark-tools">
-      <button type="button" id="hs-accu-sync"${keyed ? "" : " disabled"}>${accuBusy ? "Syncing…" : "Sync jobs"}</button>
-      <button type="button" id="hs-accu-copy"${onMap.length ? "" : " disabled"}>Copy jobs</button>
-    </div>`;
+        : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product.</p>`
+    }</div>`;
   const filter = $("#hs-mark-filter");
   if (filter) filter.onchange = () => paintFieldSheet();
+  const doneBox = $("#hs-done-text");
+  if (doneBox) {
+    doneBox.oninput = () => {
+      if (!db.done) db.done = { text: "", houses: [], geo: {} };
+      db.done.text = doneBox.value;
+      persist();
+    };
+  }
+  const loadBtn = $("#hs-done-load");
+  if (loadBtn) loadBtn.onclick = () => loadDoneAddresses();
+  const clr = $("#hs-done-clear");
+  if (clr) {
+    clr.onclick = () => {
+      db.done = { text: db.done?.text || "", houses: [], geo: db.done?.geo || {} };
+      persist();
+      paintFieldMap();
+      paintFieldSheet();
+      setStatus("Completed markers cleared");
+    };
+  }
   $("#hs-mark-copy").onclick = async () => {
     const ok = await copyText(marksPlainList(shown));
     setStatus(ok ? `Copied ${shown.length} marks` : "Copy failed");
@@ -1261,27 +1285,30 @@ function paintFieldSheet() {
       openMarkComposer(m);
     };
   });
-  $("#hs-accu-sync").onclick = () => syncAccuLynx({ force: true });
-  $("#hs-accu-copy").onclick = async () => {
-    const ok = await copyText(accuJobsCsv(onMap));
-    setStatus(ok ? `Copied ${onMap.length} AccuLynx jobs` : "Copy failed");
-  };
+  root.querySelectorAll(".hs-pack-row").forEach((b) => {
+    b.onclick = () => {
+      const pack = packs.find((p) => p.id === b.dataset.pack);
+      if (!pack || !Number.isFinite(pack.lat)) return;
+      flyToPin(pack.lat, pack.lon, 17);
+      setStatus(packLine(pack));
+    };
+  });
 }
 
 function paintLayerToggles() {
   const el = $("#hs-layers");
   if (!el) return;
-  const accuOn = db.settings.showAccu !== false;
+  const doneOn = db.settings.showDone !== false;
   const marksOn = db.settings.showMarks !== false;
   el.innerHTML = `
-    <button type="button" data-ov="accu" class="${accuOn ? "on" : ""}">AccuLynx</button>
+    <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
   el.onclick = (e) => {
     const b = e.target.closest("button[data-ov]");
     if (!b) return;
     e.preventDefault();
     e.stopPropagation();
-    if (b.dataset.ov === "accu") db.settings.showAccu = !accuOn;
+    if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
     if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
     persist();
     paintLayerToggles();
@@ -1289,36 +1316,58 @@ function paintLayerToggles() {
   };
 }
 
-async function syncAccuLynx({ force = false } = {}) {
-  const key = accuKey(db.settings);
-  if (!key) {
-    setStatus("Paste AccuLynx key in Settings");
+async function loadDoneAddresses() {
+  if (doneBusy) return;
+  const text = $("#hs-done-text")?.value ?? db.done?.text ?? "";
+  const parsed = parseDoneList(text);
+  if (!parsed.length) {
+    setStatus("Paste completed addresses first");
     return;
   }
-  const staleMs = 8 * 60 * 60 * 1000;
-  const age = db.acculynx?.syncedAt ? Date.now() - Date.parse(db.acculynx.syncedAt) : Infinity;
-  if (!force && Number.isFinite(age) && age < staleMs && accuJobs().length) return;
-  if (accuBusy) return;
-  accuBusy = true;
+  const lines = parsed.slice(0, MAX_DONE);
+  if (!db.done) db.done = { text: "", houses: [], geo: {} };
+  db.done.text = text;
+  persist();
+  doneBusy = true;
   paintFieldSheet();
-  setStatus("Pulling AccuLynx jobs…");
+  const cityHint = db.settings.city || "Edmond, OK";
+  const geo = { ...(db.done.geo || {}) };
+  const houses = [];
+  let miss = 0;
   try {
-    const jobs = await fetchAccuJobs(key, {
-      onPage: ({ count }) => setStatus(`AccuLynx · ${count} jobs`),
-    });
-    const placed = geocodeAccuJobs(jobs, db.acculynx?.geo || {});
-    const { jobs: geoJobs, geo } = await placed;
-    db.acculynx = { jobs: geoJobs, geo, syncedAt: new Date().toISOString() };
+    for (let i = 0; i < lines.length; i++) {
+      const addr = lines[i];
+      const q = withCity(addr, cityHint);
+      const cacheKey = q.toLowerCase();
+      setStatus(`Placing ${i + 1} of ${lines.length}…`);
+      let hit = geo[cacheKey];
+      if (!hit || !Number.isFinite(Number(hit.lat))) {
+        try {
+          const found = await geocodeAddress(q);
+          const top = found[0];
+          hit = { lat: top.lat, lon: top.lon, address: top.address || addr };
+          geo[cacheKey] = hit;
+        } catch {
+          hit = { lat: null, lon: null, address: addr };
+          miss += 1;
+        }
+        await new Promise((r) => setTimeout(r, 900));
+      }
+      houses.push({ id: `done-${i}`, address: hit.address || addr, lat: hit.lat, lon: hit.lon });
+    }
+    db.done = { text, houses, geo };
     persist();
     paintFieldMap();
     paintFieldSheet();
-    const n = accuJobsOnMap(geoJobs).length;
-    setStatus(`${n} AccuLynx jobs on the map`);
+    const n = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
+    const packs = clusterSixPacks(houses);
+    const warm = packs.filter((p) => p.warm).length;
+    const capped = parsed.length > MAX_DONE ? ` · first ${MAX_DONE}` : "";
+    setStatus(`${n} yellow markers · ${warm} warm 6-pack${warm === 1 ? "" : "s"}${miss ? ` · ${miss} not found` : ""}${capped}`);
   } catch (e) {
     setStatus(String(e.message || e).slice(0, 64));
-    paintFieldSheet();
   } finally {
-    accuBusy = false;
+    doneBusy = false;
     paintFieldSheet();
   }
 }
@@ -1372,7 +1421,6 @@ async function renderWx() {
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
-    syncAccuLynx({ force: false });
     const searchForm = $("#hs-search");
     if (searchForm) {
       searchForm.onsubmit = async (e) => {
@@ -1470,11 +1518,12 @@ function renderJobs() {
   document.body.classList.remove("comm");
   const jobs = db.jobs || [];
   const marks = fieldMarks();
-  const accu = accuJobs();
-  const onMap = accuJobsOnMap(accu);
+  const houses = doneHouses();
+  const packs = clusterSixPacks(houses);
+  const warm = packs.filter((p) => p.warm);
   $("#view").innerHTML = `
     <h3>Jobs</h3>
-    <p class="muted">Roof inspections on this phone, AccuLynx history, and drive-by field marks.</p>
+    <p class="muted">Roof inspections on this phone, completed 6-packs, and drive-by field marks.</p>
     <div class="actions"><button type="button" id="job-new" class="primary">New job</button></div>
     <div class="job-list">${
       jobs.length
@@ -1486,16 +1535,15 @@ function renderJobs() {
             .join("")
         : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
-    <h3>AccuLynx</h3>
-    <p class="muted">${accu.length ? `${onMap.length} mapped · ${accu.length} pulled${db.acculynx?.syncedAt ? ` · ${esc(String(db.acculynx.syncedAt).slice(0, 10))}` : ""}` : accuKey(db.settings) ? "Key saved. Open HailScope and tap Sync jobs." : "Paste your AccuLynx API key in Settings to plot every job address."}</p>
-    ${accu
-      .slice(0, 40)
+    <h3>Completed 6-packs</h3>
+    <p class="muted">${houses.length ? `${houses.filter((h) => Number.isFinite(Number(h.lat))).length} yellow on HailScope · ${packs.filter((p) => p.full).length} complete · ${warm.length} still warm. Paste more addresses on HailScope.` : "Paste finished house addresses on HailScope to plot yellow markers and see which 6-packs are still short."}</p>
+    ${warm
+      .slice(0, 20)
       .map(
-        (j) =>
-          `<article class="job-card accu-card"><strong>${esc(j.jobNumber || j.jobName || "Job")}</strong><p class="muted">${esc(j.did || jobDidLine(j))}</p><p class="muted">${esc(j.address || "")}</p></article>`,
+        (p) =>
+          `<article class="job-card"><strong>${esc(p.label)}</strong><p class="muted">${esc(packLine(p))}</p></article>`,
       )
       .join("")}
-    ${accu.length > 40 ? `<p class="muted">${accu.length - 40} more on the HailScope map.</p>` : ""}
     <h3>Field marks</h3>
     <p class="muted">${marks.length ? `${marks.length} pins. Hold the HailScope map to add Atlas / work / zone labels.` : "Hold a house on HailScope to drop a custom pin."}</p>
     ${marks
@@ -1535,6 +1583,7 @@ function renderKeys() {
     <h3>Settings</h3>
     <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>Company</span><input id="set-co" value="${esc(s.company || "")}" /></div>
+    <div class="field"><span>City</span><input id="set-city" value="${esc(s.city || "")}" placeholder="Edmond, OK" /></div>
     <div class="field"><span>Units</span>
       <select id="set-units">
         <option value="imperial"${(s.units || "imperial") === "imperial" ? " selected" : ""}>Imperial — miles</option>
@@ -1543,10 +1592,6 @@ function renderKeys() {
     </div>
     <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
     <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "No keys yet — paste Gemini or OpenAI for Lens."}</p>
-    <h3>AccuLynx</h3>
-    <p class="muted">Company API key from <a href="https://my.acculynx.com/apikeys" target="_blank" rel="noopener">my.acculynx.com/apikeys</a> (admin). The key itself is free to mint. AccuLynx only issues keys if the <strong>AppConnections</strong> add-on is on — that add-on is extra on top of your AccuLynx plan. They do not publish the price; it shows in Market → Add-ons when you enable it. If Zapier/AppConnections is already enabled, you likely already have it. HailScope plots job addresses, milestone, and work type. It does not email your customers.</p>
-    <div class="field"><span>API key</span><input id="set-acculynx" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(accuKey(s) ? "Paste to replace" : "Paste AccuLynx API key")}" /></div>
-    <div class="actions"><button type="button" id="accu-sync">${accuBusy ? "Syncing…" : "Sync jobs now"}</button></div>
     <h3>API keys</h3>
     <p class="muted">Chat can use every keyed API. Lens needs a vision key (Gemini, OpenAI, Anthropic, or OpenRouter). On-device mode blocks Lens.</p>
     <div class="key-list">${keyRows}</div>
@@ -1554,20 +1599,6 @@ function renderKeys() {
     <h3>Discontinued lookup</h3>
     <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>
     <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on this device.</p>`;
-  const accuInp = $("#set-acculynx");
-  if (accuInp) {
-    accuInp.oninput = () => {
-      db.settings.acculynx = accuInp.value;
-      persist();
-    };
-  }
-  const accuBtn = $("#accu-sync");
-  if (accuBtn) {
-    accuBtn.onclick = async () => {
-      await syncAccuLynx({ force: true });
-      renderKeys();
-    };
-  }
   const op = $("#set-op");
   if (op) op.oninput = () => {
     db.settings.operator = op.value;
@@ -1576,6 +1607,11 @@ function renderKeys() {
   const co = $("#set-co");
   if (co) co.oninput = () => {
     db.settings.company = co.value;
+    persist();
+  };
+  const cityInp = $("#set-city");
+  if (cityInp) cityInp.oninput = () => {
+    db.settings.city = cityInp.value;
     persist();
   };
   const units = $("#set-units");

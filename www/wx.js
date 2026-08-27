@@ -5,7 +5,6 @@ import { locateDevice, watchGps } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
 import { lookupAssessorParcel } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint } from "./marks.js";
-import { accuColor, accuDone } from "./acculynx.js";
 
 let map = null;
 let pin = null;
@@ -99,8 +98,8 @@ let houseLayer = null;
 let houseTimer = 0;
 let houseGen = 0;
 let markLayer = null;
-let accuLayer = null;
-let fieldOverlay = { marks: [], jobs: [], showMarks: true, showAccu: true, onMark: null, onJob: null };
+let doneLayer = null;
+let fieldOverlay = { marks: [], done: [], packs: [], showMarks: true, showDone: true, onMark: null, onDone: null };
 
 export function setHailScopeMode(on) {
   hailScopeMode = Boolean(on);
@@ -2710,16 +2709,16 @@ function stopFieldOverlay() {
       /* ignore */
     }
   }
-  if (accuLayer) {
+  if (doneLayer) {
     try {
-      accuLayer.clearLayers();
-      accuLayer.remove();
+      doneLayer.clearLayers();
+      doneLayer.remove();
     } catch {
       /* ignore */
     }
   }
   markLayer = null;
-  accuLayer = null;
+  doneLayer = null;
 }
 
 function ensureFieldPanes() {
@@ -2727,9 +2726,9 @@ function ensureFieldPanes() {
     map.createPane("fieldMarks");
     map.getPane("fieldMarks").style.zIndex = 660;
   }
-  if (!map.getPane("accuJobs")) {
-    map.createPane("accuJobs");
-    map.getPane("accuJobs").style.zIndex = 655;
+  if (!map.getPane("doneHouses")) {
+    map.createPane("doneHouses");
+    map.getPane("doneHouses").style.zIndex = 655;
   }
 }
 
@@ -2745,14 +2744,14 @@ function markDivIcon(mark) {
   });
 }
 
-export function setFieldOverlay({ marks = [], jobs = [], showMarks = true, showAccu = true, onMark, onJob } = {}) {
-  fieldOverlay = { marks, jobs, showMarks, showAccu, onMark, onJob };
+export function setFieldOverlay({ marks = [], done = [], packs = [], showMarks = true, showDone = true, onMark, onDone } = {}) {
+  fieldOverlay = { marks, done, packs, showMarks, showDone, onMark, onDone };
   if (!map || !window.L) return;
   ensureFieldPanes();
   if (!markLayer) markLayer = window.L.layerGroup().addTo(map);
-  if (!accuLayer) accuLayer = window.L.layerGroup().addTo(map);
+  if (!doneLayer) doneLayer = window.L.layerGroup().addTo(map);
   markLayer.clearLayers();
-  accuLayer.clearLayers();
+  doneLayer.clearLayers();
   if (showMarks) {
     for (const m of marks || []) {
       if (!validMarkCoord(m.lat, m.lon)) continue;
@@ -2785,23 +2784,52 @@ export function setFieldOverlay({ marks = [], jobs = [], showMarks = true, showA
         .addTo(markLayer);
     }
   }
-  if (showAccu) {
-    for (const j of jobs || []) {
-      if (!validMarkCoord(j.lat, j.lon)) continue;
-      const color = accuColor(j.milestone);
-      window.L.circleMarker([j.lat, j.lon], {
-        pane: "accuJobs",
-        radius: accuDone(j.milestone) ? 7 : 5,
-        color: "#0b0b0d",
-        weight: 1,
-        fillColor: color,
-        fillOpacity: 0.92,
+  if (showDone) {
+    for (const pack of packs || []) {
+      if (!validMarkCoord(pack.lat, pack.lon)) continue;
+      window.L.circle([pack.lat, pack.lon], {
+        pane: "doneHouses",
+        radius: Number(pack.radiusM) || 60,
+        color: pack.full ? "#ffcc00" : "#f5d76e",
+        weight: pack.full ? 2 : 2,
+        dashArray: pack.full ? null : "7 5",
+        fillColor: "#ffcc00",
+        fillOpacity: pack.full ? 0.08 : 0.14,
+        interactive: true,
       })
         .on("click", (e) => {
           window.L.DomEvent.stop(e);
-          onJob?.(j);
+          onDone?.(pack.houses?.[0], pack);
         })
-        .addTo(accuLayer);
+        .addTo(doneLayer);
+      const badge = pack.full ? "6/6" : `${pack.count}/6`;
+      window.L.marker([pack.lat, pack.lon], {
+        pane: "doneHouses",
+        interactive: false,
+        keyboard: false,
+        icon: window.L.divIcon({
+          className: `hs-pack${pack.full ? " full" : " warm"}`,
+          html: `<span>${badge}</span>`,
+          iconSize: [36, 18],
+          iconAnchor: [18, 9],
+        }),
+      }).addTo(doneLayer);
+    }
+    for (const h of done || []) {
+      if (!validMarkCoord(h.lat, h.lon)) continue;
+      window.L.circleMarker([h.lat, h.lon], {
+        pane: "doneHouses",
+        radius: 6,
+        color: "#5c4a00",
+        weight: 1,
+        fillColor: "#ffcc00",
+        fillOpacity: 1,
+      })
+        .on("click", (e) => {
+          window.L.DomEvent.stop(e);
+          onDone?.(h);
+        })
+        .addTo(doneLayer);
     }
   }
 }
@@ -3470,7 +3498,7 @@ function hailScopeHtml(data, days, esc) {
         : "Tap a storm date to draw hail zones"
     }</p>
     ${placeContactHtml(data, esc)}
-    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only <span class="hs-dot" style="background:#22c55e"></span>AccuLynx job <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
+    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only <span class="hs-dot" style="background:#ffcc00"></span>Job done <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">

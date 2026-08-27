@@ -6,6 +6,7 @@ function blank() {
     jobs: [],
     marks: [],
     acculynx: { jobs: [], geo: {}, syncedAt: "" },
+    done: { text: "", houses: [], geo: {} },
     lens: { mode: "shingle", photos: [], shots: [], last: null, field: null },
     settings: {
       operator: "Joshua",
@@ -13,7 +14,7 @@ function blank() {
       acculynx: "",
       marksLastKind: "ping",
       marksLastProduct: "atlas-glassmaster",
-      showAccu: true,
+      showDone: true,
       showMarks: true,
       humor: 40,
       honesty: 98,
@@ -60,6 +61,11 @@ export function load() {
         jobs: Array.isArray(raw.acculynx?.jobs) ? raw.acculynx.jobs : [],
         geo: raw.acculynx?.geo && typeof raw.acculynx.geo === "object" ? raw.acculynx.geo : {},
         syncedAt: String(raw.acculynx?.syncedAt || ""),
+      },
+      done: {
+        text: String(raw.done?.text || ""),
+        houses: Array.isArray(raw.done?.houses) ? raw.done.houses : [],
+        geo: raw.done?.geo && typeof raw.done.geo === "object" ? raw.done.geo : {},
       },
     };
   } catch {
