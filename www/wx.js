@@ -885,9 +885,9 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
 }
 
 let mapConfigCache = null;
-const MAP_MAX_ZOOM = 19;
+const MAP_MAX_ZOOM = 21;
 const HOUSE_NUM_ZOOM = 16;
-const HOUSE_NUM_MAX = 280;
+const HOUSE_NUM_MAX = 400;
 const RADAR_NATIVE_ZOOM = 7;
 const RADAR_TILE_SIZE = 512;
 
@@ -1192,17 +1192,38 @@ export function bindRadarScrubber(root = document) {
   }
 }
 
+const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&x={x}&y={y}&z={z}";
+const GOOGLE_SUBDOMAINS = "0123";
+
 const BASE_LAYERS = [
-  { id: "osm", label: "Street", kind: "base", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
+  {
+    id: "osm",
+    label: "Street",
+    kind: "base",
+    url: GOOGLE_TILES.replace("{lyrs}", "m"),
+    subdomains: GOOGLE_SUBDOMAINS,
+    maxNativeZoom: 21,
+    attribution: "© Google",
+  },
   {
     id: "dark",
     label: "Night",
     kind: "base",
-    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attribution: "© OSM",
+    url: GOOGLE_TILES.replace("{lyrs}", "m"),
+    subdomains: GOOGLE_SUBDOMAINS,
+    maxNativeZoom: 21,
+    attribution: "© Google",
     className: "hs-night-tiles",
   },
-  { id: "sat", label: "Sat", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
+  {
+    id: "sat",
+    label: "Sat",
+    kind: "base",
+    url: GOOGLE_TILES.replace("{lyrs}", "s"),
+    subdomains: GOOGLE_SUBDOMAINS,
+    maxNativeZoom: 21,
+    attribution: "© Google",
+  },
 ];
 
 export async function resolveMapCenter(settings) {
@@ -2623,7 +2644,7 @@ function ensureHousePane() {
   if (!map.getPane("houseNums")) {
     map.createPane("houseNums");
     const pane = map.getPane("houseNums");
-    pane.style.zIndex = 460;
+    pane.style.zIndex = 625;
     pane.style.pointerEvents = "none";
   }
   if (!houseLayer) houseLayer = window.L.layerGroup().addTo(map);
@@ -2638,7 +2659,7 @@ function scheduleHouseNumbers() {
   houseTimer = setTimeout(() => {
     houseTimer = 0;
     refreshHouseNumbers();
-  }, 380);
+  }, 220);
 }
 
 async function refreshHouseNumbers() {
@@ -2655,10 +2676,11 @@ async function refreshHouseNumbers() {
   const north = b.getNorth();
   const east = b.getEast();
   const gen = ++houseGen;
-  const q = `[out:json][timeout:10][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
+  const q = `[out:json][timeout:12][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];relation["addr:housenumber"];);out tags center;`;
   const urls = [
     `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
     `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
+    `https://overpass.osm.ch/api/interpreter?data=${encodeURIComponent(q)}`,
   ];
   let data = null;
   for (const url of urls) {
@@ -2687,8 +2709,8 @@ async function refreshHouseNumbers() {
     const icon = window.L.divIcon({
       className: "hs-housenum",
       html: `<span>${num}</span>`,
-      iconSize: [0, 0],
-      iconAnchor: [0, 0],
+      iconSize: [44, 16],
+      iconAnchor: [22, 8],
     });
     window.L.marker([lat, lon], {
       icon,
@@ -2925,7 +2947,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       opacity: layer.opacity ?? 1,
       className: layer.className || "",
       maxZoom: MAP_MAX_ZOOM,
-      maxNativeZoom: isWx ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : 19,
+      maxNativeZoom: isWx ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : layer.maxNativeZoom ?? MAP_MAX_ZOOM,
+      subdomains: layer.subdomains || "abc",
       tileSize: 256,
       updateWhenIdle: true,
       updateWhenZooming: false,
@@ -3001,6 +3024,7 @@ export function setMapLayer(id) {
   layers[id].addTo(map);
   applyOverlays();
   activeLayer = id;
+  scheduleHouseNumbers();
 }
 
 export function flyToPin(lat, lon, zoom = 13) {
