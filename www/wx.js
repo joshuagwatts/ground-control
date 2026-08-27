@@ -138,6 +138,10 @@ function placeContactHtml(data, esc) {
   const e164 = phoneDigits(phone);
   const bits = [];
   if (zurl) bits.push(`<a class="hs-zillow" href="${esc(zurl)}" target="_blank" rel="noopener">Zillow</a>`);
+  const fb = String(data.facebook_url || "").trim();
+  const ig = String(data.instagram_url || "").trim();
+  if (fb) bits.push(`<a class="hs-fb" href="${esc(fb)}" target="_blank" rel="noopener">Facebook</a>`);
+  if (ig) bits.push(`<a class="hs-ig" href="${esc(ig)}" target="_blank" rel="noopener">Instagram</a>`);
   if (e164) {
     bits.push(`<a class="hs-tel" href="tel:${esc(e164)}">${esc(phone)}</a>`);
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
@@ -192,6 +196,8 @@ async function reverseNominatim(lat, lon) {
       phone: extra.phone || extra["contact:phone"] || extra["contact:mobile"] || "",
       email: extra.email || extra["contact:email"] || "",
       website: extra.website || extra["contact:website"] || extra.url || "",
+      facebook: extra.facebook || extra["contact:facebook"] || "",
+      instagram: extra.instagram || extra["contact:instagram"] || "",
       wikidata: extra.wikidata || "",
     };
   } catch {
@@ -1786,6 +1792,8 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     owner_name: people.name || "",
     owner_phone: people.phone || "",
     owner_email: people.email || "",
+    facebook_url: people.facebook || "",
+    instagram_url: people.instagram || "",
     _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
 }
@@ -1807,6 +1815,8 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
     owner_name: people0.name || "",
     owner_phone: people0.phone || "",
     owner_email: people0.email || "",
+    facebook_url: people0.facebook || "",
+    instagram_url: people0.instagram || "",
   };
   if (onPartial) onPartial(partial);
   const km = filterKm();
@@ -1830,6 +1840,8 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
     owner_name: people.name || "",
     owner_phone: people.phone || "",
     owner_email: people.email || "",
+    facebook_url: people.facebook || "",
+    instagram_url: people.instagram || "",
     _meta: { fetchedDays: Math.max(60, lsrDays), fetchedKm: km, deep: false },
   };
 }
@@ -1917,6 +1929,8 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false }
     owner_name: people0.name || "",
     owner_phone: people0.phone || "",
     owner_email: people0.email || "",
+    facebook_url: people0.facebook || "",
+    instagram_url: people0.instagram || "",
   };
   if (onPartial) onPartial(partial);
   const full = await researchPin(settings, lat, lon, addr, true);

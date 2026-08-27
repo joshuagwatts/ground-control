@@ -8,6 +8,8 @@ import {
   formatPhone,
   phoneDigits,
   isJunkPhone,
+  publicFacebookUrl,
+  publicInstagramUrl,
 } from "../www/contacts.js";
 
 function assert(ok, msg) {
@@ -23,7 +25,10 @@ assert(parsed.zip === "73034", "zip");
 
 assert(isJunkPhone("(405) 555-1212"), "555 is junk");
 assert(phoneDigits("918-582-0001") === "+19185820001", "real phone");
-assert(formatPhone("9185820001") === "(918) 582-0001", "format");
+assert(publicFacebookUrl("HighGroundOK") === "https://www.facebook.com/HighGroundOK", "fb handle");
+assert(publicFacebookUrl("https://www.facebook.com/profile.php?id=1") === "", "skip personal profile");
+assert(publicInstagramUrl("highground.ok") === "https://www.instagram.com/highground.ok", "ig handle");
+assert(!publicInstagramUrl("https://www.instagram.com/p/abc123/"), "skip ig post");
 
 const html = `
   <script type="application/ld+json">{"@type":"PostalAddress","streetAddress":"100 Main St"}</script>

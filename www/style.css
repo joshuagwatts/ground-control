@@ -1593,6 +1593,8 @@ body.wx-map-expanded .hs-sheet { display: none; }
   font-size: 13px; font-weight: 650;
 }
 .hs-zillow { color: #1c1400 !important; background: var(--trim) !important; border-color: var(--trim) !important; }
+.hs-fb { color: #d6e4ff !important; border-color: #3b5bdb !important; }
+.hs-ig { color: #ffd6e8 !important; border-color: #c2255c !important; }
 .hs-tel, .hs-sms { color: var(--text); }
 .hs-mail { word-break: break-all; }
 .hs-place-miss { font-size: 12px; color: var(--muted); }

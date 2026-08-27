@@ -144,9 +144,68 @@ export function extractEmails(text) {
   return out;
 }
 
+export function publicFacebookUrl(raw) {
+  let s = String(raw || "").trim().replace(/^@/, "");
+  if (!s) return "";
+  if (!/^https?:/i.test(s)) {
+    if (!/^[\w.]+$/.test(s)) return "";
+    s = `https://www.facebook.com/${s}`;
+  }
+  try {
+    const u = new URL(s);
+    if (!/(^|\.)facebook\.com$/i.test(u.hostname) && !/(^|\.)fb\.com$/i.test(u.hostname)) return "";
+    const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+    if (path === "/" || /^\/(profile\.php|people|share|watch|login|dialog|sharer|groups)\b/i.test(path)) return "";
+    return `https://www.facebook.com${path}`;
+  } catch {
+    return "";
+  }
+}
+
+export function publicInstagramUrl(raw) {
+  let s = String(raw || "").trim().replace(/^@/, "");
+  if (!s) return "";
+  if (!/^https?:/i.test(s)) {
+    if (!/^[\w.]+$/.test(s)) return "";
+    s = `https://www.instagram.com/${s}`;
+  }
+  try {
+    const u = new URL(s);
+    if (!/(^|\.)instagram\.com$/i.test(u.hostname) && !/(^|\.)instagr\.am$/i.test(u.hostname)) return "";
+    const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+    if (path === "/" || /^\/(p|reel|reels|stories|accounts)\b/i.test(path)) return "";
+    return `https://www.instagram.com${path}`;
+  } catch {
+    return "";
+  }
+}
+
+function socialsFromTags(tags = {}) {
+  return {
+    facebook: publicFacebookUrl(tags.facebook || tags["contact:facebook"] || ""),
+    instagram: publicInstagramUrl(tags.instagram || tags["contact:instagram"] || ""),
+  };
+}
+
+function socialsFromHtml(html) {
+  const fb = [];
+  const ig = [];
+  const hrefs = String(html || "").matchAll(/href=["']([^"']+)["']/gi);
+  for (const m of hrefs) {
+    const f = publicFacebookUrl(m[1]);
+    if (f && !fb.includes(f)) fb.push(f);
+    const i = publicInstagramUrl(m[1]);
+    if (i && !ig.includes(i)) ig.push(i);
+  }
+  return { facebook: fb[0] || "", instagram: ig[0] || "" };
+}
 function jsonLdContacts(html) {
-  const hit = { name: "", phone: "", email: "", website: "" };
+  const hit = { name: "", phone: "", email: "", website: "", facebook: "", instagram: "" };
   const blocks = String(html || "").match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+  const takeSocial = (url) => {
+    if (!hit.facebook) hit.facebook = publicFacebookUrl(url);
+    if (!hit.instagram) hit.instagram = publicInstagramUrl(url);
+  };
   const walk = (node) => {
     if (!node) return;
     if (Array.isArray(node)) {
@@ -161,6 +220,9 @@ function jsonLdContacts(html) {
     if (!hit.email && em) hit.email = Array.isArray(em) ? em[0] : em;
     const url = node.url || node.website;
     if (!hit.website && typeof url === "string" && /^https?:/i.test(url)) hit.website = url;
+    const same = node.sameAs;
+    if (typeof same === "string") takeSocial(same);
+    else if (Array.isArray(same)) same.forEach(takeSocial);
     walk(node.address);
     walk(node.contactPoint);
     walk(node["@graph"]);
@@ -216,12 +278,17 @@ function scoredFromText(html, parts, opts = {}) {
   const emails = [ld.email, meta.email, mailHref && mailHref[1], ...extractEmails(html)].filter(Boolean);
   const uniquePhones = [...new Set(phones)];
   const uniqueMail = [...new Set(emails.map((e) => String(e).toLowerCase()).filter((e) => !JUNK_MAIL.test(e)))];
-  if (!uniquePhones.length && !uniqueMail.length && !ld.name) return null;
+  const hrefSocial = socialsFromHtml(html);
+  const facebook = ld.facebook || hrefSocial.facebook;
+  const instagram = ld.instagram || hrefSocial.instagram;
+  if (!uniquePhones.length && !uniqueMail.length && !ld.name && !facebook && !instagram) return null;
   return {
     name: ld.name || "",
     phone: uniquePhones[0] ? formatPhone(uniquePhones[0]) : "",
     email: uniqueMail[0] || "",
     website: ld.website || "",
+    facebook,
+    instagram,
   };
 }
 
@@ -230,7 +297,7 @@ export function extractContactsFromHtml(html, parts = {}, opts = {}) {
 }
 
 export function mergeContacts(...parts) {
-  const hit = { name: "", phone: "", email: "", website: "" };
+  const hit = { name: "", phone: "", email: "", website: "", facebook: "", instagram: "" };
   for (const p of parts) {
     if (!p) continue;
     if (!hit.name && (p.name || p.owner_name)) hit.name = String(p.name || p.owner_name).trim();
@@ -243,6 +310,8 @@ export function mergeContacts(...parts) {
       if (e && !JUNK_MAIL.test(e)) hit.email = e;
     }
     if (!hit.website && p.website) hit.website = String(p.website).trim();
+    if (!hit.facebook) hit.facebook = publicFacebookUrl(p.facebook || p.facebook_url || "");
+    if (!hit.instagram) hit.instagram = publicInstagramUrl(p.instagram || p.instagram_url || "");
   }
   return hit;
 }
@@ -320,8 +389,9 @@ async function nominatimSearchContacts(address) {
       const phone = firstPhone(extra.phone || extra["contact:phone"] || extra["contact:mobile"] || "");
       const email = extra.email || extra["contact:email"] || "";
       const website = extra.website || extra["contact:website"] || extra.url || "";
-      if (phone || email || website) {
-        return { name: h.name || extra.operator || "", phone, email, website };
+      const social = socialsFromTags(extra);
+      if (phone || email || website || social.facebook || social.instagram) {
+        return { name: h.name || extra.operator || "", phone, email, website, ...social };
       }
     }
   } catch {
@@ -351,7 +421,8 @@ async function overpassContacts(lat, lon, parts) {
       const phone = firstPhone(tags.phone || tags["contact:phone"] || tags["contact:mobile"] || "");
       const email = tags.email || tags["contact:email"] || "";
       const website = tags.website || tags["contact:website"] || "";
-      if (!phone && !email && !website) continue;
+      const social = socialsFromTags(tags);
+      if (!phone && !email && !website && !social.facebook && !social.instagram) continue;
       const elat = Number(el.lat || el.center?.lat);
       const elon = Number(el.lon || el.center?.lon);
       const dist = Number.isFinite(elat) && Number.isFinite(elon) ? haversineKm(lat, lon, elat, elon) : 0.08;
@@ -363,6 +434,7 @@ async function overpassContacts(lat, lon, parts) {
         phone,
         email,
         website,
+        ...social,
         wikidata: tags.wikidata || "",
       });
     }
@@ -454,10 +526,10 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     huntPages(directoryUrls(parts), parts).catch(() => null),
   ]);
   hit = mergeContacts(hit, osm, nom, dirs);
-  if (osm?.website && (!hit.phone || !hit.email)) {
+  if (osm?.website && (!hit.phone || !hit.email || !hit.facebook)) {
     hit = mergeContacts(hit, await contactsFromWebsite(osm.website, parts));
   }
-  if (hit.website && (!hit.phone || !hit.email)) {
+  if (hit.website && (!hit.phone || !hit.email || !hit.facebook)) {
     hit = mergeContacts(hit, await contactsFromWebsite(hit.website, parts));
   }
   if (!hit.phone || !hit.email) {
@@ -475,5 +547,7 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     owner_name: hit.name || "",
     owner_phone: hit.phone || "",
     owner_email: hit.email || "",
+    facebook_url: hit.facebook || "",
+    instagram_url: hit.instagram || "",
   };
 }
