@@ -12,6 +12,7 @@ import {
   publicInstagramUrl,
   sameHouse,
   listingForPin,
+  formatZillowUrl,
 } from "../www/contacts.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
@@ -25,6 +26,12 @@ assert(/tredington/i.test(parsed.street), "street");
 assert(/edmond/i.test(parsed.city), "city");
 assert(stateAbbr("Oklahoma") === "ok", "state");
 assert(parsed.zip === "73034", "zip");
+
+const z1 = formatZillowUrl("400 S Bryant Ave, Edmond, OK 73034");
+assert(z1 === "https://www.zillow.com/homes/400-S-Bryant-Ave-Edmond-OK-73034_rb/", `zillow slug, got ${z1}`);
+const z2 = formatZillowUrl("2521 Tredington Way, Edmond, Oklahoma, 73034");
+assert(z2.includes("2521-Tredington") && z2.endsWith("_rb/"), `zillow tredington, got ${z2}`);
+assert(formatZillowUrl("35.6521, -97.4783") === "", "coords only, no zillow");
 
 assert(isJunkPhone("(405) 555-1212"), "555 is junk");
 assert(phoneDigits("918-582-0001") === "+19185820001", "real phone");

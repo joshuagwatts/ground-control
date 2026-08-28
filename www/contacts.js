@@ -39,6 +39,54 @@ export function decodeEntities(s) {
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)));
 }
 
+export function formatZillowUrl(address) {
+  const p = parseStreetAddress(address);
+  const coordOnly = /^-?\d+\.\d+\s*,\s*-?\d+\.\d+$/.test(String(address || "").trim());
+  if (coordOnly) return "";
+  if (!p.house) {
+    const q = String(address || "").trim();
+    if (!q) return "";
+    const slug = q
+      .replace(/,/g, " ")
+      .replace(/\./g, "")
+      .replace(/\s+/g, "-")
+      .replace(/[^A-Za-z0-9-]/g, "")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return slug ? `https://www.zillow.com/homes/${slug}_rb/` : "";
+  }
+  const streetSlug = String(p.street || "")
+    .replace(/\./g, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Za-z0-9-]/g, "");
+  const citySlug = String(p.city || "")
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Za-z0-9-]/g, "");
+  const state = p.state ? String(p.state).toUpperCase() : "";
+  const slug = [p.house, streetSlug, citySlug, state, p.zip].filter(Boolean).join("-").replace(/-+/g, "-");
+  return slug ? `https://www.zillow.com/homes/${slug}_rb/` : "";
+}
+
+async function zillowListingContacts(address, parts) {
+  const url = formatZillowUrl(address);
+  if (!url || !parts?.house) return null;
+  const page = await fetchHtml(url, 14000);
+  if (!page?.html || /captcha|access denied|cf-challenge/i.test(page.html)) return null;
+  let html = page.html;
+  let detailUrl = page.url || url;
+  const rel =
+    html.match(/href="(\/homedetails\/[^"]+?\/[^"]+_zpid\/[^"]*)"/i) ||
+    html.match(/href="(\/homedetails\/[^"]+_zpid\/[^"]*)"/i);
+  const abs = html.match(/https:\/\/www\.zillow\.com\/homedetails\/[^"'\s]+_zpid\/[^"'\s]*/i);
+  if (rel?.[1]) detailUrl = `https://www.zillow.com${rel[1]}`;
+  else if (abs?.[0]) detailUrl = abs[0];
+  if (detailUrl !== url && detailUrl.includes("homedetails")) {
+    const detail = await fetchHtml(detailUrl, 14000);
+    if (detail?.html) html = detail.html;
+  }
+  return extractContactsFromHtml(html.slice(0, 220000), parts, { requireAddress: false });
+}
+
 export function parseStreetAddress(address) {
   const raw = String(address || "").replace(/\s+/g, " ").trim();
   const out = { raw, house: "", street: "", city: "", state: "", zip: "" };
@@ -504,6 +552,9 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     nominatimSearchContacts(address, parts).catch(() => null),
   ]);
   hit = mergeContacts(hit, osm, nom);
+  if (!hit.phone || !hit.email) {
+    hit = mergeContacts(hit, await zillowListingContacts(address, parts).catch(() => null));
+  }
   const site = osm?.website || nom?.website || hit.website;
   if (site && (!hit.phone || !hit.email || !hit.facebook)) {
     hit = mergeContacts(hit, await contactsFromWebsite(site, parts));

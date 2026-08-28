@@ -1,7 +1,15 @@
 /** WX map + storm dossier — runs on phone (public APIs). */
-import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
+import { httpGet, httpLanGet, httpLanPostJson, openUrl } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
-import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin, parseStreetAddress } from "./contacts.js";
+import {
+  lookupPlaceContacts,
+  formatPhone,
+  phoneDigits,
+  mergeContacts,
+  listingForPin,
+  parseStreetAddress,
+  formatZillowUrl,
+} from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, clampPinScale } from "./marks.js";
@@ -144,9 +152,23 @@ function hailSizeIn(raw) {
 }
 
 function zillowUrl(address) {
-  const q = String(address || "").trim();
-  if (!q || /^-?\d+\.\d+\s*,\s*-?\d+\.\d+$/.test(q)) return "";
-  return `https://www.zillow.com/homes/${encodeURIComponent(q)}_rb/`;
+  return formatZillowUrl(address);
+}
+
+function bindPlaceLinks(root) {
+  if (!root) return;
+  root.querySelectorAll("a.hs-zillow, a.hs-assessor").forEach((a) => {
+    a.addEventListener("click", async (e) => {
+      const href = a.getAttribute("href");
+      if (!href || !/^https?:/i.test(href)) return;
+      e.preventDefault();
+      try {
+        await openUrl(href);
+      } catch {
+        window.open(href, "_blank");
+      }
+    });
+  });
 }
 
 function ownerFields(people = {}, assessor = null) {
@@ -168,8 +190,10 @@ function placeContactHtml(data, esc) {
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
   const e164 = phoneDigits(phone);
+  const assessorUrl = String(data.assessor_url || "").trim();
   const bits = [];
-  if (zurl) bits.push(`<a class="hs-zillow" href="${esc(zurl)}" target="_blank" rel="noopener">Zillow</a>`);
+  if (zurl) bits.push(`<a class="hs-zillow" href="${zurl}" target="_blank" rel="noopener noreferrer">Zillow</a>`);
+  if (assessorUrl) bits.push(`<a class="hs-assessor" href="${esc(assessorUrl)}" target="_blank" rel="noopener noreferrer">Assessor</a>`);
   if (e164) {
     bits.push(`<a class="hs-tel" href="tel:${esc(e164)}">${esc(phone)}</a>`);
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
@@ -1945,9 +1969,11 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   };
 }
 
-export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
-  const geo = await reverseGeocode(lat, lon);
-  const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+export async function quickDossier(settings, lat, lon, { onPartial, address: pinAddress } = {}) {
+  const geo = pinAddress
+    ? { ok: true, address: pinAddress, city: pinAddress.split(",")[1]?.trim() || pinAddress.split(",")[0] || "" }
+    : await reverseGeocode(lat, lon);
+  const addr = pinAddress || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const people0 = listingForPin(geo, addr);
   const partial = {
     ok: true,
@@ -2050,12 +2076,14 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
   return local;
 }
 
-export async function pinDossier(settings, lat, lon, { onPartial, deep = false } = {}) {
+export async function pinDossier(settings, lat, lon, { onPartial, deep = false, address: pinAddress } = {}) {
   if (!deep) {
-    return normalizeDossier(await quickDossier(settings, lat, lon, { onPartial })) || null;
+    return normalizeDossier(await quickDossier(settings, lat, lon, { onPartial, address: pinAddress })) || null;
   }
-  const geo = await reverseGeocode(lat, lon);
-  const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const geo = pinAddress
+    ? { ok: true, address: pinAddress, city: pinAddress.split(",")[1]?.trim() || pinAddress.split(",")[0] || "" }
+    : await reverseGeocode(lat, lon);
+  const addr = pinAddress || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const people0 = listingForPin(geo, addr);
   const partial = {
     ok: true,
@@ -4261,6 +4289,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
     };
   }
   bindHailScopeDates(root, data, esc, { onRefetch });
+  bindPlaceLinks(root);
   const bind = (id, key, cast) => {
     const el = root.querySelector(id);
     if (!el) return;

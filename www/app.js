@@ -1674,7 +1674,7 @@ function wireHsShell(cfg) {
         const hit = hits[0];
         if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
         flyToPin(hit.lat, hit.lon, 20);
-        await onHailTap(hit.lat, hit.lon);
+        await onHailTap(hit.lat, hit.lon, { address: hit.address || q });
       } catch (err) {
         setStatus(String(err.message || err).slice(0, 48));
       }
@@ -1768,9 +1768,10 @@ async function renderWx() {
   }
 }
 
-async function onHailTap(lat, lon) {
+async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   wxState.lat = lat;
   wxState.lon = lon;
+  if (prefAddr) wxState.address = prefAddr;
   setWxPin(lat, lon);
   selectStormDate(null, { fit: false, requireDate: true });
   const sheet = $("#hs-sheet");
@@ -1783,6 +1784,7 @@ async function onHailTap(lat, lon) {
   };
   try {
     const data = await pinDossier(db.settings, lat, lon, {
+      address: prefAddr || wxState.address || "",
       onPartial: (partial) => {
         if (!isHailTab()) return;
         wxState.address = partial.address || "";
