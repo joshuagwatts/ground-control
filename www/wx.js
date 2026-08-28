@@ -323,12 +323,12 @@ async function reverseArcgis(lat, lon) {
 }
 
 /** Snap a tap to the nearest on-screen OSM house-number point (the yellow numbers). */
-function nearestHouseAddress(lat, lon) {
+function nearestHouseAddress(lat, lon, maxM = 64) {
   if (!map) return null;
   let best = null;
-  let bestM = 46;
+  let bestM = maxM;
   for (const n of houseCache.nums || []) {
-    if (!n.street) continue;
+    if (!n?.num || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) continue;
     let m;
     try {
       m = map.distance([lat, lon], [n.lat, n.lon]);
@@ -343,18 +343,44 @@ function nearestHouseAddress(lat, lon) {
   return best;
 }
 
+function streetFromGeo(geo) {
+  if (!geo?.ok) return "";
+  const parts = parseStreetAddress(geo.address || "");
+  return parts.street || "";
+}
+
+function packHouseAddress(num, street, city, state, zip) {
+  const line = [String(num || "").trim(), String(street || "").trim()].filter(Boolean).join(" ");
+  if (!line || !/^\d/.test(line)) return "";
+  return [line, city, state, zip].map((p) => String(p || "").trim()).filter(Boolean).join(", ");
+}
+
 export async function reverseGeocode(lat, lon) {
-  const [nom, arc] = await Promise.all([reverseNominatim(lat, lon), reverseArcgis(lat, lon)]);
-  if (nom.ok && nom.hasHouse) return nom;
+  // Prefer the yellow on-screen house number the user is looking at, then rooftop ArcGIS, then Nominatim.
   const snap = nearestHouseAddress(lat, lon);
-  if (snap) {
-    const city = snap.city || nom.city || arc.city || "";
-    const state = nom.state || arc.state || "";
-    const zip = snap.zip || nom.zip || arc.zip || "";
-    const address = [`${snap.num} ${snap.street}`, city, state, zip].filter(Boolean).join(", ");
-    return { ok: true, address, city, lat, lon, hasHouse: true, source: "osm-house" };
+  const [nom, arc] = await Promise.all([reverseNominatim(lat, lon), reverseArcgis(lat, lon)]);
+  if (snap?.num) {
+    const street = snap.street || streetFromGeo(arc) || streetFromGeo(nom);
+    const city = snap.city || arc.city || nom.city || "";
+    const state = arc.state || nom.state || "";
+    const zip = snap.zip || arc.zip || nom.zip || "";
+    const address = packHouseAddress(snap.num, street, city, state, zip);
+    if (address) {
+      return {
+        ok: true,
+        address,
+        city,
+        state,
+        zip,
+        hasHouse: true,
+        lat: snap.lat,
+        lon: snap.lon,
+        source: "osm-house",
+      };
+    }
   }
-  if (arc.ok) return arc;
+  if (arc.ok) return { ...arc, lat: arc.lat ?? lat, lon: arc.lon ?? lon };
+  if (nom.ok && nom.hasHouse) return nom;
   if (nom.ok) return nom;
   try {
     const { body } = await httpGet(
@@ -4157,9 +4183,19 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   applyOverlays();
   map.on("click", (e) => {
     if (wxSuppressMapTap) return;
-    const { lat, lng } = e.latlng;
+    let { lat, lng } = e.latlng;
+    const snap = nearestHouseAddress(lat, lng);
+    let address = "";
+    if (snap) {
+      // Land the blue pin on the yellow number the user tapped near
+      lat = snap.lat;
+      lng = snap.lon;
+      if (snap.street) {
+        address = packHouseAddress(snap.num, snap.street, snap.city, "", snap.zip);
+      }
+    }
     setWxPin(lat, lng);
-    if (onTap) onTap(lat, lng);
+    if (onTap) onTap(lat, lng, address ? { address } : undefined);
   });
   map.on("movestart zoomstart", () => {
     mapBusy += 1;
