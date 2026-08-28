@@ -2011,7 +2011,28 @@ body.wx-map-expanded .hs-field {
 }
 .hs-zillow { color: #1c1400 !important; background: var(--trim) !important; border-color: var(--trim) !important; }
 .hs-assessor { color: #d9f0e3 !important; border-color: #2f6f4e !important; }
-.hs-mailaddr { width: 100%; font-size: 12px; color: var(--muted); }
+.hs-mail-addr {
+  width: 100%; font-size: 12px; color: var(--muted); font-weight: 500;
+  padding: 0.15rem 0;
+}
+.hs-homestead {
+  display: inline-flex; align-items: center;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  font-size: 12px; font-weight: 650;
+  color: #d9f0e3;
+  border: 1px solid #2f6f4e;
+  background: rgba(47, 111, 78, 0.18);
+}
+.hs-ok-tip {
+  margin: -0.35rem 0 0.85rem;
+  padding: 0.55rem 0.7rem;
+  font-size: 12.5px; line-height: 1.45;
+  color: var(--text);
+  background: rgba(47, 111, 78, 0.12);
+  border-left: 3px solid #2f6f4e;
+  border-radius: 0 8px 8px 0;
+}
 .hs-fb { color: #d6e4ff !important; border-color: #3b5bdb !important; }
 .hs-ig { color: #ffd6e8 !important; border-color: #c2255c !important; }
 .hs-tel, .hs-sms { color: var(--text); }

@@ -15,6 +15,8 @@ import {
   formatZillowUrl,
   resolveZillowUrl,
   isUsableZillowUrl,
+  publicTextFromHtml,
+  parseAiContactJson,
 } from "../www/contacts.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
@@ -138,5 +140,16 @@ const drop = listingForPin(
 );
 assert(!drop.phone && !drop.name, "drop neighbor listing");
 assert(!extractContactsFromHtml(`<a href="tel:9185820001">918-582-0001</a>`, {}), "no house, no harvest");
+
+const plain = publicTextFromHtml(`<script>evil()</script><style>.x{}</style><p>Owner: Jane Doe</p><a href="tel:9185820001">(918) 582-0001</a>`);
+assert(!/script|style|<|>/i.test(plain), "strip tags/scripts");
+assert(/Jane Doe/.test(plain) && /918/.test(plain), "keep public listing text");
+
+const aiHit = parseAiContactJson('Sure\n{"name":"Jane Doe","phone":"(918) 582-0001","email":"office@example-roof.test"}\n');
+assert(aiHit.name === "Jane Doe", "ai name");
+assert(/582/.test(aiHit.phone), "ai phone");
+assert(aiHit.email === "office@example-roof.test", "ai email");
+assert(parseAiContactJson("not json").name === "", "ai empty on junk");
+assert(parseAiContactJson('{"owner_name":"Bob","owner_phone":"405-555-1212"}').name === "Bob", "ai owner_* keys");
 
 console.log("place-contacts ok");

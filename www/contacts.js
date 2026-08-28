@@ -91,7 +91,115 @@ async function zillowListingContacts(address, parts) {
   }
   const contacts = extractContactsFromHtml(html.slice(0, 220000), parts, { requireAddress: false });
   const zillow_url = detailUrl.includes("homedetails") ? detailUrl : "";
-  return contacts ? { ...contacts, zillow_url } : zillow_url ? { zillow_url } : null;
+  const _public_text = publicTextFromHtml(html);
+  const base = contacts ? { ...contacts, zillow_url } : zillow_url ? { zillow_url } : null;
+  return base ? { ...base, _public_text } : _public_text ? { _public_text } : null;
+}
+
+/** Strip tags for LLM extraction — listing/assessor pages only, never people-search. */
+export function publicTextFromHtml(html) {
+  return decodeEntities(String(html || ""))
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 10000);
+}
+
+/** Parse model JSON for contact fields; empty/invalid → blanks. */
+export function parseAiContactJson(text) {
+  const raw = String(text || "");
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return { name: "", phone: "", email: "" };
+  try {
+    const j = JSON.parse(m[0]);
+    return {
+      name: String(j.name || j.owner_name || "").trim().slice(0, 80),
+      phone: String(j.phone || j.owner_phone || "").trim().slice(0, 40),
+      email: String(j.email || j.owner_email || "")
+        .trim()
+        .toLowerCase()
+        .slice(0, 80),
+    };
+  } catch {
+    return { name: "", phone: "", email: "" };
+  }
+}
+
+/**
+ * Fill missing name/phone/email from PUBLIC listing/assessor text via keyed chat APIs.
+ * Does not search Google/Facebook/people-finder — only extracts what is already in `publicText`.
+ */
+export async function enrichContactsWithChat(settings, { address = "", ownerName = "", existing = {}, publicText = "" } = {}) {
+  const parts = parseStreetAddress(address);
+  if (!parts.house) return null;
+  const text = String(publicText || "").trim();
+  if (text.length < 60) return null;
+  let keyed = [];
+  try {
+    const { keyedProviders } = await import("./cloud.js");
+    keyed = keyedProviders(settings) || [];
+  } catch {
+    return null;
+  }
+  if (!keyed.length) return null;
+
+  const havePhone = Boolean(existing.owner_phone || existing.phone);
+  const haveEmail = Boolean(existing.owner_email || existing.email);
+  const haveName = Boolean(ownerName || existing.owner_name || existing.name);
+  if (havePhone && haveEmail && haveName) return null;
+
+  const sys = `You extract contact fields that already appear in the PUBLIC PROPERTY text below for one house.
+Rules:
+- Only the current owner-of-record, listing agent, or listing office for THIS address.
+- Never invent names, phones, or emails. If unsure, use "".
+- Never guess from memory or invent Oklahoma residents.
+- Never use personal social profiles or people-search.
+- Reply with JSON only: {"name":"","phone":"","email":""}`;
+
+  const user = `House: ${address}
+Assessor / known owner name: ${ownerName || "(none)"}
+Already have phone: ${havePhone ? "yes" : "no"}
+Already have email: ${haveEmail ? "yes" : "no"}
+
+PUBLIC TEXT:
+${text.slice(0, 9000)}`;
+
+  try {
+    const { chatComplete } = await import("./cloud.js");
+    const out = await chatComplete(
+      settings,
+      [
+        { role: "system", content: sys },
+        { role: "user", content: user },
+      ],
+      0.1,
+      350,
+      "life",
+    );
+    const parsed = parseAiContactJson(out?.text);
+    const hit = mergeContacts({
+      name: haveName ? "" : parsed.name,
+      phone: havePhone ? "" : parsed.phone,
+      email: haveEmail ? "" : parsed.email,
+    });
+    if (!hit.name && !hit.phone && !hit.email) return null;
+    return hit;
+  } catch {
+    return null;
+  }
+}
+
+async function assessorPublicText(url) {
+  const u = String(url || "");
+  if (!/^https?:\/\//i.test(u)) return "";
+  // County assessor / parcel sites only — not people-search hosts
+  if (!/oklahomacounty\.org|clevelandcounty|tulsacounty|assessor|incog|county\.|ok\.us/i.test(u)) return "";
+  if (SKIP_HOST.test(u)) return "";
+  const page = await fetchHtml(u, 10000);
+  if (!page?.html || /captcha|access denied/i.test(page.html)) return "";
+  return publicTextFromHtml(page.html);
 }
 
 export function parseStreetAddress(address) {
@@ -545,7 +653,7 @@ async function contactsFromWebsite(url, parts) {
   return huntPages(paths, parts);
 }
 
-export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
+export async function lookupPlaceContacts(lat, lon, address = "", seed = {}, settings = null) {
   const parts = parseStreetAddress(address);
   const blank = {
     owner_name: "",
@@ -557,12 +665,14 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
   };
   if (!parts.house) return blank;
   let hit = listingForPin(seed, address);
+  const publicChunks = [];
   const [osm, nom] = await Promise.all([
     Number.isFinite(lat) && Number.isFinite(lon) ? overpassContacts(lat, lon, parts).catch(() => null) : null,
     nominatimSearchContacts(address, parts).catch(() => null),
   ]);
   hit = mergeContacts(hit, osm, nom);
   const zillowHit = await zillowListingContacts(address, parts).catch(() => null);
+  if (zillowHit?._public_text) publicChunks.push(zillowHit._public_text);
   if (zillowHit) hit = mergeContacts(hit, zillowHit);
   const site = osm?.website || nom?.website || hit.website;
   if (site && (!hit.phone || !hit.email || !hit.facebook)) {
@@ -572,6 +682,15 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
   if (qid && (!hit.phone || !hit.email)) {
     hit = mergeContacts(hit, await wikidataContacts(qid));
   }
+  if (settings && publicChunks.length && (!hit.phone || !hit.email || !hit.name)) {
+    const ai = await enrichContactsWithChat(settings, {
+      address,
+      ownerName: hit.name || "",
+      existing: hit,
+      publicText: publicChunks.join("\n\n"),
+    }).catch(() => null);
+    if (ai) hit = mergeContacts(hit, ai);
+  }
   return {
     owner_name: hit.name || "",
     owner_phone: hit.phone || "",
@@ -579,5 +698,28 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     facebook_url: hit.facebook || "",
     instagram_url: hit.instagram || "",
     zillow_url: hit.zillow_url || "",
+    _public_text: publicChunks.join("\n\n"),
   };
+}
+
+/** Second-pass gap fill after assessor returns — uses assessor page + prior listing text only. */
+export async function fillContactGapsWithChat(settings, { address, assessor = null, contacts = {}, publicText = "" } = {}) {
+  if (!settings) return null;
+  const havePhone = Boolean(contacts.owner_phone || contacts.phone);
+  const haveEmail = Boolean(contacts.owner_email || contacts.email);
+  const haveName = Boolean(assessor?.name || contacts.owner_name || contacts.name);
+  if (havePhone && haveEmail && haveName) return null;
+  const chunks = [publicText || contacts._public_text || ""];
+  if (assessor?.url) {
+    const snip = await assessorPublicText(assessor.url).catch(() => "");
+    if (snip) chunks.push(snip);
+  }
+  const text = chunks.filter(Boolean).join("\n\n");
+  if (text.length < 60) return null;
+  return enrichContactsWithChat(settings, {
+    address,
+    ownerName: assessor?.name || contacts.owner_name || contacts.name || "",
+    existing: contacts,
+    publicText: text,
+  });
 }

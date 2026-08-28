@@ -10,6 +10,7 @@ import {
   parseStreetAddress,
   resolveZillowUrl,
   isUsableZillowUrl,
+  fillContactGapsWithChat,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
@@ -181,15 +182,25 @@ function bindPlaceLinks(root) {
 
 function ownerFields(people = {}, assessor = null) {
   return {
-    owner_name: (assessor && assessor.name) || people.name || "",
-    owner_phone: people.phone || "",
-    owner_email: people.email || "",
+    owner_name: (assessor && assessor.name) || people.name || people.owner_name || "",
+    owner_phone: people.phone || people.owner_phone || "",
+    owner_email: people.email || people.owner_email || "",
     owner_mail: (assessor && assessor.mail) || "",
     assessor_url: (assessor && assessor.url) || "",
-    facebook_url: people.facebook || "",
-    instagram_url: people.instagram || "",
+    assessor_source: (assessor && assessor.source) || "",
+    homestead: Boolean(assessor && assessor.homestead),
+    facebook_url: people.facebook || people.facebook_url || "",
+    instagram_url: people.instagram || people.instagram_url || "",
     zillow_url: people.zillow_url || "",
   };
+}
+
+function oklahomaHomeTip(data) {
+  const addr = `${data.address || ""} ${data.owner_mail || ""}`;
+  if (!/\bOK\b|oklahoma/i.test(addr)) return "";
+  const hailN = (data.hail || []).length;
+  if (!hailN) return "";
+  return `<p class="hs-ok-tip">OK tip: After hail, photograph the roof and gutters soon, note the storm date, and ask your insurer about a separate hail deductible — common on Oklahoma policies.</p>`;
 }
 
 function placeContactHtml(data, esc) {
@@ -198,18 +209,60 @@ function placeContactHtml(data, esc) {
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
+  const mail = String(data.owner_mail || "").trim();
+  const homestead = Boolean(data.homestead);
   const e164 = phoneDigits(phone);
   const assessorUrl = String(data.assessor_url || "").trim();
   const bits = [];
   if (zurl) bits.push(`<a class="hs-zillow" href="${zurl}" target="_blank" rel="noopener noreferrer">Zillow</a>`);
-  if (assessorUrl) bits.push(`<a class="hs-assessor" href="${esc(assessorUrl)}" target="_blank" rel="noopener noreferrer">Assessor</a>`);
+  if (assessorUrl) {
+    const lab = data.assessor_source ? `${esc(data.assessor_source)} assessor` : "Assessor";
+    bits.push(`<a class="hs-assessor" href="${esc(assessorUrl)}" target="_blank" rel="noopener noreferrer">${lab}</a>`);
+  }
   if (e164) {
     bits.push(`<a class="hs-tel" href="tel:${esc(e164)}">${esc(phone)}</a>`);
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
-  const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
+  if (mail && mail.replace(/\s+/g, " ").toLowerCase() !== String(addr).replace(/\s+/g, " ").toLowerCase()) {
+    bits.push(`<span class="hs-mail-addr" title="Mailing address on assessor file">Mail: ${esc(mail)}</span>`);
+  }
+  if (homestead) bits.push(`<span class="hs-homestead" title="Homestead exemption on file">Homestead</span>`);
+  const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>${oklahomaHomeTip(data)}`;
+}
+
+async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
+  const [contacts, assessor] = await Promise.all([
+    lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({})),
+    lookupAssessorParcel(lat, lon, addr).catch(() => null),
+  ]);
+  let people = mergeContacts(listingForPin(geo, addr), contacts);
+  let fields = ownerFields(people, assessor);
+  let dossier = {
+    ...base,
+    ...fields,
+    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
+  };
+  // Chat APIs extract missing phone/email/name from public listing + assessor pages only
+  if (settings && (!fields.owner_phone || !fields.owner_email || !fields.owner_name)) {
+    const ai = await fillContactGapsWithChat(settings, {
+      address: addr,
+      assessor,
+      contacts: { ...people, ...contacts, _public_text: contacts._public_text },
+      publicText: contacts._public_text || "",
+    }).catch(() => null);
+    if (ai) {
+      people = mergeContacts(people, ai);
+      fields = ownerFields(people, assessor);
+      dossier = {
+        ...dossier,
+        ...fields,
+        zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
+      };
+    }
+  }
+  return dossier;
 }
 
 async function api() {
@@ -2112,7 +2165,7 @@ async function localMapConfig(settings, center) {
   return { center: { lat: c.lat, lon: c.lon, city: c.city || settings?.city || "" }, layers: layerList, radarFrames };
 }
 
-async function localResearch(lat, lon, address = "", { deep = true, filters = wxFilters, news = false, place = true, archive = true } = {}) {
+async function localResearch(lat, lon, address = "", { deep = true, filters = wxFilters, news = false, place = true, archive = true, settings = null } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
   const filterDays = Number(filters.days) || 730;
   const archiveDays = Math.min(filterDays, 730);
@@ -2122,21 +2175,17 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const geo = await geoP;
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const placeP = place
-    ? Promise.all([
-        lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
-        lookupAssessorParcel(lat, lon, addr).catch(() => null),
-      ])
-    : Promise.resolve([{}, null]);
-  const [wxNow, archiveStorms, spc, swdi, lsr] = await Promise.all([
+    ? mergePlaceOwner(settings, lat, lon, addr, geo, { ok: true, address: addr, lat, lon })
+    : Promise.resolve({ ok: true, address: addr, lat, lon, ...ownerFields({}, null) });
+  const [wxNow, archiveStorms, spc, swdi, lsr, placeHit] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     archive ? historicalStorms(lat, lon, archiveDays) : Promise.resolve([]),
     fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, swdiDays),
     fetchIemLsrHail(lat, lon, km, filterDays).catch(() => []),
+    placeP,
   ]);
-  const [contacts, assessor] = await placeP;
   const city = geo.city || addr.split(",")[0];
-  const people = mergeContacts(listingForPin(geo, addr), contacts);
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   const storms = enrichStormDates(archiveStorms, hail, wind);
@@ -2150,6 +2199,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   }
   return {
     ok: true,
+    ...placeHit,
     address: addr,
     lat,
     lon,
@@ -2158,8 +2208,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     hail,
     wind,
     news: newsHits,
-    ...ownerFields(people, assessor),
-    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url }),
+    zillow_url: pickZillowUrl({ address: addr, zillow_url: placeHit.zillow_url }),
     _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
 }
@@ -2186,10 +2235,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   const km = filterKm();
   const days = Number(wxFilters.days) || 730;
   // Owner lookups must not gate storm history — run them beside hail sources.
-  const placeP = Promise.all([
-    lookupPlaceContacts(lat, lon, addr, geo).catch(() => ({})),
-    lookupAssessorParcel(lat, lon, addr).catch(() => null),
-  ]);
+  const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
   const wxP = currentWeather(lat, lon).catch(() => ({ ok: false }));
   const spcP = fetchSpcReports(lat, lon, km, 30);
   const swdiP = fetchSwdiHail(lat, lon, km, days);
@@ -2209,25 +2255,18 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     });
   }
 
-  const [wxNow, spc, swdi] = await Promise.all([wxP, spcP, swdiP]);
+  const [wxNow, spc, swdi, placeHit] = await Promise.all([wxP, spcP, swdiP, placeP]);
   hail = mergeHailRows(spc.hail || [], swdi || [], lsr);
   wind = spc.wind || [];
-  const withHail = {
+  const enriched = {
     ...partial,
+    ...placeHit,
     weather: wxNow,
     hail,
     wind,
     storms: enrichStormDates([], hail, wind),
+    zillow_url: pickZillowUrl({ address: addr, zillow_url: placeHit.zillow_url }),
     _meta: { fetchedDays: days, fetchedKm: km, deep: false },
-  };
-  if (onPartial) onPartial(withHail);
-
-  const [contacts, assessor] = await placeP;
-  const people = mergeContacts(people0, contacts);
-  const enriched = {
-    ...withHail,
-    ...ownerFields(people, assessor),
-    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url }),
   };
   if (onPartial) onPartial(enriched);
   return enriched;
@@ -2235,7 +2274,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
 
 export async function refetchDossier(settings, lat, lon, address, filters = wxFilters) {
   const f = { ...wxFilters, ...filters };
-  return localResearch(lat, lon, address, { deep: true, filters: f });
+  return localResearch(lat, lon, address, { deep: true, filters: f, settings });
 }
 
 function applyBaseLayers(config) {
@@ -2280,7 +2319,7 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
   } catch {
     /* local fallback */
   }
-  const local = await localResearch(lat, lon, address, { deep, filters: wxFilters, news: deep });
+  const local = await localResearch(lat, lon, address, { deep, filters: wxFilters, news: deep, settings });
   if (usableRemote(remote)) {
     const norm = normalizeDossier(remote) || local;
     norm.lat = lat;
