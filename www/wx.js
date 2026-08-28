@@ -1844,8 +1844,13 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
   const needDate = requireDate === true || (requireDate !== false && hailScopeMode);
   const hail = hailRows || lastHailRows;
   const wind = windRows || lastWindRows;
+  clearPinRadius();
   if (hail.length || wind.length) {
+    lastHailDrawSig = "";
     drawHailMarkers(hail, wind, { fit, requireDate: needDate });
+  }
+  if (selectedStormDate) {
+    scheduleHailMapFill(60);
   }
   if (selectedStormDate && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
@@ -2477,14 +2482,7 @@ export function clearWxPin() {
   pinLon = null;
   selectedStormDate = null;
   lastHailDrawSig = "";
-  if (pinRadiusLayer) {
-    try {
-      map.removeLayer(pinRadiusLayer);
-    } catch {
-      /* ignore */
-    }
-    pinRadiusLayer = null;
-  }
+  clearPinRadius();
   if (pin) {
     try {
       map.removeLayer(pin);
@@ -2574,7 +2572,10 @@ function selectPinIcon() {
 function hailNearPin(rows, day = null) {
   let pool = rows || [];
   if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
-  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return hailInMapView(pool);
+  // Selected storm date → paint whatever is in the visible map (no pin-radius circle)
+  if (selectedStormDate || !Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
+    return hailInMapView(pool);
+  }
   const km = filterKm();
   return pool.filter((h) => {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
@@ -2584,11 +2585,13 @@ function hailNearPin(rows, day = null) {
 }
 
 function windNearPin(rows, day = null) {
-  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return hailInMapView(rows || []).filter((w) => !day || String(w.date || "").slice(0, 10) === day);
+  let pool = rows || [];
+  if (day) pool = pool.filter((w) => String(w.date || "").slice(0, 10) === day);
+  if (selectedStormDate || !Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
+    return hailInMapView(pool);
+  }
   const km = filterKm();
-  return (rows || []).filter((w) => {
-    const d = String(w.date || "").slice(0, 10);
-    if (day && d !== day) return false;
+  return pool.filter((w) => {
     if (!Number.isFinite(w.lat) || !Number.isFinite(w.lon)) return false;
     const dist = Number.isFinite(w.distance_km) ? w.distance_km : haversineKm(pinLat, pinLon, w.lat, w.lon);
     return dist <= km;
@@ -2599,34 +2602,66 @@ export function setWxPin(lat, lon) {
   pinLat = Number(lat);
   pinLon = Number(lon);
   placeSelectPin([lat, lon]);
-  drawPinRadius();
+  clearPinRadius();
   if (lastHailRows.length || lastWindRows.length) {
     drawHailMarkers(lastHailRows, lastWindRows);
   }
 }
 
-function drawPinRadius() {
-  if (!map || !window.L) return;
-  if (pinRadiusLayer) {
-    try {
-      map.removeLayer(pinRadiusLayer);
-    } catch {
-      /* ignore */
-    }
-    pinRadiusLayer = null;
+/** Search-radius circle removed — hail fills the map when a storm date is selected. */
+function clearPinRadius() {
+  if (!pinRadiusLayer) return;
+  try {
+    map?.removeLayer(pinRadiusLayer);
+  } catch {
+    /* ignore */
   }
-  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return;
-  const km = filterKm();
-  pinRadiusLayer = window.L.circle([pinLat, pinLon], {
-    radius: km * 1000,
-    color: "#ffcc00",
-    fillColor: "#ffcc00",
-    fillOpacity: 0.05,
-    weight: 1,
-    dashArray: "6 8",
-    interactive: false,
-    className: "wx-pin-radius",
-  }).addTo(map);
+  pinRadiusLayer = null;
+}
+
+function drawPinRadius() {
+  clearPinRadius();
+}
+
+let hailMapFillGen = 0;
+let hailMapFillTimer = 0;
+
+/** When a storm date is on, keep the visible map stocked with hail (not a pin circle). */
+async function refreshHailMapFill() {
+  if (!selectedStormDate || !map) return;
+  const q = mapViewHailQuery();
+  if (!q) return;
+  const gen = ++hailMapFillGen;
+  const days = Number(wxFilters.days) || 730;
+  const km = Math.min(50, Math.max(8, q.radiusKm));
+  try {
+    const [spc, swdi, lsr] = await Promise.all([
+      fetchSpcReports(q.lat, q.lon, km, Math.min(days, 90)),
+      fetchSwdiHail(q.lat, q.lon, km, days),
+      fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []),
+    ]);
+    if (gen !== hailMapFillGen || !selectedStormDate) return;
+    const merged = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
+    const byKey = new Map();
+    for (const h of [...(lastHailRows || []), ...merged]) {
+      if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
+      const k = `${String(h.date || "").slice(0, 10)}|${h.lat.toFixed(4)}|${h.lon.toFixed(4)}|${h.size_in}|${h.source || ""}`;
+      byKey.set(k, h);
+    }
+    lastHailDrawSig = "";
+    drawHailMarkers([...byKey.values()], lastWindRows);
+  } catch {
+    /* keep whatever is already on the map */
+  }
+}
+
+function scheduleHailMapFill(ms = 280) {
+  if (!selectedStormDate) return;
+  if (hailMapFillTimer) clearTimeout(hailMapFillTimer);
+  hailMapFillTimer = setTimeout(() => {
+    hailMapFillTimer = 0;
+    void refreshHailMapFill();
+  }, ms);
 }
 
 function ringPolygon(lat, lon, radiusM, sides = 6) {
@@ -2734,7 +2769,7 @@ function buildDetailedZoneRings(zone, rawPts) {
       const ring = p.swdi_ring;
       const cLat = ring.reduce((a, c) => a + c[0], 0) / ring.length;
       const cLon = ring.reduce((a, c) => a + c[1], 0) / ring.length;
-      if (hitDistKm({ ...p, lat: cLat, lon: cLon }) > HOUSE_ZONE_KM) continue;
+      if (!selectedStormDate && hitDistKm({ ...p, lat: cLat, lon: cLon }) > HOUSE_ZONE_KM) continue;
       const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0;
       rings.push({
         ring: padPolygon(ring, Math.max(100, maxSz * 62)),
@@ -2803,7 +2838,11 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   }
   const activeDay = selectedStormDate;
   const pin = pinCoords();
-  const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${opts.fit ? 1 : 0}`;
+  const b = mapViewBounds(0);
+  const boundKey = b
+    ? `${b.getSouth().toFixed(3)}|${b.getWest().toFixed(3)}|${b.getNorth().toFixed(3)}|${b.getEast().toFixed(3)}`
+    : "";
+  const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${boundKey}|${opts.fit ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -2859,7 +2898,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const zones = collapsed
     .filter((h) => !activeDay || h.date === activeDay)
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
-    .slice(0, 36);
+    .slice(0, activeDay ? 80 : 36);
 
   const fitPts = [];
   for (const h of zones) {
@@ -4219,6 +4258,11 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     document.getElementById("hs-map-shell")?.classList.remove("map-moving");
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
+    if (selectedStormDate) {
+      lastHailDrawSig = "";
+      if (lastHailRows.length) drawHailMarkers(lastHailRows, lastWindRows);
+      scheduleHailMapFill();
+    }
   });
   addLocateControl();
   startMyLocation();

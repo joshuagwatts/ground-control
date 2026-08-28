@@ -57,7 +57,7 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.85";
+} from "./wx.js?v=0.2.86";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1700,8 +1700,8 @@ async function finishWxBoot(gen) {
       // Frame the map only — do not drop a select pin on boot
       flyToPin(center.lat, center.lon, undefined, { stay: true });
     }
-    // Warm storm dates for the visible map; leave none selected (no zones yet)
-    void warmMapViewStorms(gen);
+    // Storm-date warm already kicked off at mount; refresh once framed if still no pin
+    if (!wxPinSelected()) void warmMapViewStorms(gen);
   } catch (e) {
     if (isHailTab()) setStatus(String(e.message || e).slice(0, 48));
   }
@@ -1813,8 +1813,10 @@ async function renderWx() {
     paintFieldSheet();
     wirePinSizeSlider();
     syncHailBottomChrome();
+    // Map UI first — keep the shell snappy; warm recent storm dates in the background
     setWxMapExpanded(true);
     refreshMapSize();
+    void warmMapViewStorms(gen);
     void finishWxBoot(gen);
   } catch (e) {
     if (!isHailTab()) return;
