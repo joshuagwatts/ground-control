@@ -1664,6 +1664,21 @@ body.wx-map-expanded .hs-sheet {
   pointer-events: none !important;
   overflow: hidden !important;
 }
+/* Finger-driven scrub: progress follows --hs-sheet-scrub (no CSS timeline) */
+.hs-bottom-panel.hs-sheet-scrubbing .hs-legend,
+.hs-bottom-panel.hs-sheet-scrubbing .hs-filters,
+.hs-bottom-panel.hs-sheet-scrubbing .hs-dates,
+.hs-bottom-panel.hs-sheet-scrubbing .hs-empty {
+  transition: none !important;
+  opacity: var(--hs-sheet-scrub, 0) !important;
+  max-height: calc(var(--hs-sheet-scrub, 0) * 96rem) !important;
+  margin: 0 !important;
+  padding-top: calc(var(--hs-sheet-scrub, 0) * 0.2rem) !important;
+  padding-bottom: calc(var(--hs-sheet-scrub, 0) * 0.15rem) !important;
+  transform: translate3d(0, calc((1 - var(--hs-sheet-scrub, 0)) * 16px), 0) !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
+}
 .hs-bottom-panel.hs-sheet-open .hs-legend,
 .hs-bottom-panel.hs-sheet-open .hs-filters,
 .hs-bottom-panel.hs-sheet-open .hs-dates,
@@ -1671,9 +1686,10 @@ body.wx-map-expanded .hs-sheet {
   opacity: 1;
   transform: translate3d(0, 0, 0);
 }
-.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin { cursor: pointer; }
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin { cursor: grab; touch-action: none; }
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin:active { cursor: grabbing; }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
-  content: "Swipe up for storm dates";
+  content: "Pull up for storm dates";
   display: block;
   font-size: 11px;
   color: var(--muted);
@@ -1854,6 +1870,14 @@ body.wx-map-expanded .hs-sheet {
     transform var(--sheet-reveal-ms) var(--map-expand-ease),
     max-height var(--map-expand-ms) var(--map-expand-ease),
     padding var(--sheet-reveal-ms) ease;
+}
+.hs-field.hs-field-scrubbing {
+  transition: none !important;
+  opacity: var(--hs-sheet-scrub, 0);
+  max-height: calc(var(--hs-sheet-scrub, 0) * 2200px);
+  transform: translate3d(0, calc((1 - var(--hs-sheet-scrub, 0)) * 14px), 0);
+  padding: calc(var(--hs-sheet-scrub, 0) * 0.35rem) 1rem calc(var(--hs-sheet-scrub, 0) * 1.4rem);
+  pointer-events: none;
 }
 .hs-field.hs-field-open {
   max-height: 2200px;

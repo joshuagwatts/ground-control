@@ -4167,78 +4167,216 @@ function unlockHailTierGesture() {
   hailTierGestureLocked = false;
 }
 
-/** Capture upward swipes on the address peek band → storm sheet (map stays draggable). */
+/** Capture pull-up on the address peek — sheet scrub follows the finger (not a timed animation). */
 function bindAddressSwipeToStormSheet(el) {
   if (!el || el.dataset.addrSwipeBound) return;
   el.dataset.addrSwipeBound = "1";
-  let origin = null;
-  el.addEventListener(
-    "touchstart",
-    (e) => {
+  const SCRUB_PX = 150;
+  let active = false;
+  let startX = 0;
+  let startY = 0;
+  let startScroll = 0;
+  let lastY = 0;
+  let lastT = 0;
+  let velY = 0; // px/ms, up positive
+  let scrub = 0;
+  let moved = false;
+  let settling = false;
+
+  const view = () => document.getElementById("view");
+  const field = () => document.getElementById("hs-field");
+
+  const setScrub = (t) => {
+    scrub = Math.max(0, Math.min(1, t));
+    el.style.setProperty("--hs-sheet-scrub", String(scrub));
+    el.classList.add("hs-sheet-scrubbing");
+    const f = field();
+    if (f) {
+      f.style.setProperty("--hs-sheet-scrub", String(scrub));
+      f.classList.add("hs-field-scrubbing");
+    }
+    const v = view();
+    if (v) {
+      const targetTop = Math.max(0, el.offsetTop - 6);
+      v.scrollTop = startScroll + (targetTop - startScroll) * scrub;
+    }
+  };
+
+  const clearScrubStyles = () => {
+    el.classList.remove("hs-sheet-scrubbing");
+    el.style.removeProperty("--hs-sheet-scrub");
+    const f = field();
+    if (f) {
+      f.classList.remove("hs-field-scrubbing");
+      f.style.removeProperty("--hs-sheet-scrub");
+    }
+  };
+
+  const finishOpen = () => {
+    clearScrubStyles();
+    addressSwipeOpeningSheet = false;
+    settling = false;
+    revealHailStormSheet({ interactive: true });
+  };
+
+  const finishClosed = () => {
+    clearScrubStyles();
+    addressSwipeOpeningSheet = false;
+    settling = false;
+    scrub = 0;
+  };
+
+  /** Spring settle to 0 or 1 from current scrub + velocity (gesture-driven, not a fixed timeline). */
+  const settle = (open) => {
+    settling = true;
+    const target = open ? 1 : 0;
+    let t = scrub;
+    // Convert finger px/ms into scrub units/ms
+    let v = Math.max(-0.008, Math.min(0.012, velY / SCRUB_PX));
+    if (open && v < 0.003) v = 0.004;
+    if (!open && v > -0.002) v = -0.003;
+    let prev = performance.now();
+    const tick = (now) => {
+      if (!settling) return;
+      const dt = Math.min(34, now - prev);
+      prev = now;
+      const stiffness = 0.0055;
+      const damping = Math.pow(0.82, dt / 16);
+      v = (v + (target - t) * stiffness * dt) * damping;
+      t += v * dt;
+      if (t < 0) {
+        t = 0;
+        v = 0;
+      } else if (t > 1) {
+        t = 1;
+        v = 0;
+      }
+      setScrub(t);
+      const closeEnough = Math.abs(target - t) < 0.018 && Math.abs(v) < 0.00035;
+      if (!closeEnough) {
+        requestAnimationFrame(tick);
+        return;
+      }
+      setScrub(target);
+      if (open) finishOpen();
+      else finishClosed();
+    };
+    requestAnimationFrame(tick);
+  };
+
+  const pt = (e) => (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+
+  const onDown = (e) => {
+    if (settling || hailBottomTier !== "address") return;
+    if (e.touches && e.touches.length !== 1) return;
+    if (e.target.closest("a, button, input, select, textarea")) return;
+    // Prefer starting from the address line / peek chrome
+    if (!e.target.closest(".hs-pin, .hs-place, .hs-goto, #hs-search")) return;
+    unlockHailTierGesture();
+    const p = pt(e);
+    active = true;
+    moved = false;
+    startX = p.clientX;
+    startY = p.clientY;
+    lastY = startY;
+    lastT = performance.now();
+    velY = 0;
+    scrub = 0;
+    startScroll = view()?.scrollTop || 0;
+  };
+
+  const onMove = (e) => {
+    if (!active || settling || hailBottomTier !== "address") return;
+    const p = pt(e);
+    const dx = p.clientX - startX;
+    const dy = startY - p.clientY; // up positive
+    if (!moved) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      if (Math.abs(dx) > Math.abs(dy) && dy < 10) {
+        active = false;
+        clearScrubStyles();
+        return;
+      }
+      moved = true;
+      addressSwipeOpeningSheet = true;
+      lockHailTierGesture();
+    }
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    const now = performance.now();
+    const dt = Math.max(1, now - lastT);
+    velY = (lastY - p.clientY) / dt;
+    lastY = p.clientY;
+    lastT = now;
+    setScrub(dy / SCRUB_PX);
+  };
+
+  const onUp = (e) => {
+    if (!active) return;
+    active = false;
+    if (settling || hailBottomTier !== "address") {
       unlockHailTierGesture();
-      if (hailBottomTier !== "address" || e.touches.length !== 1) {
-        origin = null;
-        return;
-      }
-      if (e.target.closest("a, button, input, select, textarea")) {
-        origin = null;
-        return;
-      }
-      origin = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    },
-    { capture: true, passive: true },
-  );
-  el.addEventListener(
-    "touchmove",
-    (e) => {
-      if (!origin || hailBottomTier !== "address" || e.touches.length !== 1) return;
-      if (hailTierGestureLocked) return;
-      const dx = e.touches[0].clientX - origin.x;
-      const dy = e.touches[0].clientY - origin.y;
-      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-      origin = null;
-      // Only upward swipe on the peek opens storm dates
-      if (dy < -8 && Math.abs(dy) >= Math.abs(dx)) {
-        lockHailTierGesture();
+      return;
+    }
+    // Tap on address words with almost no drag → fling open from a small impulse
+    if (!moved) {
+      const p = pt(e);
+      const dy = startY - (p?.clientY ?? startY);
+      if (Math.abs(dy) < 6) {
+        moved = true;
         addressSwipeOpeningSheet = true;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        revealHailStormSheet();
-        requestAnimationFrame(() => {
-          addressSwipeOpeningSheet = false;
-        });
+        scrub = 0.08;
+        setScrub(scrub);
+        velY = 0.9;
       }
-    },
-    { capture: true, passive: false },
-  );
-  el.addEventListener(
-    "touchend",
-    () => {
-      origin = null;
+    }
+    if (!moved) {
       unlockHailTierGesture();
-    },
-    { capture: true, passive: true },
-  );
-  el.addEventListener(
-    "touchcancel",
-    () => {
-      origin = null;
-      addressSwipeOpeningSheet = false;
-      unlockHailTierGesture();
-    },
-    { capture: true, passive: true },
-  );
+      return;
+    }
+    const open = scrub >= 0.28 || velY > 0.28;
+    settle(open);
+    unlockHailTierGesture();
+  };
+
+  const onCancel = () => {
+    active = false;
+    if (settling) return;
+    if (moved) settle(scrub >= 0.45);
+    else clearScrubStyles();
+    addressSwipeOpeningSheet = false;
+    unlockHailTierGesture();
+  };
+
+  el.addEventListener("touchstart", onDown, { capture: true, passive: true });
+  el.addEventListener("touchmove", onMove, { capture: true, passive: false });
+  el.addEventListener("touchend", onUp, { capture: true, passive: true });
+  el.addEventListener("touchcancel", onCancel, { capture: true, passive: true });
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "touch") return;
+    onDown(e);
+    if (!active) return;
+    const move = (ev) => onMove(ev);
+    const up = (ev) => {
+      onUp(ev);
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+  });
 }
 
-function scrollViewToStormSheet() {
+function scrollViewToStormSheet(smooth = true) {
   const view = document.getElementById("view");
   const panel = document.getElementById("hs-bottom-panel");
   const sheet = document.getElementById("hs-sheet");
   if (!view) return;
   const target = panel || sheet;
   if (!target) return scrollViewToAddressPeek();
-  // Park the bottom panel near the top so storm dates + completed jobs are both in frame
-  view.scrollTo({ top: Math.max(0, target.offsetTop - 6), behavior: "smooth" });
+  view.scrollTo({ top: Math.max(0, target.offsetTop - 6), behavior: smooth ? "smooth" : "auto" });
 }
 
 /** Apply address-only vs full storm sheet visibility. */
@@ -4305,7 +4443,7 @@ export function bindStormSheetOpen(fn) {
 }
 
 /** Slide open storm dates + completed jobs list. */
-export function revealHailStormSheet() {
+export function revealHailStormSheet({ interactive = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const fromAddress = hailBottomTier === "address";
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
@@ -4314,9 +4452,19 @@ export function revealHailStormSheet() {
   if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
-  // Address → sheet: light settle (storm list + jobs CSS-transition in). Full pulse from fullscreen.
-  pulseBottomPanel({ light: fromAddress && !wasExpanded });
-  scheduleSheetScroll(scrollViewToStormSheet, { waitForMap: wasExpanded });
+  // Interactive scrub already revealed the sheet — skip timed pulse/settle animations
+  if (!interactive) {
+    pulseBottomPanel({ light: fromAddress && !wasExpanded });
+  }
+  if (interactive) {
+    try {
+      scrollViewToStormSheet(false);
+    } catch {
+      /* ignore */
+    }
+  } else {
+    scheduleSheetScroll(scrollViewToStormSheet, { waitForMap: wasExpanded });
+  }
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     try {
       stormSheetOpenHook?.();
@@ -4381,12 +4529,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   shell.dataset.scrollExpandBound = "1";
   if (sheet && !sheet.dataset.pinTapBound) {
     sheet.dataset.pinTapBound = "1";
-    sheet.addEventListener("click", (e) => {
-      if (hailBottomTier !== "address") return;
-      if (!e.target.closest(".hs-pin")) return;
-      if (e.target.closest("a, button, input, select")) return;
-      revealHailStormSheet();
-    });
+    // Address line opens via interactive scrub (bindAddressSwipeToStormSheet) — no timed click animation
   }
   // Swipe up only on the peaking address band (map stays fully draggable)
   bindAddressSwipeToStormSheet(document.getElementById("hs-bottom-panel"));
