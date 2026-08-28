@@ -3514,63 +3514,75 @@ function morphClose(grid, w, h, passes = 1) {
 }
 
 /**
- * Moore neighborhood exterior walk — keeps elongated storm corridors instead of
- * ballooning them into convex-hull bubbles (the HailTrace / TV-radar look).
+ * Exterior contour from binary occupancy: chain cell-border edges (CCW, interior left).
+ * Corner vertices + Chaikin → continuous corridors instead of cell-center balloons.
  */
 function walkBinaryExterior(grid, w, h, sx, sy, cellKm, xyToLatLon) {
-  const isOn = (x, y) => x >= 0 && y >= 0 && x < w && y < h && grid[y * w + x];
-  const DX = [1, 1, 0, -1, -1, -1, 0, 1];
-  const DY = [0, 1, 1, 1, 0, -1, -1, -1];
+  const isOn = (x, y) => x >= 0 && y >= 0 && x < w && y < h && !!grid[y * w + x];
   if (!isOn(sx, sy)) return null;
-  let startDir = -1;
-  for (let d = 0; d < 8; d++) {
-    if (!isOn(sx + DX[d], sy + DY[d])) {
-      startDir = d;
-      break;
+
+  const seen = new Uint8Array(w * h);
+  const q = [[sx, sy]];
+  seen[sy * w + sx] = 1;
+  const DX4 = [1, -1, 0, 0];
+  const DY4 = [0, 0, 1, -1];
+  for (let qi = 0; qi < q.length; qi++) {
+    const [cx, cy] = q[qi];
+    for (let k = 0; k < 4; k++) {
+      const nx = cx + DX4[k];
+      const ny = cy + DY4[k];
+      if (!isOn(nx, ny)) continue;
+      const ni = ny * w + nx;
+      if (seen[ni]) continue;
+      seen[ni] = 1;
+      q.push([nx, ny]);
     }
   }
-  if (startDir < 0) return null;
 
-  const ring = [];
-  let x = sx;
-  let y = sy;
-  let dir = startDir;
-  const maxSteps = w * h * 4;
-  for (let step = 0; step < maxSteps; step++) {
-    ring.push(xyToLatLon((x + 0.5) * cellKm, (y + 0.5) * cellKm));
-    let nextDir = -1;
-    let nx = x;
-    let ny = y;
-    for (let k = 0; k < 8; k++) {
-      const d = (dir + 6 + k) % 8;
-      const tx = x + DX[d];
-      const ty = y + DY[d];
-      if (isOn(tx, ty)) {
-        nextDir = d;
-        nx = tx;
-        ny = ty;
+  // Oriented half-edges along the OUTSIDE of ON cells (CCW around the component).
+  const nextCorner = new Map();
+  const edge = (ax, ay, bx, by) => {
+    nextCorner.set(`${ax},${ay}`, [bx, by]);
+  };
+  for (const [x, y] of q) {
+    if (!isOn(x - 1, y)) edge(x, y, x, y + 1); // west side ↑
+    if (!isOn(x, y + 1)) edge(x, y + 1, x + 1, y + 1); // north →
+    if (!isOn(x + 1, y)) edge(x + 1, y + 1, x + 1, y); // east ↓
+    if (!isOn(x, y - 1)) edge(x + 1, y, x, y); // south ←
+  }
+  if (!nextCorner.size) return null;
+
+  const used = new Set();
+  let best = null;
+  for (const start of nextCorner.keys()) {
+    if (used.has(start)) continue;
+    const ring = [];
+    let cur = start;
+    let guard = 0;
+    const maxGuard = nextCorner.size + 4;
+    while (guard++ < maxGuard) {
+      used.add(cur);
+      const [cx, cy] = cur.split(",").map(Number);
+      ring.push(xyToLatLon(cx * cellKm, cy * cellKm));
+      const n = nextCorner.get(cur);
+      if (!n) break;
+      cur = `${n[0]},${n[1]}`;
+      if (cur === start) {
+        ring.push(ring[0]);
         break;
       }
     }
-    if (nextDir < 0) break;
-    x = nx;
-    y = ny;
-    dir = nextDir;
-    if (x === sx && y === sy && ring.length > 3) break;
+    if (ring.length >= 4 && (!best || ring.length > best.length)) best = ring;
   }
-  if (ring.length < 4) return null;
-  const closed =
-    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
-      ? ring
-      : ring.concat([ring[0]]);
-  if (closed.length > 48) {
-    const stride = Math.ceil(closed.length / 36);
+  if (!best || best.length < 4) return null;
+  if (best.length > 100) {
+    const stride = Math.max(1, Math.ceil(best.length / 72));
     const slim = [];
-    for (let i = 0; i < closed.length - 1; i += stride) slim.push(closed[i]);
+    for (let i = 0; i < best.length - 1; i += stride) slim.push(best[i]);
     slim.push(slim[0]);
     return slim;
   }
-  return closed;
+  return best;
 }
 
 /**
@@ -3698,19 +3710,30 @@ function buildHailSwathRings(rawPts, zone = {}) {
     maxY = Math.max(maxY, y + rKm);
     return { x, y, rKm, size: sz, spot: isSpotterHail(p) };
   });
-  // Always seed kernels from SWDI polygon centroids so radar footprints join the swath.
+  // Fold SWDI footprints into the mesh: centroid + edge samples (follows radar shape).
   for (const p of pts) {
     if (!p.swdi_ring || p.swdi_ring.length < 3) continue;
-    const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-    const cLat = p.swdi_ring.reduce((a, c) => a + c[0], 0) / p.swdi_ring.length;
-    const cLon = p.swdi_ring.reduce((a, c) => a + c[1], 0) / p.swdi_ring.length;
-    const rKm = hailFootprintM(sz, "noaa-swdi-radar", z) / 1000;
-    const { x, y } = toXY(cLat, cLon);
-    minX = Math.min(minX, x - rKm);
-    maxX = Math.max(maxX, x + rKm);
-    minY = Math.min(minY, y - rKm);
-    maxY = Math.max(maxY, y + rKm);
-    kernels.push({ x, y, rKm, size: Math.max(sz, 0.85), spot: false });
+    const sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.85);
+    const ring = p.swdi_ring;
+    const cLat = ring.reduce((a, c) => a + c[0], 0) / ring.length;
+    const cLon = ring.reduce((a, c) => a + c[1], 0) / ring.length;
+    const coreR = hailFootprintM(sz, "noaa-swdi-radar", z) / 1000;
+    const edgeR = Math.max(0.22, coreR * (wide ? 0.42 : 0.32));
+    const pushK = (lat, lon, rKm) => {
+      const { x, y } = toXY(lat, lon);
+      minX = Math.min(minX, x - rKm);
+      maxX = Math.max(maxX, x + rKm);
+      minY = Math.min(minY, y - rKm);
+      maxY = Math.max(maxY, y + rKm);
+      kernels.push({ x, y, rKm, size: sz, spot: false });
+    };
+    pushK(cLat, cLon, coreR);
+    const step = Math.max(1, Math.floor(ring.length / (wide ? 28 : 20)));
+    for (let i = 0; i < ring.length - 1; i += step) {
+      const pt = ring[i];
+      if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+      pushK(pt[0], pt[1], edgeR);
+    }
   }
   const pad = wide ? 2.4 : 1.2;
   minX -= pad;
@@ -3727,20 +3750,21 @@ function buildHailSwathRings(rawPts, zone = {}) {
   const field = new Float32Array(w * h);
 
   for (const k of kernels) {
-    const gx0 = Math.max(0, Math.floor((k.x - k.rKm - minX) / cellKm));
-    const gx1 = Math.min(w - 1, Math.ceil((k.x + k.rKm - minX) / cellKm));
-    const gy0 = Math.max(0, Math.floor((k.y - k.rKm - minY) / cellKm));
-    const gy1 = Math.min(h - 1, Math.ceil((k.y + k.rKm - minY) / cellKm));
-    const r2 = k.rKm * k.rKm;
+    const reach = k.rKm * 1.15;
+    const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
+    const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
+    const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
+    const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
+    const sigma = Math.max(0.08, k.rKm * 0.55);
+    const twoSig2 = 2 * sigma * sigma;
+    const radarBoost = k.spot ? 1 : 1.55;
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
         const cx = minX + (gx + 0.5) * cellKm;
         const cy = minY + (gy + 0.5) * cellKm;
         const d2 = (cx - k.x) * (cx - k.x) + (cy - k.y) * (cy - k.y);
-        if (d2 > r2) continue;
-        const t = 1 - Math.sqrt(d2) / Math.max(0.05, k.rKm);
-        const radarBoost = k.spot ? 1 : 1.65;
-        const contrib = k.size * (0.5 + 0.5 * t) * radarBoost;
+        if (d2 > reach * reach) continue;
+        const contrib = k.size * radarBoost * Math.exp(-d2 / twoSig2);
         const i = gy * w + gx;
         if (contrib > field[i]) field[i] = contrib;
       }
@@ -3763,17 +3787,18 @@ function buildHailSwathRings(rawPts, zone = {}) {
       }
     }
     if (!any) continue;
-    // Aggressive close when zoomed out — fills gaps into continuous swaths like TV radar.
-    const closePasses = wide ? (thr <= 1 ? 6 : thr <= 1.5 ? 4 : 3) : thr <= 1 ? 3 : thr <= 1.5 ? 2 : 1;
+    // Close enough to bridge scan gaps; avoid over-dilating cores into circles.
+    const closePasses = wide ? (thr <= 1 ? 4 : thr <= 1.5 ? 3 : 2) : thr <= 1 ? 2 : thr <= 1.5 ? 1 : 1;
     const closed = morphClose(binary, w, h, closePasses);
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, wide ? 8 : 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      const smooth = chaikinSmoothRing(ring, wide ? 3 : 2);
+      const smooth = chaikinSmoothRing(ring, wide ? 4 : 3);
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.75) || (radarCount >= 1 && thr >= 1);
+      // Uniform pad (not thr-scaled) so nested cutouts stay inside parents.
       out.push({
-        ring: padPolygon(smooth, Math.max(wide ? 140 : 90, thr * (wide ? 80 : 55))),
+        ring: padPolygon(smooth, wide ? 50 : 28),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
@@ -5822,7 +5847,7 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
 }
 
 /** Expand / collapse map — swipe down on the address bar for fullscreen; swipe up from tabs to peek again. */
-const MAP_SHELL_MS = 360;
+const MAP_SHELL_MS = 420;
 
 function scrollViewToAddressPeek() {
   const view = document.getElementById("view");
@@ -5855,22 +5880,34 @@ function unlockHailTierGesture() {
 /**
  * Second swipe from the address peek: open storm dates, then scroll the view
  * 1:1 with the finger — Instagram-feed style (no timed open animation).
+ * Swipe down on the address/search strip: interactive pull → fullscreen map.
  */
 function bindAddressSwipeToStormSheet(el) {
   if (!el || el.dataset.addrSwipeBound) return;
   el.dataset.addrSwipeBound = "1";
   let active = false;
-  let dragging = false;
+  let dragging = false; // upward feed
+  let pulling = false; // downward fullscreen
   let startX = 0;
   let startY = 0;
   let startScroll = 0;
   let lastY = 0;
   let lastT = 0;
   let vel = 0; // scroll px/ms (finger up → positive)
+  let pullDy = 0;
   let coastId = 0;
+  let baseShellH = 0;
 
   const viewEl = () => document.getElementById("view");
+  const shellEl = () => document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const pt = (e) => (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+  const isExpanded = () => shellEl()?.classList.contains("expanded");
+  const onChrome = (t) =>
+    Boolean(
+      t?.closest?.(
+        "#hs-search, #hs-goto, .hs-goto, .hs-pin, .hs-place, .hs-pin-ready, #hs-addr-q, #hs-bottom-panel > form",
+      ),
+    ) && !t?.closest?.(".hs-dates, .hs-filters, .hs-date, button, a, select, textarea");
 
   const stopCoast = () => {
     if (coastId) cancelAnimationFrame(coastId);
@@ -5889,6 +5926,41 @@ function bindAddressSwipeToStormSheet(el) {
     coastId = requestAnimationFrame(coastScroll);
   };
 
+  const clearPullVisual = ({ animate = true } = {}) => {
+    const panel = el;
+    const shell = shellEl();
+    if (animate) {
+      panel.style.transition = "";
+      if (shell) shell.style.transition = "";
+    } else {
+      panel.style.transition = "none";
+      if (shell) shell.style.transition = "none";
+    }
+    panel.classList.remove("hs-pull-expand");
+    shell?.classList.remove("hs-pull-expand");
+    panel.style.transform = "";
+    panel.style.opacity = "";
+    if (shell) {
+      shell.style.height = "";
+      shell.style.minHeight = "";
+    }
+  };
+
+  const applyPullVisual = (dy) => {
+    const shell = shellEl();
+    const p = Math.min(1, dy / 110);
+    el.classList.add("hs-pull-expand");
+    shell?.classList.add("hs-pull-expand");
+    el.style.transition = "none";
+    if (shell) shell.style.transition = "none";
+    el.style.transform = `translate3d(0, ${Math.round(dy * 0.62)}px, 0)`;
+    el.style.opacity = String(Math.max(0.2, 1 - p * 0.75));
+    if (shell && baseShellH > 0) {
+      shell.style.height = `${Math.round(baseShellH + dy * 0.92)}px`;
+      shell.style.minHeight = `${Math.round(baseShellH + dy * 0.92)}px`;
+    }
+  };
+
   const openFeed = () => {
     if (hailBottomTier === "sheet") return;
     addressSwipeOpeningSheet = true;
@@ -5903,49 +5975,86 @@ function bindAddressSwipeToStormSheet(el) {
   };
 
   const onDown = (e) => {
-    if (hailBottomTier !== "address") return;
+    if (isExpanded()) return;
+    if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return;
     if (e.touches && e.touches.length !== 1) return;
-    if (e.target.closest("a, button, input, select, textarea, .hs-date, .hs-dates, .hs-filters")) return;
-    // Whole peek band — works with or without a selected house / .hs-pin
+    // Allow search field — vertical pull still enters fullscreen; taps keep typing.
+    if (e.target.closest("button, a, select, textarea, .hs-date, .hs-dates, .hs-filters")) return;
+    if (!onChrome(e.target) && !e.target.closest?.("#hs-bottom-panel")) return;
+    // Feed-scroll only from address chrome when peeking; pull-down from chrome always.
+    if (!onChrome(e.target) && hailBottomTier === "sheet") {
+      // Still allow pull from pin/search when sheet is open
+      if (!e.target.closest?.("#hs-search, .hs-pin, .hs-goto, #hs-addr-q")) return;
+    }
     stopCoast();
     unlockHailTierGesture();
     const p = pt(e);
     const view = viewEl();
+    const shell = shellEl();
     active = true;
     dragging = false;
+    pulling = false;
+    pullDy = 0;
     startX = p.clientX;
     startY = p.clientY;
     startScroll = view?.scrollTop || 0;
     lastY = startY;
     lastT = performance.now();
     vel = 0;
+    baseShellH = shell?.getBoundingClientRect?.().height || 0;
   };
 
   const onMove = (e) => {
-    // Keep tracking after sheet opens mid-gesture
     if (!active) return;
+    if (isExpanded()) return;
     if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return;
     const p = pt(e);
     const dx = p.clientX - startX;
-    const dy = startY - p.clientY; // up positive
-    if (!dragging) {
-      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
-      if (Math.abs(dx) > Math.abs(dy) && dy < 8) {
+    const down = p.clientY - startY;
+    const up = startY - p.clientY;
+
+    if (!dragging && !pulling) {
+      if (Math.abs(dx) < 6 && Math.abs(down) < 6) return;
+      if (Math.abs(dx) > Math.abs(down) && Math.abs(dx) > Math.abs(up)) {
         active = false;
         return;
       }
-      if (dy < 4) return; // need a clear upward pull
-      dragging = true;
-      openFeed();
+      if (down > 10 && down > up) {
+        pulling = true;
+        try {
+          document.activeElement?.blur?.();
+        } catch {
+          /* ignore */
+        }
+      } else if (up > 8 && hailBottomTier === "address") {
+        dragging = true;
+        openFeed();
+      } else if (up > 8 && hailBottomTier === "sheet") {
+        // Already open — just feed-scroll
+        dragging = true;
+      } else {
+        return;
+      }
     }
-    if (e.cancelable) e.preventDefault();
-    e.stopPropagation();
-    const now = performance.now();
-    const dt = Math.max(1, now - lastT);
-    vel = (lastY - p.clientY) / dt;
-    lastY = p.clientY;
-    lastT = now;
-    syncScroll(p.clientY);
+
+    if (pulling) {
+      if (e.cancelable) e.preventDefault();
+      e.stopPropagation();
+      pullDy = Math.max(0, p.clientY - startY);
+      applyPullVisual(pullDy);
+      return;
+    }
+
+    if (dragging) {
+      if (e.cancelable) e.preventDefault();
+      e.stopPropagation();
+      const now = performance.now();
+      const dt = Math.max(1, now - lastT);
+      vel = (lastY - p.clientY) / dt;
+      lastY = p.clientY;
+      lastT = now;
+      syncScroll(p.clientY);
+    }
   };
 
   const endGesture = () => {
@@ -5953,6 +6062,23 @@ function bindAddressSwipeToStormSheet(el) {
     active = false;
     addressSwipeOpeningSheet = false;
     unlockHailTierGesture();
+    if (pulling) {
+      pulling = false;
+      const commit = pullDy > 48;
+      if (commit) {
+        clearPullVisual({ animate: false });
+        if (hailBottomTier === "hidden") {
+          hailBottomTier = "address";
+          syncHailBottomChrome();
+        }
+        setWxMapExpanded(true);
+      } else {
+        clearPullVisual({ animate: true });
+      }
+      pullDy = 0;
+      dragging = false;
+      return;
+    }
     if (!dragging) return;
     dragging = false;
     if (vel > 0.15) coastScroll();
@@ -6148,8 +6274,20 @@ export function advanceHailBottomReveal() {
 export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const view = document.getElementById("view");
+  const panel = document.getElementById("hs-bottom-panel");
   if (!shell) return;
   if (on === shell.classList.contains("expanded")) return;
+  // Drop any in-progress pull-to-expand visuals before the real transition.
+  shell.classList.remove("hs-pull-expand");
+  panel?.classList.remove("hs-pull-expand");
+  shell.style.height = "";
+  shell.style.minHeight = "";
+  shell.style.transition = "";
+  if (panel) {
+    panel.style.transform = "";
+    panel.style.opacity = "";
+    panel.style.transition = "";
+  }
   shell.classList.toggle("expanded", on);
   document.body.classList.toggle("wx-map-expanded", on);
   document.body.classList.add("wx-map-animating");
@@ -6189,16 +6327,14 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   const mapBar = shell.querySelector(".hs-map-bar");
   const tabNav = tabs || document.getElementById("tabs");
   const isExpanded = () => shell.classList.contains("expanded");
-  const onPeekBand = (t) => Boolean(t?.closest?.("#hs-bottom-panel"));
-  /** Address search strip / pin header — swipe down here enters fullscreen (not map pan). */
   const onAddressBar = (t) =>
     Boolean(
       t?.closest?.(
-        "#hs-search, #hs-goto, .hs-goto, .hs-pin, .hs-place, .hs-pin-ready, #hs-bottom-panel > form",
+        "#hs-search, #hs-goto, .hs-goto, .hs-pin, .hs-place, .hs-pin-ready, #hs-addr-q, #hs-bottom-panel > form",
       ),
     );
   const blockMapChrome = (e) =>
-    e.target.closest(".leaflet-control, .hs-composer, .hs-pin-scale-pop, .hs-layers, input, select, textarea");
+    e.target.closest(".leaflet-control, .hs-composer, .hs-pin-scale-pop, .hs-layers, select, textarea");
   const collapseFromBar = (e) => {
     if (!isExpanded() || !mapBar?.contains(e.target)) return false;
     return true;
@@ -6270,48 +6406,107 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     { passive: false },
   );
   let touchY = 0;
+  let touchStartY = 0;
   let touchInBar = false;
-  let touchOnAddr = false;
-  let touchAccum = 0;
+  let touchPulling = false;
+  let touchPullDy = 0;
   let touchGestureDone = false;
+  let barBaseH = 0;
+  const clearBarPull = ({ animate = true } = {}) => {
+    const panel = document.getElementById("hs-bottom-panel");
+    if (animate) {
+      shell.style.transition = "";
+      if (panel) panel.style.transition = "";
+    } else {
+      shell.style.transition = "none";
+      if (panel) panel.style.transition = "none";
+    }
+    shell.classList.remove("hs-pull-expand");
+    panel?.classList.remove("hs-pull-expand");
+    shell.style.height = "";
+    shell.style.minHeight = "";
+    if (panel) {
+      panel.style.transform = "";
+      panel.style.opacity = "";
+    }
+  };
+  const applyBarPull = (dy) => {
+    const panel = document.getElementById("hs-bottom-panel");
+    const p = Math.min(1, dy / 110);
+    shell.classList.add("hs-pull-expand");
+    panel?.classList.add("hs-pull-expand");
+    shell.style.transition = "none";
+    if (panel) panel.style.transition = "none";
+    if (barBaseH > 0) {
+      shell.style.height = `${Math.round(barBaseH + dy * 0.92)}px`;
+      shell.style.minHeight = `${Math.round(barBaseH + dy * 0.92)}px`;
+    }
+    if (panel && !isExpanded()) {
+      panel.style.transform = `translate3d(0, ${Math.round(dy * 0.55)}px, 0)`;
+      panel.style.opacity = String(Math.max(0.2, 1 - p * 0.7));
+    }
+  };
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) return;
     unlockHailTierGesture();
     touchY = e.touches[0].clientY;
+    touchStartY = touchY;
     touchInBar = Boolean(mapBar?.contains(e.target) && !e.target.closest('input[type="range"]'));
-    touchOnAddr = onAddressBar(e.target);
-    touchAccum = 0;
+    touchPulling = false;
+    touchPullDy = 0;
     touchGestureDone = false;
+    barBaseH = shell.getBoundingClientRect?.().height || 0;
   };
   const onTouchMove = (e) => {
     if (touchGestureDone || e.touches.length !== 1) return;
-    if (blockMapChrome(e)) return;
+    if (!touchInBar) return;
+    if (e.target.closest?.(".leaflet-control, .hs-layers, input[type=range]")) return;
     const y = e.touches[0].clientY;
-    const dy = y - touchY;
+    const down = y - touchStartY;
+    if (!touchPulling) {
+      if (down < 12) return;
+      touchPulling = true;
+    }
+    e.preventDefault();
+    touchPullDy = Math.max(0, down);
     touchY = y;
-    touchAccum += dy;
-    // Fullscreen: one clean swipe-down from address/pin strip OR map bar (not date list).
-    const wantExpand =
-      !isExpanded() &&
-      touchAccum > 36 &&
-      ((touchOnAddr && onPeekBand(e.target) && !e.target.closest?.(".hs-dates, .hs-filters, #hs-q")) ||
-        touchInBar);
-    if (wantExpand) {
-      e.preventDefault();
-      touchGestureDone = true;
-      tryExpandFromAddressBar();
-      touchAccum = 0;
+    if (isExpanded()) {
+      // Collapse: follow finger down a bit then commit on release
+      applyBarPull(Math.min(touchPullDy, 90));
       return;
     }
-    if (isExpanded() && touchInBar && touchAccum > 28) {
-      e.preventDefault();
-      touchGestureDone = true;
-      tryCollapse();
-      touchAccum = 0;
+    applyBarPull(touchPullDy);
+  };
+  const onTouchEnd = () => {
+    if (!touchInBar || touchGestureDone) {
+      touchInBar = false;
+      touchPulling = false;
+      return;
     }
+    if (touchPulling) {
+      touchGestureDone = true;
+      if (isExpanded()) {
+        if (touchPullDy > 40) {
+          clearBarPull({ animate: false });
+          tryCollapse();
+        } else {
+          clearBarPull({ animate: true });
+        }
+      } else if (touchPullDy > 48) {
+        clearBarPull({ animate: false });
+        tryExpandFromAddressBar();
+      } else {
+        clearBarPull({ animate: true });
+      }
+    }
+    touchInBar = false;
+    touchPulling = false;
+    touchPullDy = 0;
   };
   view.addEventListener("touchstart", onTouchStart, { passive: true });
   view.addEventListener("touchmove", onTouchMove, { passive: false });
+  view.addEventListener("touchend", onTouchEnd, { passive: true });
+  view.addEventListener("touchcancel", onTouchEnd, { passive: true });
   if (mapBar) {
     mapBar.addEventListener(
       "wheel",

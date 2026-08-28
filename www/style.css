@@ -17,7 +17,7 @@
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
   --tab-h: 3.4rem;
   --gc-header-h: calc(2.35rem + var(--safe-top));
-  --map-expand-ms: 360ms;
+  --map-expand-ms: 420ms;
   --map-expand-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --sheet-reveal-ms: 420ms;
 }
@@ -1787,7 +1787,16 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) {
   cursor: grab;
-  touch-action: pan-x;
+  touch-action: none; /* vertical pull = fullscreen; upward = feed (JS) */
+}
+.hs-bottom-panel.hs-sheet-open #hs-search,
+.hs-bottom-panel.hs-sheet-open .hs-goto,
+.hs-bottom-panel.hs-sheet-open .hs-pin {
+  touch-action: none;
+}
+.hs-bottom-panel.hs-pull-expand,
+.hs-map-shell.hs-pull-expand {
+  will-change: transform, opacity, height, min-height;
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open):active { cursor: grabbing; }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
