@@ -2506,40 +2506,42 @@ export async function viewportDossier(settings, filters = wxFilters) {
   return data;
 }
 
-let selectPinDblTapHandler = null;
+let selectPinClearHandler = null;
+/** Ignore clear taps briefly after placing so the drop gesture can't clear itself. */
+let selectPinClearReadyAt = 0;
 
 export function bindSelectPinDblTap(fn) {
-  selectPinDblTapHandler = fn;
-  if (pin) wireSelectPinDblTap(pin);
+  selectPinClearHandler = typeof fn === "function" ? fn : null;
+  if (pin) wireSelectPinClear(pin);
 }
 
-function wireSelectPinDblTap(marker) {
-  if (!marker || marker._gcDblBound) return;
-  marker._gcDblBound = true;
+function wireSelectPinClear(marker) {
+  if (!marker || marker._gcClearBound) return;
+  marker._gcClearBound = true;
   const fire = (e) => {
-    if (!selectPinDblTapHandler) return;
+    if (!selectPinClearHandler) return;
+    if (Date.now() < selectPinClearReadyAt) return;
     window.L.DomEvent.stop(e);
     if (e.originalEvent) {
       e.originalEvent.preventDefault?.();
       e.originalEvent.stopPropagation?.();
     }
     wxSuppressMapTap = true;
-    selectPinDblTapHandler();
+    selectPinClearHandler();
     setTimeout(() => {
       wxSuppressMapTap = false;
     }, 450);
   };
-  marker.on("dblclick", fire);
-  let lastTap = 0;
-  marker.on("touchend", (e) => {
-    window.L.DomEvent.stop(e);
-    const now = Date.now();
-    if (now - lastTap < 350) {
-      fire(e);
-      lastTap = 0;
-    } else {
-      lastTap = now;
-    }
+  // Single tap/click — easier than double-tap on a phone
+  marker.on("click", fire);
+}
+
+function selectPinIcon() {
+  return window.L.divIcon({
+    className: "hs-select-pin",
+    iconSize: [52, 52],
+    iconAnchor: [26, 46],
+    html: '<span class="hs-select-pin-glyph" aria-hidden="true"></span>',
   });
 }
 
@@ -3762,6 +3764,7 @@ function ensureSelectPane() {
 function placeSelectPin(latlng) {
   if (!map || !window.L || !latlng) return;
   ensureSelectPane();
+  selectPinClearReadyAt = Date.now() + 420;
   if (pin) {
     pin.setLatLng(latlng);
     // After clear/remove, the marker object can linger without being on the map
@@ -3778,9 +3781,12 @@ function placeSelectPin(latlng) {
       pane: "selectPin",
       keyboard: false,
       zIndexOffset: 900,
+      icon: selectPinIcon(),
+      title: "Tap to clear",
+      alt: "Selected house — tap to clear",
     }).addTo(map);
   }
-  wireSelectPinDblTap(pin);
+  wireSelectPinClear(pin);
 }
 
 export function setFieldOverlay({

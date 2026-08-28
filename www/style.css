@@ -1224,6 +1224,30 @@ body.hs-tab .leaflet-container,
   /* Zones/dots are visual only — map taps must still place the blue select pin */
   pointer-events: none !important;
 }
+.hs-select-pin {
+  background: transparent !important;
+  border: none !important;
+}
+.hs-select-pin-glyph {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  width: 28px;
+  height: 28px;
+  margin-left: -14px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: #2a81cb;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.hs-select-pin-glyph::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+}
 .wx-panel {
   max-height: none;
   overflow: visible;
