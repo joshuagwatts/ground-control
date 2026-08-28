@@ -1400,6 +1400,43 @@ body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
 .lens-status.need { color: var(--amber); border-color: var(--amber); }
 .lens-status.narrow { color: var(--phos); border-color: var(--line); }
 .lens-status.know { color: var(--black); background: var(--phos); border-color: var(--phos); }
+.lens-meter {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0.7rem 0.8rem;
+  margin: 0 0 0.85rem;
+  border-radius: var(--radius);
+}
+.lens-meter.lock { border-color: var(--phos); }
+.lens-meter.hot { border-color: var(--amber); }
+.lens-meter-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: baseline;
+  margin-bottom: 0.4rem;
+}
+.lens-meter-top strong { font-size: 13px; }
+.lens-meter-top span {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  color: var(--phos);
+  font-weight: 700;
+}
+.lens-meter.lock .lens-meter-top span { color: var(--black); background: var(--phos); padding: 0.1rem 0.4rem; }
+.lens-meter-track {
+  height: 8px;
+  background: var(--black);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.lens-meter-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--phos);
+}
+.lens-meter p { margin: 0.4rem 0 0; font-size: 12px; }
 .shot-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .shot-chip {
   font-size: 9px;

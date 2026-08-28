@@ -32,6 +32,7 @@ import {
   drawHailMarkers,
   resolveMapCenter,
   geocodeAddress,
+  geoCacheOk,
   flyToPin,
   setWxPin,
   setHailScopeMode,
@@ -699,7 +700,7 @@ function renderLens() {
         <p class="muted">What are you shooting?</p>
         <button type="button" class="lens-pick-card" id="pick-shingle">
           <strong>Shingle identifier</strong>
-          <span>Four guided shots: granule close-up, full tab, overlay, nailing strip. We will not name a product until those are in.</span>
+          <span>Keep shooting until the meter hits 95% on a product. A back stamp or wrapper is 100% on the date.</span>
         </button>
         <button type="button" class="lens-pick-card" id="pick-damage">
           <strong>Damage highlighter</strong>
@@ -728,6 +729,29 @@ function renderLens() {
               : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}: ${next ? next.label : "next angle"}.`,
           );
 
+  const pct = Number.isFinite(Number(v?.pct)) ? Number(v.pct) : coreHave * 12;
+  const leader =
+    (status === "KNOW" && k.manufacturer
+      ? `${k.manufacturer} ${k.product}${k.color ? ` · ${k.color}` : ""}`
+      : "") ||
+    (n.manufacturer ? `${n.manufacturer}${n.product ? ` ${n.product}` : ""}${n.color ? ` · ${n.color}` : ""}` : "");
+  const meterHint =
+    pct >= 100
+      ? "Locked. Date stamp read."
+      : pct >= 95
+        ? "Product locked. Back stamp or wrapper for 100% date."
+        : next
+          ? `Need ${next.label} to push this higher.`
+          : "Identify anytime — keep detail shots coming until 95%.";
+  const meterHtml =
+    mode === "shingle"
+      ? `<div class="lens-meter${pct >= 95 ? " lock" : pct >= 70 ? " hot" : ""}">
+          <div class="lens-meter-top"><strong>${esc(leader || "Collecting tells")}</strong><span>${pct}%</span></div>
+          <div class="lens-meter-track"><i style="width:${pct}%"></i></div>
+          <p class="muted">${esc(meterHint)}</p>
+        </div>`
+      : "";
+
   $("#view").innerHTML = `
     <div class="lens-wrap">
       <div class="lens-session-head">
@@ -739,8 +763,9 @@ function renderLens() {
           ? `<div class="lens-progress" aria-label="${coreHave} of ${SHINGLE_CORE.length} required shots">
               ${SHINGLE_CORE.map((id) => `<i class="${have.has(id) ? "have" : pendingShot === id ? "now" : ""}" title="${esc(shotSpec(id).label)}"></i>`).join("")}
             </div>
+            ${meterHtml}
             <div class="lens-shot-card">
-              <div class="lens-shot-kicker">${coreDone ? "Required shots done" : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
+              <div class="lens-shot-kicker">${coreDone ? (pct >= 95 ? "Locked — extra shots raise date" : "Keep going until 95%") : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
               <h3>${esc((next || shotSpec(pendingShot)).label)}</h3>
               <p class="muted">${esc((next || shotSpec(pendingShot)).how || (next || shotSpec(pendingShot)).why)}</p>
             </div>`
@@ -748,7 +773,7 @@ function renderLens() {
       }
       <div class="actions">
         <button type="button" id="lens-snap" class="primary">${mode === "shingle" && coreDone && next ? "Add extra shot" : "Snap"}</button>
-        <button type="button" id="lens-read" ${mode === "shingle" && !coreDone ? "disabled" : L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "Mark last" : "Identify"}</button>
+        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "Mark last" : "Identify"}</button>
         <button type="button" id="lens-clear">Start over</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos
@@ -760,9 +785,7 @@ function renderLens() {
       <div class="lens-status ${statusCls}">${esc(
         mode === "damage"
           ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
-          : coreDone
-            ? `${status.replace("_", " ")} · ${L.photos.length} shots`
-            : `${coreHave} / ${SHINGLE_CORE.length} required`,
+          : `${pct}% · ${leader || (coreDone ? status.replace("_", " ") : `${coreHave} / ${SHINGLE_CORE.length}`)}`,
       )}</div>
       <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
@@ -772,7 +795,7 @@ function renderLens() {
       }
       ${
         mode === "shingle" && n.candidates?.length && status !== "KNOW"
-          ? `<div class="lens-cands"><h3>Candidates (not claimed)</h3>${n.candidates
+          ? `<div class="lens-cands"><h3>Also in the running</h3>${n.candidates
               .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? " · discontinued" : ""}</p>`)
               .join("")}</div>`
           : ""
@@ -843,9 +866,10 @@ function renderLens() {
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
       persist();
       const justFinishedCore = !wasDone && shingleCoreDone(L);
+      const extraAfterCore = wasDone && shingleCoreDone(L);
       renderLens();
-      if (justFinishedCore) {
-        setStatus("Required shots in — identifying…");
+      if (justFinishedCore || extraAfterCore) {
+        setStatus(justFinishedCore ? "Required shots in — identifying…" : "New detail — identifying…");
         runLens();
       }
     } catch (e) {
@@ -884,10 +908,6 @@ async function runLens() {
   const L = lensPhotos();
   const mode = lensMode();
   if (!L.photos.length || lensBusy) return;
-  if (mode === "shingle" && !shingleCoreDone(L)) {
-    setStatus(`Need ${SHINGLE_CORE.length} guided shots first`);
-    return;
-  }
   lensBusy = true;
   setStatus("Reading shots…");
   try {
@@ -913,7 +933,13 @@ async function runLens() {
     L.last = hit;
     persist();
     renderLens();
-    setStatus(hit.status === "KNOW" ? "LENS · KNOW" : hit.status === "NARROWED" ? "LENS · NARROWED" : "LENS · NEED SHOTS");
+    setStatus(
+      hit.verdict?.pct >= 100
+        ? "LENS · 100%"
+        : hit.verdict?.pct >= 95
+          ? "LENS · 95%"
+          : `LENS · ${Number(hit.verdict?.pct) || 0}%`,
+    );
   } catch (e) {
     setStatus(String(e.message || e).slice(0, 70).toUpperCase());
     const card = $("#lens-card");
@@ -971,8 +997,10 @@ function paintFieldMap() {
       const box = $("#hs-addr-q");
       if (box && h.address) box.value = h.address;
       if (h.address) setStatus(h.address);
-      flyToPin(h.lat, h.lon, 20);
-      onHailTap(h.lat, h.lon);
+      wxState.lat = Number(h.lat);
+      wxState.lon = Number(h.lon);
+      wxState.address = h.address || "";
+      flyToPin(h.lat, h.lon, 20, { radius: false });
     },
   });
 }
@@ -1317,14 +1345,21 @@ async function loadDoneAddresses() {
       const cacheKey = q.toLowerCase();
       setStatus(`Placing ${i + 1} of ${lines.length}…`);
       let hit = geo[cacheKey];
-      if (!hit || !Number.isFinite(Number(hit.lat))) {
+      if (!geoCacheOk(hit, q)) {
         try {
           const found = await geocodeAddress(q);
           const top = found[0];
-          hit = { lat: top.lat, lon: top.lon, address: top.address || addr };
+          hit = {
+            lat: top.lat,
+            lon: top.lon,
+            address: top.address || addr,
+            v: 2,
+            houseOk: Boolean(top.houseOk),
+            source: top.source || "",
+          };
           geo[cacheKey] = hit;
         } catch {
-          hit = { lat: null, lon: null, address: addr };
+          hit = { lat: null, lon: null, address: addr, v: 2, houseOk: false };
           miss += 1;
         }
         await new Promise((r) => setTimeout(r, 900));

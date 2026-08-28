@@ -1,4 +1,4 @@
-/** Certain-only shingle lens. Guesses never become answers. */
+/** Shingle lens. Always names a catalog leader; the meter is what locks it. */
 
 import { privacyOn } from "./cloud.js";
 import { visionComplete } from "./vision.js";
@@ -53,18 +53,20 @@ export function normalizeAnalysis(raw) {
 
 function buildPrompt(photos, taggedShots) {
   const tags = (taggedShots || []).map((s, i) => `Photo ${i + 1}: ${s || "unspecified angle"}`).join("\n");
-  return `You are Ground Control LENS — a roofing-company shingle identifier for field inspections.
-You do NOT guess. You do NOT name a product unless the photos uniquely match the CATALOG below.
-If you are not certain, set confidence below 0.72 and list the next shot you need.
+  return `You are Ground Control LENS — a field shingle identifier for roofing inspections.
+You ALWAYS pick the single most likely CATALOG manufacturer + product + color. Refusing to name a line is a failure.
+Uncertainty belongs in confidence, not in blank values. Low conf (0.2–0.6) is the correct way to say "leaning this way."
 
 Rules:
-- Only use manufacturer / product line / color names from CATALOG. If it is not in the catalog, value="" conf=0.
-- 3-tab vs architectural vs designer must be visible (cutouts, overlay, thickness). If not, construction conf=0.
-- Owens Corning Duration is identified by the pink/coral SureNail strip — without that shot, do not assert Duration vs Oakridge.
-- GAF Timberline HD vs HDZ: do not assert HDZ unless LayerLock/HDZ cues are visible; otherwise NARROW to Timberline family.
-- Date: only fill date_code if you can read a stamp, lot, or wrapper year. Weathering is era, not a date.
+- manufacturer / product / color MUST be names from CATALOG. Empty values only if the photos are not asphalt shingles.
+- conf is 0..1 for how sure YOU are from THESE photos. Do not refuse a name just because you are not 95% sure.
+- 0.92+ only when unique factory tells are visible (SureNail pink strip, LayerLock/HDZ, plant stamp, branded wrapper).
+- Owens Corning Duration vs Oakridge: without a nailing-strip shot, still NAME the leader, but keep product conf below 0.72.
+- GAF Timberline HD vs HDZ: without LayerLock/HDZ cues, name Timberline HD if the roof looks older, HDZ if it looks new. Keep conf below 0.72 if ambiguous.
+- Date: only fill date_code if you can read a stamp, lot, or wrapper year. Weathering is era, not a date. Date conf 0.92+ is a 100% lock.
 - Discontinued products ARE in the catalog — prefer them when the cues match an older line.
 - Hail bruises / granule loss are damage notes, not product ID.
+- shots_needed: the ONE next photo that would raise certainty the most.
 
 Photos tagged:
 ${tags || "(untagged sequence)"}
@@ -85,9 +87,9 @@ Reply with JSON only, this shape:
   "shots_needed": [{"id":"granules_close","why":""}],
   "lookalikes": [],
   "tells": [],
-  "notes": "one sentence, no product name unless conf>=0.92"
+  "notes": "one sentence: leading pick and what shot would raise the meter"
 }
-conf is 0..1. Use 0.92+ only when you would stake a claim on it.`;
+conf is 0..1. Name the leader even at 0.3.`;
 }
 
 export async function identifyShingles(settings, photos, taggedShots = []) {
@@ -105,7 +107,7 @@ export async function identifyShingles(settings, photos, taggedShots = []) {
     };
   }
   const prompt = buildPrompt(urls, taggedShots);
-  const out = await visionComplete(settings, prompt, urls, { maxTokens: 1400, temperature: 0.05 });
+  const out = await visionComplete(settings, prompt, urls, { maxTokens: 1400, temperature: 0.25 });
   const parsed = extractJson(out.text);
   const analysis = normalizeAnalysis(parsed || {});
   const shotIds = [...new Set([...(taggedShots || []).filter(Boolean), ...(analysis.shots_present || [])])];
@@ -132,32 +134,39 @@ export async function identifyShingles(settings, photos, taggedShots = []) {
 
 export function formatVerdict(hit) {
   const v = hit.verdict || gateVerdict({}, 0, []);
+  const pct = Number.isFinite(Number(v.pct)) ? Number(v.pct) : 0;
   const lines = [];
+  const leader =
+    (v.status === "KNOW" && v.known?.manufacturer
+      ? `${v.known.manufacturer} ${v.known.product}${v.known.color ? ` · ${v.known.color}` : ""}`
+      : null) ||
+    (v.narrowed?.manufacturer
+      ? `${v.narrowed.manufacturer}${v.narrowed.product ? ` ${v.narrowed.product}` : ""}${v.narrowed.color ? ` · ${v.narrowed.color}` : ""}`
+      : "");
+  if (pct >= 100) lines.push(`100% · ${leader || "date locked"}`);
+  else if (pct >= 95) lines.push(`95% · ${leader}`);
+  else if (leader) lines.push(`${pct}% leaning ${leader}`);
+  else lines.push(`${pct}% — keep shooting. Gemini names a leader; the meter locks it.`);
   if (v.status === "KNOW") {
     const k = v.known;
-    lines.push(`KNOW · ${k.manufacturer} ${k.product}${k.color ? ` · ${k.color}` : ""}`);
     if (k.discontinued) lines.push(`DISCONTINUED${k.replacedBy ? ` · current equivalent ${k.replacedBy}` : ""}`);
     if (k.years) lines.push(`Production window: ${k.years}`);
     if (k.date) lines.push(`DATE CODE: ${k.date}`);
-    else lines.push("DATE: not proven — still need a back stamp or bundle wrapper for an exact date.");
+    else lines.push("Product locked at 95%. Back stamp or bundle wrapper for 100% date.");
     if (k.construction) lines.push(`Construction: ${k.construction}`);
   } else if (v.status === "NARROWED") {
     const n = v.narrowed;
-    lines.push("NARROWED — not an ID yet.");
-    if (n.manufacturer) lines.push(`Family: ${n.manufacturer}${n.product ? ` / ${n.product}` : ""}`);
-    if (n.color) lines.push(`Color leaning: ${n.color} (not locked)`);
     if (n.candidates?.length) {
-      lines.push("Catalog candidates (not claimed):");
+      lines.push("Also in the running:");
       for (const c of n.candidates.slice(0, 4)) {
         lines.push(`  · ${c.maker} ${c.line}${c.color ? ` ${c.color}` : ""}${c.discontinued ? " [DISCONTINUED]" : ""} ${c.years || ""}`);
       }
     }
     if (v.needed[0]) lines.push(nextShotPrompt(v.needed));
   } else {
-    lines.push("NO ID. Ground Control does not guess shingles.");
-    if (v.invented) lines.push("Model tried a name that is not a unique catalog match — thrown out.");
+    if (v.invented) lines.push("That name is not a unique catalog match — thrown out.");
     if (v.needed[0]) lines.push(nextShotPrompt(v.needed));
-    else lines.push("Add a granule close-up, a full tab, and an overlay/shadow shot.");
+    else lines.push("Add a granule close-up, a full tab, overlay, and nailing strip.");
   }
   const tells = hit.analysis?.tells || [];
   if (tells.length) lines.push(`Tells: ${tells.slice(0, 4).join("; ")}`);

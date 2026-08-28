@@ -54,6 +54,9 @@ assert(locked.known.manufacturer === "GAF", "maker");
 assert(locked.known.product === "Timberline HDZ", "line");
 assert(locked.known.color === "Charcoal", "color");
 assert(!locked.known.date, "date still unproven");
+assert(locked.pct === 95, `product lock is 95, got ${locked.pct}`);
+assert(onePhoto.pct < 95, `one photo must stay under 95, got ${onePhoto.pct}`);
+assert(guessNotInCatalog.pct < 30, "invented name stays low on the meter");
 
 const disc = matchCatalog({ manufacturer: "GAF", product: "Timberline HD", color: "Charcoal" });
 assert(disc.top && disc.top.discontinued, "Timberline HD is discontinued");
@@ -85,5 +88,6 @@ const dated = gateVerdict(
 );
 assert(dated.knowDate, "date code + backstamp/wrapper is KNOW date");
 assert(dated.known.date === "W12 2019", "date value");
+assert(dated.pct === 100, `date lock is 100, got ${dated.pct}`);
 
 console.log("shingle-gate ok");

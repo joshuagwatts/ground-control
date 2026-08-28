@@ -840,6 +840,21 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
     if (!has("wrapper")) pushShot("wrapper");
   }
 
+  const pct = meterPct({
+    status,
+    invented: Boolean(invented),
+    knowMaker,
+    knowLine,
+    knowColor,
+    knowDate,
+    coreIn,
+    n,
+    manufacturer,
+    product,
+    color,
+    hit,
+  });
+
   return {
     status,
     known,
@@ -851,7 +866,39 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
     knowLine,
     knowColor,
     knowDate,
+    pct,
   };
+}
+
+/** 0–100 field meter. 95 locks the product; 100 needs a readable date stamp. */
+export function meterPct({
+  status,
+  invented,
+  knowMaker,
+  knowLine,
+  knowColor,
+  knowDate,
+  coreIn,
+  n,
+  manufacturer,
+  product,
+  color,
+  hit,
+} = {}) {
+  if (knowDate && knowLine) return 100;
+  if (status === "KNOW" && knowColor) return 95;
+  if (invented) return Math.min(18, Math.round(((Number(n) || 0) / 8) * 18));
+  let pct = 6;
+  pct += Math.round((Math.min(Number(n) || 0, SHINGLE_CORE.length) / SHINGLE_CORE.length) * 28);
+  if (hit?.top) {
+    pct += Math.round((Number(manufacturer?.conf) || 0) * 18);
+    pct += Math.round((Number(product?.conf) || 0) * (Number(hit.top.p) || 0) * 22);
+    pct += Math.round((Number(color?.conf) || 0) * (Number(hit.top.c) || 0) * 12);
+  }
+  if (!coreIn) pct = Math.min(pct, 58);
+  if (knowMaker && !knowLine) pct = Math.max(pct, 68);
+  if (knowLine && !knowColor) pct = Math.max(pct, 84);
+  return Math.max(0, Math.min(94, Math.round(pct)));
 }
 
 function replacedLineName(id) {
@@ -879,5 +926,8 @@ export function catalogBrief() {
 export function nextShotPrompt(needed) {
   if (!needed.length) return "";
   const first = needed[0];
-  return `Need ${first.label}. ${first.why}. Do not name a product until that shot is in.`;
+  const extra = /backstamp|wrapper/i.test(first.id || "")
+    ? "That shot can push the meter to 100%."
+    : "Keep shooting until the meter hits 95%.";
+  return `Need ${first.label}. ${first.why}. ${extra}`;
 }

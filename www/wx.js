@@ -2,7 +2,8 @@
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
 import { desktopConfigured } from "./desktop.js";
 import { locateDevice, watchGps } from "./geo.js";
-import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin } from "./contacts.js";
+import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin, parseStreetAddress } from "./contacts.js";
+import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint } from "./marks.js";
 
@@ -98,6 +99,7 @@ let houseLayer = null;
 let houseTimer = 0;
 let houseGen = 0;
 let houseCache = { key: "", rings: [], nums: [] };
+let housePaintSig = "";
 let markLayer = null;
 let doneLayer = null;
 let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, onMark: null, onDone: null };
@@ -2631,6 +2633,7 @@ function stopHouseNumbers() {
   }
   houseGen += 1;
   houseCache = { key: "", rings: [], nums: [] };
+  housePaintSig = "";
   if (houseLayer) {
     try {
       houseLayer.clearLayers();
@@ -2671,7 +2674,7 @@ function buildingStyle() {
     color: "#ffcc00",
     weight: sat ? 1.15 : 2,
     fillColor: "#ffcc00",
-    fillOpacity: sat ? 0.04 : night ? 0.2 : 0.1,
+    fillOpacity: sat ? 0.03 : night ? 0.1 : 0.05,
     opacity: 1,
   };
 }
@@ -2706,10 +2709,28 @@ function isOutbuilding(v) {
 }
 
 function houseBoundsKey(b, z) {
-  return `${z}|${b.getSouth().toFixed(4)}|${b.getWest().toFixed(4)}|${b.getNorth().toFixed(4)}|${b.getEast().toFixed(4)}`;
+  return `${z}|${b.getSouth().toFixed(3)}|${b.getWest().toFixed(3)}|${b.getNorth().toFixed(3)}|${b.getEast().toFixed(3)}`;
+}
+
+function ringCentroid(ring) {
+  if (!Array.isArray(ring) || ring.length < 3) return null;
+  const last = ring[ring.length - 1];
+  const closed = ring[0][0] === last[0] && ring[0][1] === last[1];
+  const n = closed ? ring.length - 1 : ring.length;
+  if (n < 3) return null;
+  let lat = 0;
+  let lon = 0;
+  for (let i = 0; i < n; i++) {
+    lat += ring[i][0];
+    lon += ring[i][1];
+  }
+  return { lat: lat / n, lon: lon / n };
 }
 
 function paintHouseLayer(rings, nums, style) {
+  const sig = `${houseCache.key}|${style.weight}|${style.fillOpacity}|${(rings || []).length}|${(nums || []).length}`;
+  if (sig === housePaintSig && houseLayer?.getLayers?.().length) return;
+  housePaintSig = sig;
   houseLayer.clearLayers();
   for (const ring of rings || []) {
     if (!ring || ring.length < 4) continue;
@@ -2865,6 +2886,7 @@ async function refreshHouseNumbers() {
   if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.035 || b.getEast() - b.getWest() > 0.05) {
     houseLayer.clearLayers();
     houseCache = { key: "", rings: [], nums: [] };
+    housePaintSig = "";
     return;
   }
   const style = buildingStyle();
@@ -2873,10 +2895,11 @@ async function refreshHouseNumbers() {
     paintHouseLayer(houseCache.rings, houseCache.nums, style);
     return;
   }
-  const south = b.getSouth();
-  const west = b.getWest();
-  const north = b.getNorth();
-  const east = b.getEast();
+  const padB = b.pad(0.18);
+  const south = padB.getSouth();
+  const west = padB.getWest();
+  const north = padB.getNorth();
+  const east = padB.getEast();
   const gen = ++houseGen;
   const [foot, osm] = await Promise.all([
     fetchStructureFootprints(south, west, north, east).catch(() => []),
@@ -3221,11 +3244,15 @@ export function setMapLayer(id) {
   scheduleHouseNumbers();
 }
 
-export function flyToPin(lat, lon, zoom = HOUSE_ZOOM) {
+export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
-  setWxPin(lat, lon);
-  map.setView([lat, lon], zoom);
+  if (opts.radius === false) placeSelectPin([lat, lon]);
+  else setWxPin(lat, lon);
   placeSelectPin([lat, lon]);
+  const inView = Boolean(map.getBounds?.()?.pad(0.08)?.contains([lat, lon]));
+  const zoomOk = Math.abs((map.getZoom?.() || 0) - zoom) <= 1;
+  if (opts.stay === true || (inView && zoomOk)) return;
+  map.setView([lat, lon], zoom, { animate: false });
 }
 
 /** Double-tap map shell to expand / collapse — keeps address pin zoom separate from hail fit. */
@@ -3268,57 +3295,57 @@ export function bindWxMapExpand(shell) {
   );
 }
 
-/** Forward geocode an address/place for WX search. */
-export async function geocodeAddress(query) {
-  const q = String(query || "").trim();
-  if (q.length < 3) throw new Error("type a longer address");
-  const looksStreet = /\d/.test(q) || /,/.test(q);
-  const fromNominatim = async () => {
-    const { body: nb } = await httpGet(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1`,
-      9000,
-      { "User-Agent": "GroundControl/1.0 (joshuagwatts)" },
-    );
-    const hits = JSON.parse(nb || "[]");
-    return hits.map((h) => ({
-      lat: Number(h.lat),
-      lon: Number(h.lon),
-      address: h.display_name || q,
-      city: String((h.address && (h.address.city || h.address.town || h.address.village)) || "").trim() || String(h.display_name || "").split(",")[0],
-      source: "nominatim",
-    }));
-  };
-  const fromMeteo = async () => {
-    const { body } = await httpGet(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=en&format=json`,
-      9000,
-    );
-    const results = JSON.parse(body || "{}").results || [];
-    return results.map((h) => ({
-      lat: Number(h.latitude),
-      lon: Number(h.longitude),
-      address: [h.name, h.admin1, h.country].filter(Boolean).join(", "),
-      city: h.name || q,
-      source: "open-meteo",
-    }));
-  };
-  let hits = [];
+async function snapToHouse(hit, query) {
+  if (!hit) return hit;
+  const want = parseStreetAddress(query);
+  const houseOk = Boolean(want.house) && Number(hit.score) >= 70;
+  const stamped = { ...hit, v: 2, houseOk };
+  if (!want.house) return stamped;
+  if (hit.addrType === "PointAddress" || Number(hit.score) >= 140) return stamped;
+  const pad = 0.001;
+  const south = hit.lat - pad;
+  const west = hit.lon - pad;
+  const north = hit.lat + pad;
+  const east = hit.lon + pad;
+  const wait = (p, ms) =>
+    Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
   try {
-    hits = looksStreet ? await fromNominatim() : await fromMeteo();
+    const osm = await wait(fetchOsmHouseData(south, west, north, east), 6000);
+    const wantNum = String(want.house).replace(/^0+/, "").toLowerCase();
+    const match = (osm.nums || []).find((n) => String(n.num).replace(/^0+/, "").toLowerCase() === wantNum);
+    if (match) return { ...stamped, lat: match.lat, lon: match.lon, houseOk: true, source: `${hit.source}+osm` };
   } catch {
-    hits = [];
+    /* rooftop footprints next */
   }
-  if (!hits.length) {
-    try {
-      hits = looksStreet ? await fromMeteo() : await fromNominatim();
-    } catch {
-      hits = [];
+  if (!houseOk) return stamped;
+  try {
+    const rings = await wait(fetchStructureFootprints(south, west, north, east), 7000);
+    let best = null;
+    let bestM = 40;
+    for (const ring of rings || []) {
+      const c = ringCentroid(ring);
+      if (!c) continue;
+      const m = haversineKm(hit.lat, hit.lon, c.lat, c.lon) * 1000;
+      if (m < bestM) {
+        bestM = m;
+        best = c;
+      }
     }
+    if (best) return { ...stamped, lat: best.lat, lon: best.lon, houseOk: true, source: `${hit.source}+roof` };
+  } catch {
+    /* keep interpolated point */
   }
-  hits = hits.filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon));
-  if (!hits.length) throw new Error("address not found");
-  return hits;
+  return stamped;
 }
+
+/** Forward geocode an address/place for WX search. Prefers the house, not the street centroid. */
+export async function geocodeAddress(query) {
+  const ranked = await geocodeCandidates(query);
+  const top = await snapToHouse(ranked[0], query);
+  return [top, ...ranked.slice(1)];
+}
+
+export { geoCacheOk };
 
 function cutoffDate(days) {
   const d = new Date();
