@@ -2062,7 +2062,7 @@ body.wx-map-expanded .hs-field {
 .hs-dates { display: flex; flex-direction: column; gap: 0.3rem; }
 .hs-date {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto 1fr auto;
   gap: 0.1rem 0.65rem;
   padding: 0.55rem 0.75rem;
   background: var(--panel);
@@ -2073,12 +2073,27 @@ body.wx-map-expanded .hs-field {
   width: 100%;
   border-radius: var(--radius);
 }
+.hs-date .mark {
+  grid-row: 1 / 2;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-top: 0.15rem;
+  border: 1.5px solid var(--line);
+  border-radius: 0.25rem;
+  background: transparent;
+  align-self: start;
+}
 .hs-date.on { border-color: var(--trim); background: #2a2308; }
+.hs-date.on .mark {
+  border-color: var(--trim);
+  background: var(--trim);
+  box-shadow: inset 0 0 0 2px #2a2308;
+}
 .hs-date.away { opacity: 0.78; }
 .hs-date.away .size { color: var(--muted); }
 .hs-date .when { font-weight: 600; font-size: 14px; }
 .hs-date .size { color: var(--trim); font-weight: 650; font-size: 14px; }
-.hs-date .meta { grid-column: 1 / -1; color: var(--muted); font-size: 12px; line-height: 1.35; }
+.hs-date .meta { grid-column: 2 / -1; color: var(--muted); font-size: 12px; line-height: 1.35; }
 .hs-empty { color: var(--muted); padding: 1.2rem 0.2rem; line-height: 1.45; }
 .hs-goto, .hs-styles, .hs-map-bar { pointer-events: auto; }
 .hs-filters #hs-q { flex: 1 1 100%; }

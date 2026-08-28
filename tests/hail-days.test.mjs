@@ -1,4 +1,10 @@
-import { collapseHailByDate, filterDossier, mergeHailRows, HOUSE_HAIL_KM } from "../www/wx.js";
+import {
+  collapseHailByDate,
+  filterDossier,
+  mergeHailRows,
+  stormPassesSizeFilter,
+  HOUSE_HAIL_KM,
+} from "../www/wx.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -60,5 +66,26 @@ assert(
   "spotter flood must not drop SWDI radar hits",
 );
 assert(merged.filter((h) => h.source === "noaa-swdi-radar").length === 50, "keep the radar batch");
+
+const spread = Array.from({ length: 45 }, (_, i) => ({
+  date: "2026-03-15",
+  lat: 35.5 + i * 0.012,
+  lon: -97.4 - i * 0.01,
+  size_in: "1.00",
+  source: "iem-lsr",
+  distance_km: 1 + i * 0.2,
+}));
+const [monster] = collapseHailByDate(spread);
+assert(monster.hits === 45, `hits ${monster.hits}`);
+assert(monster.span_km > 15, `span_km should be wide, got ${monster.span_km}`);
+assert(stormPassesSizeFilter(monster, { stormSize: "huge" }), "huge filter should keep wide busy storm");
+assert(!stormPassesSizeFilter({ hits: 45, span_km: 20 }, { stormSize: "epic" }), "epic filter should drop mid-huge storm");
+
+const { hail: bigOnly } = filterDossier(
+  { hail: [...spread, near] },
+  { km: 80, hailIn: 0, windMph: 0, days: 730, year: "all", sort: "storm", stormSize: "busy" },
+);
+assert(bigOnly.some((h) => h.date === "2026-03-15"), "busy storm size filter keeps the 45-hit day");
+assert(!bigOnly.some((h) => h.date === near.date), "busy filter drops single-hit day");
 
 console.log("hail-days ok");
