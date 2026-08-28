@@ -254,6 +254,55 @@ export async function desktopGpuPing(settings) {
   };
 }
 
+function stripDataUrl(url) {
+  const s = String(url || "");
+  const i = s.indexOf("base64,");
+  return i >= 0 ? s.slice(i + 7) : s;
+}
+
+/** Control Room — GPU shingle / vision on the paired desktop (Ollama). Stays on LAN. */
+export async function desktopLens(settings, { prompt, images, maxTokens = 1400, temperature = 0.2, mode = "shingle" } = {}) {
+  const url = baseUrl(settings);
+  if (!url) throw new Error("Control Room not paired — tap Connect in Settings");
+  const reach = await desktopReachable(settings, 2500);
+  if (!reach.ok) throw new Error(`Control Room offline (${reach.error || "same Wi‑Fi?"})`);
+  await ensureDesktopSession(settings);
+  const body = {
+    prompt: String(prompt || ""),
+    images: (images || []).map(stripDataUrl),
+    mode: String(mode || "shingle"),
+    max_tokens: Number(maxTokens) || 1400,
+    temperature: Number(temperature) || 0.2,
+  };
+  const paths = ["/api/lens", "/api/vision"];
+  let lastErr = "";
+  for (const path of paths) {
+    try {
+      const raw = await httpLanPostJson(`${url}${path}`, authHeaders(settings), body, 120000);
+      const text = String(raw.text || raw.reply || raw.content || "").trim();
+      if (!text) throw new Error("empty Control Room reply");
+      return {
+        text,
+        provider: "desktop",
+        model: String(raw.model || raw.ollama?.using || "ollama"),
+        leaked: false,
+      };
+    } catch (e) {
+      lastErr = String(e.message || e);
+      if (e?.status === 404) continue;
+      if (path === paths[paths.length - 1]) throw e;
+    }
+  }
+  throw new Error(lastErr || "Control Room vision not available on desktop");
+}
+
+export function disconnectDesktop(settings) {
+  if (!settings) return;
+  settings.desktop_token = "";
+  settings.desktop_paired = false;
+  settings.desktop_live = false;
+}
+
 async function scanLan(onProgress) {
   if (onProgress) onProgress("FINDING YOUR Wi‑Fi…");
   const subnets = await guessSubnets();

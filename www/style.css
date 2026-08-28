@@ -1373,8 +1373,24 @@ body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
 .lens-pick-card span { color: var(--muted); font-size: 14px; font-weight: 500; line-height: 1.4; }
 .lens-pick-card:active { border-color: var(--trim); }
 .lens-session-head {
-  display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
 }
+.lens-room {
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+}
+.lens-room.on { color: var(--phos); border-color: var(--phos); }
+.room-status { font-weight: 650; }
+.lens-thumb em[data-retag] { cursor: pointer; text-decoration: underline dotted; }
 .lens-session-head strong { letter-spacing: -0.02em; }
 .lens-session-head #lens-back {
   padding: 0.4rem 0.75rem; font-size: 13px;

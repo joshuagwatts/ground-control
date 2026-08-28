@@ -75,7 +75,7 @@ export const SHOTS = [
 
 /** Required sequence before Lens will try to name a product. */
 export const SHINGLE_CORE = ["granules_close", "tab_pattern", "overlay_shadow", "nailing_strip"];
-export const SHINGLE_EXTRA = ["thickness_edge", "slope_context", "backstamp", "wrapper", "ridge_cap"];
+export const SHINGLE_EXTRA = ["wrapper", "backstamp", "thickness_edge", "slope_context", "ridge_cap"];
 
 export const CONSTRUCTIONS = ["3-tab", "architectural laminate", "designer", "luxury designer", "metal", "tile", "slate", "wood", "other"];
 
@@ -788,9 +788,17 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
     (has("nailing_strip") || has("wrapper")) &&
     n >= SHINGLE_CORE.length;
   const knowMaker = manufacturer.conf >= KNOW && hit.top && hit.top.m >= 0.88 && coreIn;
-  const knowLine = knowMaker && product.conf >= KNOW && hit.unique;
-  const knowColor = knowLine && color.conf >= KNOW && hit.colorUnique && has("granules_close");
+  let knowLine = knowMaker && product.conf >= KNOW && hit.unique;
+  let knowColor = knowLine && color.conf >= KNOW && hit.colorUnique && has("granules_close");
   const knowDate = dateCode.conf >= KNOW && (has("backstamp") || has("wrapper")) && String(dateCode.value).match(/\d{4}|\b\d{1,2}\/\d{2,4}\b|\bweek\s*\d+/i);
+
+  const wrapperShot = has("wrapper");
+  if (wrapperShot && hit.top && hit.top.m >= 0.85 && hit.top.p >= 0.85 && coreIn) {
+    if (manufacturer.conf >= 0.72 && product.conf >= 0.72 && (hit.unique || hit.top.score >= 0.82)) {
+      knowLine = true;
+      if (color.value && (color.conf >= 0.68 || hit.top.c >= 0.85)) knowColor = Boolean(hit.colorUnique || hit.top.c >= 0.85);
+    }
+  }
 
   let status = "NEED_SHOTS";
   if (invented) status = "NEED_SHOTS";
@@ -853,6 +861,7 @@ export function gateVerdict(analysis, photoCount, shotIds = []) {
     product,
     color,
     hit,
+    wrapperShot,
   });
 
   return {
@@ -884,6 +893,7 @@ export function meterPct({
   product,
   color,
   hit,
+  wrapperShot = false,
 } = {}) {
   if (knowDate && knowLine) return 100;
   if (status === "KNOW" && knowColor) return 95;
@@ -896,6 +906,10 @@ export function meterPct({
     pct += Math.round((Number(color?.conf) || 0) * (Number(hit.top.c) || 0) * 12);
   }
   if (!coreIn) pct = Math.min(pct, 58);
+  if (wrapperShot && hit?.top && hit.top.p >= 0.85 && hit.top.m >= 0.85) {
+    pct = Math.max(pct, 78);
+    if ((Number(manufacturer?.conf) || 0) >= 0.65 && (Number(product?.conf) || 0) >= 0.65) pct = Math.max(pct, 88);
+  }
   if (knowMaker && !knowLine) pct = Math.max(pct, 68);
   if (knowLine && !knowColor) pct = Math.max(pct, 84);
   return Math.max(0, Math.min(94, Math.round(pct)));

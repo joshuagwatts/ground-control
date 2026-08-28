@@ -35,6 +35,8 @@ function blank() {
       desktop_password: "",
       desktop_paired: false,
       desktop_live: null,
+      desktop_lens: true,
+      desktop_model: "",
       lat: "",
       lon: "",
       city: "",

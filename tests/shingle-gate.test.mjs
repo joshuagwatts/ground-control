@@ -90,4 +90,15 @@ assert(dated.knowDate, "date code + backstamp/wrapper is KNOW date");
 assert(dated.known.date === "W12 2019", "date value");
 assert(dated.pct === 100, `date lock is 100, got ${dated.pct}`);
 
+const wrapperLowConf = gateVerdict(
+  {
+    manufacturer: { value: "GAF", conf: 0.58 },
+    product: { value: "Timberline HDZ", conf: 0.55 },
+    color: { value: "Charcoal", conf: 0.52 },
+  },
+  5,
+  ["granules_close", "tab_pattern", "overlay_shadow", "nailing_strip", "wrapper"],
+);
+assert(wrapperLowConf.pct >= 78, `wrapper branding should raise meter above 34, got ${wrapperLowConf.pct}`);
+
 console.log("shingle-gate ok");

@@ -18,7 +18,7 @@ import {
   privacyOn,
   cloudStatus,
 } from "./cloud.js";
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, connectDesktop, desktopStatus, disconnectDesktop } from "./desktop.js";
 import { httpDiag } from "./net.js";
 import {
   loadMapConfig,
@@ -42,7 +42,7 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
-} from "./wx.js?v=0224";
+} from "./wx.js?v=0225";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
@@ -106,8 +106,10 @@ function renderPrivacy() {
     tog.classList.toggle("leaky", !secure);
     tog.textContent = secure ? "On-device" : "Cloud";
     tog.title = secure
-      ? "Vision stays on this device. Lens needs cloud."
-      : "Cloud vision is on for Lens.";
+      ? "Vision stays on this device. Connect Control Room or flip Cloud."
+      : desktopConfigured(db.settings)
+        ? "Control Room GPU ready for Lens."
+        : "Cloud vision is on for Lens.";
   }
 }
 
@@ -637,6 +639,12 @@ function nextShingleShot(L) {
   return SHINGLE_CORE.find((id) => !have.has(id)) || SHINGLE_EXTRA.find((id) => !have.has(id)) || null;
 }
 
+function cycleShot(id) {
+  const order = [...SHINGLE_CORE, ...SHINGLE_EXTRA];
+  const i = order.indexOf(id);
+  return order[(i + 1) % order.length] || SHINGLE_CORE[0];
+}
+
 function shingleCoreDone(L) {
   const have = haveShots(L);
   return SHINGLE_CORE.every((id) => have.has(id));
@@ -693,10 +701,16 @@ function renderLens() {
   const have = haveShots(L);
   const coreHave = SHINGLE_CORE.filter((id) => have.has(id)).length;
 
+  const roomOn = desktopConfigured(db.settings);
+  const roomLine = roomOn
+    ? `Control Room · ${esc(db.settings.desktop_model || "GPU paired")}`
+    : "Cloud keys or connect Control Room at homebase for GPU Lens.";
+
   if (!L.session) {
     $("#view").innerHTML = `
       <div class="lens-pick">
         <h3>Lens</h3>
+        <p class="muted">${roomLine}</p>
         <p class="muted">What are you shooting?</p>
         <button type="button" class="lens-pick-card" id="pick-shingle">
           <strong>Shingle identifier</strong>
@@ -757,6 +771,7 @@ function renderLens() {
       <div class="lens-session-head">
         <button type="button" id="lens-back">Back</button>
         <strong>${mode === "damage" ? "Damage highlighter" : "Shingle identifier"}</strong>
+        ${roomOn ? `<span class="lens-room on">Control Room</span>` : `<span class="lens-room">Cloud</span>`}
       </div>
       ${
         mode === "shingle"
@@ -779,7 +794,7 @@ function renderLens() {
       <div class="lens-strip" id="lens-strip">${L.photos
         .map(
           (p, i) =>
-            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em>${esc(p.shot === "damage" ? "Damage" : shotSpec(p.shot).label || p.shot || "?")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
+            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em data-retag="${i}" title="Tap to retag shot">${esc(p.shot === "damage" ? "Damage" : shotSpec(p.shot).label || p.shot || "?")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
         )
         .join("")}</div>
       <div class="lens-status ${statusCls}">${esc(
@@ -818,6 +833,20 @@ function renderLens() {
       L.last = null;
       persist();
       renderLens();
+    };
+  });
+  $("#lens-strip")?.querySelectorAll("[data-retag]").forEach((em) => {
+    em.onclick = (e) => {
+      e.stopPropagation();
+      const i = Number(em.dataset.retag);
+      const p = L.photos[i];
+      if (!p || p.mode === "damage") return;
+      p.shot = cycleShot(p.shot || SHINGLE_CORE[0]);
+      L.shots = [...new Set(L.photos.map((x) => x.shot).filter(Boolean))];
+      L.last = null;
+      persist();
+      renderLens();
+      setStatus(`Retagged · ${shotSpec(p.shot).label}`);
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-edit]").forEach((el) => {
@@ -861,7 +890,8 @@ function renderLens() {
       const shot = nextShingleShot(L) || pendingShot || SHINGLE_CORE[0];
       const wasDone = shingleCoreDone(L);
       for (const file of picked) {
-        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot, mode: "shingle", at: Date.now() });
+        const tag = nextShingleShot(L) || pendingShot || shot;
+        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot: tag, mode: "shingle", at: Date.now() });
       }
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
       persist();
@@ -1584,6 +1614,8 @@ function renderKeys() {
       <input id="set-${esc(p.field)}" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(has ? "Paste to replace" : "Paste key — saves as you type")}" data-field="${esc(p.field)}" />
     </div>`;
   }).join("");
+  const roomOn = desktopConfigured(s);
+  const roomModel = String(s.desktop_model || "").trim();
   $("#view").innerHTML = `
     <h3>Settings</h3>
     <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
@@ -1595,10 +1627,18 @@ function renderKeys() {
         <option value="metric"${s.units === "metric" ? " selected" : ""}>Metric — kilometers</option>
       </select>
     </div>
+    <h3>Control Room</h3>
+    <p class="muted">Homebase GPU for Lens — same Wi‑Fi as your PC. Pip desktop on port 7420. Scans if URL is blank.</p>
+    <div class="field"><span>Desktop URL</span><input id="set-desktop-url" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.162:7420" autocomplete="off" spellcheck="false" /></div>
+    <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}` : "Not connected"}</p>
+    <div class="actions">
+      <button type="button" id="room-connect" class="primary">Connect</button>
+      <button type="button" id="room-disconnect"${roomOn ? "" : " disabled"}>Disconnect</button>
+    </div>
     <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
-    <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "No keys yet — paste Gemini or OpenAI for Lens."}</p>
+    <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : roomOn ? "Lens uses Control Room GPU." : "No keys yet — connect Control Room or paste Gemini for Lens."}</p>
     <h3>API keys</h3>
-    <p class="muted">Chat can use every keyed API. Lens needs a vision key (Gemini, OpenAI, Anthropic, or OpenRouter). On-device mode blocks Lens.</p>
+    <p class="muted">Chat can use every keyed API. Lens prefers Control Room when connected; otherwise needs a vision key (Gemini, OpenAI, Anthropic, or OpenRouter).</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
     <h3>Discontinued lookup</h3>
@@ -1627,6 +1667,36 @@ function renderKeys() {
       persist();
     };
   }
+  const deskUrl = $("#set-desktop-url");
+  if (deskUrl) {
+    deskUrl.oninput = () => {
+      db.settings.desktop_url = deskUrl.value.trim();
+      persist();
+    };
+  }
+  $("#room-connect")?.addEventListener("click", async () => {
+    setStatus("Control Room…");
+    try {
+      const hit = await connectDesktop(db.settings, (msg) => setStatus(String(msg || "").slice(0, 48)));
+      db.settings.desktop_model = hit.model || hit.ping?.model || "";
+      persist();
+      renderKeys();
+      paintBrainStrip();
+      renderPrivacy();
+      setStatus(`Control Room · ${db.settings.desktop_model || "GPU OK"}`);
+    } catch (e) {
+      setStatus(String(e.message || e).slice(0, 70));
+    }
+  });
+  $("#room-disconnect")?.addEventListener("click", () => {
+    disconnectDesktop(db.settings);
+    db.settings.desktop_model = "";
+    persist();
+    renderKeys();
+    paintBrainStrip();
+    renderPrivacy();
+    setStatus("Control Room disconnected");
+  });
   document.querySelectorAll(".key-row input[data-field]").forEach((inp) => {
     inp.oninput = () => {
       const field = inp.dataset.field;

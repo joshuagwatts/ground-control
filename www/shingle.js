@@ -67,6 +67,8 @@ Rules:
 - Discontinued products ARE in the catalog — prefer them when the cues match an older line.
 - Hail bruises / granule loss are damage notes, not product ID.
 - shots_needed: the ONE next photo that would raise certainty the most.
+- shots_present: list every shot type you can see across ALL photos (include wrapper if bundle branding is visible).
+- If a photo shows printed product name, color, or lot on a wrapper, set wrapper in shots_present and read manufacturer/product/color from it.
 
 Photos tagged:
 ${tags || "(untagged sequence)"}
@@ -107,7 +109,7 @@ export async function identifyShingles(settings, photos, taggedShots = []) {
     };
   }
   const prompt = buildPrompt(urls, taggedShots);
-  const out = await visionComplete(settings, prompt, urls, { maxTokens: 1400, temperature: 0.25 });
+  const out = await visionComplete(settings, prompt, urls, { maxTokens: 1400, temperature: 0.25, mode: "shingle" });
   const parsed = extractJson(out.text);
   const analysis = normalizeAnalysis(parsed || {});
   const shotIds = [...new Set([...(taggedShots || []).filter(Boolean), ...(analysis.shots_present || [])])];
@@ -171,6 +173,9 @@ export function formatVerdict(hit) {
   const tells = hit.analysis?.tells || [];
   if (tells.length) lines.push(`Tells: ${tells.slice(0, 4).join("; ")}`);
   if (hit.analysis?.damage?.value) lines.push(`Damage note: ${hit.analysis.damage.value} (not a claim decision).`);
-  if (hit.provider) lines.push(`— LENS · ${String(hit.provider).toUpperCase()} · LEAKED`);
+  if (hit.provider) {
+    const via = hit.provider === "desktop" ? "CONTROL ROOM · LOCAL GPU" : `${String(hit.provider).toUpperCase()} · LEAKED`;
+    lines.push(`— LENS · ${via}`);
+  }
   return lines.join("\n");
 }
