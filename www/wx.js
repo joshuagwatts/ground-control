@@ -6622,7 +6622,11 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
     drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
     renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   }
-  if (revealSheet) revealHailAddressPeek();
+  if (revealSheet) revealHailStormSheet({ interactive: true, scroll: false });
+  else if (hailScopeDays(data).length && hailBottomTier === "address") {
+    // Dates loaded while address peek was up — open the list without waiting for a swipe.
+    revealHailStormSheet({ interactive: true, scroll: false });
+  }
 }
 
 function hailScopePinHtml(data, esc) {

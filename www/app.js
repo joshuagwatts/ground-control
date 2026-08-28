@@ -43,6 +43,7 @@ import {
   clearSelectedStormDate,
   applyDonePinScaleLive,
   revealHailAddressPeek,
+  revealHailStormSheet,
   advanceHailBottomReveal,
   syncHailBottomChrome,
   setWxMapExpanded,
@@ -61,7 +62,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.112";
+} from "./wx.js?v=0.2.113";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1692,7 +1693,7 @@ async function warmMapViewStorms(gen) {
       // Idle paint so map pans/zooms stay responsive while the list fills in.
       const go = () => {
         if (token !== warmStormToken || gen !== wxRenderGen || wxPinSelected()) return;
-        syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: false });
+        syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: true });
       };
       if (typeof requestIdleCallback === "function") requestIdleCallback(go, { timeout: 400 });
       else setTimeout(go, 0);
@@ -1857,7 +1858,7 @@ async function onHailViewport() {
       return;
     }
     wxState.data = data;
-    syncHailScopeView(sheet, data, esc, { onRefetch, fit: false, revealSheet: false });
+    syncHailScopeView(sheet, data, esc, { onRefetch, fit: false, revealSheet: true });
     setStatus("");
   } catch (e) {
     if (gen !== hailTapGen) return;
@@ -1888,7 +1889,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     if (wxState.address && parseStreetAddress(wxState.address).house) addrBox.value = wxState.address;
     else addrBox.value = "";
   }
-  revealHailAddressPeek();
+  revealHailStormSheet();
   setStatus("Finding storms…");
   const onRefetch = async (filters) => {
     if (gen !== hailTapGen) return null;
@@ -1912,7 +1913,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
         if (!knownAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
         wxState.data = partial;
         if ((partial.hail || []).length) {
-          syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: false });
+          syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: true });
         } else {
           patchHailScopePartial($("#hs-sheet"), partial, esc);
         }
@@ -1926,7 +1927,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     }
     wxState.address = data.address || "";
     wxState.data = data;
-    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: false });
+    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: true });
     const fetchedDays = Number(data._meta?.fetchedDays) || 0;
     if (!(data.hail || []).length && fetchedDays < 730) {
       if (sheet) {
