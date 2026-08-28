@@ -2945,8 +2945,12 @@ function selectPinIcon() {
 function hailNearPin(rows, day = null) {
   let pool = rows || [];
   if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
-  // Selected storm date(s) → paint whatever is in the visible map (no pin-radius circle)
-  if (hasSelectedStormDates() || !Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
+  // Selected storm date(s): use the full cached footprint so zones don't morph
+  // as the phone pans (never rebuild from only on-screen dots).
+  if (hasSelectedStormDates()) {
+    return pool.filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon));
+  }
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
     return hailInMapView(pool);
   }
   const km = filterKm();
@@ -2960,7 +2964,10 @@ function hailNearPin(rows, day = null) {
 function windNearPin(rows, day = null) {
   let pool = rows || [];
   if (day) pool = pool.filter((w) => String(w.date || "").slice(0, 10) === day);
-  if (hasSelectedStormDates() || !Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
+  if (hasSelectedStormDates()) {
+    return pool.filter((w) => Number.isFinite(w.lat) && Number.isFinite(w.lon));
+  }
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
     return hailInMapView(pool);
   }
   const km = filterKm();
@@ -3484,11 +3491,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const collapsed = collapseHailByDate(nearHail);
   const activeDays = selectedStormDates;
   const pin = pinCoords();
-  const b = mapViewBounds(0);
-  const boundKey = b
-    ? `${b.getSouth().toFixed(3)}|${b.getWest().toFixed(3)}|${b.getNorth().toFixed(3)}|${b.getEast().toFixed(3)}`
-    : "";
-  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${boundKey}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}`;
+  // Geometry is lat/lon — do not key the draw cache on map bounds or zones morph while panning.
+  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -4944,10 +4948,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     document.getElementById("hs-map-shell")?.classList.remove("map-moving");
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
-    if (hasSelectedStormDates() && lastHailRows.length) {
-      lastHailDrawSig = "";
-      drawHailMarkers(lastHailRows, lastWindRows);
-    }
+    // Hail zones are geographic — leave them alone on pan/zoom (stroke/dot scale
+    // already refreshes via scheduleZoomUiRefresh on zoom).
   });
   addLocateControl();
   startMyLocation();
