@@ -1,7 +1,6 @@
 /** Shingle lens. Always names a catalog leader; the meter is what locks it. */
 
 import { privacyOn } from "./cloud.js";
-import { desktopConfigured } from "./desktop.js";
 import { visionComplete, visionProvidersReady } from "./vision.js";
 import {
   SHOTS,
@@ -93,7 +92,7 @@ function confOf(x) {
 }
 
 function lensBlocked(settings) {
-  return privacyOn(settings) && !desktopConfigured(settings) && !visionProvidersReady(settings).length;
+  return privacyOn(settings) && !visionProvidersReady(settings).length;
 }
 
 function photoRows(photos) {
@@ -215,7 +214,7 @@ Reply JSON only:
 
 export async function identifyShingles(settings, photos, taggedShots = []) {
   if (lensBlocked(settings)) {
-    throw new Error("Lens needs Control Room (homebase GPU) or a vision key in Settings");
+    throw new Error("Lens needs a vision key in Settings (Gemini, OpenAI, etc.) or use phone Lens → ChatGPT");
   }
   let rows = photoRows(photos);
   if (!rows.length) {

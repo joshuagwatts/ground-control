@@ -1,7 +1,6 @@
-/** Vision lens — cloud keys or Control Room GPU on the paired desktop. */
+/** Vision lens — cloud API keys (Gemini, OpenAI, Anthropic, OpenRouter). */
 
 import { PROVIDERS, privacyOn, markHealth } from "./cloud.js";
-import { desktopConfigured, desktopLens, ensureControlRoom, desktopReachable } from "./desktop.js";
 import { httpPostJson } from "./net.js";
 
 const VISION_ORDER = ["gemini", "openai", "anthropic", "openrouter"];
@@ -49,7 +48,6 @@ function providerKey(settings, prov) {
 }
 
 export function visionProvidersReady(settings) {
-  if (desktopConfigured(settings) && settings.desktop_lens !== false) return ["desktop"];
   return VISION_ORDER.filter((id) => {
     const p = PROVIDERS.find((x) => x.id === id);
     return p && providerKey(settings, p);
@@ -63,21 +61,8 @@ export function cloudVisionReady(settings) {
   });
 }
 
-/** Reconnect Control Room when paired URL is stale or PC was asleep. */
-async function ensureDesktopVision(settings, { onProgress } = {}) {
-  if (settings?.desktop_lens === false) return false;
-  if (desktopConfigured(settings)) {
-    const reach = await desktopReachable(settings, 2200);
-    if (reach.ok) return true;
-  }
-  const room = await ensureControlRoom(settings, { onProgress }).catch(() => ({ ok: false }));
-  if (!room?.ok) return false;
-  const again = await desktopReachable(settings, 2200);
-  return again.ok;
-}
-
 function cloudVisionBlocked(settings) {
-  return privacyOn(settings) && !desktopConfigured(settings);
+  return privacyOn(settings);
 }
 
 export const MAX_CHAT_PHOTOS = 8;
@@ -204,21 +189,9 @@ async function visionOnce(prov, key, model, prompt, dataUrl) {
  */
 export async function identifyImage(settings, dataUrl, mode = "lens") {
   if (cloudVisionBlocked(settings)) {
-    throw new Error("SECURE blocks cloud lens — connect Control Room or flip LEAKY");
+    throw new Error("SECURE blocks cloud lens — flip Cloud in the header");
   }
   const prompt = PROMPTS[mode] || PROMPTS.lens;
-  if (await ensureDesktopVision(settings)) {
-    try {
-      const out = await desktopLens(settings, { prompt, images: [dataUrl], maxTokens: 500, temperature: 0.2, mode });
-      return {
-        ...out,
-        mode,
-        text: `${out.text}\n\n— Ground Control lens · CONTROL ROOM · LOCAL GPU`,
-      };
-    } catch (e) {
-      if (!cloudVisionReady(settings).length) throw e;
-    }
-  }
   const ready = cloudVisionReady(settings);
   if (!ready.length) {
     throw new Error("Need Gemini or OpenRouter key in DATA for photo ID (free AI Studio / OpenRouter)");
@@ -245,20 +218,13 @@ export async function identifyImage(settings, dataUrl, mode = "lens") {
   throw new Error(errors.join(" · ") || "vision failed");
 }
 
-/** Multi-image vision (shingle sequence). Prefers Control Room GPU, then cloud keys. */
-export async function visionComplete(settings, prompt, dataUrls, { maxTokens = 1200, temperature = 0.05, mode = "shingle", onProgress } = {}) {
+/** Multi-image vision (shingle sequence) via cloud keys. */
+export async function visionComplete(settings, prompt, dataUrls, { maxTokens = 1200, temperature = 0.05, mode = "shingle" } = {}) {
   if (cloudVisionBlocked(settings)) {
-    throw new Error("SECURE blocks cloud lens — connect Control Room or flip LEAKY");
+    throw new Error("SECURE blocks cloud lens — flip Cloud in the header");
   }
   const urls = (Array.isArray(dataUrls) ? dataUrls : [dataUrls]).filter(Boolean).slice(0, MAX_CHAT_PHOTOS);
   if (!urls.length) throw new Error("no images");
-  if (await ensureDesktopVision(settings, { onProgress })) {
-    try {
-      return await desktopLens(settings, { prompt, images: urls, maxTokens, temperature, mode });
-    } catch (e) {
-      if (!cloudVisionReady(settings).length) throw e;
-    }
-  }
   const ready = cloudVisionReady(settings);
   if (!ready.length) {
     throw new Error("Need a vision key in KEYS — Gemini, OpenAI, Anthropic, or OpenRouter");

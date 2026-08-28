@@ -26,15 +26,7 @@ npm start
 
 Open http://127.0.0.1:4173
 
-Paste a **Gemini / OpenAI / Anthropic / OpenRouter** key in Settings, leave **Cloud** on, then use Lens.
-
-### Control Room (home PC GPU)
-
-On the same Wi‑Fi as your phone, **double-click `Control Room.bat`** in this folder (or run `npm run control-room`).
-
-Install [Ollama](https://ollama.com) and pull a model (`ollama pull llama3.2`; for Lens vision also `ollama pull llava`). The server prints a LAN URL like `http://192.168.x.x:7420` — phone **Settings → Connect**, or let auto-scan find it.
-
-Allow port **7420** through Windows Firewall if Connect fails.
+Paste a **Gemini / OpenAI / Anthropic / OpenRouter** key in Settings, leave **Cloud** on, then use Lens. On phone, shingle ID uses **Lens → ChatGPT share** — no keys required.
 
 ## Certainty rules
 

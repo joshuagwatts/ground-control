@@ -1,6 +1,5 @@
-/** WX map + storm dossier — runs on phone standalone (public APIs) or via paired desktop. */
+/** WX map + storm dossier — runs on phone (public APIs). */
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
-import { desktopConfigured } from "./desktop.js";
 import { locateDevice, watchGps } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin, parseStreetAddress } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
@@ -180,17 +179,7 @@ function placeContactHtml(data, esc) {
   return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }
 
-async function api(path, opts = {}) {
-  const settings = opts.settings;
-  if (desktopConfigured(settings)) {
-    const tok = String(settings.desktop_token || "").trim();
-    const base = String(settings.desktop_url || "").replace(/\/+$/, "");
-    const headers = tok ? { Cookie: `pip_gate=${tok}` } : {};
-    if (opts.method === "POST") {
-      return httpLanPostJson(`${base}${path}`, headers, opts.body || {}, opts.timeout || 120000);
-    }
-    return httpLanGet(`${base}${path}`, opts.timeout || 20000, headers);
-  }
+async function api() {
   return null;
 }
 
@@ -2473,9 +2462,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         .addTo(hailLayer);
     }
     const onBlock = dayHits.filter((p) => hitDistKm(p) <= 0.5);
-    if (onBlock.length) {
-      for (const sub of buildDetailedZoneRings(h, onBlock)) subRings.push(sub);
-    }
+    const zoneHits = onBlock.length ? onBlock : dayHits;
+    for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
     for (const sub of subRings) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
@@ -4215,8 +4203,7 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     row.onclick = () => {
       const date = row.getAttribute("data-storm-date");
       const hailRows = filterHailRaw(data, wxFilters);
-      if (selectedStormDate === date) selectStormDate(null, { fit: false, requireDate: true, hailRows });
-      else selectStormDate(date, { fit: false, requireDate: true, hailRows });
+      selectStormDate(date, { fit: false, requireDate: true, hailRows });
       const pin = root.querySelector(".hs-pin");
       if (pin) {
         const addr = data.address || "Dropped pin";

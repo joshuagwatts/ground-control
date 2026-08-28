@@ -14,7 +14,6 @@ import {
   providerHealth,
   usableProviders,
 } from "./cloud.js";
-import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
 import { pickJob, skipLocalModel } from "./command.js";
@@ -294,19 +293,6 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const liveCloud = liveProviderIds(settings);
   const pin = String(settings?.brain_pin || "auto").toLowerCase();
 
-  const tryDesktop = async () => {
-    if (!desktopConfigured(settings)) throw new Error("desktop not paired");
-    emit("DESKTOP GPU");
-    const reach = await desktopReachable(settings, 2500);
-    if (!reach.ok) throw new Error(`desktop offline (${reach.error || "no route"})`);
-    const user = [...messages].reverse().find((m) => m.role === "user");
-    const out = await desktopChat(settings, String((user && user.content) || ""), 60000);
-    const cleaned = sanitizeReply(out.text);
-    if (!cleaned) throw new Error("desktop blank");
-    if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
-    return { text: cleaned, provider: "desktop", model: out.model || "ollama", leaked: false };
-  };
-
   const tryCloud = async () => {
     if (!hasKeys) throw new Error("no cloud keys on phone — paste them in DATA");
     if (!isChat && !cloud.leaky) throw new Error("SECURE blocks cloud for OPP/CODE — flip LEAKY");
@@ -363,8 +349,8 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     });
     if (!hit?.text) throw new Error("lite blank");
     // With keys or desktop, Lite is Guide-only (pin lite/local), never general chat.
-    if (pin !== "lite" && pin !== "local" && (hasKeys || desktopConfigured(settings))) {
-      throw new Error("lite skipped — use cloud/desktop");
+    if (pin !== "lite" && pin !== "local" && hasKeys) {
+      throw new Error("lite skipped — use cloud");
     }
     return hit;
   };
@@ -384,32 +370,19 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     } else if (pin === "compare" || pin === "all") {
       // COMPARE is all-or-show-tabs — never quietly degrade into a single cascaded cloud reply.
       steps.push(["compare", tryCompare]);
-    } else if (pin === "desktop") {
-      steps.push(["desktop", tryDesktop]);
-      if (hasKeys) steps.push(["cloud", tryCloud]);
-      steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
-      // Pinned cloud agent — that API only. No desktop/other-API steal.
+      // Pinned cloud agent — that API only.
       steps.push(["cloud", tryCloud]);
     } else if (hasKeys) {
-      if (secure) {
-        if (desktopConfigured(settings)) steps.push(["desktop", tryDesktop]);
-        steps.push(["cloud", tryCloud]);
-      } else {
-        steps.push(["cloud", tryCloud]);
-        if (desktopConfigured(settings)) steps.push(["desktop", tryDesktop]);
-      }
+      steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     } else {
-      steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
     }
   } else if (secure) {
-    steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
   } else {
     steps.push(["cloud", tryCloud]);
-    steps.push(["desktop", tryDesktop]);
   }
   void allowQwen;
   void liveCloud;
