@@ -61,7 +61,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.101";
+} from "./wx.js?v=0.2.102";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1422,18 +1422,15 @@ function paintFieldSheet() {
   const shown = filterMarks(marks, kind);
   const houses = doneHouses();
   const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
-  const rawText = String(db.done?.text || "");
   const selHouse = selectedDoneHouse();
   root.innerHTML = `
     <div class="hs-field-head">
-      <strong>Completed jobs</strong>
-      <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "Paste the houses you already built"}</span>
+      <strong>Completed houses</strong>
+      <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "None loaded yet"}</span>
     </div>
-    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to load storm dates for that house. Pin size slider is on the map. Lines without a city use Settings city.</p>
-    <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
+    <p class="muted">Paste finished addresses and load yellow markers in the Jobs tab. Tap a yellow pin here to open storm dates for that house. Pin size slider is on the map.</p>
     <div class="hs-mark-tools">
-      <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>
-      <button type="button" id="hs-done-clear"${houses.length ? "" : " disabled"}>Clear</button>
+      <button type="button" class="primary" id="hs-done-jobs">Manage in Jobs</button>
       ${selHouse ? `<button type="button" id="hs-done-all-pins">Clear selection</button>` : ""}
     </div>
     <div class="hs-field-head">
@@ -1467,16 +1464,13 @@ function paintFieldSheet() {
     }</div>`;
   const filter = $("#hs-mark-filter");
   if (filter) filter.onchange = () => paintFieldSheet();
-  const doneBox = $("#hs-done-text");
-  if (doneBox) {
-    doneBox.oninput = () => {
-      if (!db.done) db.done = { text: "", houses: [], geo: {} };
-      db.done.text = doneBox.value;
-      persist();
+  const goJobs = $("#hs-done-jobs");
+  if (goJobs) {
+    goJobs.onclick = () => {
+      tab = "jobs";
+      render();
     };
   }
-  const loadBtn = $("#hs-done-load");
-  if (loadBtn) loadBtn.onclick = () => loadDoneAddresses();
   const allPins = $("#hs-done-all-pins");
   if (allPins) {
     allPins.onclick = () => {
@@ -1486,18 +1480,6 @@ function paintFieldSheet() {
     };
   }
   wirePinSizeSlider();
-  const clr = $("#hs-done-clear");
-  if (clr) {
-    clr.onclick = () => {
-      selectedDoneId = null;
-      hidePinScalePopover();
-      db.done = { text: db.done?.text || "", houses: [], geo: db.done?.geo || {} };
-      persist();
-      paintFieldMap();
-      paintFieldSheet();
-      setStatus("Completed markers cleared");
-    };
-  }
   $("#hs-mark-copy").onclick = async () => {
     const ok = await copyText(marksPlainList(shown));
     setStatus(ok ? `Copied ${shown.length} marks` : "Copy failed");
@@ -1612,7 +1594,7 @@ async function ensureDoneHousesPlaced() {
   if (!doneBusy) await loadDoneAddresses();
 }
 
-async function loadDoneAddresses({ textId = "hs-done-text" } = {}) {
+async function loadDoneAddresses({ textId = "job-done-text" } = {}) {
   if (doneBusy) return;
   const text = document.querySelector("#" + textId)?.value ?? db.done?.text ?? "";
   const parsed = parseDoneList(text);
