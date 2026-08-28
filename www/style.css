@@ -17,6 +17,8 @@
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
   --tab-h: 3.4rem;
   --gc-header-h: calc(2.35rem + var(--safe-top));
+  --map-expand-ms: 520ms;
+  --map-expand-ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
@@ -36,9 +38,19 @@ header.stat {
   padding: calc(0.55rem + var(--safe-top)) 1rem 0.65rem;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
-  background: rgba(11, 11, 13, 0.88);
+  background: rgba(11, 11, 13, 0.92);
   backdrop-filter: blur(16px);
   z-index: 12;
+  transition:
+    background-color var(--map-expand-ms) var(--map-expand-ease),
+    backdrop-filter var(--map-expand-ms) ease;
+}
+body.wx-map-expanded header.stat {
+  background: rgba(11, 11, 13, 0.97);
+}
+body.wx-map-expanded .mark,
+body.wx-map-expanded .app-ver {
+  opacity: 1;
 }
 .mark {
   color: var(--text);
@@ -214,10 +226,18 @@ nav.tabs {
   overflow-x: auto;
   scrollbar-width: none;
   border-top: 1px solid var(--line);
-  background: rgba(11, 11, 13, 0.92);
+  background: rgba(11, 11, 13, 0.94);
   backdrop-filter: blur(18px);
   padding: 0.2rem 0.3rem var(--safe-bottom);
   z-index: 12;
+  transition:
+    background-color var(--map-expand-ms) var(--map-expand-ease),
+    backdrop-filter var(--map-expand-ms) ease,
+    border-color var(--map-expand-ms) ease;
+}
+body.wx-map-expanded nav.tabs {
+  background: rgba(11, 11, 13, 0.58);
+  backdrop-filter: blur(12px);
 }
 nav.tabs::-webkit-scrollbar { display: none; }
 nav.tabs button {
@@ -1587,11 +1607,16 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
   border-bottom: 1px solid var(--line);
   background: #000;
   transition:
-    height 0.42s cubic-bezier(0.22, 1, 0.36, 1),
-    min-height 0.42s cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 0.32s ease,
-    box-shadow 0.32s ease;
+    height var(--map-expand-ms) var(--map-expand-ease),
+    min-height var(--map-expand-ms) var(--map-expand-ease),
+    top var(--map-expand-ms) var(--map-expand-ease),
+    bottom var(--map-expand-ms) var(--map-expand-ease),
+    border-color calc(var(--map-expand-ms) * 0.75) ease,
+    box-shadow calc(var(--map-expand-ms) * 0.75) ease;
   overflow: hidden;
+}
+body.wx-map-animating .hs-map-shell {
+  will-change: height, min-height, top, bottom;
 }
 .hs-map-shell.expanded {
   position: fixed;
@@ -1607,7 +1632,16 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
   box-shadow: none;
 }
 body.wx-map-expanded #view { overflow: hidden; }
-body.wx-map-expanded .hs-sheet { display: none; }
+body.wx-map-expanded .hs-sheet {
+  opacity: 0;
+  transform: translate3d(0, 22px, 0);
+  max-height: 0;
+  margin: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
 .hs-map-bar {
   position: absolute;
   z-index: 500;
@@ -1796,6 +1830,12 @@ body.wx-map-expanded .hs-sheet { display: none; }
 .hs-styles button.on { background: var(--trim); color: #1c1400; }
 .hs-sheet {
   padding: 1rem 1rem 1.4rem;
+  max-height: 2400px;
+  transition:
+    opacity var(--map-expand-ms) var(--map-expand-ease),
+    transform var(--map-expand-ms) var(--map-expand-ease),
+    max-height var(--map-expand-ms) var(--map-expand-ease),
+    padding var(--map-expand-ms) var(--map-expand-ease);
 }
 .hs-pin {
   font-size: 13px; color: var(--muted); margin: 0 0 0.85rem;

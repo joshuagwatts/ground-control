@@ -3870,6 +3870,8 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
 }
 
 /** Expand / collapse map — scroll up opens full screen; swipe down on map bar returns to storm dates. */
+const MAP_SHELL_MS = 520;
+
 export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const sheet = document.getElementById("hs-sheet");
@@ -3878,15 +3880,22 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   if (on === shell.classList.contains("expanded")) return;
   shell.classList.toggle("expanded", on);
   document.body.classList.toggle("wx-map-expanded", on);
+  document.body.classList.add("wx-map-animating");
+  clearTimeout(setWxMapExpanded._animTimer);
+  setWxMapExpanded._animTimer = setTimeout(() => {
+    document.body.classList.remove("wx-map-animating");
+  }, MAP_SHELL_MS);
   if (view) view.style.overflowY = on ? "hidden" : "";
-  clearTimeout(setWxMapExpanded._sizeTimer);
-  setWxMapExpanded._sizeTimer = setTimeout(() => {
+  const invalidate = () => {
     try {
       map?.invalidateSize?.({ animate: false, pan: false });
     } catch {
       /* ignore */
     }
-  }, on ? 420 : 280);
+  };
+  requestAnimationFrame(() => requestAnimationFrame(invalidate));
+  clearTimeout(setWxMapExpanded._sizeTimer);
+  setWxMapExpanded._sizeTimer = setTimeout(invalidate, MAP_SHELL_MS + 48);
   if (!on && scrollToSheet && sheet) {
     setTimeout(() => {
       try {
@@ -3894,7 +3903,7 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
       } catch {
         /* ignore */
       }
-    }, 180);
+    }, MAP_SHELL_MS - 80);
   }
 }
 
