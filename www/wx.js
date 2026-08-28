@@ -3212,6 +3212,120 @@ function bindLongPress(onHold) {
   });
 }
 
+/** Fast pinch continues zooming briefly after fingers lift (Maps-style coast). */
+function bindPinchZoomInertia(leafletMap) {
+  const el = leafletMap.getContainer();
+  let tracking = false;
+  let samples = [];
+  let focal = null;
+  let raf = 0;
+
+  const stopCoast = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+  };
+
+  const pinchSpan = (touches) => {
+    if (touches.length < 2) return 0;
+    return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  };
+
+  const pinchFocal = (touches) => {
+    if (touches.length < 2) return leafletMap.getCenter();
+    const rect = el.getBoundingClientRect();
+    const x = (touches[0].clientX + touches[1].clientX) / 2 - rect.left;
+    const y = (touches[0].clientY + touches[1].clientY) / 2 - rect.top;
+    return leafletMap.containerPointToLatLng([x, y]);
+  };
+
+  const onStart = (e) => {
+    if (e.touches.length !== 2) return;
+    stopCoast();
+    tracking = true;
+    focal = pinchFocal(e.touches);
+    samples = [{ t: performance.now(), z: leafletMap.getZoom(), span: pinchSpan(e.touches) }];
+  };
+
+  const onMove = (e) => {
+    if (!tracking || e.touches.length < 2) return;
+    const now = performance.now();
+    focal = pinchFocal(e.touches);
+    samples.push({ t: now, z: leafletMap.getZoom(), span: pinchSpan(e.touches) });
+    while (samples.length > 2 && now - samples[0].t > 240) samples.shift();
+  };
+
+  const finishCoast = (z) => {
+    const snap = leafletMap.options.zoomSnap || 1;
+    if (snap <= 0 || !focal) return;
+    const snapped = Math.round(z / snap) * snap;
+    if (Math.abs(snapped - z) < 0.02) return;
+    leafletMap.setZoomAround(focal, snapped, { animate: true, duration: 0.18 });
+  };
+
+  const onEnd = (e) => {
+    if (e.touches.length >= 2) return;
+    if (!tracking) return;
+    tracking = false;
+    const now = performance.now();
+    const win = samples.filter((s) => now - s.t <= 220);
+    if (win.length < 2 || !focal) return;
+
+    const first = win[0];
+    const last = win[win.length - 1];
+    const dt = (last.t - first.t) / 1000;
+    if (dt < 0.035) return;
+
+    const zoomVel = (last.z - first.z) / dt;
+    const avgSpan = Math.max(1, (first.span + last.span) / 2);
+    const spanVel = (last.span - first.span) / dt;
+    const spanZoomVel = (spanVel / avgSpan) * 2.8;
+    let vel = zoomVel * 0.5 + spanZoomVel * 0.5;
+    vel = Math.max(-7, Math.min(7, vel * 0.92));
+    if (Math.abs(vel) < 0.28) return;
+
+    const minZ = leafletMap.getMinZoom();
+    const maxZ = leafletMap.getMaxZoom();
+    let z = leafletMap.getZoom();
+    const friction = 0.89;
+    let lastFrame = performance.now();
+
+    const step = (frameNow) => {
+      const dtFrame = Math.min(0.05, (frameNow - lastFrame) / 1000);
+      lastFrame = frameNow;
+      vel *= Math.pow(friction, dtFrame * 60);
+      if (Math.abs(vel) < 0.05) {
+        raf = 0;
+        finishCoast(z);
+        return;
+      }
+      z += vel * dtFrame;
+      if (z <= minZ || z >= maxZ) {
+        z = Math.max(minZ, Math.min(maxZ, z));
+        vel = 0;
+        raf = 0;
+        finishCoast(z);
+        return;
+      }
+      leafletMap.setZoomAround(focal, z, { animate: false });
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  };
+
+  el.addEventListener("touchstart", onStart, { passive: true });
+  el.addEventListener("touchmove", onMove, { passive: true });
+  el.addEventListener("touchend", onEnd, { passive: true });
+  el.addEventListener("touchcancel", onEnd, { passive: true });
+
+  return () => {
+    stopCoast();
+    el.removeEventListener("touchstart", onStart);
+    el.removeEventListener("touchmove", onMove);
+    el.removeEventListener("touchend", onEnd);
+    el.removeEventListener("touchcancel", onEnd);
+  };
+}
+
 export function destroyMap() {
   stopRadarPlay();
   stopHourPlay();
@@ -3221,6 +3335,7 @@ export function destroyMap() {
   houseLayer = null;
   if (map) {
     try {
+      map._pinchInertiaOff?.();
       map.off();
       map.remove();
     } catch {
@@ -3260,8 +3375,14 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     touchZoom: true,
     doubleClickZoom: false,
     maxZoom: MAP_MAX_ZOOM,
+    zoomSnap: 0.25,
+    zoomDelta: 0.25,
+    inertia: true,
+    inertiaDeceleration: 2800,
+    inertiaMaxSpeed: 1600,
   }).setView([c.lat, c.lon], zoom);
   if (container?.style) container.style.background = "#000";
+  map._pinchInertiaOff = bindPinchZoomInertia(map);
   if (!isPhoneUi()) {
     window.L.control.zoom({ position: "bottomleft" }).addTo(map);
   }
