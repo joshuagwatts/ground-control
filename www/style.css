@@ -1105,6 +1105,51 @@ body.hs-tab .leaflet-container,
 .wx-tl-filters button[data-wx-fl="all"] { color: var(--amber); border-color: rgba(212,168,75,0.45); }
 .wx-tl-filters button[data-wx-fl="none"] { color: var(--muted); }
 .wx-radar-tag { font-size: 9px; letter-spacing: 0.16em; color: var(--amber); }
+.wx-radar-track {
+  --thumb: 14px;
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 1.35rem;
+}
+.wx-radar-track input[type="range"] {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--phos);
+  background: transparent;
+}
+.wx-radar-now {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--thumb) / 2 + (100% - var(--thumb)) * var(--now, 100) / 100);
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--amber, #f0b429);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 0 8px rgba(240, 180, 41, 0.35);
+  pointer-events: none;
+  z-index: 0;
+}
+.wx-radar-now::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--amber, #f0b429);
+  transform: translateX(-50%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
 .wx-radar-scrub input[type="range"] { flex: 1; accent-color: var(--phos); }
 .wx-radar-label { font-size: 10px; color: var(--muted); min-width: 5.5rem; text-align: right; }
 .wx-play-btn {

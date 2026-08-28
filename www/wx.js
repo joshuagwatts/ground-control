@@ -1786,6 +1786,24 @@ export function setHailScopeLiveFrame(idx, { crossfade = false } = {}) {
   if (range && String(range.value) !== String(i)) range.value = String(i);
 }
 
+function radarPresentMarkPct(steps) {
+  if (!steps?.length) return null;
+  const t0 = Number(steps[0].time) || 0;
+  const t1 = Number(steps[steps.length - 1].time) || t0;
+  if (!(t1 > t0)) return t1 === t0 ? 100 : null;
+  const now = Date.now() / 1000;
+  return Math.max(0, Math.min(100, ((now - t0) / (t1 - t0)) * 100));
+}
+
+function radarRangeTrackHtml(id, max, idx, steps) {
+  const pct = radarPresentMarkPct(steps);
+  const mark =
+    pct == null
+      ? ""
+      : `<span class="wx-radar-now" style="--now:${pct.toFixed(2)}" title="Present" aria-hidden="true"></span>`;
+  return `<div class="wx-radar-track" data-radar-track>${mark}<input type="range" id="${id}" min="0" max="${max}" value="${idx}" step="1" /></div>`;
+}
+
 function hailScopeLiveScrubberInnerHtml() {
   if (!hailScopeRadarActive()) return "";
   const f = hailScopeRadarFilters;
@@ -1800,7 +1818,7 @@ function hailScopeLiveScrubberInnerHtml() {
   return `<div class="wx-radar-scrub-row">
     <button type="button" id="hs-live-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
     <span class="${tagCls}">${tag}</span>
-    <input type="range" id="hs-live-range" min="0" max="${max}" value="${idx}" step="1" />
+    ${radarRangeTrackHtml("hs-live-range", max, idx, steps)}
     <span id="hs-live-label" class="wx-radar-label">…</span>
   </div>`;
 }
@@ -2039,10 +2057,11 @@ export function syncHailScopeRadar(settings) {
 function radarScrubberInnerHtml() {
   if (radarFrames.length < 2 || !wxTimelineFilters.precip) return "";
   const max = radarFrames.length - 1;
+  const steps = radarFrames.map((fr) => ({ time: fr.time }));
   return `<div class="wx-radar-scrub-row">
     <button type="button" id="wx-radar-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
     <span class="wx-radar-tag">LIVE PRECIP</span>
-    <input type="range" id="wx-radar-range" min="0" max="${max}" value="${radarFrameIdx}" step="1" />
+    ${radarRangeTrackHtml("wx-radar-range", max, radarFrameIdx, steps)}
     <span id="wx-radar-label" class="wx-radar-label">…</span>
   </div>`;
 }
