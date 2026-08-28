@@ -3423,25 +3423,27 @@ function clusterPoints(pts, splitKm = 1.5) {
   return clusters.map((c) => c.pts);
 }
 
-/** Roofer/industry-style footprint radius from hail size + source type. */
-function hailFootprintM(sizeIn, source, zoom) {
+/**
+ * Roofer/industry-style footprint radius from hail size + source type.
+ * Zoom-INVARIANT on purpose: the swath is fixed geography — zooming must only
+ * change render resolution, never how far hits reach or merge.
+ */
+function hailFootprintM(sizeIn, source) {
   const sz = parseFloat(sizeIn);
   const s = Number.isNaN(sz) ? 0.75 : sz;
   const radar = /swdi|radar/i.test(String(source || ""));
-  const z = Number.isFinite(zoom) ? zoom : map?.getZoom?.() || 14;
-  // Zoomed-out: fatten kernels so pockets merge into continuous news-radar corridors.
-  const zoomScale = z < 8 ? 2.8 : z < 10 ? 2.1 : z < 12 ? 1.45 : 1;
   const base = (radar ? 900 : 420) + s * (radar ? 720 : 400);
-  return Math.max(500, Math.min(6200, base * zoomScale));
+  return Math.max(500, Math.min(6200, base * 1.5));
 }
 
 /**
  * Hailswath / MESH-style region builder (Cheresnick & Basara 2005; MRMS MESH contouring).
- * Rasterize size-weighted footprints onto a local km grid, morphologically close gaps
- * between volume-scan-like hits, then extract nested isosurfaces at hail-size thresholds.
+ * Rasterize size-weighted footprints onto a local km grid, close gaps by a fixed
+ * km distance, then extract nested isosurfaces at hail-size thresholds.
  */
 const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.5, 2.0, 2.5];
-const HAIL_SWATH_THRESHOLDS_WIDE = [0.75, 1.25, 2.0];
+/** Gap-closing distance per threshold — km, NOT cells, so shape ≠ f(resolution). */
+const HAIL_CLOSE_KM = (thr) => (thr <= 1 ? 7 : thr <= 1.5 ? 5 : 3.5);
 
 function chaikinSmoothRing(ring, iters = 2) {
   if (!ring || ring.length < 4) return ring;
@@ -3463,54 +3465,62 @@ function chaikinSmoothRing(ring, iters = 2) {
   return pts;
 }
 
-function dilateBinary(grid, w, h) {
-  const out = new Uint8Array(w * h);
+/** Two-pass chamfer distance (km) from every cell to the nearest ON cell. */
+function chamferDistKm(onMask, w, h, cellKm) {
+  const INF = 1e9;
+  const d = new Float32Array(w * h);
+  for (let i = 0; i < d.length; i++) d[i] = onMask[i] ? 0 : INF;
+  const st = cellKm;
+  const dg = cellKm * Math.SQRT2;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      let on = 0;
-      for (let dy = -1; dy <= 1 && !on; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          const yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-          if (grid[yy * w + xx]) on = 1;
-        }
+      const i = y * w + x;
+      let v = d[i];
+      if (x > 0) v = Math.min(v, d[i - 1] + st);
+      if (y > 0) {
+        v = Math.min(v, d[i - w] + st);
+        if (x > 0) v = Math.min(v, d[i - w - 1] + dg);
+        if (x < w - 1) v = Math.min(v, d[i - w + 1] + dg);
       }
-      out[y * w + x] = on;
+      d[i] = v;
     }
   }
-  return out;
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      let v = d[i];
+      if (x < w - 1) v = Math.min(v, d[i + 1] + st);
+      if (y < h - 1) {
+        v = Math.min(v, d[i + w] + st);
+        if (x < w - 1) v = Math.min(v, d[i + w + 1] + dg);
+        if (x > 0) v = Math.min(v, d[i + w - 1] + dg);
+      }
+      d[i] = v;
+    }
+  }
+  return d;
 }
 
-function erodeBinary(grid, w, h) {
+/**
+ * Morphological close by a fixed km radius (dilate r → erode r) via distance
+ * transforms. Resolution-independent: the same gap bridges at any cell size,
+ * so zooming refines detail without re-merging shapes.
+ */
+function closeBinaryKm(grid, w, h, cellKm, closeKm) {
+  const r = closeKm / 2;
+  if (!(r > 0)) return grid;
+  const dOn = chamferDistKm(grid, w, h, cellKm);
+  const dil = new Uint8Array(w * h);
+  const inv = new Uint8Array(w * h);
+  for (let i = 0; i < dil.length; i++) {
+    dil[i] = dOn[i] <= r ? 1 : 0;
+    inv[i] = dil[i] ? 0 : 1;
+  }
+  const dOff = chamferDistKm(inv, w, h, cellKm);
   const out = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let on = grid[y * w + x] ? 1 : 0;
-      if (!on) {
-        out[y * w + x] = 0;
-        continue;
-      }
-      for (let dy = -1; dy <= 1 && on; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          const yy = y + dy;
-          // Ignore OOB — don't eat the swath edge on thin grids
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-          if (!grid[yy * w + xx]) on = 0;
-        }
-      }
-      out[y * w + x] = on;
-    }
-  }
+  // Union with the original mask — closing must never lose real hits.
+  for (let i = 0; i < out.length; i++) out[i] = grid[i] || (dil[i] && dOff[i] > r) ? 1 : 0;
   return out;
-}
-
-/** Morphological close — fills small gaps between successive radar footprints (Hailswath smoothing). */
-function morphClose(grid, w, h, passes = 1) {
-  let g = grid;
-  for (let i = 0; i < passes; i++) g = erodeBinary(dilateBinary(g, w, h), w, h);
-  return g;
 }
 
 /**
@@ -3687,7 +3697,7 @@ function buildHailSwathRings(rawPts, zone = {}) {
       const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
       return [
         {
-          ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source, z), wide ? 20 : 14),
+          ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source), 18),
           maxSize: sz,
           hits: 1,
           confirmed: isSpotterHail(p),
@@ -3698,8 +3708,10 @@ function buildHailSwathRings(rawPts, zone = {}) {
     return swdiRings;
   }
 
-  const oLat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
-  const oLon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
+  // Snap the local projection origin to a fixed lattice so the grid is anchored
+  // to geography — pan/zoom re-meshes land on the same cells (no shape jitter).
+  const oLat = Math.round((pts.reduce((a, p) => a + p.lat, 0) / pts.length) * 4) / 4;
+  const oLon = Math.round((pts.reduce((a, p) => a + p.lon, 0) / pts.length) * 4) / 4;
   const cos = Math.cos((oLat * Math.PI) / 180);
   const toXY = (lat, lon) => ({
     x: ((lon - oLon) * 111.32 * Math.max(0.2, cos)),
@@ -3716,7 +3728,7 @@ function buildHailSwathRings(rawPts, zone = {}) {
   let maxY = -Infinity;
   const kernels = pts.map((p) => {
     const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-    const rKm = hailFootprintM(sz, p.source, z) / 1000;
+    const rKm = hailFootprintM(sz, p.source) / 1000;
     const { x, y } = toXY(p.lat, p.lon);
     minX = Math.min(minX, x - rKm);
     maxX = Math.max(maxX, x + rKm);
@@ -3731,8 +3743,8 @@ function buildHailSwathRings(rawPts, zone = {}) {
     const ring = p.swdi_ring;
     const cLat = ring.reduce((a, c) => a + c[0], 0) / ring.length;
     const cLon = ring.reduce((a, c) => a + c[1], 0) / ring.length;
-    const coreR = hailFootprintM(sz, "noaa-swdi-radar", z) / 1000;
-    const edgeR = Math.max(0.22, coreR * (wide ? 0.42 : 0.32));
+    const coreR = hailFootprintM(sz, "noaa-swdi-radar") / 1000;
+    const edgeR = Math.max(0.22, coreR * 0.36);
     const pushK = (lat, lon, rKm) => {
       const { x, y } = toXY(lat, lon);
       minX = Math.min(minX, x - rKm);
@@ -3742,24 +3754,28 @@ function buildHailSwathRings(rawPts, zone = {}) {
       kernels.push({ x, y, rKm, size: sz, spot: false });
     };
     pushK(cLat, cLon, coreR);
-    const step = Math.max(1, Math.floor(ring.length / (wide ? 28 : 20)));
+    const step = Math.max(1, Math.floor(ring.length / 24));
     for (let i = 0; i < ring.length - 1; i += step) {
       const pt = ring[i];
       if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
       pushK(pt[0], pt[1], edgeR);
     }
   }
-  const pad = wide ? 2.4 : 1.2;
+  const pad = 2.0;
   minX -= pad;
   minY -= pad;
   maxX += pad;
   maxY += pad;
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
-  // Cell size scales with data span so the grid ALWAYS covers every hit — a cap on
-  // cellKm used to clip statewide swaths to one corner (boxy edges, vanishing zones).
-  const maxCells = wide ? 176 : hasSelectedStormDates() ? 192 : 128;
-  const cellKm = Math.max(wide ? 0.35 : 0.18, span / maxCells);
+  // Cell size scales with data span so the grid ALWAYS covers every hit (a cellKm
+  // cap used to clip statewide swaths to one corner). Zoom only changes resolution:
+  // finer floor when viewport-meshed, quantized steps + lattice-snapped bounds so
+  // the same geography rasterizes identically between redraws.
+  const maxCells = 208;
+  const cellKm = Math.max(wide ? 0.3 : 0.12, Math.ceil(span / maxCells / 0.05) * 0.05);
+  minX = Math.floor(minX / cellKm) * cellKm;
+  minY = Math.floor(minY / cellKm) * cellKm;
   const w = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
   const h = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxY - minY) / cellKm)));
   const field = new Float32Array(w * h);
@@ -3790,9 +3806,8 @@ function buildHailSwathRings(rawPts, zone = {}) {
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
-  const thresholds = wide ? HAIL_SWATH_THRESHOLDS_WIDE : HAIL_SWATH_THRESHOLDS;
 
-  for (const thr of thresholds) {
+  for (const thr of HAIL_SWATH_THRESHOLDS) {
     const binary = new Uint8Array(w * h);
     let any = 0;
     for (let i = 0; i < field.length; i++) {
@@ -3802,18 +3817,16 @@ function buildHailSwathRings(rawPts, zone = {}) {
       }
     }
     if (!any) continue;
-    // Close enough to bridge scan gaps; avoid over-dilating cores into circles.
-    const closePasses = wide ? (thr <= 1 ? 4 : thr <= 1.5 ? 3 : 2) : thr <= 1 ? 3 : 2;
-    const closed = morphClose(binary, w, h, closePasses);
-    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, wide ? 8 : 12);
+    const closed = closeBinaryKm(binary, w, h, cellKm, HAIL_CLOSE_KM(thr));
+    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      const smooth = chaikinSmoothRing(ring, wide ? 4 : 3);
+      const smooth = chaikinSmoothRing(ring, 3);
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.75) || (radarCount >= 1 && thr >= 1);
       // Uniform pad (not thr-scaled) so nested cutouts stay inside parents.
       out.push({
-        ring: padPolygon(smooth, wide ? 50 : 28),
+        ring: padPolygon(smooth, 36),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,

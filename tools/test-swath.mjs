@@ -34,9 +34,8 @@ function extractConst(name) {
 }
 
 const fns = [
-  "dilateBinary",
-  "erodeBinary",
-  "morphClose",
+  "chamferDistKm",
+  "closeBinaryKm",
   "walkBinaryExterior",
   "traceBinaryExteriorRings",
   "chaikinSmoothRing",
@@ -50,7 +49,7 @@ const fns = [
   "ringCentroidLatLon",
   "pointInLatLonRing",
 ];
-const consts = ["HAIL_SWATH_THRESHOLDS", "HAIL_SWATH_THRESHOLDS_WIDE"];
+const consts = ["HAIL_SWATH_THRESHOLDS", "HAIL_CLOSE_KM"];
 const code = consts.map(extractConst).join("\n") + "\n" + fns.map(extractFn).join("\n\n");
 
 let ZOOM = 7;
@@ -151,6 +150,25 @@ const sparse = [
   const rings = g.buildHailSwathRings(sparse, { size_in: 1.0, date: "2026-05-01" });
   const total = rings.reduce((a, r) => a + ringAreaKm2(r.ring), 0);
   check("z=16 sparse hits visible", rings.length >= 1 && total > 1, `rings=${rings.length} totalArea=${total.toFixed(1)}km²`);
+}
+
+// Zoom invariance: identical data at z=7 vs z=16 must produce the SAME geometry —
+// zooming may only refine resolution, never re-merge or warp shapes.
+{
+  const at = (z) => {
+    ZOOM = z;
+    return g.buildHailSwathRings(corridor, { size_in: 1.0, date: "2026-05-01" });
+  };
+  const a = at(7);
+  const b = at(16);
+  const areaA = a.reduce((s, r) => s + ringAreaKm2(r.ring), 0);
+  const areaB = b.reduce((s, r) => s + ringAreaKm2(r.ring), 0);
+  const drift = Math.abs(areaA - areaB) / Math.max(areaA, areaB, 1);
+  check(
+    "zoom invariance z7 vs z16",
+    a.length === b.length && drift < 0.02,
+    `rings ${a.length} vs ${b.length}, area ${areaA.toFixed(0)} vs ${areaB.toFixed(0)} km² (drift ${(drift * 100).toFixed(2)}%)`,
+  );
 }
 
 // Statewide span (~440km of hits): the mesh must cover the WHOLE swath, not clip

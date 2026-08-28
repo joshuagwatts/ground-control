@@ -19,9 +19,8 @@ function extractFn(name) {
 }
 
 const names = [
-  "dilateBinary",
-  "erodeBinary",
-  "morphClose",
+  "chamferDistKm",
+  "closeBinaryKm",
   "walkBinaryExterior",
   "traceBinaryExteriorRings",
   "chaikinSmoothRing",
@@ -141,11 +140,20 @@ function check(label, cond, detail = "") {
   check("donut exterior", maxArea > 15, `rings=${rings.length} maxArea=${maxArea.toFixed(1)} (outer=25)`);
 }
 
-// 7. morphClose on gap: two cells 1 apart should bridge
+// 7. km-based close: bridges gaps below closeKm, leaves bigger gaps open —
+//    and does the SAME at half the cell size (resolution independence).
 {
-  const { grid, w, h } = gridFrom(["#.#"]);
-  const closed = g.morphClose(grid, w, h, 1);
-  check("morphClose bridges 1-cell gap", closed[1] === 1, `mid=${closed[1]}`);
+  const { grid, w, h } = gridFrom(["#...#"]);
+  const closed = g.closeBinaryKm(grid, w, h, 1, 4.5); // 3km gap, close 4.5km
+  const open = g.closeBinaryKm(grid, w, h, 1, 1.5); // close 1.5km — must NOT bridge
+  check("closeBinaryKm bridges 3km gap @1km cells", closed[2] === 1, `mid=${closed[2]}`);
+  check("closeBinaryKm keeps 3km gap open when closeKm=1.5", open[2] === 0, `mid=${open[2]}`);
+  // Same geography at 0.5km cells: "#" spans 2 cells, gap 6 cells = 3km
+  const fine = gridFrom(["##......##"]);
+  const closedF = g.closeBinaryKm(fine.grid, fine.w, fine.h, 0.5, 4.5);
+  const openF = g.closeBinaryKm(fine.grid, fine.w, fine.h, 0.5, 1.5);
+  check("closeBinaryKm bridges same gap @0.5km cells", closedF[5] === 1, `mid=${closedF[5]}`);
+  check("closeBinaryKm keeps gap open @0.5km cells", openF[5] === 0, `mid=${openF[5]}`);
 }
 
 process.exit(fail ? 1 : 0);
