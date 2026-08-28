@@ -1678,14 +1678,22 @@ body.wx-map-expanded .hs-sheet {
   opacity: 1;
   transform: translate3d(0, 0, 0);
 }
-.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin { cursor: grab; touch-action: none; }
-.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin:active { cursor: grabbing; }
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) {
+  cursor: grab;
+  touch-action: pan-x;
+}
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open):active { cursor: grabbing; }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
   content: "Swipe up for storm dates";
   display: block;
   font-size: 11px;
   color: var(--muted);
   margin-top: 2px;
+}
+/* Loaded map-view / pin copy already says what to do — don't stack the hint */
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready::after {
+  content: none;
+  display: none;
 }
 .hs-bottom-panel {
   transition:

@@ -2770,22 +2770,6 @@ function topoZoneRing(zone, rawPts) {
   return ringPolygon(lat, lon, baseM, sz >= 1.5 ? 8 : 6);
 }
 
-function hailPopupHtml(h, day) {
-  const stars = h.stars || hailStars(h.size_in);
-  const sev = h.severity || hailSeverityLabel(h.size_in);
-  const src =
-    h.source === "mixed"
-      ? "radar+spot"
-      : h.source === "noaa-swdi-radar"
-        ? "radar"
-        : h.source === "iem-lsr"
-          ? "LSR"
-          : "spotter";
-  return `<b>${stars} ${sev}</b><br>${h.date || day || ""}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> (${src})${
-    h.near_hits > 0 ? `<br>${h.near_hits} signature${h.near_hits === 1 ? "" : "s"} at this roof` : "<br>No hail signature at this roof"
-  }${h.size_far ? `<br>${h.size_far}" also ${formatDistance(h.far_km)} out` : ""}<br>${h.hits || 1} hit${(h.hits || 1) === 1 ? "" : "s"} in radius · zone ~${h.zone_r_km != null ? formatDistance(h.zone_r_km) : "?"}<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}${h.distance_km != null ? `<br>nearest ${formatDistance(h.distance_km)} from pin` : ""}`;
-}
-
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (!map || !window.L) return;
   lastHailRows = hailRows || [];
@@ -2879,9 +2863,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         renderer: hailSvg,
         interactive: false,
         className: "wx-hail-pin-zone",
-      })
-        .bindPopup(hailPopupHtml({ ...h, size_in: String(sz || h.size_in) }, activeDay))
-        .addTo(hailLayer);
+      }).addTo(hailLayer);
     }
     const onBlock = dayHits.filter((p) => hitDistKm(p) <= 0.5);
     const zoneHits = onBlock.length ? onBlock : dayHits;
@@ -2906,14 +2888,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           renderer: hailSvg,
           interactive: false,
           className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
-        })
-          .bindPopup(
-            hailPopupHtml(
-              { ...h, hits: sub.hits || h.hits, size_in: String(sub.maxSize || h.size_in) },
-              activeDay,
-            ),
-          )
-          .addTo(hailLayer),
+        }).addTo(hailLayer),
         { confirmed: isConfirm, size: sz, kind: "zone" },
       );
       if (sz >= 0.75 && isConfirm) {
@@ -2972,11 +2947,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           interactive: false,
         }).addTo(hailLayer);
       }
-      mark
-        .bindPopup(
-          `<b>${isSpot ? "SPOTTER" : "RADAR"}</b> · ${p.date}${p.time ? ` ${p.time}` : ""}<br><b>${p.size_in}"</b> · ${p.location || ""}${p.distance_km != null ? `<br>${formatDistance(p.distance_km)} from pin` : ""}`,
-        )
-        .addTo(hailLayer);
+      mark.addTo(hailLayer);
     }
   }
 
@@ -3004,9 +2975,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         dashArray: stroke.dashArray || "5 6",
         interactive: false,
         className: "wx-wind-topo",
-      })
-        .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km != null ? `${formatDistance(w.distance_km)} from pin` : ""}`)
-        .addTo(windLayer),
+      }).addTo(windLayer),
       { confirmed: false, size: mph / 40, kind: "wind" },
     );
   }
@@ -4192,7 +4161,6 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     if (wxSuppressMapTap) return;
     const { lat, lng } = e.latlng;
     setWxPin(lat, lng);
-    placeSelectPin(e.latlng);
     if (onTap) onTap(lat, lng);
   });
   map.on("movestart zoomstart", () => {
@@ -4256,11 +4224,7 @@ export function setMapLayer(id) {
 export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
   // stay:true = just frame the map (boot / recenter) — do not drop/keep a select pin
-  if (!opts.stay) {
-    if (opts.radius === false) placeSelectPin([lat, lon]);
-    else setWxPin(lat, lon);
-    placeSelectPin([lat, lon]);
-  }
+  if (!opts.stay) setWxPin(lat, lon);
   const inView = Boolean(map.getBounds?.()?.pad(0.08)?.contains([lat, lon]));
   const zoomOk = Math.abs((map.getZoom?.() || 0) - zoom) <= 1;
   if (opts.stay !== true && inView && zoomOk) return;
@@ -4300,7 +4264,7 @@ function unlockHailTierGesture() {
 
 /**
  * Second swipe from the address peek: open storm dates, then scroll the view
- * 1:1 with the finger — Instagram-feed style (no scrub / settle animation).
+ * 1:1 with the finger — Instagram-feed style (no timed open animation).
  */
 function bindAddressSwipeToStormSheet(el) {
   if (!el || el.dataset.addrSwipeBound) return;
@@ -4439,15 +4403,12 @@ function scrollViewToStormSheet(smooth = true) {
 export function syncHailBottomChrome() {
   const panel = document.getElementById("hs-bottom-panel");
   const field = document.getElementById("hs-field");
-  const wrap = document.querySelector(".hs-wrap");
   if (panel) {
     panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
     panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
   }
   // Completed jobs / field marks ride with the storm sheet tier
   field?.classList.toggle("hs-field-open", hailBottomTier === "sheet");
-  wrap?.classList.toggle("hs-tier-sheet", hailBottomTier === "sheet");
-  wrap?.classList.toggle("hs-tier-address", hailBottomTier === "address");
 }
 
 function pulseBottomPanel({ light = false } = {}) {
@@ -4490,7 +4451,7 @@ export function revealHailAddressPeek() {
     const sheet = document.getElementById("hs-sheet");
     if (sheet && !sheet.querySelector(".hs-pin")) {
       sheet.innerHTML =
-        '<p class="hs-pin"><strong>Map view</strong>Swipe up for storm dates in this area</p><p class="hs-empty">Storm dates load on the next swipe.</p>';
+        '<p class="hs-pin"><strong>Map view</strong></p><p class="hs-empty">Storm dates load on the next swipe.</p>';
     }
   }
   if (wasExpanded) {
@@ -4516,7 +4477,7 @@ export function revealHailStormSheet({ interactive = false, scroll = true } = {}
   if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
-  // Interactive scrub already revealed the sheet — skip timed pulse/settle animations
+  // Gesture already opened the sheet — skip pulse / auto-scroll
   if (!interactive) {
     pulseBottomPanel({ light: fromAddress && !wasExpanded });
   }
@@ -4593,9 +4554,6 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
 export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   if (!view || !shell || shell.dataset.scrollExpandBound) return;
   shell.dataset.scrollExpandBound = "1";
-  if (sheet && !sheet.dataset.pinTapBound) {
-    sheet.dataset.pinTapBound = "1";
-  }
   // Address peek → storm sheet is feed-scroll (bindAddressSwipeToStormSheet)
   bindAddressSwipeToStormSheet(document.getElementById("hs-bottom-panel"));
   const mapBar = shell.querySelector(".hs-map-bar");
@@ -4689,7 +4647,10 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     const dy = y - touchY;
     touchY = y;
     touchAccum += dy;
-    // Peek → sheet is handled by bindAddressSwipeToStormSheet (feed scroll)
+    // Peek band owns upward swipes (address → storm feed) — don't fullscreen over it
+    if (onPeekBand(e.target) && (hailBottomTier === "address" || hailBottomTier === "sheet")) {
+      return;
+    }
     if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
       e.preventDefault();
       tryExpand();
@@ -5221,7 +5182,7 @@ function hailScopeHtml(data, days, esc) {
   ].sort((a, b) => b.localeCompare(a));
   const q = hailSearchQ;
   return `
-    <p class="hs-pin"><strong>${esc(addr)}</strong>${
+    <p class="hs-pin hs-pin-ready"><strong>${esc(addr)}</strong>${
       selectedStormDate
         ? `Showing zones for ${esc(prettyStormDate(selectedStormDate))}`
         : viewport
@@ -5301,7 +5262,7 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
 function hailScopeDateRows(days, esc, { viewport = false } = {}) {
   if (!days.length) {
     const empty = viewport
-      ? "No storms in the current map view. Pan/zoom, then swipe up again to refresh, or widen filters."
+      ? "No storms in the current map view. Pan or zoom the map, then open the sheet again, or widen filters."
       : hailSearchQ
         ? "No storms match that search."
         : "No storms in this window. Widen the radius, drop the hail size, or tap another place.";
