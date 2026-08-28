@@ -1008,6 +1008,16 @@ body.wx-tab .leaflet-control-attribution {
   padding: 0 2px !important;
   background: transparent !important;
 }
+body.wx-tab .leaflet-container,
+body.hs-tab .leaflet-container,
+.wx-map-shell .leaflet-container,
+.hs-map-shell .leaflet-container {
+  background: #000 !important;
+}
+#wx-map,
+#hs-map {
+  background: #000;
+}
 /* Block layout so the dossier grows natural height — #view scrolls map away */
 .wx-wrap {
   display: block;
@@ -1176,7 +1186,7 @@ body.wx-tab .leaflet-control-attribution {
   min-height: 240px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  background: #050805;
+  background: #000;
   transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .wx-map-shell.expanded {
@@ -1566,7 +1576,7 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
   height: min(64vh, 560px);
   min-height: 280px;
   border-bottom: 1px solid var(--line);
-  background: #111;
+  background: #000;
   transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .hs-map-shell.expanded {

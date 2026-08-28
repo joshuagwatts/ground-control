@@ -3261,6 +3261,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     doubleClickZoom: false,
     maxZoom: MAP_MAX_ZOOM,
   }).setView([c.lat, c.lon], zoom);
+  if (container?.style) container.style.background = "#000";
   if (!isPhoneUi()) {
     window.L.control.zoom({ position: "bottomleft" }).addTo(map);
   }
