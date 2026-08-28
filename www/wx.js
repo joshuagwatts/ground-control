@@ -918,12 +918,30 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
   return mergeHailRows(spc.hail, swdi);
 }
 
-let mapConfigCache = null;
+let mapBusy = 0;
+let lastHailDrawSig = "";
+
+export function mapContainer() {
+  try {
+    return map?.getContainer?.() || null;
+  } catch {
+    return null;
+  }
+}
 const MAP_MAX_ZOOM = 22;
 const HOUSE_NUM_ZOOM = 16;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const HOUSE_NUM_MAX = 400;
+/** Keep tiles warm while panning/zooming — avoids blank flashes and reload stutter. */
+const BASE_TILE_OPTS = {
+  maxZoom: MAP_MAX_ZOOM,
+  tileSize: 256,
+  detectRetina: false,
+  updateWhenIdle: false,
+  updateWhenZooming: true,
+  keepBuffer: 8,
+};
 const FEMA_STRUCTURES =
   "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0/query";
 const MS_BUILDINGS =
@@ -2316,6 +2334,43 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   lastHailRows = hailRows || [];
   lastWindRows = windRows || [];
   const requireDate = opts.requireDate === true || (opts.requireDate !== false && hailScopeMode);
+  const nearHail = hailNearPin(hailRows || [], null);
+  const collapsed = collapseHailByDate(nearHail);
+  const daySet = new Set(collapsed.map((h) => h.date));
+  if (selectedStormDate && !daySet.has(selectedStormDate)) {
+    selectedStormDate = null;
+  }
+  if (!selectedStormDate && collapsed.length && !requireDate) {
+    selectedStormDate = [...collapsed].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0]?.date || null;
+  }
+  const activeDay = selectedStormDate;
+  const pin = pinCoords();
+  const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${opts.fit ? 1 : 0}`;
+  if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
+    syncHazardLayers();
+    return;
+  }
+  lastHailDrawSig = drawSig;
+  if (requireDate && !activeDay) {
+    if (hailLayer) {
+      try {
+        hailLayer.remove();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (windLayer) {
+      try {
+        windLayer.remove();
+      } catch {
+        /* ignore */
+      }
+    }
+    hailLayer = null;
+    windLayer = null;
+    syncHazardLayers();
+    return;
+  }
   if (hailLayer) {
     try {
       hailLayer.remove();
@@ -2338,21 +2393,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   }
   const hailSvg = window.L.svg({ pane: "hailVectors", padding: 0.6 });
 
-  const day = selectedStormDate;
-  const nearHail = hailNearPin(hailRows || [], null);
-  const collapsed = collapseHailByDate(nearHail);
-  const daySet = new Set(collapsed.map((h) => h.date));
-  if (selectedStormDate && !daySet.has(selectedStormDate)) {
-    selectedStormDate = null;
-  }
-  if (!selectedStormDate && collapsed.length && !requireDate) {
-    selectedStormDate = [...collapsed].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0]?.date || null;
-  }
-  const activeDay = selectedStormDate;
-  if (requireDate && !activeDay) {
-    syncHazardLayers();
-    return;
-  }
+  const day = activeDay;
   const zones = collapsed
     .filter((h) => !activeDay || h.date === activeDay)
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
@@ -2758,13 +2799,13 @@ function escHouseNum(s) {
 }
 
 function scheduleHouseNumbers() {
-  if (Date.now() < houseHoldUntil) return;
+  if (Date.now() < houseHoldUntil || mapBusy > 0) return;
   if (houseTimer) clearTimeout(houseTimer);
   houseTimer = setTimeout(() => {
     houseTimer = 0;
-    if (Date.now() < houseHoldUntil) return;
+    if (Date.now() < houseHoldUntil || mapBusy > 0) return;
     refreshHouseNumbers();
-  }, 220);
+  }, 750);
 }
 
 function holdHouseOutlines(ms = 1500) {
@@ -2819,7 +2860,9 @@ function isOutbuilding(v) {
 }
 
 function houseBoundsKey(b, z) {
-  return `${z}|${b.getSouth().toFixed(3)}|${b.getWest().toFixed(3)}|${b.getNorth().toFixed(3)}|${b.getEast().toFixed(3)}`;
+  const q = z >= 18 ? 0.0015 : z >= 16 ? 0.003 : 0.006;
+  const r = (v) => Math.round(v / q);
+  return `${z}|${r(b.getSouth())}|${r(b.getWest())}|${r(b.getNorth())}|${r(b.getEast())}`;
 }
 
 function ringCentroid(ring) {
@@ -3218,11 +3261,13 @@ function bindPinchZoomInertia(leafletMap) {
   let tracking = false;
   let samples = [];
   let focal = null;
-  let raf = 0;
 
   const stopCoast = () => {
-    if (raf) cancelAnimationFrame(raf);
-    raf = 0;
+    try {
+      leafletMap.stop();
+    } catch {
+      /* ignore */
+    }
   };
 
   const pinchSpan = (touches) => {
@@ -3254,14 +3299,6 @@ function bindPinchZoomInertia(leafletMap) {
     while (samples.length > 2 && now - samples[0].t > 240) samples.shift();
   };
 
-  const finishCoast = (z) => {
-    const snap = leafletMap.options.zoomSnap || 1;
-    if (snap <= 0 || !focal) return;
-    const snapped = Math.round(z / snap) * snap;
-    if (Math.abs(snapped - z) < 0.02) return;
-    leafletMap.setZoomAround(focal, snapped, { animate: true, duration: 0.18 });
-  };
-
   const onEnd = (e) => {
     if (e.touches.length >= 2) return;
     if (!tracking) return;
@@ -3285,31 +3322,11 @@ function bindPinchZoomInertia(leafletMap) {
 
     const minZ = leafletMap.getMinZoom();
     const maxZ = leafletMap.getMaxZoom();
-    let z = leafletMap.getZoom();
-    const friction = 0.89;
-    let lastFrame = performance.now();
-
-    const step = (frameNow) => {
-      const dtFrame = Math.min(0.05, (frameNow - lastFrame) / 1000);
-      lastFrame = frameNow;
-      vel *= Math.pow(friction, dtFrame * 60);
-      if (Math.abs(vel) < 0.05) {
-        raf = 0;
-        finishCoast(z);
-        return;
-      }
-      z += vel * dtFrame;
-      if (z <= minZ || z >= maxZ) {
-        z = Math.max(minZ, Math.min(maxZ, z));
-        vel = 0;
-        raf = 0;
-        finishCoast(z);
-        return;
-      }
-      leafletMap.setZoomAround(focal, z, { animate: false });
-      raf = requestAnimationFrame(step);
-    };
-    raf = requestAnimationFrame(step);
+    const z = leafletMap.getZoom();
+    const targetZ = Math.max(minZ, Math.min(maxZ, z + vel * 0.3));
+    if (Math.abs(targetZ - z) < 0.08) return;
+    const duration = Math.min(0.48, 0.16 + Math.abs(vel) * 0.04);
+    leafletMap.flyTo(focal, targetZ, { duration, easeLinearity: 0.28, animate: true });
   };
 
   el.addEventListener("touchstart", onStart, { passive: true });
@@ -3333,6 +3350,8 @@ export function destroyMap() {
   stopHouseNumbers();
   stopFieldOverlay();
   houseLayer = null;
+  lastHailDrawSig = "";
+  mapBusy = 0;
   if (map) {
     try {
       map._pinchInertiaOff?.();
@@ -3370,7 +3389,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : HOUSE_ZOOM;
   map = window.L.map(container, {
     zoomControl: false,
-    preferCanvas: true,
+    preferCanvas: false,
     scrollWheelZoom: true,
     touchZoom: true,
     doubleClickZoom: false,
@@ -3394,14 +3413,18 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       attribution: layer.attribution || "",
       opacity: layer.opacity ?? 1,
       className: layer.className || "",
-      maxZoom: MAP_MAX_ZOOM,
       maxNativeZoom: isWx ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : layer.maxNativeZoom ?? MAP_MAX_ZOOM,
       subdomains: layer.subdomains || "abc",
-      tileSize: 256,
-      detectRetina: false,
-      updateWhenIdle: true,
-      updateWhenZooming: false,
-      keepBuffer: 2,
+      ...(isWx
+        ? {
+            maxZoom: MAP_MAX_ZOOM,
+            tileSize: 256,
+            detectRetina: false,
+            updateWhenIdle: false,
+            updateWhenZooming: true,
+            keepBuffer: 4,
+          }
+        : BASE_TILE_OPTS),
     });
     if (isWx) {
       overlays[layer.id] = tile;
@@ -3433,7 +3456,16 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     placeSelectPin(e.latlng);
     if (onTap) onTap(lat, lng);
   });
+  map.on("movestart zoomstart", () => {
+    mapBusy += 1;
+    if (houseTimer) {
+      clearTimeout(houseTimer);
+      houseTimer = 0;
+    }
+  });
   map.on("moveend zoomend", () => {
+    mapBusy = Math.max(0, mapBusy - 1);
+    if (mapBusy > 0) return;
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
   });
@@ -3444,7 +3476,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   setFieldOverlay(fieldOverlay);
   setTimeout(() => {
     try {
-      map?.invalidateSize?.(true);
+      map?.invalidateSize?.();
     } catch {
       /* ignore */
     }
@@ -3468,7 +3500,10 @@ export function setMapLayer(id) {
     return;
   }
   if (!layers[id]) return;
-  Object.values(layers).forEach((l) => map.removeLayer(l));
+  if (activeLayer === id && map.hasLayer(layers[id])) return;
+  Object.values(layers).forEach((l) => {
+    if (map.hasLayer(l)) map.removeLayer(l);
+  });
   layers[id].addTo(map);
   applyOverlays();
   activeLayer = id;
@@ -3509,7 +3544,7 @@ export function bindWxMapExpand(shell) {
         if (hint) hint.textContent = on ? "Double-tap to close" : "Double-tap to expand";
         setTimeout(() => {
           try {
-            map?.invalidateSize?.(true);
+            map?.invalidateSize?.();
           } catch {
             /* ignore */
           }

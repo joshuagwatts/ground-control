@@ -42,7 +42,8 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
-} from "./wx.js?v=0228";
+  mapContainer,
+} from "./wx.js?v=0229";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
@@ -1426,6 +1427,16 @@ function onMapHold(lat, lon) {
 
 async function renderWx() {
   document.body.classList.remove("comm");
+  setHailScopeMode(true);
+  document.body.classList.add("hs-tab", "wx-tab");
+  const keepMap = mapContainer() && mapContainer() === document.getElementById("wx-map");
+  if (keepMap) {
+    paintLayerToggles();
+    paintFieldMap();
+    paintFieldSheet();
+    setStatus("");
+    return;
+  }
   leaveWx();
   setHailScopeMode(true);
   document.body.classList.add("hs-tab", "wx-tab");
