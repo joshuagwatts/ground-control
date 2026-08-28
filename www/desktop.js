@@ -303,6 +303,34 @@ export function disconnectDesktop(settings) {
   settings.desktop_live = false;
 }
 
+let roomConnectLock = null;
+
+/** Tap-less homebase pairing — scan LAN or refresh an existing session. */
+export async function ensureControlRoom(settings, { onProgress, forceScan = false } = {}) {
+  if (settings?.desktop_auto === false) {
+    if (!desktopConfigured(settings)) return { ok: false, error: "auto off" };
+  }
+  if (roomConnectLock) return roomConnectLock;
+  roomConnectLock = (async () => {
+    if (desktopConfigured(settings) && !forceScan) {
+      const reach = await desktopReachable(settings, 2200);
+      if (reach.ok) return { ok: true, paired: true, url: baseUrl(settings) };
+    }
+    try {
+      const hit = await connectDesktop(settings, onProgress || (() => {}));
+      settings.desktop_model = hit.model || hit.ping?.model || settings.desktop_model || "";
+      return { ok: true, paired: true, fresh: true, url: hit.url, model: settings.desktop_model };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  })();
+  try {
+    return await roomConnectLock;
+  } finally {
+    roomConnectLock = null;
+  }
+}
+
 async function scanLan(onProgress) {
   if (onProgress) onProgress("FINDING YOUR Wi‑Fi…");
   const subnets = await guessSubnets();

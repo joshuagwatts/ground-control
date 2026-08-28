@@ -1,17 +1,23 @@
 /** Shingle lens. Always names a catalog leader; the meter is what locks it. */
 
 import { privacyOn } from "./cloud.js";
-import { visionComplete } from "./vision.js";
+import { desktopConfigured, ensureControlRoom } from "./desktop.js";
+import { visionComplete, visionProvidersReady } from "./vision.js";
 import {
   SHOTS,
+  SHINGLE_CORE,
+  SHINGLE_EXTRA,
   catalogBrief,
   gateVerdict,
+  matchCatalog,
   nextShotPrompt,
   discontinuedFor,
   yearRange,
 } from "./catalog.js";
 
 export { SHOTS, gateVerdict, nextShotPrompt, discontinuedFor, yearRange };
+
+const SHOT_IDS = [...SHINGLE_CORE, ...SHINGLE_EXTRA];
 
 function extractJson(raw) {
   const t = String(raw || "").trim();
@@ -27,10 +33,68 @@ function extractJson(raw) {
   }
 }
 
+function normalizeShotId(raw) {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
+  if (SHOT_IDS.includes(s)) return s;
+  if (/wrapper|bundle|label|brand|packaging/.test(s)) return "wrapper";
+  if (/back.?stamp|date.?code|stamp/.test(s)) return "backstamp";
+  if (/granule|close|macro/.test(s)) return "granules_close";
+  if (/tab|pattern|cutout/.test(s)) return "tab_pattern";
+  if (/overlay|shadow/.test(s)) return "overlay_shadow";
+  if (/nail|strip|surenail|duragrip/.test(s)) return "nailing_strip";
+  if (/edge|butt|thick/.test(s)) return "thickness_edge";
+  if (/ridge|hip|cap/.test(s)) return "ridge_cap";
+  if (/slope|field|context/.test(s)) return "slope_context";
+  return "";
+}
+
 function confOf(x) {
   if (x == null) return { value: "", conf: 0 };
   if (typeof x === "string") return { value: x, conf: 0.4 };
   return { value: String(x.value || x.name || ""), conf: Number(x.conf || x.confidence || 0) };
+}
+
+function lensBlocked(settings) {
+  return privacyOn(settings) && !desktopConfigured(settings) && !visionProvidersReady(settings).length;
+}
+
+function photoRows(photos) {
+  if (!Array.isArray(photos) || !photos.length) return [];
+  if (photos[0]?.url) return photos.map((p) => ({ ...p }));
+  return photos.filter(Boolean).map((url) => ({ url, shot: "" }));
+}
+
+function applyTagRows(rows, tagRows) {
+  for (const row of tagRows || []) {
+    const idx = Number(row.i ?? row.index) - 1;
+    const id = normalizeShotId(row.id || row.shot);
+    if (rows[idx] && id) rows[idx].shot = id;
+  }
+}
+
+function boostWrapperConfidence(analysis, rows) {
+  const tags = new Set([...(analysis.shots_present || []), ...rows.map((p) => p.shot).filter(Boolean)]);
+  if (!tags.has("wrapper")) return analysis;
+  const hit = matchCatalog({
+    manufacturer: analysis.manufacturer?.value,
+    product: analysis.product?.value,
+    color: analysis.color?.value,
+  });
+  if (!hit.top) return analysis;
+  const floor = (field, min) => {
+    if (!field?.value) return field;
+    return { ...field, conf: Math.max(Number(field.conf) || 0, min) };
+  };
+  return {
+    ...analysis,
+    manufacturer: floor(analysis.manufacturer, 0.88),
+    product: floor(analysis.product, 0.86),
+    color: floor(analysis.color, analysis.color?.value ? 0.8 : 0),
+    shots_present: [...new Set([...(analysis.shots_present || []), "wrapper"])],
+  };
 }
 
 export function normalizeAnalysis(raw) {
@@ -44,6 +108,7 @@ export function normalizeAnalysis(raw) {
     era: confOf(j.era),
     damage: confOf(j.damage),
     shots_present: Array.isArray(j.shots_present) ? j.shots_present.map(String) : [],
+    photo_tags: Array.isArray(j.photo_tags) ? j.photo_tags : Array.isArray(j.photos) ? j.photos : [],
     shots_needed: Array.isArray(j.shots_needed) ? j.shots_needed : [],
     lookalikes: Array.isArray(j.lookalikes) ? j.lookalikes.map(String) : [],
     tells: Array.isArray(j.tells) ? j.tells.map(String) : [],
@@ -51,32 +116,51 @@ export function normalizeAnalysis(raw) {
   };
 }
 
-function buildPrompt(photos, taggedShots) {
-  const tags = (taggedShots || []).map((s, i) => `Photo ${i + 1}: ${s || "unspecified angle"}`).join("\n");
+/** Vision-sort each photo into granules / tab / wrapper / etc. No user tagging. */
+export async function classifyShinglePhotos(settings, rows) {
+  const list = rows || [];
+  if (!list.length || lensBlocked(settings)) return list;
+  const ids = SHOT_IDS.join(", ");
+  const prompt = `Classify each roofing inspection photo in order.
+Pick ONE id per image from: ${ids}.
+Use wrapper when bundle branding, printed product name, color, or lot label is visible.
+Use backstamp for loose shingle back stamp / date mold.
+Reply JSON only: {"photos":[{"i":1,"id":"granules_close"}, {"i":2,"id":"wrapper"}]}`;
+  try {
+    const out = await visionComplete(settings, prompt, list.map((p) => p.url), {
+      maxTokens: 500,
+      temperature: 0.05,
+      mode: "classify",
+    });
+    const parsed = extractJson(out.text);
+    applyTagRows(list, parsed?.photos || parsed?.photo_tags);
+  } catch {
+    /* keep sequential / prior tags */
+  }
+  return list;
+}
+
+function buildPrompt(rows, taggedShots) {
+  const tags = (taggedShots || []).map((s, i) => `Photo ${i + 1}: ${s || "unspecified"}`).join("\n");
   return `You are Ground Control LENS — a field shingle identifier for roofing inspections.
 You ALWAYS pick the single most likely CATALOG manufacturer + product + color. Refusing to name a line is a failure.
-Uncertainty belongs in confidence, not in blank values. Low conf (0.2–0.6) is the correct way to say "leaning this way."
+Uncertainty belongs in confidence, not in blank values.
 
 Rules:
-- manufacturer / product / color MUST be names from CATALOG. Empty values only if the photos are not asphalt shingles.
-- conf is 0..1 for how sure YOU are from THESE photos. Do not refuse a name just because you are not 95% sure.
-- 0.92+ only when unique factory tells are visible (SureNail pink strip, LayerLock/HDZ, plant stamp, branded wrapper).
-- Owens Corning Duration vs Oakridge: without a nailing-strip shot, still NAME the leader, but keep product conf below 0.72.
-- GAF Timberline HD vs HDZ: without LayerLock/HDZ cues, name Timberline HD if the roof looks older, HDZ if it looks new. Keep conf below 0.72 if ambiguous.
-- Date: only fill date_code if you can read a stamp, lot, or wrapper year. Weathering is era, not a date. Date conf 0.92+ is a 100% lock.
-- Discontinued products ARE in the catalog — prefer them when the cues match an older line.
-- Hail bruises / granule loss are damage notes, not product ID.
-- shots_needed: the ONE next photo that would raise certainty the most.
-- shots_present: list every shot type you can see across ALL photos (include wrapper if bundle branding is visible).
-- If a photo shows printed product name, color, or lot on a wrapper, set wrapper in shots_present and read manufacturer/product/color from it.
+- manufacturer / product / color MUST be names from CATALOG.
+- If ANY photo shows bundle wrapper branding, read manufacturer/product/color from it and set conf 0.88+ for those fields.
+- 0.92+ only when unique factory tells are visible (SureNail, LayerLock/HDZ, plant stamp, branded wrapper).
+- Date: only fill date_code from stamp, lot, or wrapper year — not weathering alone.
+- photo_tags: for EACH photo, {"i":1,"id":"wrapper"} using ids: ${SHOT_IDS.join(", ")}.
+- shots_present: every shot type visible across the set (include wrapper when branding shows).
 
-Photos tagged:
-${tags || "(untagged sequence)"}
+Photos:
+${tags || rows.map((_, i) => `Photo ${i + 1}: auto`).join("\n")}
 
 CATALOG:
 ${catalogBrief()}
 
-Reply with JSON only, this shape:
+Reply JSON only:
 {
   "construction": {"value":"", "conf":0},
   "manufacturer": {"value":"", "conf":0},
@@ -85,35 +169,41 @@ Reply with JSON only, this shape:
   "date_code": {"value":"", "conf":0},
   "era": {"value":"", "conf":0},
   "damage": {"value":"", "conf":0},
+  "photo_tags": [{"i":1,"id":""}],
   "shots_present": [],
   "shots_needed": [{"id":"granules_close","why":""}],
   "lookalikes": [],
   "tells": [],
-  "notes": "one sentence: leading pick and what shot would raise the meter"
-}
-conf is 0..1. Name the leader even at 0.3.`;
+  "notes": ""
+}`;
 }
 
 export async function identifyShingles(settings, photos, taggedShots = []) {
-  if (privacyOn(settings)) {
-    throw new Error("SECURE blocks lens — flip LEAKY so vision can leave the device");
+  if (lensBlocked(settings)) {
+    throw new Error("Lens needs Control Room (homebase GPU) or a vision key in Settings");
   }
-  const urls = (photos || []).filter(Boolean);
-  if (!urls.length) {
+  await ensureControlRoom(settings).catch(() => {});
+  let rows = photoRows(photos);
+  if (!rows.length) {
     return {
       status: "NEED_SHOTS",
       analysis: normalizeAnalysis({}),
       verdict: gateVerdict({}, 0, []),
       provider: "",
       leaked: false,
+      photos: [],
     };
   }
-  const prompt = buildPrompt(urls, taggedShots);
-  const out = await visionComplete(settings, prompt, urls, { maxTokens: 1400, temperature: 0.25, mode: "shingle" });
-  const parsed = extractJson(out.text);
-  const analysis = normalizeAnalysis(parsed || {});
-  const shotIds = [...new Set([...(taggedShots || []).filter(Boolean), ...(analysis.shots_present || [])])];
-  const verdict = gateVerdict(analysis, urls.length, shotIds);
+  rows = await classifyShinglePhotos(settings, rows);
+  const urls = rows.map((p) => p.url);
+  const tags = rows.map((p) => p.shot).filter(Boolean);
+  const prompt = buildPrompt(rows, tags.length ? tags : taggedShots);
+  const out = await visionComplete(settings, prompt, urls, { maxTokens: 1600, temperature: 0.2, mode: "shingle" });
+  let analysis = normalizeAnalysis(extractJson(out.text) || {});
+  applyTagRows(rows, analysis.photo_tags);
+  analysis = boostWrapperConfidence(analysis, rows);
+  const shotIds = [...new Set([...rows.map((p) => p.shot).filter(Boolean), ...(analysis.shots_present || []), ...taggedShots])];
+  let verdict = gateVerdict(analysis, urls.length, shotIds);
   if (Array.isArray(analysis.shots_needed)) {
     for (const s of analysis.shots_needed) {
       const id = String(s.id || s || "");
@@ -129,8 +219,9 @@ export async function identifyShingles(settings, photos, taggedShots = []) {
     verdict,
     provider: out.provider,
     model: out.model,
-    leaked: true,
+    leaked: out.provider !== "desktop",
     raw: out.text,
+    photos: rows,
   };
 }
 
@@ -147,8 +238,8 @@ export function formatVerdict(hit) {
       : "");
   if (pct >= 100) lines.push(`100% · ${leader || "date locked"}`);
   else if (pct >= 95) lines.push(`95% · ${leader}`);
-  else if (leader) lines.push(`${pct}% leaning ${leader}`);
-  else lines.push(`${pct}% — keep shooting. Gemini names a leader; the meter locks it.`);
+  else if (leader) lines.push(`${pct}% · ${leader}`);
+  else lines.push(`${pct}% — reading photos…`);
   if (v.status === "KNOW") {
     const k = v.known;
     if (k.discontinued) lines.push(`DISCONTINUED${k.replacedBy ? ` · current equivalent ${k.replacedBy}` : ""}`);
@@ -165,16 +256,14 @@ export function formatVerdict(hit) {
       }
     }
     if (v.needed[0]) lines.push(nextShotPrompt(v.needed));
-  } else {
-    if (v.invented) lines.push("That name is not a unique catalog match — thrown out.");
-    if (v.needed[0]) lines.push(nextShotPrompt(v.needed));
-    else lines.push("Add a granule close-up, a full tab, overlay, and nailing strip.");
+  } else if (v.needed[0]) {
+    lines.push(nextShotPrompt(v.needed[0]));
   }
   const tells = hit.analysis?.tells || [];
   if (tells.length) lines.push(`Tells: ${tells.slice(0, 4).join("; ")}`);
   if (hit.analysis?.damage?.value) lines.push(`Damage note: ${hit.analysis.damage.value} (not a claim decision).`);
   if (hit.provider) {
-    const via = hit.provider === "desktop" ? "CONTROL ROOM · LOCAL GPU" : `${String(hit.provider).toUpperCase()} · LEAKED`;
+    const via = hit.provider === "desktop" ? "CONTROL ROOM · LOCAL GPU" : `${String(hit.provider).toUpperCase()} · CLOUD`;
     lines.push(`— LENS · ${via}`);
   }
   return lines.join("\n");

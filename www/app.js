@@ -18,7 +18,7 @@ import {
   privacyOn,
   cloudStatus,
 } from "./cloud.js";
-import { desktopConfigured, connectDesktop, desktopStatus, disconnectDesktop } from "./desktop.js";
+import { desktopConfigured, connectDesktop, desktopStatus, disconnectDesktop, ensureControlRoom } from "./desktop.js";
 import { httpDiag } from "./net.js";
 import {
   loadMapConfig,
@@ -42,7 +42,7 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
-} from "./wx.js?v=0225";
+} from "./wx.js?v=0226";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
@@ -61,6 +61,15 @@ let wxState = { lat: null, lon: null, address: "", data: null };
 let wxWatch = null;
 let chatBusy = false;
 let lensBusy = false;
+let lensRunTimer = null;
+
+function scheduleLensRun(delay = 350) {
+  clearTimeout(lensRunTimer);
+  lensRunTimer = setTimeout(() => {
+    lensRunTimer = null;
+    void runLens();
+  }, delay);
+}
 let pendingShot = "granules_close";
 let markDraft = null;
 let doneBusy = false;
@@ -657,6 +666,12 @@ function setLensMode(mode, { openCamera = false } = {}) {
   persist();
   pendingShot = L.mode === "shingle" ? nextShingleShot(L) || SHINGLE_CORE[0] : "damage";
   renderLens();
+  if (L.mode === "shingle") {
+    void ensureControlRoom(db.settings, { onProgress: (m) => setStatus(String(m).slice(0, 48)) }).then((r) => {
+      if (r.ok) persist();
+      if (L.photos.length) scheduleLensRun(250);
+    });
+  }
   if (openCamera) $("#lens-snap")?.click();
 }
 
@@ -704,7 +719,7 @@ function renderLens() {
   const roomOn = desktopConfigured(db.settings);
   const roomLine = roomOn
     ? `Control Room · ${esc(db.settings.desktop_model || "GPU paired")}`
-    : "Cloud keys or connect Control Room at homebase for GPU Lens.";
+    : "Pairing Control Room at homebase in the background — or add a cloud vision key in Settings.";
 
   if (!L.session) {
     $("#view").innerHTML = `
@@ -714,36 +729,41 @@ function renderLens() {
         <p class="muted">What are you shooting?</p>
         <button type="button" class="lens-pick-card" id="pick-shingle">
           <strong>Shingle identifier</strong>
-          <span>Keep shooting until the meter hits 95% on a product. A back stamp or wrapper is 100% on the date.</span>
+          <span>Snap photos — Lens classifies angles and identifies automatically. 95% locks the product; wrapper or back stamp hits 100% on date.</span>
         </button>
         <button type="button" class="lens-pick-card" id="pick-damage">
           <strong>Damage highlighter</strong>
-          <span>Circle bruises, granule loss, and lifts. We’ll tighten this later.</span>
+          <span>Circle bruises, granule loss, and lifts. We'll tighten this later.</span>
         </button>
       </div>`;
     $("#pick-shingle").onclick = () => setLensMode("shingle", { openCamera: true });
     $("#pick-damage").onclick = () => setLensMode("damage", { openCamera: true });
+    void ensureControlRoom(db.settings).then((r) => {
+      if (r.ok) persist();
+    });
     return;
   }
 
-  const status = last?.status || (coreDone ? "READY" : "NEED_SHOTS");
+  const status = last?.status || (L.photos.length ? "READING" : "NEED_SHOTS");
   const statusCls = status === "KNOW" || status === "ID" ? "know" : status === "NARROWED" ? "narrow" : "need";
+  const needHint =
+    mode === "shingle" && v?.needed?.[0] && Number(v?.pct) < 85
+      ? `${shotSpec(v.needed[0].id).label} would help — or keep snapping, Lens will sort it.`
+      : "";
   const cardHtml =
     mode === "damage"
       ? formatChatBody(
           marksN
             ? `${marksN} mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit.`
-            : "Snap the damaged area. Circles and arrows come next — we’ll dial this in later.",
+            : "Snap the damaged area. Circles and arrows come next — we'll dial this in later.",
         )
-      : last
-        ? formatChatBody(formatVerdict(last))
-        : formatChatBody(
-            coreDone
-              ? "Four required shots are in. Identify when you’re ready, or add a back stamp if you have a loose shingle."
-              : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}: ${next ? next.label : "next angle"}.`,
-          );
+      : lensBusy
+        ? formatChatBody("Reading photos…")
+        : last
+          ? formatChatBody(formatVerdict(last))
+          : formatChatBody(L.photos.length ? "Reading photos…" : "Snap the roof — identification runs automatically.");
 
-  const pct = Number.isFinite(Number(v?.pct)) ? Number(v.pct) : coreHave * 12;
+  const pct = Number.isFinite(Number(v?.pct)) ? Number(v.pct) : L.photos.length ? Math.min(40, L.photos.length * 10) : 0;
   const leader =
     (status === "KNOW" && k.manufacturer
       ? `${k.manufacturer} ${k.product}${k.color ? ` · ${k.color}` : ""}`
@@ -754,9 +774,7 @@ function renderLens() {
       ? "Locked. Date stamp read."
       : pct >= 95
         ? "Product locked. Back stamp or wrapper for 100% date."
-        : next
-          ? `Need ${next.label} to push this higher.`
-          : "Identify anytime — keep detail shots coming until 95%.";
+        : needHint || (L.photos.length ? "Keep snapping — Lens re-runs after each photo." : "Snap the roof to start.");
   const meterHtml =
     mode === "shingle"
       ? `<div class="lens-meter${pct >= 95 ? " lock" : pct >= 70 ? " hot" : ""}">
@@ -775,32 +793,25 @@ function renderLens() {
       </div>
       ${
         mode === "shingle"
-          ? `<div class="lens-progress" aria-label="${coreHave} of ${SHINGLE_CORE.length} required shots">
-              ${SHINGLE_CORE.map((id) => `<i class="${have.has(id) ? "have" : pendingShot === id ? "now" : ""}" title="${esc(shotSpec(id).label)}"></i>`).join("")}
-            </div>
-            ${meterHtml}
-            <div class="lens-shot-card">
-              <div class="lens-shot-kicker">${coreDone ? (pct >= 95 ? "Locked — extra shots raise date" : "Keep going until 95%") : `Shot ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
-              <h3>${esc((next || shotSpec(pendingShot)).label)}</h3>
-              <p class="muted">${esc((next || shotSpec(pendingShot)).how || (next || shotSpec(pendingShot)).why)}</p>
-            </div>`
+          ? `${meterHtml}${needHint ? `<p class="muted lens-need-hint">${esc(needHint)}</p>` : ""}`
           : `<p class="muted">Snap the damaged area. Marking tools come after the photo.</p>`
       }
       <div class="actions">
-        <button type="button" id="lens-snap" class="primary">${mode === "shingle" && coreDone && next ? "Add extra shot" : "Snap"}</button>
-        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>${mode === "damage" ? "Mark last" : "Identify"}</button>
+        <button type="button" id="lens-snap" class="primary">Snap</button>
+        ${mode === "shingle" ? `<button type="button" id="lens-gallery">Gallery</button>` : ""}
+        <button type="button" id="lens-read"${L.photos.length ? "" : " disabled"}>${mode === "damage" ? "Mark last" : "Re-run"}</button>
         <button type="button" id="lens-clear">Start over</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos
         .map(
           (p, i) =>
-            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em data-retag="${i}" title="Tap to retag shot">${esc(p.shot === "damage" ? "Damage" : shotSpec(p.shot).label || p.shot || "?")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
+            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em data-retag="${i}" title="Tap to override shot tag">${esc(p.shot === "damage" ? "Damage" : p.shot ? shotSpec(p.shot).label || p.shot : "…")}${p.marks?.length ? ` · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">×</button></span>`,
         )
         .join("")}</div>
       <div class="lens-status ${statusCls}">${esc(
         mode === "damage"
           ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
-          : `${pct}% · ${leader || (coreDone ? status.replace("_", " ") : `${coreHave} / ${SHINGLE_CORE.length}`)}`,
+          : `${pct}% · ${leader || (L.photos.length ? (lensBusy ? "reading…" : status.replace("_", " ")) : "waiting for photos")}`,
       )}</div>
       <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
@@ -833,6 +844,7 @@ function renderLens() {
       L.last = null;
       persist();
       renderLens();
+      if (mode === "shingle" && L.photos.length) scheduleLensRun(400);
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-retag]").forEach((em) => {
@@ -847,6 +859,7 @@ function renderLens() {
       persist();
       renderLens();
       setStatus(`Retagged · ${shotSpec(p.shot).label}`);
+      if (mode === "shingle") scheduleLensRun(400);
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-edit]").forEach((el) => {
@@ -855,9 +868,9 @@ function renderLens() {
       if (lensMode() === "damage") editDamagePhoto(i);
     };
   });
-  const addFiles = async ({ capture }) => {
+  const addFiles = async ({ capture, multiple = false }) => {
     try {
-      const files = await pickImageFiles({ capture, multiple: false });
+      const files = await pickImageFiles({ capture, multiple: multiple || !capture });
       const room = MAX_CHAT_PHOTOS - L.photos.length;
       const picked = files.slice(0, room);
       if (!picked.length) return;
@@ -887,26 +900,21 @@ function renderLens() {
         }
         return;
       }
-      const shot = nextShingleShot(L) || pendingShot || SHINGLE_CORE[0];
-      const wasDone = shingleCoreDone(L);
       for (const file of picked) {
-        const tag = nextShingleShot(L) || pendingShot || shot;
-        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot: tag, mode: "shingle", at: Date.now() });
+        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot: "", mode: "shingle", at: Date.now() });
       }
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
+      L.last = null;
       persist();
-      const justFinishedCore = !wasDone && shingleCoreDone(L);
-      const extraAfterCore = wasDone && shingleCoreDone(L);
       renderLens();
-      if (justFinishedCore || extraAfterCore) {
-        setStatus(justFinishedCore ? "Required shots in — identifying…" : "New detail — identifying…");
-        runLens();
-      }
+      setStatus("Reading photos…");
+      scheduleLensRun(350);
     } catch (e) {
       if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 50));
     }
   };
-  $("#lens-snap").onclick = () => addFiles({ capture: true });
+  $("#lens-snap").onclick = () => addFiles({ capture: true, multiple: false });
+  $("#lens-gallery")?.addEventListener("click", () => addFiles({ capture: false, multiple: true }));
   $("#lens-clear").onclick = () => {
     db.lens = { mode: lensMode(), photos: [], shots: [], last: null, field: null, session: true };
     persist();
@@ -955,11 +963,12 @@ async function runLens() {
       setStatus(`LENS · ${String(hit.provider || "ID").toUpperCase()}`);
       return;
     }
-    const hit = await identifyShingles(
-      db.settings,
-      L.photos.map((p) => p.url),
-      L.photos.map((p) => p.shot),
-    );
+    await ensureControlRoom(db.settings, { onProgress: (m) => setStatus(String(m).slice(0, 48)) });
+    const hit = await identifyShingles(db.settings, L.photos, L.photos.map((p) => p.shot));
+    if (hit.photos?.length) {
+      L.photos = hit.photos;
+      L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
+    }
     L.last = hit;
     persist();
     renderLens();
@@ -1628,7 +1637,7 @@ function renderKeys() {
       </select>
     </div>
     <h3>Control Room</h3>
-    <p class="muted">Homebase GPU for Lens — same Wi‑Fi as your PC. Pip desktop on port 7420. Scans if URL is blank.</p>
+    <p class="muted">Homebase GPU for Lens — auto-pairs on same Wi‑Fi (Pip desktop port 7420). Manual Connect only if auto-scan fails.</p>
     <div class="field"><span>Desktop URL</span><input id="set-desktop-url" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.162:7420" autocomplete="off" spellcheck="false" /></div>
     <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}` : "Not connected"}</p>
     <div class="actions">
@@ -1795,6 +1804,12 @@ function boot() {
   });
   render();
   setStatus("");
+  void ensureControlRoom(db.settings).then((r) => {
+    if (r.ok) {
+      persist();
+      paintBrainStrip();
+    }
+  });
 }
 
 void matchCatalog;
