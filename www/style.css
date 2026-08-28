@@ -1872,15 +1872,22 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-pin strong { display: block; color: var(--text); font-size: 1.05rem; font-weight: 650; margin-bottom: 0.15rem; }
 .hs-legend {
-  display: flex; flex-wrap: wrap; gap: 0.75rem 1.1rem; align-items: center;
-  font-size: 12px; color: var(--muted); margin: -0.45rem 0 0.85rem;
+  display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between;
+  gap: 0.35rem; font-size: clamp(10px, 2.7vw, 11px); color: var(--muted);
+  margin: -0.45rem 0 0.85rem; line-height: 1.2;
+}
+.hs-legend-item {
+  display: inline-flex; align-items: center; white-space: nowrap; flex: 1 1 0; min-width: 0;
+  justify-content: center;
 }
 .hs-dot {
-  display: inline-block; width: 0.58rem; height: 0.58rem;
-  border-radius: 50%; margin-right: 0.35rem; vertical-align: -1px;
+  display: inline-block; width: 0.5rem; height: 0.5rem; flex-shrink: 0;
+  border-radius: 50%; margin-right: 0.22rem; vertical-align: -1px;
 }
-.hs-dot-spot { background: #ff2d2d; box-shadow: 0 0 0 1.5px #fff, 0 0 6px rgba(255,45,45,0.7); }
+.hs-dot-spot { background: #ff2d2d; box-shadow: 0 0 0 1px #fff, 0 0 4px rgba(255,45,45,0.65); }
 .hs-dot-radar { background: #7dff5a; box-shadow: 0 0 0 1px #1a3a14; }
+.hs-dot-done { background: #ffcc00; }
+.hs-dot-ping { background: #fb923c; }
 .hs-place {
   display: flex; flex-wrap: wrap; gap: 0.45rem 0.65rem; align-items: center;
   margin: -0.15rem 0 0.85rem;

@@ -1006,6 +1006,13 @@ export function zoomUiScale(z) {
   return Math.min(1, Math.max(0.4, Math.pow(2, (zoom - ZOOM_UI_REF) / 3)));
 }
 
+/** Hail spot/radar dots shrink more aggressively when zoomed out. */
+export function hailDotZoomScale(z) {
+  const zoom = Number.isFinite(z) ? z : map?.getZoom?.();
+  if (!Number.isFinite(zoom)) return 1;
+  return Math.min(1, Math.max(0.22, Math.pow(2, (zoom - ZOOM_UI_REF) / 2.4)));
+}
+
 let zoomUiFrame = 0;
 
 function scheduleZoomUiRefresh(force = false) {
@@ -1022,10 +1029,11 @@ function refreshZoomScaledUi(force = false) {
   const ui = zoomUiScale();
   if (!force && Math.abs(ui - lastZoomUiScale) < 0.02) return;
   lastZoomUiScale = ui;
+  const dotUi = hailDotZoomScale();
   for (const m of hailDotMarkers) {
     if (!m?.setRadius) continue;
     const br = m.options.baseRadius || 6;
-    m.setRadius(Math.max(2, br * ui));
+    m.setRadius(Math.max(1.2, br * dotUi));
   }
   if (windFieldCenterDot?.setRadius) {
     const br = windFieldCenterDot.options.baseRadius || 10;
@@ -2709,12 +2717,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
     const toDraw = [...radar.slice(0, 180), ...spots.slice(0, 120)];
-    const ui = zoomUiScale();
+    const dotUi = hailDotZoomScale();
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
       const baseR = isSpot ? 8 : 7;
       const mark = window.L.circleMarker([p.lat, p.lon], {
-        radius: Math.max(2.5, baseR * ui),
+        radius: Math.max(1.2, baseR * dotUi),
         color: isSpot ? "#ffffff" : "#b8ff6a",
         fillColor: isSpot ? "#ff2d2d" : "#4caf2a",
         fillOpacity: isSpot ? 0.95 : 0.92,
@@ -2725,7 +2733,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       });
       mark.options.baseRadius = baseR;
       hailDotMarkers.push(mark);
-      if (!isSpot && ui >= 0.5) {
+      if (!isSpot && dotUi >= 0.5) {
         const pSz = parseFloat(p.size_in) || 0.75;
         window.L.circle([p.lat, p.lon], {
           radius: Math.max(48, Math.min(140, 52 + pSz * 38)),
@@ -3938,12 +3946,19 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   map.setView([lat, lon], zoom, { animate: false });
 }
 
-/** Expand / collapse map — scroll up opens full screen; swipe down on map bar returns to storm dates. */
+/** Expand / collapse map — scroll up opens full screen; swipe down on map bar peeks address. */
 const MAP_SHELL_MS = 520;
+
+function scrollViewToAddressPeek() {
+  const view = document.getElementById("view");
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  if (!view || !shell) return;
+  const top = shell.offsetTop + shell.offsetHeight;
+  view.scrollTo({ top: Math.max(0, top - 4), behavior: "smooth" });
+}
 
 export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
-  const sheet = document.getElementById("hs-sheet");
   const view = document.getElementById("view");
   if (!shell) return;
   if (on === shell.classList.contains("expanded")) return;
@@ -3966,12 +3981,9 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   clearTimeout(setWxMapExpanded._sizeTimer);
   setWxMapExpanded._sizeTimer = setTimeout(invalidate, MAP_SHELL_MS + 48);
   if (!on && scrollToSheet) {
-    const panel = document.getElementById("hs-bottom-panel");
-    const target = panel || sheet;
-    if (!target) return;
     setTimeout(() => {
       try {
-        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        scrollViewToAddressPeek();
       } catch {
         /* ignore */
       }
@@ -3992,7 +4004,7 @@ export function revealHailBottomPanel() {
   panel.classList.add("hs-bottom-reveal");
   requestAnimationFrame(() => {
     try {
-      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollViewToAddressPeek();
     } catch {
       /* ignore */
     }
@@ -4598,7 +4610,7 @@ function hailScopeHtml(data, days, esc) {
           : "Tap a storm date to draw hail zones"
     }</p>
     ${viewport ? "" : placeContactHtml(data, esc)}
-    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar hail <span class="hs-dot" style="background:#ffcc00"></span>Job done <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
+    <p class="hs-legend"><span class="hs-legend-item"><span class="hs-dot hs-dot-spot"></span>Spotter</span><span class="hs-legend-item"><span class="hs-dot hs-dot-radar"></span>Radar</span><span class="hs-legend-item"><span class="hs-dot hs-dot-done"></span>Done</span><span class="hs-legend-item"><span class="hs-dot hs-dot-ping"></span>Ping</span></p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">
