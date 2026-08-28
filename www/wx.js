@@ -3982,25 +3982,45 @@ function scrollViewToAddressPeek() {
   view.scrollTo({ top: Math.max(0, top - 4), behavior: "smooth" });
 }
 
-/** Hide storm sheet until a pin is placed; show address search when peeking. */
+/** Bottom panel tier: hidden (fullscreen) → address → sheet. */
+let hailBottomTier = "hidden";
+
+export function getHailBottomTier() {
+  return hailBottomTier;
+}
+
+function scrollViewToStormSheet() {
+  const view = document.getElementById("view");
+  const sheet = document.getElementById("hs-sheet");
+  if (!view || !sheet) return scrollViewToAddressPeek();
+  view.scrollTo({ top: Math.max(0, sheet.offsetTop - 12), behavior: "smooth" });
+}
+
+/** Apply address-only vs full storm sheet visibility. */
 export function syncHailBottomChrome() {
   const panel = document.getElementById("hs-bottom-panel");
   if (!panel) return;
-  panel.classList.toggle("hs-has-location", wxPinSelected());
+  panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
+  panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
 }
 
-/** Slide up address search only — storm dates stay hidden until a pin is placed. */
-export function revealHailAddressPeek() {
+function pulseBottomPanel() {
   const panel = document.getElementById("hs-bottom-panel");
-  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
-  syncHailBottomChrome();
-  if (shell?.classList.contains("expanded")) {
-    setWxMapExpanded(false, { scrollToSheet: false });
-  }
   if (!panel) return;
   panel.classList.remove("hs-bottom-reveal");
   void panel.offsetWidth;
   panel.classList.add("hs-bottom-reveal");
+}
+
+/** Slide up address search only — storm dates on the next swipe/tap. */
+export function revealHailAddressPeek() {
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  hailBottomTier = "address";
+  syncHailBottomChrome();
+  if (shell?.classList.contains("expanded")) {
+    setWxMapExpanded(false, { scrollToSheet: false });
+  }
+  pulseBottomPanel();
   requestAnimationFrame(() => {
     try {
       scrollViewToAddressPeek();
@@ -4008,6 +4028,38 @@ export function revealHailAddressPeek() {
       /* ignore */
     }
   });
+}
+
+/** Slide up the full storm date sheet. */
+export function revealHailStormSheet() {
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  hailBottomTier = "sheet";
+  syncHailBottomChrome();
+  if (shell?.classList.contains("expanded")) {
+    setWxMapExpanded(false, { scrollToSheet: false });
+  }
+  pulseBottomPanel();
+  requestAnimationFrame(() => {
+    try {
+      scrollViewToStormSheet();
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+/** First step: address peek. Second step: storm sheet. */
+export function advanceHailBottomReveal() {
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  if (shell?.classList.contains("expanded") || hailBottomTier === "hidden") {
+    revealHailAddressPeek();
+    return "address";
+  }
+  if (hailBottomTier === "address") {
+    revealHailStormSheet();
+    return "sheet";
+  }
+  return hailBottomTier;
 }
 
 export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
@@ -4022,6 +4074,8 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   setWxMapExpanded._animTimer = setTimeout(() => {
     document.body.classList.remove("wx-map-animating");
   }, MAP_SHELL_MS);
+  if (on) hailBottomTier = "hidden";
+  syncHailBottomChrome();
   if (view) view.style.overflowY = on ? "hidden" : "";
   const invalidate = () => {
     try {
@@ -4046,29 +4100,8 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
 
 /** Slide the address search + storm sheet into view after a map tap. */
 export function revealHailBottomPanel() {
-  const panel = document.getElementById("hs-bottom-panel");
-  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
-  syncHailBottomChrome();
-  if (shell?.classList.contains("expanded")) {
-    setWxMapExpanded(false, { scrollToSheet: false });
-  }
-  if (!panel) return;
-  panel.classList.remove("hs-bottom-reveal");
-  void panel.offsetWidth;
-  panel.classList.add("hs-bottom-reveal");
-  requestAnimationFrame(() => {
-    try {
-      if (wxPinSelected()) {
-        const view = document.getElementById("view");
-        const sheet = document.getElementById("hs-sheet");
-        if (view && sheet) {
-          view.scrollTo({ top: Math.max(0, sheet.offsetTop - 12), behavior: "smooth" });
-        } else scrollViewToAddressPeek();
-      } else revealHailAddressPeek();
-    } catch {
-      /* ignore */
-    }
-  });
+  if (wxPinSelected()) revealHailStormSheet();
+  else revealHailAddressPeek();
 }
 
 export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
@@ -4097,6 +4130,17 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     return false;
   };
+  const tryTabSwipeUp = () => {
+    if (isExpanded()) {
+      setWxMapExpanded(false, { scrollToSheet: true });
+      return true;
+    }
+    if (hailBottomTier === "address") {
+      revealHailStormSheet();
+      return true;
+    }
+    return false;
+  };
   view.addEventListener(
     "wheel",
     (e) => {
@@ -4109,6 +4153,11 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       if (!isExpanded() && view.scrollTop <= 8 && e.deltaY < 0) {
         e.preventDefault();
         tryExpand();
+        return;
+      }
+      if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0) {
+        e.preventDefault();
+        revealHailStormSheet();
         return;
       }
       if (isExpanded() && e.deltaY > 0 && !e.target.closest("#wx-map, .leaflet-container")) {
@@ -4139,6 +4188,12 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
       e.preventDefault();
       tryExpand();
+      touchAccum = 0;
+      return;
+    }
+    if (!isExpanded() && hailBottomTier === "address" && touchAccum < -12) {
+      e.preventDefault();
+      revealHailStormSheet();
       touchAccum = 0;
       return;
     }
@@ -4184,7 +4239,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         tabAccum += dy;
         if (tabAccum < -10) {
           e.preventDefault();
-          tryCollapse();
+          tryTabSwipeUp();
           tabAccum = 0;
         }
       },

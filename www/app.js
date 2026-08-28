@@ -46,6 +46,8 @@ import {
   applyDonePinScaleLive,
   revealHailBottomPanel,
   revealHailAddressPeek,
+  revealHailStormSheet,
+  advanceHailBottomReveal,
   syncHailBottomChrome,
   setWxMapExpanded,
   wxPinSelected,
@@ -60,7 +62,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.54";
+} from "./wx.js?v=0.2.55";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1695,7 +1697,7 @@ async function renderWx() {
     paintFieldSheet();
     wirePinSizeSlider();
     syncHailBottomChrome();
-    if (!wxPinSelected()) setWxMapExpanded(true);
+    if (!wxPinSelected()) revealHailAddressPeek();
     setStatus("");
     return;
   }
@@ -2040,7 +2042,12 @@ function boot() {
   $("#tabs").onclick = (e) => {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
-    tab = b.dataset.tab;
+    const next = b.dataset.tab;
+    if ((next === "hailscope" || next === "wx") && (tab === "hailscope" || tab === "wx") && mapIsLive()) {
+      advanceHailBottomReveal();
+      return;
+    }
+    tab = next;
     if (tab === "chat" || tab === "radio") {
       $("#tabs").querySelectorAll("[data-tab]").forEach((btn) => btn.classList.toggle("on", btn.dataset.tab === "chat"));
       document.body.classList.add("comm");

@@ -1652,7 +1652,7 @@ body.wx-map-expanded .hs-sheet {
   pointer-events: none;
   overflow: hidden;
 }
-.hs-bottom-panel:not(.hs-has-location) .hs-sheet {
+.hs-bottom-panel:not(.hs-sheet-open) .hs-sheet {
   max-height: 0 !important;
   opacity: 0 !important;
   overflow: hidden;
