@@ -51,6 +51,7 @@ import {
   setMyLocationVisible,
   viewportDossier,
   mapViewFetchKm,
+  mapViewStormsNeedRefresh,
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
@@ -64,7 +65,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.120";
+} from "./wx.js?v=0.2.121";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1810,9 +1811,14 @@ async function renderWx() {
             },
             revealSheet: false,
           });
-    bindMapViewStormMove(() => {
+    bindMapViewStormMove((force) => {
       if (wxPinSelected()) return;
-      scheduleWarmMapViewStorms(wxRenderGen, { afterMs: 0, force: false, revealSheet: false });
+      const refresh = Boolean(force) || mapViewStormsNeedRefresh(false);
+      scheduleWarmMapViewStorms(wxRenderGen, {
+        afterMs: 0,
+        force: refresh,
+        revealSheet: false,
+      });
     });
         }
         return;

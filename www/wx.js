@@ -2417,6 +2417,7 @@ export function bindStormGraph(root, onPick) {
 }
 
 export function selectStormDate(date, { fit = false, requireDate, hailRows, windRows, toggle = false } = {}) {
+  const hadSelection = hasSelectedStormDates();
   if (!date) {
     clearStormDateSelection();
   } else if (toggle) {
@@ -2438,6 +2439,10 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
   }
   if (hasSelectedStormDates()) {
     scheduleHailMapFill(120);
+  } else if (hadSelection && !wxPinSelected() && hailScopeMode) {
+    // Cleared every storm date — research the current map frame again on refocus/move.
+    mapViewStormForceNext = true;
+    scheduleMapViewStormMove(80);
   }
   if (hasSelectedStormDates() && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
@@ -3199,6 +3204,7 @@ export async function viewportDossier(settings, filters = wxFilters) {
     // Allow geographic re-fetch as the map pans/zooms; days filter still refetches via onRefetch.
     listLocked: false,
   };
+  lastMapViewStormFetch = { lat: q.lat, lon: q.lon, km };
   return data;
 }
 
@@ -6053,18 +6059,38 @@ export function bindStormSheetOpen(fn) {
 /** Optional hook when the map view moves and no house pin is set (refresh statewide dates). */
 let mapViewStormMoveHook = null;
 let mapViewStormMoveTimer = 0;
+/** Last successful viewport storm search — used to decide when to re-fetch. */
+let lastMapViewStormFetch = null;
+/** After clearing all selected storm dates, force a fresh map-view search. */
+let mapViewStormForceNext = false;
+
 export function bindMapViewStormMove(fn) {
   mapViewStormMoveHook = typeof fn === "function" ? fn : null;
 }
 
+/** True when the visible map no longer matches the last storm-date search. */
+export function mapViewStormsNeedRefresh(force = false) {
+  if (force || mapViewStormForceNext) return true;
+  if (wxPinSelected() || hasSelectedStormDates()) return false;
+  const q = mapViewHailQuery();
+  if (!q) return false;
+  const needKm = mapViewFetchKm();
+  if (!lastMapViewStormFetch) return true;
+  if ((Number(lastMapViewStormFetch.km) || 0) < needKm * 0.88) return true;
+  const moved = haversineKm(lastMapViewStormFetch.lat, lastMapViewStormFetch.lon, q.lat, q.lon);
+  return moved > Math.max(6, (Number(lastMapViewStormFetch.km) || 0) * 0.32);
+}
+
 function scheduleMapViewStormMove(ms = 700) {
-  if (wxPinSelected() || !hailScopeMode) return;
+  if (wxPinSelected() || !hailScopeMode || hasSelectedStormDates()) return;
   if (mapViewStormMoveTimer) clearTimeout(mapViewStormMoveTimer);
   mapViewStormMoveTimer = setTimeout(() => {
     mapViewStormMoveTimer = 0;
-    if (wxPinSelected() || !hailScopeMode) return;
+    if (wxPinSelected() || !hailScopeMode || hasSelectedStormDates()) return;
+    const force = mapViewStormForceNext;
+    mapViewStormForceNext = false;
     try {
-      mapViewStormMoveHook?.();
+      mapViewStormMoveHook?.(force);
     } catch {
       /* ignore */
     }
@@ -6781,6 +6807,7 @@ function syncHailStormDateSelection(data) {
 }
 
 export function clearSelectedStormDate() {
+  const hadSelection = hasSelectedStormDates();
   clearStormDateSelection();
   lastHailDrawSig = "";
   if (selectedStormRedrawTimer) {
@@ -6788,6 +6815,10 @@ export function clearSelectedStormDate() {
     selectedStormRedrawTimer = 0;
   }
   pendingSelectedStormRows = null;
+  if (hadSelection && !wxPinSelected() && hailScopeMode) {
+    mapViewStormForceNext = true;
+    scheduleMapViewStormMove(80);
+  }
 }
 
 /** Update address/contacts while storm list still loading — avoids wiping the sheet. */
