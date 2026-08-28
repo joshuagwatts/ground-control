@@ -695,12 +695,12 @@ async function shareShinglePack({ auto = false } = {}) {
     const hit = await shareToChatGpt({ text, photos: rows });
     setStatus(
       hit.ok
-        ? "Pick ChatGPT in the share sheet"
-        : hit.message || "Prompt copied — paste in ChatGPT and attach photos",
+        ? `Share · ${hit.count} photo${hit.count === 1 ? "" : "s"} — pick ChatGPT`
+        : "Share failed",
     );
   } catch (e) {
     if (/abort|cancel/i.test(String(e.message || e))) setStatus("Share cancelled");
-    else setStatus(String(e.message || e).slice(0, 56));
+    else setStatus(String(e.message || e).slice(0, 64));
   }
 }
 

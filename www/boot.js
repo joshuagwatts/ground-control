@@ -1,4 +1,4 @@
-await import("./app.js?v=0230").catch((err) => {
+await import("./app.js?v=0231").catch((err) => {
   const root = document.getElementById("view");
   const msg = String(err?.message || err || "boot failed");
   if (root) {

@@ -1,4 +1,10 @@
-/** Share guided Lens photos into ChatGPT (or any share target) via the phone share sheet. */
+/** Share guided Lens photos via native Android share or Web Share API. */
+
+function dataUrlBase64(dataUrl) {
+  const s = String(dataUrl || "");
+  const i = s.indexOf("base64,");
+  return i >= 0 ? s.slice(i + 7) : s;
+}
 
 async function dataUrlToFile(dataUrl, filename) {
   const res = await fetch(dataUrl);
@@ -6,66 +12,62 @@ async function dataUrlToFile(dataUrl, filename) {
   return new File([blob], filename, { type: blob.type || "image/jpeg" });
 }
 
-async function copyText(text) {
-  const s = String(text || "");
-  try {
-    await navigator.clipboard.writeText(s);
-    return true;
-  } catch {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = s;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      return true;
-    } catch {
-      return false;
-    }
-  }
+function capPlugins() {
+  return window.Capacitor?.Plugins || null;
 }
 
-/**
- * Open the native share sheet with prompt text + roof photos.
- * User picks ChatGPT from the list — iOS/Android attach images + text together.
- */
-export async function shareToChatGpt({ text, photos }) {
+/** Built-in Android plugin — writes JPEGs to cache and opens the real share sheet. */
+async function shareViaLensShare({ text, photos }) {
+  const LensShare = capPlugins()?.LensShare;
+  if (!LensShare?.sharePhotos) return null;
+
   const rows = (Array.isArray(photos) ? photos : []).filter((p) => p?.url);
   if (!rows.length) throw new Error("No photos to share");
+
+  const out = await LensShare.sharePhotos({
+    text: String(text || "").trim(),
+    photos: rows.map((p, i) => ({
+      base64: dataUrlBase64(p.url),
+      name: `roof-${String(i + 1).padStart(2, "0")}-${p.shot || "shot"}.jpg`,
+    })),
+  });
+  const count = Number(out?.count) || rows.length;
+  return { ok: true, method: "native", count };
+}
+
+async function shareViaWeb({ text, photos }) {
+  const rows = (Array.isArray(photos) ? photos : []).filter((p) => p?.url);
+  if (!rows.length) throw new Error("No photos to share");
+  if (!navigator.share) return null;
 
   const files = await Promise.all(
     rows.map((p, i) => dataUrlToFile(p.url, `roof-${String(i + 1).padStart(2, "0")}-${p.shot || "shot"}.jpg`)),
   );
+  const payload = { title: "Roof shingle ID", text: String(text || "").trim(), files };
 
-  const payload = {
-    title: "Roof shingle ID",
-    text: String(text || "").trim(),
-    files,
-  };
-
-  if (navigator.share) {
-    try {
-      if (!navigator.canShare || navigator.canShare(payload)) {
-        await navigator.share(payload);
-        return { ok: true, method: "share", count: files.length };
-      }
-    } catch (e) {
-      if (/abort|cancel/i.test(String(e.message || e))) throw e;
-    }
-    try {
-      await navigator.share({ title: payload.title, text: payload.text, files });
-      return { ok: true, method: "share", count: files.length };
-    } catch (e) {
-      if (/abort|cancel/i.test(String(e.message || e))) throw e;
-    }
+  if (!navigator.canShare || navigator.canShare(payload)) {
+    await navigator.share(payload);
+    return { ok: true, method: "web", count: files.length };
   }
+  if (navigator.canShare?.({ files })) {
+    await navigator.share({ title: payload.title, files });
+    return { ok: true, method: "web-files", count: files.length };
+  }
+  return null;
+}
 
-  await copyText(payload.text);
-  return {
-    ok: false,
-    method: "clipboard",
-    count: files.length,
-    message: "Prompt copied — open ChatGPT and attach photos from your gallery",
-  };
+/**
+ * Share sheet with all photos + shingle prompt. Never clipboard-only.
+ */
+export async function shareToChatGpt({ text, photos }) {
+  const native = await shareViaLensShare({ text, photos }).catch((e) => {
+    if (/abort|cancel/i.test(String(e.message || e))) throw e;
+    return null;
+  });
+  if (native) return native;
+
+  const web = await shareViaWeb({ text, photos });
+  if (web) return web;
+
+  throw new Error("Rebuild the APK — share needs the latest Ground Control install");
 }
