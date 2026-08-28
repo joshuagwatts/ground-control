@@ -1701,6 +1701,11 @@ body.wx-map-expanded .hs-sheet {
 .hs-bottom-panel.hs-sheet-open .hs-empty {
   opacity: 1;
   transform: translate3d(0, 0, 0);
+  pointer-events: auto !important;
+}
+.hs-bottom-panel.hs-sheet-open .hs-date {
+  pointer-events: auto !important;
+  touch-action: manipulation;
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) {
   cursor: grab;

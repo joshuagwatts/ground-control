@@ -1852,7 +1852,11 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
   clearPinRadius();
   if (hail.length || wind.length) {
     lastHailDrawSig = "";
-    drawHailMarkers(hail, wind, { fit, requireDate: needDate });
+    try {
+      drawHailMarkers(hail, wind, { fit, requireDate: needDate });
+    } catch (err) {
+      console.warn("drawHailMarkers failed", err);
+    }
   }
   if (selectedStormDate) {
     scheduleHailMapFill(60);
@@ -4692,7 +4696,7 @@ function bindAddressSwipeToStormSheet(el) {
   const onDown = (e) => {
     if (hailBottomTier !== "address") return;
     if (e.touches && e.touches.length !== 1) return;
-    if (e.target.closest("a, button, input, select, textarea")) return;
+    if (e.target.closest("a, button, input, select, textarea, .hs-date, .hs-dates, .hs-filters")) return;
     // Whole peek band — works with or without a selected house / .hs-pin
     stopCoast();
     unlockHailTierGesture();
@@ -5609,13 +5613,15 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     const hailRows = filterHailRaw(data, wxFilters);
     // Tap selected date again to deselect — keep list, clear zones
     const next = selectedStormDate && selectedStormDate === String(date).slice(0, 10) ? null : date;
-    selectStormDate(next, { fit: false, requireDate: true, hailRows });
-    // Map-view date with no house pin → fullscreen overview of that storm across the frame
-    if (next && viewport && !wxPinSelected()) {
-      setWxMapExpanded(true);
+    try {
+      selectStormDate(next, { fit: false, requireDate: true, hailRows });
+    } catch (err) {
+      console.warn("selectStormDate failed", err);
     }
+    // Keep the storm sheet open so dates stay tappable (no jump to fullscreen)
     const pinEl = root.querySelector(".hs-pin");
     if (pinEl) {
+      pinEl.classList.add("hs-pin-ready");
       const addr = data.address || (viewport ? "Map view" : "Dropped pin");
       pinEl.innerHTML = `<strong>${esc(addr)}</strong>${
         selectedStormDate
@@ -5632,7 +5638,11 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     }
   };
   root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
-    row.onclick = () => pickDate(row.getAttribute("data-storm-date"));
+    row.onclick = (e) => {
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      pickDate(row.getAttribute("data-storm-date"));
+    };
   });
 }
 
