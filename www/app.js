@@ -1000,7 +1000,7 @@ function paintFieldMap() {
       wxState.lat = Number(h.lat);
       wxState.lon = Number(h.lon);
       wxState.address = h.address || "";
-      flyToPin(h.lat, h.lon, 20, { radius: false });
+      flyToPin(h.lat, h.lon, 20, { radius: false, stay: true });
     },
   });
 }

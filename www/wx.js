@@ -100,6 +100,7 @@ let houseTimer = 0;
 let houseGen = 0;
 let houseCache = { key: "", rings: [], nums: [] };
 let housePaintSig = "";
+let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
 let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, onMark: null, onDone: null };
@@ -2658,11 +2659,21 @@ function escHouseNum(s) {
 }
 
 function scheduleHouseNumbers() {
+  if (Date.now() < houseHoldUntil) return;
   if (houseTimer) clearTimeout(houseTimer);
   houseTimer = setTimeout(() => {
     houseTimer = 0;
+    if (Date.now() < houseHoldUntil) return;
     refreshHouseNumbers();
   }, 220);
+}
+
+function holdHouseOutlines(ms = 1500) {
+  houseHoldUntil = Date.now() + ms;
+  if (houseTimer) {
+    clearTimeout(houseTimer);
+    houseTimer = 0;
+  }
 }
 
 function buildingStyle() {
@@ -3036,7 +3047,12 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
       })
         .on("click", (e) => {
           window.L.DomEvent.stop(e);
+          wxSuppressMapTap = true;
+          holdHouseOutlines(2000);
           onDone?.(h);
+          setTimeout(() => {
+            wxSuppressMapTap = false;
+          }, 500);
         })
         .addTo(doneLayer);
     }
@@ -3249,9 +3265,10 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   if (opts.radius === false) placeSelectPin([lat, lon]);
   else setWxPin(lat, lon);
   placeSelectPin([lat, lon]);
+  if (opts.stay === true) return;
   const inView = Boolean(map.getBounds?.()?.pad(0.08)?.contains([lat, lon]));
   const zoomOk = Math.abs((map.getZoom?.() || 0) - zoom) <= 1;
-  if (opts.stay === true || (inView && zoomOk)) return;
+  if (inView && zoomOk) return;
   map.setView([lat, lon], zoom, { animate: false });
 }
 
