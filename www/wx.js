@@ -2877,6 +2877,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         opacity: 1,
         pane: "hailVectors",
         renderer: hailSvg,
+        interactive: false,
         className: "wx-hail-pin-zone",
       })
         .bindPopup(hailPopupHtml({ ...h, size_in: String(sz || h.size_in) }, activeDay))
@@ -2903,6 +2904,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           dashArray: stroke.dashArray,
           pane: "hailVectors",
           renderer: hailSvg,
+          interactive: false,
           className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
         })
           .bindPopup(
@@ -2929,6 +2931,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
             dashArray: coreStroke.dashArray,
             pane: "hailVectors",
             renderer: hailSvg,
+            interactive: false,
             className: "wx-hail-topo-core",
           }).addTo(hailLayer),
           { confirmed: true, size: sz, kind: "core" },
@@ -2950,6 +2953,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         weight: isSpot ? 2 : 1.6,
         pane: "hailVectors",
         renderer: hailSvg,
+        interactive: false,
         className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
       });
       mark.options.baseRadius = baseR;
@@ -2998,6 +3002,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         weight: Math.min(1.4, stroke.weight),
         opacity: Math.min(0.65, stroke.opacity),
         dashArray: stroke.dashArray || "5 6",
+        interactive: false,
         className: "wx-wind-topo",
       })
         .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km != null ? `${formatDistance(w.distance_km)} from pin` : ""}`)

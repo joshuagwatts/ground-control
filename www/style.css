@@ -1214,9 +1214,16 @@ body.hs-tab .leaflet-container,
   height: 100%;
   z-index: 1;
 }
-.wx-hail-topo { pointer-events: auto; }
-.wx-hail-topo-core { pointer-events: none; }
-.wx-wind-topo { pointer-events: auto; }
+.wx-hail-topo,
+.wx-hail-topo-core,
+.wx-hail-pin-zone,
+.wx-hail-radar-pt,
+.wx-hail-spot,
+.wx-wind-topo,
+.wx-pin-radius {
+  /* Zones/dots are visual only — map taps must still place the blue select pin */
+  pointer-events: none !important;
+}
 .wx-panel {
   max-height: none;
   overflow: visible;
