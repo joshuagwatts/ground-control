@@ -5,10 +5,11 @@ alwaysApply: true
 
 # Commit and push
 
-- **Every time** you change code, commit and push before you stop. No exceptions. Do not ask whether to commit or push.
-- If the user says "push this" or similar, push immediately — even if you think it was already pushed; run `git push origin HEAD:main` and report the result.
-- After finishing any task (bug fix, feature, config), create a git commit and push in the same turn. Never leave unpushed commits on `master`.
-- Push with `git push origin HEAD:main` (local `master` tracks `origin/main`). Do not force-push.
+- After any code change, commit and push in the same turn with `git push origin HEAD:main` (local `master` tracks `origin/main`). Never ask first, never leave unpushed commits, never force-push.
+- If the user says "push this" or similar, push immediately — even if you think it was already pushed — and report the result.
 - PowerShell: pass the commit message with a here-string, not bash HEREDOC.
 - Do not skip hooks. Do not update git config.
+
+# Contact lookup boundaries
+
 - Contact lookup is for reaching the current homeowner of the pinned house (public listing / assessor-style sources). Do not skip-trace personal Google/Facebook accounts, profile photos, or people-search pages of former residents.

@@ -237,7 +237,7 @@ nav.tabs {
     border-color var(--map-expand-ms) ease;
 }
 body.wx-map-expanded nav.tabs {
-  background: rgba(11, 11, 13, 0.88);
+  background: rgba(11, 11, 13, 0.72);
   backdrop-filter: none;
 }
 nav.tabs::-webkit-scrollbar { display: none; }
@@ -1040,7 +1040,6 @@ body.wx-tab .leaflet-control-attribution {
 }
 body.wx-tab .leaflet-container,
 body.hs-tab .leaflet-container,
-.wx-map-shell .leaflet-container,
 .hs-map-shell .leaflet-container {
   background: #000 !important;
 }
@@ -1209,37 +1208,6 @@ body.hs-tab .leaflet-container,
 .wx-hail-row.sev-extreme .size, .wx-hail-row.sev-extreme .sev { color: var(--leak); }
 .wx-hail-row.sev-severe .sev { color: var(--warn); }
 .wx-hail-row .src { color: var(--muted); font-size: 9px; letter-spacing: 0.08em; }
-.wx-map-shell {
-  position: relative;
-  width: 100%;
-  height: min(52vh, 380px);
-  min-height: 240px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  background: #000;
-  transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.wx-map-shell.expanded {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: calc(var(--safe-top) + 2.35rem);
-  bottom: calc(var(--tab-h) + var(--safe-bottom));
-  height: auto;
-  min-height: 0;
-  max-height: none;
-  z-index: 9;
-  border: none;
-  box-shadow: 0 -12px 40px rgba(0,0,0,0.55);
-}
-body.wx-map-expanded #view { overflow: hidden; }
-.wx-map-hint {
-  position: absolute; z-index: 500; left: 0.55rem; bottom: 0.45rem;
-  font-size: 8px; letter-spacing: 0.16em; color: rgba(197,224,180,0.65);
-  background: rgba(5,8,5,0.72); border: 1px solid var(--line);
-  padding: 0.2rem 0.4rem; pointer-events: none;
-}
-.wx-map-shell.expanded .wx-map-hint { color: var(--phos); border-color: var(--phos); }
 #wx-map {
   width: 100%;
   height: 100%;
@@ -1678,6 +1646,14 @@ body.wx-map-expanded .hs-sheet {
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-empty {
   display: none !important;
 }
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin { cursor: pointer; }
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
+  content: "Tap for storm dates ▾";
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
 .hs-bottom-panel {
   transition:
     opacity var(--map-expand-ms) var(--map-expand-ease),
@@ -2046,6 +2022,10 @@ body.wx-map-expanded .hs-sheet {
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
+}
+/* Sat pop only while the map is at rest — zero filter cost during pan/zoom. */
+.hs-map-shell:not(.map-moving) .hs-sat-tiles {
+  filter: contrast(1.06) saturate(1.05);
 }
 .hs-night-tiles {
   filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.35) contrast(0.95);

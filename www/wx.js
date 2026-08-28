@@ -8,7 +8,6 @@ import {
   mergeContacts,
   listingForPin,
   parseStreetAddress,
-  formatZillowUrl,
   resolveZillowUrl,
   isUsableZillowUrl,
 } from "./contacts.js";
@@ -153,10 +152,6 @@ function hailSizeIn(raw) {
   const n = parseInt(String(raw || "").trim(), 10);
   if (!n || n >= 8000) return "UNK";
   return (n / 100).toFixed(2);
-}
-
-function zillowUrl(address) {
-  return formatZillowUrl(address);
 }
 
 function pickZillowUrl(data = {}) {
@@ -1120,14 +1115,14 @@ function hailZoneOpacityBoost(base) {
 }
 
 const HOUSE_NUM_MAX = 400;
-/** Base map tiles — lean buffer; no CSS filters on imagery. */
+/** Keep tiles warm while panning — avoids blank flashes without filter cost. */
 const BASE_TILE_OPTS = {
   maxZoom: MAP_MAX_ZOOM,
   tileSize: 256,
   detectRetina: false,
   updateWhenIdle: false,
-  updateWhenZooming: true,
-  keepBuffer: 3,
+  updateWhenZooming: false,
+  keepBuffer: 6,
 };
 const FEMA_STRUCTURES =
   "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0/query";
@@ -1437,7 +1432,7 @@ export function bindRadarScrubber(root = document) {
   }
 }
 
-const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&scale=1&x={x}&y={y}&z={z}";
+const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&scale=2&x={x}&y={y}&z={z}";
 const GOOGLE_SUBDOMAINS = "0123";
 
 const BASE_LAYERS = [
@@ -1468,6 +1463,7 @@ const BASE_LAYERS = [
     subdomains: GOOGLE_SUBDOMAINS,
     maxNativeZoom: 21,
     attribution: "© Google",
+    className: "hs-sat-tiles",
   },
 ];
 
@@ -4015,6 +4011,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   });
   map.on("movestart zoomstart", () => {
     mapBusy += 1;
+    document.getElementById("hs-map-shell")?.classList.add("map-moving");
     if (houseTimer) {
       clearTimeout(houseTimer);
       houseTimer = 0;
@@ -4031,6 +4028,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   map.on("moveend zoomend", () => {
     mapBusy = Math.max(0, mapBusy - 1);
     if (mapBusy > 0) return;
+    document.getElementById("hs-map-shell")?.classList.remove("map-moving");
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
   });
@@ -4100,10 +4098,6 @@ function scrollViewToAddressPeek() {
 
 /** Bottom panel tier: hidden (fullscreen) → address → sheet. */
 let hailBottomTier = "hidden";
-
-export function getHailBottomTier() {
-  return hailBottomTier;
-}
 
 function scrollViewToStormSheet() {
   const view = document.getElementById("view");
@@ -4214,14 +4208,18 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   }
 }
 
-/** Slide the address peek into view after a map tap (storm sheet stays hidden). */
-export function revealHailBottomPanel() {
-  revealHailAddressPeek();
-}
-
 export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   if (!view || !shell || shell.dataset.scrollExpandBound) return;
   shell.dataset.scrollExpandBound = "1";
+  if (sheet && !sheet.dataset.pinTapBound) {
+    sheet.dataset.pinTapBound = "1";
+    sheet.addEventListener("click", (e) => {
+      if (hailBottomTier !== "address") return;
+      if (!e.target.closest(".hs-pin")) return;
+      if (e.target.closest("a, button, input, select")) return;
+      revealHailStormSheet();
+    });
+  }
   const mapBar = shell.querySelector(".hs-map-bar");
   const tabNav = tabs || document.getElementById("tabs");
   const isExpanded = () => shell.classList.contains("expanded");

@@ -1,14 +1,22 @@
+/** Lists names imported by www/app.js that never appear in the module body. */
 import fs from "node:fs";
+import path from "node:path";
 
-const s = fs.readFileSync("www/app.js", "utf8");
-const used = new Set([...s.matchAll(/\b(bindWxMap\w+|setWxMapExpanded)\b/g)].map((m) => m[1]));
-const i = s.indexOf('from "./wx.js');
-const block = s.slice(s.lastIndexOf("import", i), i + 80);
-const imported = new Set([...block.matchAll(/\b(bindWxMap\w+|setWxMapExpanded)\b/g)].map((m) => m[1]));
-
-const missing = [...used].filter((n) => !imported.has(n));
-if (missing.length) {
-  console.error("Missing wx imports:", missing.join(", "));
-  process.exit(1);
+const root = path.resolve(import.meta.dirname, "..");
+const src = fs.readFileSync(path.join(root, "www/app.js"), "utf8");
+const importRe = /import\s*\{([\s\S]*?)\}\s*from\s*"([^"]+)"/g;
+let m;
+let unused = 0;
+while ((m = importRe.exec(src))) {
+  const body = src.slice(importRe.lastIndex);
+  for (const raw of m[1].split(",")) {
+    const name = raw.trim().split(/\s+as\s+/).pop();
+    if (!name) continue;
+    const re = new RegExp(`\\b${name}\\b`);
+    if (!re.test(body)) {
+      console.log(`UNUSED: ${name} (from ${m[2]})`);
+      unused += 1;
+    }
+  }
 }
-console.log("wx imports ok:", [...imported].sort().join(", "));
+console.log(unused ? `${unused} unused import(s)` : "all imports used");

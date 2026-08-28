@@ -35,19 +35,6 @@ const LAYERS = [
     href: () => "https://www.clevelandcountyassessor.us/",
   },
   {
-    id: "okc-tricounty",
-    source: "Oklahoma City GIS",
-    south: 34.95,
-    north: 35.78,
-    west: -98.45,
-    east: -97.05,
-    url: "https://gis.okc.gov/arcgis/rest/services/Public/EncodeOKCWebMap2/MapServer/8/query",
-    situsField: "Address",
-    outFields:
-      "Owner_Name1,Owner_Name2,Address,City,Mail_Address1,Mail_Address2,Mail_City,Mail_State,Mail_Zipcode,PARCEL_HYPERLINK,Owner_Occ,Jurisdiction",
-    href: (row) => attr(row, "PARCEL_HYPERLINK"),
-  },
-  {
     id: "tulsa",
     source: "Tulsa County",
     south: 35.85,
@@ -248,8 +235,9 @@ function inBbox(lat, lon, layer) {
 function addressWhere(field, parts) {
   const house = String(parts.house || "").replace(/[^0-9A-Za-z]/g, "");
   const key = streetKey(parts.street).replace(/[^a-z0-9]/g, "");
-  if (!house || key.length < 4 || !/^[A-Za-z][\w]*$/.test(field)) return "";
-  return `UPPER(${field}) LIKE '${house} ${key.toUpperCase()}%'`;
+  if (!house || key.length < 3 || !/^[A-Za-z][\w]*$/.test(field)) return "";
+  // Wildcard before the street key so directional prefixes match ("1122 N BOULEVARD ST").
+  return `UPPER(${field}) LIKE '${house} %${key.toUpperCase()}%'`;
 }
 
 async function arcgisQuery(url, params) {

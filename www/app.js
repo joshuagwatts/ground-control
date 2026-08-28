@@ -26,9 +26,6 @@ import {
   setMapLayer,
   pinDossier,
   refetchDossier,
-  filterHailRaw,
-  selectStormDate,
-  drawHailMarkers,
   resolveMapCenter,
   geocodeAddress,
   geoCacheOk,
@@ -37,7 +34,6 @@ import {
   setHailScopeMode,
   syncHailScopeView,
   patchHailScopePartial,
-  renderHailScopeSheet,
   baseLayerButtons,
   bindWxMapScrollExpand,
   bindSelectPinDblTap,
@@ -45,12 +41,10 @@ import {
   clearSelectedStormDate,
   applyDonePinScaleLive,
   revealHailAddressPeek,
-  revealHailStormSheet,
   advanceHailBottomReveal,
   syncHailBottomChrome,
   setWxMapExpanded,
   setMyLocationVisible,
-  wxPinSelected,
   viewportDossier,
   setWxUnits,
   reverseGeocode,
@@ -60,10 +54,9 @@ import {
   defaultMapCenter,
   quickMapConfig,
   hidePinScalePopover,
-  showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.64";
-import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
+} from "./wx.js?v=0.2.65";
+import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
