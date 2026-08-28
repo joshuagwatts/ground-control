@@ -1287,7 +1287,8 @@ body.hs-tab .leaflet-container,
   -webkit-overflow-scrolling: touch;
 }
 .wx-roof-blurb { font-size: 9px; margin: 0.35rem 0 0.45rem; letter-spacing: 0.04em; }
-.wx-hail-confirmed { filter: saturate(1.1); }
+.wx-hail-confirmed { filter: saturate(1.2); }
+.wx-hail-radar { filter: saturate(1.15) brightness(1.05); }
 .wx-hail-spot { filter: drop-shadow(0 0 5px rgba(255,45,45,0.9)); }
 .wx-addr { color: var(--phos); letter-spacing: 0.06em; margin-bottom: 0.35rem; }
 .wx-links { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.45rem; flex-wrap: wrap; }

@@ -719,26 +719,55 @@ function pinCoords() {
 }
 
 function parseSwdiShape(shape) {
-  const s = String(shape || "");
+  const s = String(shape || "").trim();
   const pt = s.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
   if (pt) {
     const lon = parseFloat(pt[1]);
     const lat = parseFloat(pt[2]);
     return Number.isNaN(lon) || Number.isNaN(lat) ? null : { type: "point", lon, lat };
   }
-  const poly = s.match(/POLYGON\s*\(\(\s*([^)]+)\s*\)\)/i);
-  if (poly) {
+  const parseRing = (text) => {
     const ring = [];
-    for (const pair of poly[1].split(",")) {
+    for (const pair of String(text || "").split(",")) {
       const bits = pair.trim().split(/\s+/);
       if (bits.length < 2) continue;
       const lon = parseFloat(bits[0]);
       const lat = parseFloat(bits[1]);
       if (Number.isFinite(lon) && Number.isFinite(lat)) ring.push([lat, lon]);
     }
-    if (ring.length >= 3) return { type: "polygon", ring };
+    return ring.length >= 3 ? ring : null;
+  };
+  const ringArea = (ring) => {
+    let a = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [y1, x1] = ring[i];
+      const [y2, x2] = ring[(i + 1) % ring.length];
+      a += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(a);
+  };
+  const multi = s.match(/MULTIPOLYGON\s*\(([\s\S]+)\)\s*$/i);
+  if (multi) {
+    const rings = [];
+    for (const m of multi[1].matchAll(/\(\(([^()]+)\)\)/g)) {
+      const ring = parseRing(m[1]);
+      if (ring) rings.push(ring);
+    }
+    if (rings.length) {
+      rings.sort((a, b) => ringArea(b) - ringArea(a));
+      return { type: "polygon", ring: rings[0] };
+    }
+  }
+  const poly = s.match(/POLYGON\s*\(\(([^()]+)\)/i);
+  if (poly) {
+    const ring = parseRing(poly[1]);
+    if (ring) return { type: "polygon", ring };
   }
   return null;
+}
+
+function isRadarHail(p) {
+  return !isSpotterHail(p);
 }
 
 /** SWDI history window — full 730d on wide ring; fast ring uses recent window so radar lands quickly. */
@@ -1348,14 +1377,14 @@ export function hailDotZoomScale(z) {
 }
 
 /** Stroke style for hail/wind topo — keep zoomed-in weight/detail when far out. */
-function hailZoneStrokeStyle(isConfirm, sz, z) {
+function hailZoneStrokeStyle(isConfirm, sz, z, { radar = false } = {}) {
   const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
   const size = Number(sz) || 0;
-  // Same quality language at every zoom; only solidify dashes when far out so edges don't glitter.
+  const solid = isConfirm || radar;
   const base = {
-    weight: isConfirm ? (size >= 2 ? 2.8 : 2.2) : size >= 2 ? 2.2 : 1.4,
-    opacity: 0.92,
-    dashArray: isConfirm ? null : size >= 1 ? "4 4" : "6 5",
+    weight: solid ? (size >= 2 ? 3.2 : 2.6) : size >= 2 ? 2.4 : 1.8,
+    opacity: solid ? 0.96 : 0.88,
+    dashArray: solid ? null : size >= 1 ? "5 4" : "7 5",
   };
   if (zoom < 11) {
     return {
@@ -1453,10 +1482,10 @@ function refreshZoomScaledUi(force = false) {
 function hailZoneOpacityBoost(base) {
   const z = map?.getZoom?.() ?? ZOOM_UI_REF;
   const sat = activeLayer === "sat";
-  let o = sat ? base + 0.08 : base;
-  if (hasSelectedStormDates()) o += 0.06;
-  if (z < 9) o += 0.04;
-  return Math.min(sat ? 0.58 : 0.52, o);
+  let o = sat ? base + 0.1 : base + 0.04;
+  if (hasSelectedStormDates()) o += 0.14;
+  if (z < 9) o += 0.05;
+  return Math.min(sat ? 0.78 : 0.72, o);
 }
 
 /** Keep pane at 1 — per-shape fillOpacity handles overlap; pane opacity broke SVG zones on some devices. */
@@ -3376,8 +3405,9 @@ function clusterPoints(pts, splitKm = 1.5) {
 function hailFootprintM(sizeIn, source) {
   const sz = parseFloat(sizeIn);
   const s = Number.isNaN(sz) ? 0.75 : sz;
-  const spot = /spc|lsr|spot|iem/i.test(String(source || ""));
-  return Math.max(280, Math.min(2200, (spot ? 360 : 540) + s * (spot ? 360 : 480)));
+  const radar = /swdi|radar/i.test(String(source || ""));
+  // Radar/MESH footprints are wider than a spotter ping — HailTrace-style swaths.
+  return Math.max(450, Math.min(3800, (radar ? 820 : 380) + s * (radar ? 640 : 380)));
 }
 
 /**
@@ -3520,10 +3550,10 @@ function buildHailSwathRings(rawPts, zone = {}) {
     if (p.swdi_ring && p.swdi_ring.length >= 3) {
       const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
       swdiRings.push({
-        ring: padPolygon(p.swdi_ring, Math.max(80, maxSz * 48)),
+        ring: padPolygon(p.swdi_ring, Math.max(160, maxSz * 90)),
         maxSize: maxSz,
         hits: 1,
-        confirmed: false,
+        confirmed: true,
         source: "radar-poly",
       });
     }
@@ -3601,14 +3631,16 @@ function buildHailSwathRings(rawPts, zone = {}) {
         if (d2 > r2) continue;
         // Soft falloff toward edge — continuous field for nicer isosurfaces
         const t = 1 - Math.sqrt(d2) / Math.max(0.05, k.rKm);
-        const contrib = k.size * (0.55 + 0.45 * t);
+        const radarBoost = k.spot ? 1 : 1.5;
+        const contrib = k.size * (0.55 + 0.45 * t) * radarBoost;
         const i = gy * w + gx;
         if (contrib > field[i]) field[i] = contrib;
       }
     }
   }
 
-  const confirmed = kernels.some((k) => k.spot);
+  const spotConfirm = kernels.some((k) => k.spot);
+  const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
 
@@ -3623,17 +3655,18 @@ function buildHailSwathRings(rawPts, zone = {}) {
       }
     }
     if (!any) continue;
-    // Close small gaps between successive radar footprints (Hailswath paper)
-    const closed = morphClose(binary, w, h, thr <= 1 ? 2 : 1);
+    const closed = morphClose(binary, w, h, thr <= 1 ? 3 : thr <= 1.5 ? 2 : 1);
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
+      const meshConfirmed =
+        (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.75) || (radarCount >= 1 && thr >= 1);
       out.push({
-        ring: padPolygon(ring, Math.max(60, thr * 40)),
+        ring: padPolygon(ring, Math.max(90, thr * 55)),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
-        confirmed: confirmed && thr >= 1,
-        source: confirmed ? "spot+radar" : "mesh-swath",
+        confirmed: meshConfirmed,
+        source: spotConfirm && radarCount ? "spot+radar" : radarCount ? "mesh-swath" : "spotter",
       });
     }
   }
@@ -3644,83 +3677,52 @@ function buildHailSwathRings(rawPts, zone = {}) {
         ring: topoZoneRing(zone, rawPts),
         maxSize: parseFloat(zone.size_in) || 0.75,
         hits: pts.length,
-        confirmed,
-        source: confirmed ? "spot+radar" : "radar-merge",
+        confirmed: spotConfirm || radarCount > 0,
+        source: spotConfirm && radarCount ? "spot+radar" : radarCount ? "radar-merge" : "spotter",
       },
     ];
   }
   return out;
 }
 
-function buildDetailedZoneRings(zone, rawPts) {
-  // Prefer research-style nested swaths when we have enough hits
-  const hits = (rawPts || []).filter(
-    (p) => String(p.date || "").slice(0, 10) === zone.date && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+function zoneHitPool(zone, rawPts) {
+  const day = String(zone.date || "").slice(0, 10);
+  const fromRows = (rawPts || []).filter(
+    (p) => String(p.date || "").slice(0, 10) === day && Number.isFinite(p.lat) && Number.isFinite(p.lon),
   );
-  if (hits.length >= 2 || hits.some((p) => p.swdi_ring?.length >= 3)) {
-    return buildHailSwathRings(hits.length ? hits : rawPts, zone);
-  }
-  const fromZone = (zone.zone_pts || []).map((p) => ({
-    lat: p.lat,
-    lon: p.lon,
-    size_in: p.size_in || zone.size_in,
-    source: p.source || zone.source,
-    swdi_ring: p.swdi_ring || null,
-  }));
-  const merged = hits.length ? hits : fromZone;
-  if (!merged.length) {
+  const fromZone = (zone.zone_pts || [])
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+    .map((p) => ({
+      lat: p.lat,
+      lon: p.lon,
+      size_in: p.size_in || zone.size_in,
+      source: p.source || zone.source,
+      swdi_ring: p.swdi_ring || null,
+      date: day,
+    }));
+  return mergeHailRows(fromRows, fromZone);
+}
+
+function buildDetailedZoneRings(zone, rawPts) {
+  const pool = zoneHitPool(zone, rawPts);
+  if (!pool.length) {
     return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: 1, confirmed: false }];
   }
-
-  const rings = [];
-  for (const p of merged) {
-    if (p.swdi_ring && p.swdi_ring.length >= 3) {
-      const ring = p.swdi_ring;
-      const cLat = ring.reduce((a, c) => a + c[0], 0) / ring.length;
-      const cLon = ring.reduce((a, c) => a + c[1], 0) / ring.length;
-      if (!hasSelectedStormDates() && hitDistKm({ ...p, lat: cLat, lon: cLon }) > HOUSE_ZONE_KM) continue;
-      const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0;
-      rings.push({
-        ring: padPolygon(ring, Math.max(100, maxSz * 62)),
-        maxSize: maxSz,
-        hits: 1,
-        confirmed: false,
-        source: "radar-poly",
-      });
-    }
+  const radarN = pool.filter(isRadarHail).length;
+  if (radarN || pool.length >= 2 || pool.some((p) => p.swdi_ring?.length >= 3) || hasSelectedStormDates()) {
+    return buildHailSwathRings(pool, zone);
   }
-
-  const clusterInput = merged.map((p) => ({
-    lat: p.lat,
-    lon: p.lon,
-    size_in: p.size_in || zone.size_in,
-    source: p.source || zone.source,
-  }));
-  const clusters = clusterPoints(clusterInput, 1.5);
-  for (const cluster of clusters) {
-    const samples = [];
-    let confirmed = false;
-    for (const p of cluster) {
-      if (/spc|lsr|spot|iem/i.test(String(p.source || ""))) confirmed = true;
-      const r = hailFootprintM(p.size_in, p.source);
-      for (const [la, lo] of ringPolygon(p.lat, p.lon, r, 12)) samples.push({ lat: la, lon: lo });
-    }
-    const hull = convexHullLatLon(samples);
-    if (!hull) continue;
-    const maxSz = Math.max(...cluster.map((p) => parseFloat(p.size_in) || 0));
-    rings.push({
-      ring: padPolygon(hull, Math.max(100, maxSz * 68)),
-      maxSize: maxSz,
-      hits: cluster.length,
-      confirmed,
-      source: confirmed ? "spot+radar" : "radar-merge",
-    });
-  }
-
-  if (!rings.length) {
-    return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: zone.hits || 1, confirmed: false }];
-  }
-  return rings;
+  const p = pool[0];
+  const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+  return [
+    {
+      ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source) * 1.25, 16),
+      maxSize: sz,
+      hits: 1,
+      confirmed: isSpotterHail(p),
+      source: isSpotterHail(p) ? "spotter" : "radar-merge",
+    },
+  ];
 }
 
 function topoZoneRing(zone, rawPts) {
@@ -3745,8 +3747,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const collapsed = collapseHailByDate(nearHail);
   const activeDays = selectedStormDates;
   const pin = pinCoords();
+  const radarN = (hailRows || []).filter(isRadarHail).length;
   // Geometry is lat/lon — do not key the draw cache on map bounds or zones morph while panning.
-  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}`;
+  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}|r${radarN}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -3810,7 +3813,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const fitPts = [];
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
-    const dayHits = hailNearPin(hailRows || [], h.date);
+    const dayHits = zoneHitPool(h, hailRows || []);
     const atRoof = dayHits.filter((p) => hitDistKm(p) <= HOUSE_HAIL_KM);
     const pin = pinCoords();
     const subRings = [];
@@ -3831,10 +3834,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         className: "wx-hail-pin-zone",
       }).addTo(hailLayer);
     }
-    const onBlock = dayHits.filter((p) => hitDistKm(p) <= 0.5);
-    // Map-fill: use every hit in view (not only the pin neighborhood)
-    const zoneHits =
-      hasSelectedStormDates() || !pinCoords() ? dayHits : onBlock.length ? onBlock : dayHits;
+    const zoneHits = dayHits;
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
     if (!subRings.length && dayHits.length) {
       subRings.push({
@@ -3851,37 +3851,42 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     for (const sub of subRings) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
-      const isConfirm = sub.confirmed || sub.source === "spot+radar";
+      const isRadarZone = /radar|mesh|swdi/i.test(String(sub.source || ""));
+      const isConfirm = Boolean(sub.confirmed) || sub.source === "spot+radar" || isRadarZone;
       fitPts.push(...sub.ring);
-      const stroke = hailZoneStrokeStyle(isConfirm, sz);
-      const baseFill = isConfirm ? 0.44 : sz >= 1 ? 0.38 : 0.32;
+      const stroke = hailZoneStrokeStyle(isConfirm, sz, undefined, { radar: isRadarZone });
+      const baseFill = isRadarZone ? 0.58 + Math.min(0.12, sz * 0.04) : isConfirm ? 0.62 : 0.42;
       trackHailStroke(
         window.L.polygon(sub.ring, {
           color: col.stroke,
           fillColor: col.fill,
           fillOpacity: hailZoneOpacityBoost(baseFill),
-          weight: stroke.weight + (sat && (map?.getZoom?.() || 14) < 13 ? 0.35 : 0),
-          opacity: Math.min(1, stroke.opacity + (sat ? 0.06 : 0)),
+          weight: stroke.weight + (sat && (map?.getZoom?.() || 14) < 13 ? 0.45 : 0),
+          opacity: Math.min(1, stroke.opacity + (sat ? 0.08 : 0.04)),
           dashArray: stroke.dashArray,
           pane: "hailFills",
           renderer: hailFillSvg,
           interactive: false,
-          className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
+          className: isConfirm
+            ? "wx-hail-topo wx-hail-confirmed"
+            : isRadarZone
+              ? "wx-hail-topo wx-hail-radar"
+              : "wx-hail-topo",
         }).addTo(hailLayer),
         { confirmed: isConfirm, size: sz, kind: "zone" },
       );
       if (sz >= 0.75 && isConfirm) {
         const cLat = sub.ring.reduce((a, c) => a + c[0], 0) / sub.ring.length;
         const cLon = sub.ring.reduce((a, c) => a + c[1], 0) / sub.ring.length;
-        const coreR = Math.max(280, hailFootprintM(sz, "noaa-spc") * 0.45);
+        const coreR = Math.max(320, hailFootprintM(sz, isRadarZone ? "noaa-swdi-radar" : "noaa-spc") * 0.5);
         const coreStroke = hailCoreStrokeStyle();
         trackHailStroke(
           window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
             color: col.core,
             fillColor: col.core,
-            fillOpacity: hailZoneOpacityBoost(0.34),
-            weight: coreStroke.weight,
-            opacity: coreStroke.opacity,
+            fillOpacity: hailZoneOpacityBoost(0.48),
+            weight: coreStroke.weight + 0.25,
+            opacity: Math.min(1, coreStroke.opacity + 0.12),
             dashArray: coreStroke.dashArray,
             pane: "hailFills",
             renderer: hailFillSvg,
