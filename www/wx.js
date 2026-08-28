@@ -162,6 +162,8 @@ function clearStormDateSelection() {
 }
 
 function pruneStormDateSelection(validDates) {
+  // Sticky selection: once the user checks storm dates, only they can uncheck.
+  if (hasSelectedStormDates()) return;
   const ok = validDates instanceof Set ? validDates : new Set(validDates || []);
   for (const d of [...selectedStormDates]) {
     if (!ok.has(d)) selectedStormDates.delete(d);
@@ -5370,6 +5372,11 @@ export function destroyMap() {
   lastHailDrawSig = "";
   lastSyncHailN = 0;
   lastSyncRadarN = 0;
+  if (selectedStormRedrawTimer) {
+    clearTimeout(selectedStormRedrawTimer);
+    selectedStormRedrawTimer = 0;
+  }
+  pendingSelectedStormRows = null;
   mapBusy = 0;
   hailDotMarkers.length = 0;
   hailStrokeLayers.length = 0;
@@ -6514,18 +6521,21 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
 }
 
 function syncHailStormDateSelection(data) {
+  // Checked storm dates stay on until the user toggles them off — never auto-clear
+  // while radar/spotter batches are still landing.
+  if (hasSelectedStormDates()) return;
   const days = hailScopeDays(data);
-  if (!days.length) {
-    if (data?._meta?.loading) return;
-    clearStormDateSelection();
-    return;
-  }
-  pruneStormDateSelection(new Set(days.map((h) => h.date)));
+  if (!days.length) return;
 }
 
 export function clearSelectedStormDate() {
   clearStormDateSelection();
   lastHailDrawSig = "";
+  if (selectedStormRedrawTimer) {
+    clearTimeout(selectedStormRedrawTimer);
+    selectedStormRedrawTimer = 0;
+  }
+  pendingSelectedStormRows = null;
 }
 
 /** Update address/contacts while storm list still loading — avoids wiping the sheet. */
@@ -6551,6 +6561,46 @@ export function patchHailScopePartial(root, partial, esc) {
 
 let lastSyncHailN = 0;
 let lastSyncRadarN = 0;
+let selectedStormRedrawTimer = 0;
+let pendingSelectedStormRows = null;
+
+function scheduleSelectedStormZoneRedraw(hailRows, windRows = []) {
+  pendingSelectedStormRows = { hailRows, windRows };
+  if (selectedStormRedrawTimer) return;
+  selectedStormRedrawTimer = window.setTimeout(() => {
+    selectedStormRedrawTimer = 0;
+    const pending = pendingSelectedStormRows;
+    pendingSelectedStormRows = null;
+    if (!pending || !hasSelectedStormDates()) return;
+    lastHailDrawSig = "";
+    drawHailMarkers(pending.hailRows, pending.windRows, { requireDate: true });
+  }, 280);
+}
+
+/** Soft sheet patch — keep selected dates lit while list/radar keep loading. */
+function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
+  if (!root || !data) return;
+  const days = hailScopeDays(data);
+  const box = root.querySelector(".hs-dates");
+  if (box) {
+    box.innerHTML = hailScopeDateRows(days, esc, {
+      viewport: Boolean(data.viewport || data._meta?.viewport),
+      data,
+    });
+    box._hsData = data;
+    box._hsEsc = esc;
+  } else {
+    renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
+    return;
+  }
+  paintHailScopeDateSelection(root, data, esc);
+  bindHailScopeDates(root, data, esc, { onRefetch });
+  const filters = root.querySelector(".hs-filters");
+  if (filters && !root.querySelector("#hs-q")) {
+    /* sheet skeleton missing — full rebuild once */
+    renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
+  }
+}
 
 /** One coordinated map + sheet refresh after dossier data arrives. */
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
@@ -6558,13 +6608,20 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
   syncHailStormDateSelection(data);
   const hailRows = mapHailRows(data, wxFilters);
   const radarN = hailRows.filter((h) => !isSpotterHail(h)).length;
-  if (hailRows.length !== lastSyncHailN || radarN !== lastSyncRadarN) {
-    lastHailDrawSig = "";
-    lastSyncHailN = hailRows.length;
-    lastSyncRadarN = radarN;
+  const locked = hasSelectedStormDates();
+  const hailGrew = hailRows.length !== lastSyncHailN || radarN !== lastSyncRadarN;
+  lastSyncHailN = hailRows.length;
+  lastSyncRadarN = radarN;
+
+  if (locked) {
+    // Keep selection; debounce zone rebuilds so SWDI batches don't thrash the map.
+    if (hailGrew || fit) scheduleSelectedStormZoneRedraw(hailRows, []);
+    softUpdateHailScopeSheet(root, data, esc, { onRefetch });
+  } else {
+    if (hailGrew) lastHailDrawSig = "";
+    drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
+    renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   }
-  drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
-  renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   if (revealSheet) revealHailAddressPeek();
 }
 
@@ -6770,9 +6827,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 export function renderHailScopeSheet(root, data, esc, { onRefetch, drawMap = true } = {}) {
   if (!root) return;
   const days = hailScopeDays(data);
-  if (days.length || !data?._meta?.loading) {
-    pruneStormDateSelection(new Set(days.map((h) => h.date)));
-  }
+  // Never prune checked dates from progressive loads / filter churn.
   root.innerHTML = hailScopeHtml(data, days, esc);
   bindHailScopeSheet(root, data, esc, { onRefetch });
   if (drawMap) drawHailMarkers(mapHailRows(data, wxFilters), [], { requireDate: true });
