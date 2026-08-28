@@ -4107,7 +4107,7 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
 }
 
 /** Expand / collapse map — scroll up opens full screen; swipe down on map bar peeks address. */
-const MAP_SHELL_MS = 520;
+const MAP_SHELL_MS = 360;
 
 function scrollViewToAddressPeek() {
   const view = document.getElementById("view");
@@ -4127,6 +4127,15 @@ function scrollViewToAddressPeek() {
 let hailBottomTier = "hidden";
 /** True while an address-peek upward swipe is opening the storm sheet (blocks movestart→fullscreen). */
 let addressSwipeOpeningSheet = false;
+/** One advancement per finger-down so a continuous drag can't skip address → sheet. */
+let hailTierGestureLocked = false;
+
+function lockHailTierGesture() {
+  hailTierGestureLocked = true;
+}
+function unlockHailTierGesture() {
+  hailTierGestureLocked = false;
+}
 
 /** Capture upward swipes on the address peek band → storm sheet (map stays draggable). */
 function bindAddressSwipeToStormSheet(el) {
@@ -4136,6 +4145,7 @@ function bindAddressSwipeToStormSheet(el) {
   el.addEventListener(
     "touchstart",
     (e) => {
+      unlockHailTierGesture();
       if (hailBottomTier !== "address" || e.touches.length !== 1) {
         origin = null;
         return;
@@ -4152,12 +4162,14 @@ function bindAddressSwipeToStormSheet(el) {
     "touchmove",
     (e) => {
       if (!origin || hailBottomTier !== "address" || e.touches.length !== 1) return;
+      if (hailTierGestureLocked) return;
       const dx = e.touches[0].clientX - origin.x;
       const dy = e.touches[0].clientY - origin.y;
       if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
       origin = null;
       // Only upward swipe on the peek opens storm dates
       if (dy < -10 && Math.abs(dy) >= Math.abs(dx)) {
+        lockHailTierGesture();
         addressSwipeOpeningSheet = true;
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -4173,6 +4185,7 @@ function bindAddressSwipeToStormSheet(el) {
     "touchend",
     () => {
       origin = null;
+      unlockHailTierGesture();
     },
     { capture: true, passive: true },
   );
@@ -4181,6 +4194,7 @@ function bindAddressSwipeToStormSheet(el) {
     () => {
       origin = null;
       addressSwipeOpeningSheet = false;
+      unlockHailTierGesture();
     },
     { capture: true, passive: true },
   );
@@ -4201,23 +4215,29 @@ export function syncHailBottomChrome() {
   panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
 }
 
-function pulseBottomPanel() {
+function pulseBottomPanel({ light = false } = {}) {
   const panel = document.getElementById("hs-bottom-panel");
   if (!panel) return;
   panel.classList.remove("hs-bottom-reveal");
   void panel.offsetWidth;
-  panel.classList.add("hs-bottom-reveal");
+  if (light) panel.classList.add("hs-bottom-reveal-light");
+  else panel.classList.add("hs-bottom-reveal");
+  clearTimeout(pulseBottomPanel._t);
+  pulseBottomPanel._t = setTimeout(() => {
+    panel.classList.remove("hs-bottom-reveal", "hs-bottom-reveal-light");
+  }, MAP_SHELL_MS + 40);
 }
 
 /** Slide up address search only — storm sheet stays hidden until explicitly opened. */
 export function revealHailAddressPeek() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  const fromHidden = hailBottomTier === "hidden" || shell?.classList.contains("expanded");
   hailBottomTier = "address";
   syncHailBottomChrome();
   if (shell?.classList.contains("expanded")) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
-  pulseBottomPanel();
+  if (fromHidden) pulseBottomPanel();
   requestAnimationFrame(() => {
     try {
       scrollViewToAddressPeek();
@@ -4236,12 +4256,14 @@ export function bindStormSheetOpen(fn) {
 /** Slide up the full storm date sheet. */
 export function revealHailStormSheet() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  const fromAddress = hailBottomTier === "address";
   hailBottomTier = "sheet";
   syncHailBottomChrome();
   if (shell?.classList.contains("expanded")) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
-  pulseBottomPanel();
+  // Address → sheet: light settle only (storm list CSS-transitions in). Full pulse from fullscreen.
+  pulseBottomPanel({ light: fromAddress });
   requestAnimationFrame(() => {
     try {
       scrollViewToStormSheet();
@@ -4258,7 +4280,7 @@ export function revealHailStormSheet() {
   }
 }
 
-/** First step: address peek. Second step: storm dates. Pan the map to go fullscreen. */
+/** First swipe: address peek. Second swipe: storm dates. Pan the map to go fullscreen. */
 export function advanceHailBottomReveal() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (shell?.classList.contains("expanded") || hailBottomTier === "hidden") {
@@ -4341,17 +4363,22 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   };
   const tryCollapse = () => {
     if (isExpanded()) {
-      setWxMapExpanded(false, { scrollToSheet: true });
+      // Swipe-down collapse lands on address peek (first tier)
+      revealHailAddressPeek();
       return true;
     }
     return false;
   };
-  const tryTabSwipeUp = () => {
-    if (isExpanded()) {
-      setWxMapExpanded(false, { scrollToSheet: true });
-      return true;
-    }
-    return false;
+  /** Bottom double-swipe: 1) address  2) storm dates. One step per gesture. */
+  const tryBottomSwipeUp = () => {
+    if (hailTierGestureLocked) return false;
+    if (hailBottomTier === "sheet" && !isExpanded()) return false;
+    lockHailTierGesture();
+    advanceHailBottomReveal();
+    // Wheel/trackpad has no touchend — release after settle so the next flick can step again
+    clearTimeout(tryBottomSwipeUp._unlock);
+    tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 320);
+    return true;
   };
   view.addEventListener(
     "wheel",
@@ -4364,7 +4391,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       }
       if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0 && onPeekBand(e.target)) {
         e.preventDefault();
-        revealHailStormSheet();
+        tryBottomSwipeUp();
         return;
       }
       if (!isExpanded() && view.scrollTop <= 8 && e.deltaY < 0) {
@@ -4386,6 +4413,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   let touchAccum = 0;
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) return;
+    unlockHailTierGesture();
     touchY = e.touches[0].clientY;
     touchStartScroll = view.scrollTop;
     touchInBar = Boolean(mapBar?.contains(e.target) && !e.target.closest('input[type="range"]'));
@@ -4401,7 +4429,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     touchAccum += dy;
     if (!isExpanded() && hailBottomTier === "address" && touchOnPeek && touchAccum < -12) {
       e.preventDefault();
-      revealHailStormSheet();
+      tryBottomSwipeUp();
       touchAccum = 0;
       return;
     }
@@ -4437,7 +4465,8 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     tabNav.addEventListener(
       "touchstart",
       (e) => {
-        if (!isExpanded() || e.touches.length !== 1) return;
+        if (e.touches.length !== 1) return;
+        unlockHailTierGesture();
         tabTouchY = e.touches[0].clientY;
         tabAccum = 0;
       },
@@ -4446,14 +4475,16 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     tabNav.addEventListener(
       "touchmove",
       (e) => {
-        if (!isExpanded() || e.touches.length !== 1) return;
+        if (e.touches.length !== 1) return;
+        // Swipe up from tabs: fullscreen → address → storm dates
+        if (!(isExpanded() || hailBottomTier === "address" || hailBottomTier === "hidden")) return;
         const y = e.touches[0].clientY;
         const dy = y - tabTouchY;
         tabTouchY = y;
         tabAccum += dy;
-        if (tabAccum < -10) {
+        if (tabAccum < -12) {
           e.preventDefault();
-          tryTabSwipeUp();
+          tryBottomSwipeUp();
           tabAccum = 0;
         }
       },

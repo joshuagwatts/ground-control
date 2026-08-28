@@ -17,8 +17,9 @@
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
   --tab-h: 3.4rem;
   --gc-header-h: calc(2.35rem + var(--safe-top));
-  --map-expand-ms: 520ms;
-  --map-expand-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --map-expand-ms: 360ms;
+  --map-expand-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --sheet-reveal-ms: 280ms;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
@@ -1603,7 +1604,7 @@ body.wx-map-animating .hs-map-shell {
 body.wx-map-expanded #view { overflow: hidden; }
 body.wx-map-expanded .hs-bottom-panel {
   opacity: 0;
-  transform: translate3d(0, 22px, 0);
+  transform: translate3d(0, 16px, 0);
   max-height: 0;
   margin: 0;
   padding-top: 0;
@@ -1640,11 +1641,35 @@ body.wx-map-expanded .hs-sheet {
   margin: 0 !important;
   pointer-events: auto !important;
 }
+.hs-bottom-panel .hs-legend,
+.hs-bottom-panel .hs-filters,
+.hs-bottom-panel .hs-dates,
+.hs-bottom-panel .hs-empty {
+  transform-origin: top center;
+  transition:
+    opacity var(--sheet-reveal-ms) var(--map-expand-ease),
+    transform var(--sheet-reveal-ms) var(--map-expand-ease),
+    max-height var(--sheet-reveal-ms) var(--map-expand-ease);
+}
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-legend,
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-filters,
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-dates,
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-empty {
-  display: none !important;
+  opacity: 0 !important;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  transform: translate3d(0, 10px, 0);
+  pointer-events: none !important;
+  overflow: hidden !important;
+}
+.hs-bottom-panel.hs-sheet-open .hs-legend,
+.hs-bottom-panel.hs-sheet-open .hs-filters,
+.hs-bottom-panel.hs-sheet-open .hs-dates,
+.hs-bottom-panel.hs-sheet-open .hs-empty {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin { cursor: pointer; }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
@@ -1660,14 +1685,28 @@ body.wx-map-expanded .hs-sheet {
     transform var(--map-expand-ms) var(--map-expand-ease),
     max-height var(--map-expand-ms) var(--map-expand-ease),
     padding var(--map-expand-ms) var(--map-expand-ease);
+  will-change: transform, opacity;
 }
 .hs-bottom-panel.hs-bottom-reveal {
-  animation: hs-bottom-slide var(--map-expand-ms) var(--map-expand-ease) both;
+  animation: hs-bottom-slide var(--sheet-reveal-ms) var(--map-expand-ease) both;
+}
+.hs-bottom-panel.hs-bottom-reveal-light {
+  animation: hs-bottom-slide-light 200ms var(--map-expand-ease) both;
 }
 @keyframes hs-bottom-slide {
   from {
-    opacity: 0.35;
-    transform: translate3d(0, -28px, 0);
+    opacity: 0.55;
+    transform: translate3d(0, 14px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes hs-bottom-slide-light {
+  from {
+    opacity: 0.92;
+    transform: translate3d(0, 6px, 0);
   }
   to {
     opacity: 1;
