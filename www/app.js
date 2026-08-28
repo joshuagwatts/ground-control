@@ -1703,6 +1703,7 @@ function renderKeys() {
   }).join("");
   const roomOn = desktopConfigured(s);
   const roomModel = String(s.desktop_model || "").trim();
+  const roomVision = String(s.desktop_vision || "").trim();
   $("#view").innerHTML = `
     <h3>Settings</h3>
     <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
@@ -1715,9 +1716,9 @@ function renderKeys() {
       </select>
     </div>
     <h3>Control Room</h3>
-    <p class="muted">Homebase GPU for Lens. On your PC run <code>npm run control-room</code> (port 7420), same Wi‑Fi as the phone, then Connect — or paste the LAN URL below.</p>
+    <p class="muted">Homebase GPU for Lens. On your PC: double-click <code>Control Room.bat</code>, same Wi‑Fi as the phone, then Connect. Lens photos need a <strong>vision</strong> model in Ollama — run <code>ollama pull llava</code> once on the PC (or double-click <code>Install Lens Vision.bat</code>).</p>
     <div class="field"><span>Desktop URL</span><input id="set-desktop-url" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.162:7420" autocomplete="off" spellcheck="false" /></div>
-    <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}` : "Not connected"}</p>
+    <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}${roomVision ? ` · vision: ${esc(roomVision)}` : " · needs ollama pull llava on PC for photos"}` : "Not connected"}</p>
     <div class="actions">
       <button type="button" id="room-connect" class="primary">Connect</button>
       <button type="button" id="room-disconnect"${roomOn ? "" : " disabled"}>Disconnect</button>
@@ -1766,11 +1767,16 @@ function renderKeys() {
     try {
       const hit = await connectDesktop(db.settings, (msg) => setStatus(String(msg || "").slice(0, 48)));
       db.settings.desktop_model = hit.model || hit.ping?.model || "";
+      db.settings.desktop_vision = hit.vision?.using || "";
       persist();
       renderKeys();
       paintBrainStrip();
       renderPrivacy();
-      setStatus(`Control Room · ${db.settings.desktop_model || "GPU OK"}`);
+      if (hit.vision?.ok) {
+        setStatus(`Control Room · ${db.settings.desktop_vision || db.settings.desktop_model || "GPU OK"}`);
+      } else {
+        setStatus("Connected — on PC run: ollama pull llava");
+      }
     } catch (e) {
       setStatus(String(e.message || e).slice(0, 70));
     }
@@ -1778,6 +1784,7 @@ function renderKeys() {
   $("#room-disconnect")?.addEventListener("click", () => {
     disconnectDesktop(db.settings);
     db.settings.desktop_model = "";
+    db.settings.desktop_vision = "";
     persist();
     renderKeys();
     paintBrainStrip();

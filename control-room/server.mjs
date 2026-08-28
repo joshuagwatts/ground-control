@@ -11,6 +11,9 @@ import { randomBytes } from "node:crypto";
 const PORT = Number(process.env.CONTROL_ROOM_PORT) || 7420;
 const OLLAMA = String(process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/+$/, "");
 const HOST = process.env.CONTROL_ROOM_HOST || "0.0.0.0";
+const VISION_MODEL = String(process.env.CONTROL_ROOM_VISION_MODEL || "").trim();
+
+const VISION_RE = /llava|moondream|bakllava|minicpm-v|qwen2-vl|qwen-vl|granite.*vision|llama.*vision|gemma.*vision|vision/i;
 
 const sessionToken = `gc-${randomBytes(16).toString("hex")}`;
 const started = new Date().toISOString();
@@ -69,11 +72,27 @@ async function ollamaTags() {
   }
 }
 
+function isVisionModel(name) {
+  return VISION_RE.test(String(name || ""));
+}
+
+function pickVisionModel(tags) {
+  const names = tags.map(String);
+  if (VISION_MODEL && names.includes(VISION_MODEL)) return VISION_MODEL;
+  const order = [/llava:13b/i, /llava:34b/i, /llava/i, /moondream/i, /minicpm-v/i, /qwen2-vl|qwen-vl/i, /bakllava/i, /vision/i];
+  for (const re of order) {
+    const hit = names.find((n) => re.test(n));
+    if (hit) return hit;
+  }
+  return names.find(isVisionModel) || null;
+}
+
 function pickModel(tags, preferVision = false) {
   const names = tags.map(String);
   if (preferVision) {
-    const vision = names.find((n) => /llava|moondream|bakllava|minicpm-v|vision/i.test(n));
+    const vision = pickVisionModel(tags);
     if (vision) return vision;
+    return null;
   }
   return (
     names.find((n) => /qwen|llama|mistral|gemma|phi|deepseek/i.test(n)) ||
@@ -82,11 +101,38 @@ function pickModel(tags, preferVision = false) {
   );
 }
 
+function visionHint() {
+  return "On this PC run: ollama pull llava  (smaller/faster: ollama pull moondream)";
+}
+
+function parseOllamaError(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  try {
+    const j = JSON.parse(text);
+    return String(j.error || j.message || text);
+  } catch {
+    return text;
+  }
+}
+
+function friendlyVisionError(msg) {
+  const s = String(msg || "");
+  if (/multimodal|does not support (multimodal|images|vision)/i.test(s)) {
+    return `No vision model for photos. ${visionHint()}`;
+  }
+  if (/model .* not found|pull/i.test(s)) return `${s} — ${visionHint()}`;
+  return s;
+}
+
 async function ollamaChat(text, { images = [], maxTokens = 1400, temperature = 0.2 } = {}) {
   const tags = await ollamaTags();
-  const model = pickModel(tags, images.length > 0);
+  const model = images.length ? pickVisionModel(tags) : pickModel(tags);
+  if (images.length && !model) {
+    throw new Error(`No vision model installed. ${visionHint()}`);
+  }
   const body = {
-    model,
+    model: model || "llama3.2",
     stream: false,
     options: { num_predict: maxTokens, temperature },
     messages: [
@@ -104,8 +150,8 @@ async function ollamaChat(text, { images = [], maxTokens = 1400, temperature = 0
     signal: AbortSignal.timeout(120000),
   });
   if (!res.ok) {
-    const err = await res.text().catch(() => "");
-    throw new Error(err || `ollama ${res.status}`);
+    const err = parseOllamaError(await res.text().catch(() => ""));
+    throw new Error(friendlyVisionError(err) || `ollama ${res.status}`);
   }
   const data = await res.json();
   const reply = String(data.message?.content || data.response || "").trim();
@@ -165,9 +211,16 @@ async function handler(req, res) {
   if ((path === "/api/health" || path === "/api/status") && req.method === "GET") {
     const tags = await ollamaTags();
     const model = pickModel(tags);
+    const visionUsing = pickVisionModel(tags);
     return json(res, 200, {
       ok: true,
       ollama: { ok: tags.length > 0, using: model, models: tags.slice(0, 12) },
+      vision: {
+        ok: Boolean(visionUsing),
+        using: visionUsing || "",
+        models: tags.filter(isVisionModel).slice(0, 8),
+        hint: visionUsing ? "" : visionHint(),
+      },
       router: { model },
     });
   }
@@ -212,11 +265,9 @@ async function handler(req, res) {
       });
       return json(res, 200, { text: out.reply, reply: out.reply, content: out.reply, model: out.model, ollama: { using: out.model } });
     } catch (e) {
-      const msg = String(e.message || e);
-      const hint = images.length
-        ? "Need a vision model: ollama pull llava (or moondream)"
-        : "ollama pull llama3.2";
-      return json(res, 503, { detail: `${msg} — ${hint}` });
+      const msg = friendlyVisionError(e.message || e);
+      const hint = images.length ? visionHint() : "ollama pull llama3.2";
+      return json(res, 503, { detail: `${msg} — ${hint}`, vision_required: images.length > 0 });
     }
   }
 
@@ -227,8 +278,10 @@ const server = http.createServer((req, res) => {
   handler(req, res).catch((e) => json(res, 500, { detail: String(e.message || e) }));
 });
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, async () => {
   const urls = lanUrls();
+  const tags = await ollamaTags().catch(() => []);
+  const vision = pickVisionModel(tags);
   console.log("");
   console.log("  Ground Control — Control Room");
   console.log(`  Listening on ${HOST}:${PORT}`);
@@ -240,6 +293,11 @@ server.listen(PORT, HOST, () => {
     console.log("  Phone URL: http://YOUR-PC-LAN-IP:7420");
   }
   console.log("  Ollama:", OLLAMA);
+  if (vision) console.log("  Lens vision:", vision);
+  else {
+    console.log("  Lens vision: MISSING — run: ollama pull llava");
+    console.log("               (or: ollama pull moondream for a smaller model)");
+  }
   console.log("  Stop with Ctrl+C");
   console.log("");
 });

@@ -198,6 +198,7 @@ export async function desktopStatus(settings) {
       listen: data.listen || "",
       urls: data.urls || [],
       ollama: health.ollama || {},
+      vision: health.vision || {},
       router: health.router || {},
       restart: Boolean(data.restart),
     };
@@ -260,6 +261,14 @@ function stripDataUrl(url) {
   return i >= 0 ? s.slice(i + 7) : s;
 }
 
+function lensVisionError(msg) {
+  const s = String(msg || "");
+  if (/multimodal|vision model|ollama pull/i.test(s)) {
+    return "PC needs a vision model — run: ollama pull llava";
+  }
+  return s;
+}
+
 /** Control Room — GPU shingle / vision on the paired desktop (Ollama). Stays on LAN. */
 export async function desktopLens(settings, { prompt, images, maxTokens = 1400, temperature = 0.2, mode = "shingle" } = {}) {
   const url = baseUrl(settings);
@@ -288,12 +297,12 @@ export async function desktopLens(settings, { prompt, images, maxTokens = 1400, 
         leaked: false,
       };
     } catch (e) {
-      lastErr = String(e.message || e);
+      lastErr = lensVisionError(String(e.message || e));
       if (e?.status === 404) continue;
-      if (path === paths[paths.length - 1]) throw e;
+      if (path === paths[paths.length - 1]) throw new Error(lastErr);
     }
   }
-  throw new Error(lastErr || "Control Room vision not available on desktop");
+  throw new Error(lensVisionError(lastErr) || "Control Room vision not available on desktop");
 }
 
 export function disconnectDesktop(settings) {
@@ -437,11 +446,18 @@ export async function connectDesktop(settings, onProgress) {
 
   if (onProgress) onProgress("TESTING GPU…");
   const ping = await desktopGpuPing(settings);
+  let vision = {};
+  try {
+    vision = (await httpLanGet(`${hit.url}/api/health`, 5000, authHeaders(settings)))?.vision || {};
+  } catch {
+    vision = {};
+  }
   return {
     url: hit.url,
     token: hit.token,
     ping,
     model: ping.model,
+    vision,
   };
 }
 
