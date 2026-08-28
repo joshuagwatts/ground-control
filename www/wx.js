@@ -55,11 +55,11 @@ export const HOUSE_ZONE_KM = 2.5;
 export const MAX_STORM_DATES = 8;
 const HAIL_IN_CHOICES = [0, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6];
 const STORM_SIZE_CHOICES = [
-  { value: "any", label: "Any storm" },
-  { value: "busy", label: "Busy 12+ hits" },
-  { value: "wide", label: "Wide 15 mi+" },
-  { value: "huge", label: "Huge storms" },
-  { value: "epic", label: "Epic only" },
+  { value: "any", label: "Any size" },
+  { value: "small", label: "Small+" },
+  { value: "medium", label: "Medium+" },
+  { value: "large", label: "Large+" },
+  { value: "giant", label: "Giant+" },
 ];
 let wxFilters = { ...DEFAULT_FILTERS };
 const RADIUS_KM = [5, 10, 16, 25, 40, 50];
@@ -219,10 +219,10 @@ export function stormPassesSizeFilter(h, filters = wxFilters) {
   if (mode === "any" || !mode) return true;
   const hits = Number(h.hits) || 0;
   const spanMi = kmToMi(Number(h.span_km) || 0);
-  if (mode === "busy") return hits >= 12;
-  if (mode === "wide") return spanMi >= 15 || hits >= 25;
-  if (mode === "huge") return hits >= 40 || spanMi >= 30;
-  if (mode === "epic") return hits >= 80 || spanMi >= 50;
+  if (mode === "small" || mode === "busy") return hits >= 12;
+  if (mode === "medium" || mode === "wide") return spanMi >= 15 || hits >= 25;
+  if (mode === "large" || mode === "huge") return hits >= 40 || spanMi >= 30;
+  if (mode === "giant" || mode === "epic") return hits >= 80 || spanMi >= 50;
   return true;
 }
 

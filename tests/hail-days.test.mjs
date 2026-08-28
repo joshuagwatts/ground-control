@@ -78,14 +78,14 @@ const spread = Array.from({ length: 45 }, (_, i) => ({
 const [monster] = collapseHailByDate(spread);
 assert(monster.hits === 45, `hits ${monster.hits}`);
 assert(monster.span_km > 15, `span_km should be wide, got ${monster.span_km}`);
-assert(stormPassesSizeFilter(monster, { stormSize: "huge" }), "huge filter should keep wide busy storm");
-assert(!stormPassesSizeFilter({ hits: 45, span_km: 20 }, { stormSize: "epic" }), "epic filter should drop mid-huge storm");
+assert(stormPassesSizeFilter(monster, { stormSize: "large" }), "large filter should keep mid-size storm");
+assert(!stormPassesSizeFilter({ hits: 45, span_km: 20 }, { stormSize: "giant" }), "giant filter should drop mid-size storm");
 
 const { hail: bigOnly } = filterDossier(
   { hail: [...spread, near] },
-  { km: 80, hailIn: 0, windMph: 0, days: 730, year: "all", sort: "storm", stormSize: "busy" },
+  { km: 80, hailIn: 0, windMph: 0, days: 730, year: "all", sort: "storm", stormSize: "small" },
 );
-assert(bigOnly.some((h) => h.date === "2026-03-15"), "busy storm size filter keeps the 45-hit day");
-assert(!bigOnly.some((h) => h.date === near.date), "busy filter drops single-hit day");
+assert(bigOnly.some((h) => h.date === "2026-03-15"), "small+ filter keeps the 45-hit day");
+assert(!bigOnly.some((h) => h.date === near.date), "small+ filter drops single-hit day");
 
 console.log("hail-days ok");
