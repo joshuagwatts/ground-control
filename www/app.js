@@ -45,8 +45,8 @@ import {
   mapContainer,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0230";
-import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
+} from "./wx.js?v=0231";
+import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
@@ -65,12 +65,17 @@ let wxWatch = null;
 let chatBusy = false;
 let lensBusy = false;
 let lensRunTimer = null;
+let lastLensSig = "";
 
-function scheduleLensRun(delay = 350) {
+function lensPhotoSig(L) {
+  return `${L.photos.length}|${(L.photos || []).map((p) => `${p.at || 0}:${p.shot || ""}:${(p.url || "").length}`).join(";")}`;
+}
+
+function scheduleLensRun(delay = 500, { force = false } = {}) {
   clearTimeout(lensRunTimer);
   lensRunTimer = setTimeout(() => {
     lensRunTimer = null;
-    void runLens();
+    void runLens({ force });
   }, delay);
 }
 let pendingShot = "granules_close";
@@ -670,12 +675,6 @@ function setLensMode(mode, { openCamera = false } = {}) {
   persist();
   pendingShot = L.mode === "shingle" ? nextShingleShot(L) || SHINGLE_CORE[0] : "damage";
   renderLens();
-  if (L.mode === "shingle") {
-    void ensureControlRoom(db.settings, { onProgress: (m) => setStatus(String(m).slice(0, 48)) }).then((r) => {
-      if (r.ok) persist();
-      if (L.photos.length) scheduleLensRun(250);
-    });
-  }
   if (openCamera) $("#lens-snap")?.click();
 }
 
@@ -742,9 +741,6 @@ function renderLens() {
       </div>`;
     $("#pick-shingle").onclick = () => setLensMode("shingle", { openCamera: true });
     $("#pick-damage").onclick = () => setLensMode("damage", { openCamera: true });
-    void ensureControlRoom(db.settings).then((r) => {
-      if (r.ok) persist();
-    });
     return;
   }
 
@@ -765,7 +761,9 @@ function renderLens() {
         ? formatChatBody("Reading photos…")
         : last
           ? formatChatBody(formatVerdict(last))
-          : formatChatBody(L.photos.length ? "Reading photos…" : "Snap the roof — identification runs automatically.");
+          : formatChatBody(
+              L.photos.length ? "Tap Re-run to identify, or snap another photo." : "Snap the roof to start.",
+            );
 
   const pct = Number.isFinite(Number(v?.pct)) ? Number(v.pct) : L.photos.length ? Math.min(40, L.photos.length * 10) : 0;
   const leader =
@@ -848,7 +846,7 @@ function renderLens() {
       L.last = null;
       persist();
       renderLens();
-      if (mode === "shingle" && L.photos.length) scheduleLensRun(400);
+      if (mode === "shingle" && L.photos.length) scheduleLensRun(500, { force: true });
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-retag]").forEach((em) => {
@@ -863,7 +861,7 @@ function renderLens() {
       persist();
       renderLens();
       setStatus(`Retagged · ${shotSpec(p.shot).label}`);
-      if (mode === "shingle") scheduleLensRun(400);
+      scheduleLensRun(800, { force: true });
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-edit]").forEach((el) => {
@@ -911,8 +909,7 @@ function renderLens() {
       L.last = null;
       persist();
       renderLens();
-      setStatus("Reading photos…");
-      scheduleLensRun(350);
+      scheduleLensRun(500, { force: true });
     } catch (e) {
       if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 50));
     }
@@ -921,6 +918,7 @@ function renderLens() {
   $("#lens-gallery")?.addEventListener("click", () => addFiles({ capture: false, multiple: true }));
   $("#lens-clear").onclick = () => {
     db.lens = { mode: lensMode(), photos: [], shots: [], last: null, field: null, session: true };
+    lastLensSig = "";
     persist();
     pendingShot = SHINGLE_CORE[0];
     renderLens();
@@ -946,10 +944,12 @@ function renderLens() {
 }
 
 
-async function runLens() {
+async function runLens({ force = false } = {}) {
   const L = lensPhotos();
   const mode = lensMode();
   if (!L.photos.length || lensBusy) return;
+  const sig = lensPhotoSig(L);
+  if (!force && sig === lastLensSig && L.last) return;
   lensBusy = true;
   setStatus("Reading shots…");
   try {
@@ -965,15 +965,20 @@ async function runLens() {
       persist();
       renderLens();
       setStatus(`LENS · ${String(hit.provider || "ID").toUpperCase()}`);
+      lastLensSig = sig;
       return;
     }
-    await ensureControlRoom(db.settings, { onProgress: (m) => setStatus(String(m).slice(0, 48)) });
+    const cloudReady = visionProvidersReady(db.settings).filter((id) => id !== "desktop");
+    if (!cloudReady.length && !desktopConfigured(db.settings)) {
+      await ensureControlRoom(db.settings).catch(() => {});
+    }
     const hit = await identifyShingles(db.settings, L.photos, L.photos.map((p) => p.shot));
     if (hit.photos?.length) {
       L.photos = hit.photos;
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
     }
     L.last = hit;
+    lastLensSig = sig;
     persist();
     renderLens();
     setStatus(
@@ -1844,12 +1849,6 @@ function boot() {
   });
   render();
   setStatus("");
-  void ensureControlRoom(db.settings).then((r) => {
-    if (r.ok) {
-      persist();
-      paintBrainStrip();
-    }
-  });
 }
 
 void matchCatalog;

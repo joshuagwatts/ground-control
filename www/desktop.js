@@ -305,17 +305,33 @@ export function disconnectDesktop(settings) {
 
 let roomConnectLock = null;
 
-/** Tap-less homebase pairing — scan LAN or refresh an existing session. */
+/** Refresh an existing session — full LAN scan only when forceScan (Connect button). */
 export async function ensureControlRoom(settings, { onProgress, forceScan = false } = {}) {
-  if (settings?.desktop_auto === false) {
-    if (!desktopConfigured(settings)) return { ok: false, error: "auto off" };
+  if (settings?.desktop_auto === false && !desktopConfigured(settings)) {
+    return { ok: false, error: "auto off" };
   }
   if (roomConnectLock) return roomConnectLock;
   roomConnectLock = (async () => {
-    if (desktopConfigured(settings) && !forceScan) {
+    if (desktopConfigured(settings)) {
       const reach = await desktopReachable(settings, 2200);
       if (reach.ok) return { ok: true, paired: true, url: baseUrl(settings) };
     }
+    const typed = normalizeUrl(settings.desktop_url);
+    if (typed && !forceScan) {
+      try {
+        const hit = await probeDesktop(typed, 7000);
+        if (hit?.token) {
+          settings.desktop_url = hit.url;
+          settings.desktop_token = hit.token;
+          settings.desktop_paired = true;
+          return { ok: true, paired: true, fresh: true, url: hit.url };
+        }
+      } catch (e) {
+        if (e?.hard) return { ok: false, error: String(e.message || e) };
+      }
+      return { ok: false, error: "desktop unreachable" };
+    }
+    if (!forceScan) return { ok: false, error: "not paired" };
     try {
       const hit = await connectDesktop(settings, onProgress || (() => {}));
       settings.desktop_model = hit.model || hit.ping?.model || settings.desktop_model || "";

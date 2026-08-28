@@ -1,7 +1,7 @@
 /** Shingle lens. Always names a catalog leader; the meter is what locks it. */
 
 import { privacyOn } from "./cloud.js";
-import { desktopConfigured, ensureControlRoom } from "./desktop.js";
+import { desktopConfigured } from "./desktop.js";
 import { visionComplete, visionProvidersReady } from "./vision.js";
 import {
   SHOTS,
@@ -182,7 +182,6 @@ export async function identifyShingles(settings, photos, taggedShots = []) {
   if (lensBlocked(settings)) {
     throw new Error("Lens needs Control Room (homebase GPU) or a vision key in Settings");
   }
-  await ensureControlRoom(settings).catch(() => {});
   let rows = photoRows(photos);
   if (!rows.length) {
     return {
@@ -194,7 +193,9 @@ export async function identifyShingles(settings, photos, taggedShots = []) {
       photos: [],
     };
   }
-  rows = await classifyShinglePhotos(settings, rows);
+  if (rows.some((p) => !p.shot)) {
+    rows = await classifyShinglePhotos(settings, rows);
+  }
   const urls = rows.map((p) => p.url);
   const tags = rows.map((p) => p.shot).filter(Boolean);
   const prompt = buildPrompt(rows, tags.length ? tags : taggedShots);
