@@ -1024,9 +1024,9 @@ function refreshZoomScaledUi(force = false) {
     const br = windFieldCenterDot.options.baseRadius || 10;
     windFieldCenterDot.setRadius(Math.max(3, br * ui));
   }
-  for (const [id, marker] of livePinMarkers.done) {
-    const h = fieldOverlay.done?.find((x) => String(x.id) === id);
-    if (h) marker.setIcon(donePinIcon(h.iconScale, ui));
+  const doneScale = fieldOverlay.donePinScale ?? 1;
+  for (const [, marker] of livePinMarkers.done) {
+    marker.setIcon(donePinIcon(doneScale, ui));
   }
   for (const [id, marker] of livePinMarkers.marks) {
     const m = fieldOverlay.marks?.find((x) => String(x.id) === id);
@@ -1829,7 +1829,7 @@ export function renderWeatherBoot(root, geo, wx, hail, esc) {
       <div id="wx-summary" class="wx-summary-host">${weatherSummaryHtml(bundleStub, hailRows, esc)}</div>
       <div id="wx-daily"></div>
       <div id="wx-hourly-slot" class="wx-hourly"></div>
-      <p class="muted wx-boot-hint">Double-tap map to expand · roofing dossier below</p>
+      <p class="muted wx-boot-hint">Scroll up on the map for full screen · storm dates below</p>
     </div>`;
   const slot = root.querySelector("#wx-hourly-slot");
   if (hourly && slot) {
@@ -3364,8 +3364,17 @@ function placeSelectPin(latlng) {
   }
 }
 
-export function setFieldOverlay({ marks = [], done = [], showMarks = true, showDone = true, onMark, onDone, onMarkScale, onDoneScale } = {}) {
-  fieldOverlay = { marks, done, showMarks, showDone, onMark, onDone, onMarkScale, onDoneScale };
+export function setFieldOverlay({
+  marks = [],
+  done = [],
+  donePinScale = 1,
+  showMarks = true,
+  showDone = true,
+  onMark,
+  onDone,
+  onMarkScale,
+} = {}) {
+  fieldOverlay = { marks, done, donePinScale, showMarks, showDone, onMark, onMarkScale };
   if (!map || !window.L) return;
   ensureFieldPanes();
   if (!markLayer) markLayer = window.L.layerGroup().addTo(map);
@@ -3425,7 +3434,7 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
       if (!validMarkCoord(h.lat, h.lon)) continue;
       const marker = window.L.marker([h.lat, h.lon], {
         pane: "doneHouses",
-        icon: donePinIcon(h.iconScale),
+        icon: donePinIcon(donePinScale),
         keyboard: false,
         title: h.address || "Completed house",
       })
@@ -3440,19 +3449,6 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
         })
         .addTo(doneLayer);
       livePinMarkers.done.set(String(h.id), marker);
-      bindPinScaleHold(marker, {
-        onHold: () => {
-          if (typeof onDoneScale !== "function") return;
-          showPinScalePopover({
-            lat: h.lat,
-            lon: h.lon,
-            scale: h.iconScale,
-            title: h.address || "Done house",
-            onChange: (s) => onDoneScale(h, s, { live: true }),
-            onDone: (s) => onDoneScale(h, s, { live: false }),
-          });
-        },
-      });
     }
   }
   refreshZoomScaledUi(true);
@@ -3790,44 +3786,90 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   map.setView([lat, lon], zoom, { animate: false });
 }
 
-/** Double-tap map shell to expand / collapse — keeps address pin zoom separate from hail fit. */
-export function bindWxMapExpand(shell) {
-  if (!shell || shell.dataset.expandBound) return;
-  shell.dataset.expandBound = "1";
-  let lastTap = 0;
-  let suppressClick = false;
-  shell.addEventListener(
-    "click",
+/** Expand / collapse map — scroll up opens full screen; scroll down returns to storm dates. */
+export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  const sheet = document.getElementById("hs-sheet");
+  const view = document.getElementById("view");
+  if (!shell) return;
+  shell.classList.toggle("expanded", on);
+  document.body.classList.toggle("wx-map-expanded", on);
+  const hint = shell.querySelector(".wx-map-hint, .hs-map-hint");
+  if (hint) hint.textContent = on ? "Scroll down for storm dates" : "Scroll up for full screen · scroll down for storm dates";
+  if (view) view.style.overflowY = on ? "hidden" : "";
+  setTimeout(() => {
+    try {
+      map?.invalidateSize?.();
+    } catch {
+      /* ignore */
+    }
+  }, 280);
+  if (!on && scrollToSheet && sheet) {
+    setTimeout(() => {
+      try {
+        sheet.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch {
+        /* ignore */
+      }
+    }, 120);
+  }
+}
+
+export function bindWxMapScrollExpand(view, shell, sheet) {
+  if (!view || !shell || shell.dataset.scrollExpandBound) return;
+  shell.dataset.scrollExpandBound = "1";
+  const isExpanded = () => shell.classList.contains("expanded");
+  const block = (e) => {
+    if (e.target.closest(".leaflet-control, .hs-map-pin-size, .hs-composer, .hs-pin-scale-pop, input, select, textarea, button, a")) return;
+    const expanded = isExpanded();
+    if (!expanded && view.scrollTop <= 10 && e.deltaY < 0) {
+      e.preventDefault();
+      setWxMapExpanded(true);
+      return;
+    }
+    if (expanded && e.deltaY > 0) {
+      e.preventDefault();
+      setWxMapExpanded(false, { scrollToSheet: true });
+    }
+  };
+  view.addEventListener("wheel", block, { passive: false });
+  let touchY = 0;
+  let touchStartScroll = 0;
+  view.addEventListener(
+    "touchstart",
     (e) => {
-      if (e.target.closest(".leaflet-control, .hs-search, .hs-styles, .hs-layers, .hs-composer, .hs-field, input, select, textarea, button, a")) return;
-      const now = Date.now();
-      if (now - lastTap < 360) {
-        e.stopPropagation();
+      if (e.touches.length !== 1) return;
+      touchY = e.touches[0].clientY;
+      touchStartScroll = view.scrollTop;
+    },
+    { passive: true },
+  );
+  view.addEventListener(
+    "touchmove",
+    (e) => {
+      if (e.touches.length !== 1) return;
+      if (e.target.closest(".leaflet-control, .hs-map-pin-size, .hs-composer, .hs-pin-scale-pop, input, select, textarea, button, a")) return;
+      const y = e.touches[0].clientY;
+      const dy = y - touchY;
+      touchY = y;
+      const expanded = isExpanded();
+      if (!expanded && touchStartScroll <= 10 && dy < -14) {
         e.preventDefault();
-        suppressClick = true;
-        wxSuppressMapTap = true;
-        const on = shell.classList.toggle("expanded");
-        document.body.classList.toggle("wx-map-expanded", on);
-        const hint = shell.querySelector(".wx-map-hint, .hs-map-hint");
-        if (hint) hint.textContent = on ? "Double-tap to close" : "Double-tap to expand";
-        setTimeout(() => {
-          try {
-            map?.invalidateSize?.();
-          } catch {
-            /* ignore */
-          }
-        }, 280);
-        lastTap = 0;
-        setTimeout(() => {
-          suppressClick = false;
-          wxSuppressMapTap = false;
-        }, 400);
+        setWxMapExpanded(true);
         return;
       }
-      lastTap = now;
+      if (expanded && dy > 14) {
+        e.preventDefault();
+        setWxMapExpanded(false, { scrollToSheet: true });
+      }
     },
-    true,
+    { passive: false },
   );
+}
+
+/** @deprecated use bindWxMapScrollExpand */
+export function bindWxMapExpand(shell) {
+  bindWxMapScrollExpand(document.getElementById("view"), shell, document.getElementById("hs-sheet"));
 }
 
 async function snapToHouse(hit, query) {
@@ -4267,12 +4309,25 @@ export function patchHailScopePartial(root, partial, esc) {
 }
 
 /** One coordinated map + sheet refresh after dossier data arrives. */
-export function syncHailScopeView(root, data, esc, { onRefetch, fit = false } = {}) {
+export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = true } = {}) {
   if (!root || !data) return;
   ensureHailStormDate(data);
   const hailRows = filterHailRaw(data, wxFilters);
   drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
   renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
+  if (!revealSheet) return;
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  if (shell?.classList.contains("expanded")) {
+    setWxMapExpanded(false, { scrollToSheet: true });
+  } else {
+    requestAnimationFrame(() => {
+      try {
+        root.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch {
+        /* ignore */
+      }
+    });
+  }
 }
 
 function hailScopeHtml(data, days, esc) {

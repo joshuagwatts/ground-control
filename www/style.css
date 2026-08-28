@@ -1573,8 +1573,8 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
 .hs-wrap { min-height: 100%; padding-bottom: calc(var(--tab-h) + var(--safe-bottom)); }
 .hs-map-shell {
   position: relative;
-  height: clamp(240px, 46dvh, 480px);
-  min-height: 240px;
+  height: clamp(320px, 62dvh, 640px);
+  min-height: 320px;
   border-bottom: 1px solid var(--line);
   background: #000;
   transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
@@ -1595,11 +1595,26 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
 body.wx-map-expanded #view { overflow: hidden; }
 body.wx-map-expanded .hs-sheet { display: none; }
 .hs-map-hint {
-  position: absolute; z-index: 500; left: 12px; bottom: 16px;
+  position: absolute; z-index: 500; left: 12px; bottom: 52px;
   font-size: 11px; color: var(--muted);
   background: rgba(22,22,24,0.88); border: 1px solid var(--line);
   padding: 0.28rem 0.55rem; pointer-events: none;
   border-radius: 999px;
+  max-width: calc(100% - 140px);
+}
+.hs-map-pin-size {
+  position: absolute; z-index: 500; left: 12px; bottom: 12px;
+  display: flex; align-items: center; gap: 0.35rem;
+  background: rgba(22,22,24,0.92); border: 1px solid var(--line);
+  border-radius: 999px; padding: 0.28rem 0.55rem;
+  font-size: 11px; pointer-events: auto;
+}
+.hs-map-pin-size-lab { color: var(--muted); font-weight: 600; }
+.hs-map-pin-size .hs-pin-size-val {
+  min-width: 2.4rem; text-align: right; color: var(--trim); font-weight: 650;
+}
+.hs-map-pin-size input[type="range"] {
+  width: 76px; margin: 0; accent-color: var(--trim);
 }
 .hs-map-shell.expanded .hs-map-hint { color: var(--trim); border-color: var(--trim); }
 .hs-map-shell #wx-map, .hs-map-shell #hs-map {
@@ -1628,7 +1643,8 @@ body.wx-map-expanded .hs-sheet { display: none; }
 }
 .hs-goto + .hs-sheet { padding-top: 0.45rem; }
 @media (pointer: fine) {
-  .hs-map-hint { left: 54px; }
+  .hs-map-hint { left: 54px; max-width: calc(100% - 180px); }
+  .hs-map-pin-size { left: 54px; }
 }
 .hs-layers {
   position: absolute; z-index: 500; left: 12px; top: 12px;

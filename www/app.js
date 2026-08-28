@@ -48,7 +48,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0239";
+} from "./wx.js?v=0240";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1142,82 +1142,64 @@ function selectedDoneHouse() {
 }
 
 function donePinScaleUi() {
-  const sel = selectedDoneHouse();
-  if (sel) return clampPinScale(sel.iconScale);
   return clampPinScale(db.settings.done_pin_scale ?? 1);
 }
 
 function setAllDonePinScale(scale, { live = false } = {}) {
   const next = clampPinScale(scale);
   db.settings.done_pin_scale = next;
-  const houses = doneHouses().map((h) => normalizeDoneHouse({ ...h, iconScale: next }, h.id));
-  db.done = { ...(db.done || {}), houses };
   if (live) {
-    for (const h of houses) updatePinScaleLive("done", h.id, h);
-    const slider = $("#hs-done-pin-scale");
-    const lab = $("#hs-done-pin-scale-lab");
-    if (slider) slider.value = String(Math.round(next * 100));
-    if (lab) lab.textContent = `${Math.round(next * 100)}%`;
+    paintFieldMap();
+    wirePinSizeSlider();
     return;
   }
   persist();
   paintFieldMap();
+  paintFieldSheet();
 }
 
 function applyDonePinScale(scale, { live = false } = {}) {
-  const sel = selectedDoneHouse();
-  if (sel) setDoneScale(sel, scale, { live });
-  else setAllDonePinScale(scale, { live });
+  setAllDonePinScale(scale, { live });
 }
 
-function setDoneScale(house, scale, { live = false } = {}) {
-  const next = normalizeDoneHouse({ ...house, iconScale: scale }, house.id);
-  const houses = doneHouses().map((h) => (h.id === house.id ? next : h));
-  db.done = { ...(db.done || {}), houses };
-  if (live) {
-    updatePinScaleLive("done", house.id, next);
-    const pct = Math.round(clampPinScale(scale) * 100);
-    const slider = $("#hs-done-pin-scale");
-    const lab = $("#hs-done-pin-scale-lab");
-    if (slider) slider.value = String(pct);
-    if (lab) lab.textContent = `${pct}%`;
-    return;
+function wirePinSizeSlider() {
+  const wrap = $("#hs-map-pin-size");
+  const placed = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (wrap) wrap.hidden = !placed;
+  const pct = Math.round(donePinScaleUi() * 100);
+  const slider = $("#hs-done-pin-scale");
+  const lab = $("#hs-done-pin-scale-lab");
+  if (slider && document.activeElement !== slider) slider.value = String(pct);
+  if (lab) lab.textContent = `${pct}%`;
+  if (slider && !slider.dataset.wired) {
+    slider.dataset.wired = "1";
+    slider.oninput = () => {
+      const scale = clampPinScale(Number(slider.value) / 100);
+      if (lab) lab.textContent = `${Math.round(scale * 100)}%`;
+      applyDonePinScale(scale, { live: true });
+    };
+    slider.onchange = () => {
+      applyDonePinScale(clampPinScale(Number(slider.value) / 100), { live: false });
+    };
   }
-  persist();
-  paintFieldMap();
 }
 
 function paintFieldMap() {
   setFieldOverlay({
     marks: fieldMarks(),
     done: doneHouses(),
+    donePinScale: donePinScaleUi(),
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
-    onDoneScale: (h, scale, opts) => setDoneScale(h, scale, opts),
     onDone: (h) => {
       if (!h || !Number.isFinite(Number(h.lat))) return;
       selectedDoneId = h.id;
       const box = $("#hs-addr-q");
       if (box && h.address) box.value = h.address;
-      if (h.address) setStatus(h.address);
-      wxState.lat = Number(h.lat);
-      wxState.lon = Number(h.lon);
-      wxState.address = h.address || "";
-      flyToPin(h.lat, h.lon, 20, { radius: false, stay: true });
-      showPinScalePopover({
-        lat: h.lat,
-        lon: h.lon,
-        scale: h.iconScale,
-        title: h.address || "Yellow pin",
-        onChange: (s) => setDoneScale(h, s, { live: true }),
-        onDone: (s) => {
-          setDoneScale(h, s, { live: false });
-          paintFieldSheet();
-        },
-      });
       paintFieldSheet();
+      void onHailTap(Number(h.lat), Number(h.lon), { address: h.address || "" });
     },
   });
 }
@@ -1428,29 +1410,18 @@ function paintFieldSheet() {
   const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
   const rawText = String(db.done?.text || "");
   const selHouse = selectedDoneHouse();
-  const pinPct = Math.round(donePinScaleUi() * 100);
-  const pinScope = selHouse ? esc(String(selHouse.address || "selected").slice(0, 32)) : "all pins";
   root.innerHTML = `
     <div class="hs-field-head">
       <strong>Completed jobs</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "Paste the houses you already built"}</span>
     </div>
-    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to select it — use the slider below or hold a pin on the map. Lines without a city use Settings city.</p>
+    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to load storm dates for that house. Pin size slider is on the map. Lines without a city use Settings city.</p>
     <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>
       <button type="button" id="hs-done-clear"${houses.length ? "" : " disabled"}>Clear</button>
-      ${selHouse ? `<button type="button" id="hs-done-all-pins">All pins</button>` : ""}
+      ${selHouse ? `<button type="button" id="hs-done-all-pins">Clear selection</button>` : ""}
     </div>
-    ${
-      placed.length
-        ? `<label class="hs-pin-size-row">
-      <span class="hs-pin-size-label">Yellow pin size — ${pinScope}</span>
-      <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">${pinPct}%</span>
-      <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="${pinPct}" aria-label="Yellow pin size" />
-    </label>`
-        : ""
-    }
     <div class="hs-field-head">
       <strong>Field marks</strong>
       <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"} — hold any pin to resize</span>
@@ -1739,7 +1710,12 @@ async function renderWx() {
       <div class="hs-map-shell" id="hs-map-shell">
         <div class="hs-layers" id="hs-layers"></div>
         <div class="hs-styles" id="hs-styles"></div>
-        <span class="hs-map-hint">Hold to drop a pin — double-tap to expand</span>
+        <span class="hs-map-hint">Scroll up for full screen · scroll down for storm dates</span>
+        <div class="hs-map-pin-size" id="hs-map-pin-size" hidden aria-label="Yellow pin size">
+          <span class="hs-map-pin-size-lab">Pins</span>
+          <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">100%</span>
+          <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="100" aria-label="Yellow pin size" />
+        </div>
         <div id="wx-map"></div>
         <div class="hs-composer" id="hs-composer" hidden></div>
       </div>
@@ -1757,7 +1733,7 @@ async function renderWx() {
     const cfg = quickMapConfig(db.settings);
     wireHsShell(cfg);
     mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat" });
-    bindWxMapExpand($("#hs-map-shell"));
+    bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"));
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
@@ -1799,6 +1775,11 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
       },
     });
     if (gen !== hailTapGen || !isHailTab()) return;
+    if (!data) {
+      if (sheet) sheet.innerHTML = `<p class="hs-empty">Could not load storm data. Try another pin.</p>`;
+      setStatus("");
+      return;
+    }
     wxState.address = data.address || "";
     wxState.data = data;
     syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch });
