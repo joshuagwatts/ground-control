@@ -45,6 +45,10 @@ import {
   clearSelectedStormDate,
   applyDonePinScaleLive,
   revealHailBottomPanel,
+  revealHailAddressPeek,
+  syncHailBottomChrome,
+  setWxMapExpanded,
+  wxPinSelected,
   viewportDossier,
   setWxUnits,
   reverseGeocode,
@@ -56,7 +60,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.52";
+} from "./wx.js?v=0.2.53";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1689,6 +1693,8 @@ async function renderWx() {
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();
+    syncHailBottomChrome();
+    if (!wxPinSelected()) setWxMapExpanded(true);
     setStatus("");
     return;
   }
@@ -1744,6 +1750,8 @@ async function renderWx() {
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();
+    syncHailBottomChrome();
+    setWxMapExpanded(true);
     refreshMapSize();
     void finishWxBoot(gen);
   } catch (e) {

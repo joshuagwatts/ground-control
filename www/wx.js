@@ -2283,6 +2283,7 @@ export function clearWxPin() {
     }
     pin = null;
   }
+  syncHailBottomChrome();
 }
 
 export async function viewportDossier(settings, filters = wxFilters) {
@@ -2980,6 +2981,8 @@ function panToMe() {
   if (!map || !lastMe) return;
   const z = Math.max(map.getZoom(), HOUSE_ZOOM);
   map.setView([lastMe.lat, lastMe.lon], z, { animate: true });
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  if (shell?.classList.contains("expanded")) revealHailAddressPeek();
 }
 
 function isPhoneUi() {
@@ -3960,10 +3963,44 @@ const MAP_SHELL_MS = 520;
 
 function scrollViewToAddressPeek() {
   const view = document.getElementById("view");
+  const search = document.getElementById("hs-search");
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (!view || !shell) return;
+  if (search) {
+    const top = search.offsetTop + search.offsetHeight - Math.min(view.clientHeight * 0.22, 96);
+    view.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    return;
+  }
   const top = shell.offsetTop + shell.offsetHeight;
   view.scrollTo({ top: Math.max(0, top - 4), behavior: "smooth" });
+}
+
+/** Hide storm sheet until a pin is placed; show address search when peeking. */
+export function syncHailBottomChrome() {
+  const panel = document.getElementById("hs-bottom-panel");
+  if (!panel) return;
+  panel.classList.toggle("hs-has-location", wxPinSelected());
+}
+
+/** Slide up address search only — storm dates stay hidden until a pin is placed. */
+export function revealHailAddressPeek() {
+  const panel = document.getElementById("hs-bottom-panel");
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  syncHailBottomChrome();
+  if (shell?.classList.contains("expanded")) {
+    setWxMapExpanded(false, { scrollToSheet: false });
+  }
+  if (!panel) return;
+  panel.classList.remove("hs-bottom-reveal");
+  void panel.offsetWidth;
+  panel.classList.add("hs-bottom-reveal");
+  requestAnimationFrame(() => {
+    try {
+      scrollViewToAddressPeek();
+    } catch {
+      /* ignore */
+    }
+  });
 }
 
 export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
@@ -3992,7 +4029,7 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   if (!on && scrollToSheet) {
     setTimeout(() => {
       try {
-        scrollViewToAddressPeek();
+        revealHailAddressPeek();
       } catch {
         /* ignore */
       }
@@ -4004,6 +4041,7 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
 export function revealHailBottomPanel() {
   const panel = document.getElementById("hs-bottom-panel");
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  syncHailBottomChrome();
   if (shell?.classList.contains("expanded")) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
@@ -4013,7 +4051,13 @@ export function revealHailBottomPanel() {
   panel.classList.add("hs-bottom-reveal");
   requestAnimationFrame(() => {
     try {
-      scrollViewToAddressPeek();
+      if (wxPinSelected()) {
+        const view = document.getElementById("view");
+        const sheet = document.getElementById("hs-sheet");
+        if (view && sheet) {
+          view.scrollTo({ top: Math.max(0, sheet.offsetTop - 12), behavior: "smooth" });
+        } else scrollViewToAddressPeek();
+      } else revealHailAddressPeek();
     } catch {
       /* ignore */
     }
