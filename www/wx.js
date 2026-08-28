@@ -741,7 +741,14 @@ function parseSwdiShape(shape) {
   return null;
 }
 
-async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
+/** SWDI history window — full 730d on wide ring; fast ring uses recent window so radar lands quickly. */
+function swdiDaysForRing(radiusKm, filterDays = 730) {
+  const days = Math.min(Math.max(Number(filterDays) || 730, 7), 730);
+  if (radiusKm >= PIN_FETCH_WIDE_KM - 1) return days;
+  return Math.min(days, 120);
+}
+
+async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgress } = {}) {
   const today = new Date();
   const days = Math.min(Math.max(daysBack, 7), 730);
   const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
@@ -763,20 +770,23 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
     cursor.setDate(cursor.getDate() - 1);
   }
   const hits = new Map();
-  const batch = km >= 100 ? 3 : 5;
-  const timeout = km >= 100 ? 14000 : 18000;
+  const batch = km >= 100 ? 3 : 4;
+  const timeout = km >= 100 ? 12000 : 14000;
   for (let i = 0; i < chunks.length; i += batch) {
     const part = await Promise.all(
       chunks.slice(i, i + batch).map(async ({ start, end }) => {
         const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
         const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
-        try {
-          const { body } = await httpGet(url, timeout);
-          const data = JSON.parse(body || "{}");
-          return data.result || [];
-        } catch {
-          return [];
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const { body } = await httpGet(url, timeout);
+            const data = JSON.parse(body || "{}");
+            return data.result || [];
+          } catch {
+            if (attempt) return [];
+          }
         }
+        return [];
       }),
     );
     for (const rows of part) {
@@ -821,6 +831,7 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
         if (!prev || (parseFloat(row.size_in) || 0) > (parseFloat(prev.size_in) || 0)) hits.set(key, row);
       }
     }
+    if (onProgress && hits.size) onProgress([...hits.values()], { chunk: i / batch + 1, total: Math.ceil(chunks.length / batch) });
   }
   return [...hits.values()];
 }
@@ -2752,7 +2763,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
   const filterDays = Number(filters.days) || 730;
   const archiveDays = Math.min(filterDays, 730);
-  const swdiDays = Math.min(filterDays, 730);
+  const swdiDays = swdiDaysForRing(km, filterDays);
   const viewport = Boolean(filters.viewport);
   const km = viewport ? filterKm(filters) : dossierWideKm(filters);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
@@ -2816,62 +2827,91 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     ...ownerFields(people0),
   };
   if (onPartial) onPartial(partial);
-  // Center-out: paint ~40km first (LSR → SWDI/SPC), then widen in the background.
   const fastKm = dossierFetchKm();
   const wideKm = dossierWideKm();
   const days = Number(wxFilters.days) || 730;
+  const swdiFastDays = swdiDaysForRing(fastKm, days);
+  const swdiWideDays = swdiDaysForRing(wideKm, days);
+  const wideFetch = wideKm > fastKm + 1;
   const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
   const wxP = currentWeather(lat, lon).catch(() => ({ ok: false }));
   const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, days).catch(() => []);
-  const swdiFastP = fetchSwdiHail(lat, lon, fastKm, days);
   const spcFastP = fetchSpcReports(lat, lon, fastKm, 30);
-  const wideFetch = wideKm > fastKm + 1;
   const lsrWideP = wideFetch ? fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []) : null;
-  const swdiWideP = wideFetch ? fetchSwdiHail(lat, lon, wideKm, days) : null;
   const spcWideP = wideFetch ? fetchSpcReports(lat, lon, wideKm, 30) : null;
 
-  const lsrFast = await lsrFastP;
-  let hail = mergeHailRows([], [], lsrFast);
-  let wind = [];
-  if (onPartial) {
+  let accHail = [];
+  let accWind = [];
+  let wxNow = { ok: false };
+  let placeHit = partial;
+  let spcFast = { hail: [], wind: [] };
+  let lsrFast = [];
+
+  const pushPartial = (tag, { loading = false, fetchedKm = fastKm } = {}) => {
+    if (!onPartial) return;
     onPartial({
       ...partial,
-      hail,
-      wind,
-      storms: enrichStormDates([], hail, wind),
-      _meta: { fetchedDays: days, fetchedKm: fastKm, deep: false, partial: "lsr", loading: true },
+      ...placeHit,
+      weather: wxNow,
+      hail: accHail,
+      wind: accWind,
+      storms: enrichStormDates([], accHail, accWind),
+      zillow_url: pickZillowUrl({ address: addr, zillow_url: placeHit.zillow_url }),
+      lat,
+      lon,
+      _meta: {
+        fetchedDays: days,
+        fetchedKm,
+        deep: false,
+        partial: tag,
+        loading,
+        radarN: accHail.filter((h) => !isSpotterHail(h)).length,
+        spotN: accHail.filter(isSpotterHail).length,
+      },
     });
+  };
+
+  lsrFast = await lsrFastP;
+  accHail = mergeHailRows([], [], lsrFast);
+  pushPartial("lsr", { loading: true, fetchedKm: fastKm });
+
+  [wxNow, spcFast, placeHit] = await Promise.all([wxP, spcFastP, placeP]);
+  accHail = mergeHailRows(spcFast.hail || [], accHail, lsrFast);
+  accWind = spcFast.wind || [];
+  pushPartial("spc", { loading: true, fetchedKm: fastKm });
+
+  const swdiFast = await fetchSwdiHail(lat, lon, fastKm, swdiFastDays, {
+    onProgress: (swdiBatch) => {
+      accHail = mergeHailRows(spcFast.hail || [], swdiBatch, lsrFast);
+      pushPartial("swdi", { loading: true, fetchedKm: fastKm });
+    },
+  });
+  accHail = mergeHailRows(spcFast.hail || [], swdiFast || [], lsrFast);
+  pushPartial("swdi-fast", { loading: wideFetch, fetchedKm: fastKm });
+
+  if (wideFetch) {
+    const [lsrWide, swdiWide, spcWide] = await Promise.all([
+      lsrWideP,
+      fetchSwdiHail(lat, lon, wideKm, swdiWideDays),
+      spcWideP,
+    ]);
+    accHail = mergeHailRows(spcWide.hail || [], swdiWide || [], lsrWide, accHail);
+    accWind = spcWide.wind?.length ? spcWide.wind : accWind;
+    pushPartial("wide", { loading: false, fetchedKm: wideKm });
   }
 
-  const [wxNow, spcFast, swdiFast, placeHit] = await Promise.all([wxP, spcFastP, swdiFastP, placeP]);
-  hail = mergeHailRows(spcFast.hail || [], swdiFast || [], lsrFast);
-  wind = spcFast.wind || [];
-  let enriched = {
+  return {
     ...partial,
     ...placeHit,
     weather: wxNow,
-    hail,
-    wind,
-    storms: enrichStormDates([], hail, wind),
+    hail: accHail,
+    wind: accWind,
+    storms: enrichStormDates([], accHail, accWind),
     zillow_url: pickZillowUrl({ address: addr, zillow_url: placeHit.zillow_url }),
-    _meta: { fetchedDays: days, fetchedKm: fastKm, deep: false, partial: "fast", loading: wideFetch },
+    lat,
+    lon,
+    _meta: { fetchedDays: days, fetchedKm: wideFetch ? wideKm : fastKm, deep: false, loading: false },
   };
-  if (onPartial) onPartial(enriched);
-
-  if (wideFetch) {
-    const [lsrWide, swdiWide, spcWide] = await Promise.all([lsrWideP, swdiWideP, spcWideP]);
-    hail = mergeHailRows(spcWide.hail || [], swdiWide || [], lsrWide, hail);
-    wind = spcWide.wind?.length ? spcWide.wind : wind;
-    enriched = {
-      ...enriched,
-      hail,
-      wind,
-      storms: enrichStormDates([], hail, wind),
-      _meta: { fetchedDays: days, fetchedKm: wideKm, deep: false },
-    };
-    if (onPartial) onPartial(enriched);
-  }
-  return enriched;
 }
 
 export async function refetchDossier(settings, lat, lon, address, filters = wxFilters) {
@@ -3231,7 +3271,7 @@ async function refreshHailMapFill() {
   try {
     const [spc, swdi, lsr] = await Promise.all([
       fetchSpcReports(q.lat, q.lon, km, Math.min(days, 90)),
-      fetchSwdiHail(q.lat, q.lon, km, days),
+      fetchSwdiHail(q.lat, q.lon, km, swdiDaysForRing(km, days)),
       fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []),
     ]);
     if (gen !== hailMapFillGen || !hasSelectedStormDates()) return;
@@ -3796,6 +3836,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const zoneHits =
       hasSelectedStormDates() || !pinCoords() ? dayHits : onBlock.length ? onBlock : dayHits;
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
+    if (!subRings.length && dayHits.length) {
+      subRings.push({
+        ring: topoZoneRing(h, zoneHits),
+        maxSize: parseFloat(h.size_in) || parseFloat(dayHits[0]?.size_in) || 0.75,
+        hits: dayHits.length,
+        confirmed: dayHits.some(isSpotterHail),
+        source: dayHits.some((p) => !isSpotterHail(p)) ? "spot+radar" : "spotter",
+      });
+    }
     // Outer / weaker first, then cores on top — opaque fills cut through (no opacity stack).
     subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
     const sat = activeLayer === "sat";
@@ -3919,6 +3968,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       }).addTo(windLayer),
       { confirmed: false, size: mph / 40, kind: "wind" },
     );
+  }
+  const showHail = hailScopeMode || wxTimelineFilters.hail || activeWxProduct === "hail";
+  if (hailLayer && showHail) {
+    try {
+      if (!map.hasLayer(hailLayer)) hailLayer.addTo(map);
+    } catch {
+      /* ignore */
+    }
   }
   syncHazardLayers();
   scheduleZoomUiRefresh(true);
@@ -5306,6 +5363,8 @@ export function destroyMap() {
   liveTlIdx = 0;
   houseLayer = null;
   lastHailDrawSig = "";
+  lastSyncHailN = 0;
+  lastSyncRadarN = 0;
   mapBusy = 0;
   hailDotMarkers.length = 0;
   hailStrokeLayers.length = 0;
@@ -6485,11 +6544,20 @@ export function patchHailScopePartial(root, partial, esc) {
   bindPlaceLinks(root);
 }
 
+let lastSyncHailN = 0;
+let lastSyncRadarN = 0;
+
 /** One coordinated map + sheet refresh after dossier data arrives. */
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
   syncHailStormDateSelection(data);
   const hailRows = mapHailRows(data, wxFilters);
+  const radarN = hailRows.filter((h) => !isSpotterHail(h)).length;
+  if (hailRows.length !== lastSyncHailN || radarN !== lastSyncRadarN) {
+    lastHailDrawSig = "";
+    lastSyncHailN = hailRows.length;
+    lastSyncRadarN = radarN;
+  }
   drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
   renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   if (revealSheet) revealHailAddressPeek();
@@ -6505,8 +6573,9 @@ function hailScopePinHtml(data, esc) {
     return `<p class="hs-pin hs-pin-ready">${line}</p>`;
   }
   const addr = data.address || "Dropped pin";
+  const loading = data._meta?.loading ? " · loading radar…" : "";
   return `<p class="hs-pin hs-pin-ready"><strong>${esc(addr)}</strong>${
-    pinLine || "Tap storm dates to overlay hail zones (multi-check)"
+    pinLine || `Tap storm dates to overlay hail zones (multi-check)${loading}`
   }</p>`;
 }
 
@@ -6696,7 +6765,9 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 export function renderHailScopeSheet(root, data, esc, { onRefetch, drawMap = true } = {}) {
   if (!root) return;
   const days = hailScopeDays(data);
-  pruneStormDateSelection(new Set(days.map((h) => h.date)));
+  if (days.length || !data?._meta?.loading) {
+    pruneStormDateSelection(new Set(days.map((h) => h.date)));
+  }
   root.innerHTML = hailScopeHtml(data, days, esc);
   bindHailScopeSheet(root, data, esc, { onRefetch });
   if (drawMap) drawHailMarkers(mapHailRows(data, wxFilters), [], { requireDate: true });
