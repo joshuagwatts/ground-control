@@ -255,6 +255,21 @@ export function setHailScopeMode(on) {
   hailScopeMode = Boolean(on);
   if (!hailScopeMode) hailSearchQ = "";
 }
+/** HailScope live radar — separate from pip wx timeline filters. */
+let hailScopeRadarOn = true;
+export const hailScopeRadarFilters = { precip: true, wind: false };
+
+function hailScopeRadarActive() {
+  return hailScopeMode && hailScopeRadarOn !== false;
+}
+
+function wantPrecipRadarTiles() {
+  if (hailScopeRadarActive() && hailScopeRadarFilters.precip) return true;
+  return (
+    wxTimelineFilters.precip &&
+    (activeWxProduct === "precip" || activeOverlays.has("precip") || activeOverlays.has("radar"))
+  );
+}
 let radarFrames = [];
 let radarFrameIdx = 0;
 let radarPlayRaf = null;
@@ -1463,7 +1478,7 @@ function ensureRadarLayer(url) {
 function setRadarTilePath(path, { crossfade = false } = {}) {
   if (!map || !window.L || !path) return;
   const url = rainTileUrl(radarHost, path, radarColor);
-  const wantOn = wxTimelineFilters.precip && (activeWxProduct === "precip" || activeOverlays.has("precip") || activeOverlays.has("radar"));
+  const wantOn = wantPrecipRadarTiles();
 
   if (!crossfade) {
     const layer = ensureRadarLayer(url) || overlays.precip;
@@ -1630,6 +1645,171 @@ export function stopHourPlay() {
     clearInterval(hourPlayTimer);
     hourPlayTimer = null;
   }
+}
+
+function hailScopeRadarScrubberInnerHtml() {
+  if (!hailScopeRadarActive() || radarFrames.length < 2 || !hailScopeRadarFilters.precip) return "";
+  const max = radarFrames.length - 1;
+  return `<div class="wx-radar-scrub-row">
+    <button type="button" id="wx-radar-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
+    <span class="wx-radar-tag">LIVE PRECIP</span>
+    <input type="range" id="wx-radar-range" min="0" max="${max}" value="${radarFrameIdx}" step="1" />
+    <span id="wx-radar-label" class="wx-radar-label">…</span>
+  </div>`;
+}
+
+export function hailScopeRadarBarHtml() {
+  if (!hailScopeRadarActive()) return "";
+  const f = hailScopeRadarFilters;
+  const radar = hailScopeRadarScrubberInnerHtml();
+  return `<div class="hs-radar-bar" id="hs-radar-bar">
+    <div class="wx-tl-filters hs-radar-filters">
+      <button type="button" data-hs-radar-fl="precip" class="${f.precip ? "on" : ""}">PRECIP</button>
+      <button type="button" data-hs-radar-fl="wind" class="${f.wind ? "on" : ""}">WIND</button>
+    </div>
+    ${radar ? `<div class="wx-radar-scrub" id="wx-radar-scrub">${radar}</div>` : ""}
+  </div>`;
+}
+
+export function bindHailScopeRadar(root = document) {
+  bindRadarScrubber(root);
+  root.querySelectorAll("[data-hs-radar-fl]").forEach((btn) => {
+    btn.onclick = () => {
+      const k = btn.dataset.hsRadarFl;
+      if (k === "precip" || k === "wind") hailScopeRadarFilters[k] = !hailScopeRadarFilters[k];
+      syncHailScopeRadarLayers();
+      const host = root.querySelector?.("#hs-radar-bar") || document.getElementById("hs-radar-bar");
+      if (host) {
+        host.outerHTML = hailScopeRadarBarHtml();
+        bindHailScopeRadar(root);
+      }
+    };
+  });
+}
+
+export function applyLoadedMapConfig(config, settings) {
+  upgradeMapFromConfig(config);
+  syncHailScopeRadar(settings);
+}
+
+function upgradeMapFromConfig(config) {
+  if (!map || !window.L || !config?.layers) return;
+  for (const layer of config.layers) {
+    if (layer.synthetic || !layer.url || overlays[layer.id]) continue;
+    const isWx = layer.kind === "wx" || layer.kind === "overlay";
+    if (!isWx) continue;
+    const tile = window.L.tileLayer(layer.url, {
+      attribution: layer.attribution || "",
+      opacity: layer.opacity ?? 1,
+      className: layer.className || "",
+      maxNativeZoom: layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM,
+      subdomains: layer.subdomains || "abc",
+      maxZoom: MAP_MAX_ZOOM,
+      tileSize: 256,
+      detectRetina: false,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
+      keepBuffer: 4,
+    });
+    overlays[layer.id] = tile;
+    if (layer.id === "precip") overlays.radar = tile;
+  }
+}
+
+async function fetchRainViewerFrames() {
+  if (radarFrames.length) return;
+  try {
+    const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 2500);
+    const rv = JSON.parse(body || "{}");
+    radarHost = rv.host || "https://tilecache.rainviewer.com";
+    const past = ((rv.radar || {}).past || []).slice(-12);
+    const nowcast = ((rv.radar || {}).nowcast || []).slice(0, 3);
+    radarFrames = [...past, ...nowcast].filter((f) => f && f.path);
+    radarFrameIdx = Math.max(0, past.length - 1);
+  } catch {
+    /* optional */
+  }
+}
+
+export async function ensureHailScopeRadarLayers(settings) {
+  if (!map || !hailScopeRadarActive()) return;
+  await fetchRainViewerFrames();
+  if (!overlays.precip && radarFrames.length) {
+    const frame = radarFrames[radarFrameIdx] || radarFrames[radarFrames.length - 1];
+    if (frame?.path) {
+      const url = rainTileUrl(radarHost, frame.path, radarColor);
+      overlays.precip = window.L.tileLayer(url, {
+        attribution: "© RainViewer",
+        opacity: 0.72,
+        maxZoom: MAP_MAX_ZOOM,
+        maxNativeZoom: RADAR_NATIVE_ZOOM,
+        tileSize: 256,
+        updateWhenIdle: false,
+        updateWhenZooming: false,
+        keepBuffer: 4,
+      });
+      overlays.radar = overlays.precip;
+    }
+  }
+  syncHailScopeRadarLayers();
+  const shell = document.getElementById("hs-map-shell");
+  const bar = document.getElementById("hs-radar-bar");
+  if (shell && bar && hailScopeRadarActive()) {
+    bar.outerHTML = hailScopeRadarBarHtml();
+    bindHailScopeRadar(shell);
+  }
+}
+
+function syncHailScopeRadarLayers() {
+  if (!map) return;
+  const wantPrecip = hailScopeRadarActive() && hailScopeRadarFilters.precip;
+  for (const layer of radarLayers) {
+    if (!layer) continue;
+    try {
+      if (wantPrecip) {
+        if (!map.hasLayer(layer)) layer.addTo(map);
+      } else map.removeLayer(layer);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (wantPrecip && overlays.precip) {
+    const frame = radarFrames[radarFrameIdx];
+    if (frame?.path) setRadarTilePath(frame.path);
+    else {
+      try {
+        if (!map.hasLayer(overlays.precip)) overlays.precip.addTo(map);
+      } catch {
+        /* ignore */
+      }
+    }
+  } else if (overlays.precip) {
+    try {
+      map.removeLayer(overlays.precip);
+    } catch {
+      /* ignore */
+    }
+    for (const layer of radarLayers) {
+      if (!layer) continue;
+      try {
+        map.removeLayer(layer);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  applyOverlays();
+}
+
+export function syncHailScopeRadar(settings) {
+  hailScopeRadarOn = settings?.showRadar !== false;
+  if (!hailScopeMode || !map) return;
+  if (!hailScopeRadarActive()) {
+    stopRadarPlay();
+    syncHailScopeRadarLayers();
+    return;
+  }
+  void ensureHailScopeRadarLayers(settings);
 }
 
 function radarScrubberInnerHtml() {
@@ -3524,7 +3704,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
 
 function syncHazardLayers() {
   if (!map) return;
-  const showHail = wxTimelineFilters.hail;
+  const showHail = wxTimelineFilters.hail || (hailScopeMode && activeWxProduct === "hail");
   const showWind = wxTimelineFilters.wind;
   try {
     if (hailLayer) {
@@ -3542,12 +3722,15 @@ function syncHazardLayers() {
 
 function applyOverlays() {
   if (!map) return;
+  const hsRadar = hailScopeRadarActive();
   for (const id of Object.keys(overlays)) {
     if (id === "radar") continue;
     let on = activeWxProduct === id || (id === "precip" && activeWxProduct === "precip");
-    if (id === "precip") on = on && wxTimelineFilters.precip;
+    if (id === "precip") {
+      on = (on && wxTimelineFilters.precip) || (hsRadar && hailScopeRadarFilters.precip);
+    }
     if (id === "cloud" || id === "vis") on = (activeWxProduct === id || activeWxProduct === "cloud" || activeWxProduct === "vis") && wxTimelineFilters.precip;
-    if (id === "wind") on = activeWxProduct === "wind" && wxTimelineFilters.wind;
+    if (id === "wind") on = activeWxProduct === "wind" && wxTimelineFilters.wind && !hsRadar;
     try {
       if (on) overlays[id].addTo(map);
       else map.removeLayer(overlays[id]);
@@ -3555,7 +3738,8 @@ function applyOverlays() {
       /* ignore */
     }
   }
-  if (activeWxProduct === "wind") refreshWindField();
+  const wantWindField = activeWxProduct === "wind" || (hsRadar && hailScopeRadarFilters.wind);
+  if (wantWindField) refreshWindField();
   else if (windFieldLayer) {
     try {
       map.removeLayer(windFieldLayer);
@@ -3568,7 +3752,9 @@ function applyOverlays() {
 }
 
 async function refreshWindField() {
-  if (!map || !window.L || activeWxProduct !== "wind") return;
+  if (!map || !window.L) return;
+  const hsRadar = hailScopeRadarActive();
+  if (activeWxProduct !== "wind" && !(hsRadar && hailScopeRadarFilters.wind)) return;
   const c = map.getCenter();
   if (!c) return;
   try {
@@ -3614,7 +3800,8 @@ async function refreshWindField() {
       weight: 1,
     }).addTo(windFieldLayer);
     windFieldCenterDot.options.baseRadius = windBaseR;
-    if (activeWxProduct === "wind") windFieldLayer.addTo(map);
+    const showWind = activeWxProduct === "wind" || (hsRadar && hailScopeRadarFilters.wind);
+    if (showWind) windFieldLayer.addTo(map);
     scheduleZoomUiRefresh(true);
   } catch {
     /* wind field optional */

@@ -57,7 +57,11 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.93";
+  hailScopeRadarBarHtml,
+  bindHailScopeRadar,
+  syncHailScopeRadar,
+  applyLoadedMapConfig,
+} from "./wx.js?v=0.2.97";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1521,6 +1525,50 @@ function paintFieldSheet() {
   });
 }
 
+function paintRadarToggle() {
+  const el = $("#hs-radar-top");
+  if (!el) return;
+  const on = db.settings.showRadar !== false;
+  el.classList.toggle("off", !on);
+  el.innerHTML = `<button type="button" id="hs-radar-btn" class="hs-radar-toggle ${on ? "on" : ""}" aria-label="Weather radar" title="Live precip radar"><span class="hs-radar-icon" aria-hidden="true"></span>Radar</button>`;
+  el.onclick = (e) => {
+    const b = e.target.closest("#hs-radar-btn");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    db.settings.showRadar = !(db.settings.showRadar !== false);
+    persist();
+    paintRadarToggle();
+    paintHailScopeRadarBar();
+    syncHailScopeRadar(db.settings);
+  };
+}
+
+function paintHailScopeRadarBar() {
+  const shell = $("#hs-map-shell");
+  if (!shell) return;
+  let bar = $("#hs-radar-bar");
+  const on = db.settings.showRadar !== false;
+  if (!on) {
+    bar?.remove();
+    syncHailScopeRadar(db.settings);
+    return;
+  }
+  const html = hailScopeRadarBarHtml();
+  if (!html) {
+    bar?.remove();
+    return;
+  }
+  if (bar) bar.outerHTML = html;
+  else {
+    const mapEl = $("#wx-map");
+    if (mapEl) mapEl.insertAdjacentHTML("beforebegin", html);
+    else shell.insertAdjacentHTML("beforeend", html);
+  }
+  bindHailScopeRadar(shell);
+  syncHailScopeRadar(db.settings);
+}
+
 function paintLayerToggles() {
   const el = $("#hs-layers");
   if (!el) return;
@@ -1676,7 +1724,7 @@ function wireHsShell(cfg) {
     searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
     searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
   }
-  for (const id of ["hs-layers", "hs-composer"]) {
+  for (const id of ["hs-layers", "hs-composer", "hs-radar-top", "hs-radar-bar"]) {
     const el = $(`#${id}`);
     if (!el) continue;
     el.addEventListener("click", (e) => e.stopPropagation());
@@ -1695,6 +1743,8 @@ async function finishWxBoot(gen) {
     if (gen !== wxRenderGen || !isHailTab() || !mapIsLive()) return;
     cfg.center = { ...cfg.center, ...center };
     wireHsShell(cfg);
+    applyLoadedMapConfig(cfg, db.settings);
+    paintHailScopeRadarBar();
     refreshMapSize();
     if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
       // Frame the map only — do not drop a select pin on boot
@@ -1766,6 +1816,7 @@ async function renderWx() {
     <div class="hs-wrap">
       <div class="hs-map-shell" id="hs-map-shell">
         <div class="hs-layers" id="hs-layers"></div>
+        <div class="hs-radar-top" id="hs-radar-top"></div>
         <div class="hs-map-bar" id="hs-map-bar">
           <div class="hs-map-pin-size" id="hs-map-pin-size" hidden aria-label="Yellow pin size">
             <span class="hs-map-pin-size-lab">Pins</span>
@@ -1808,6 +1859,8 @@ async function renderWx() {
       void onHailViewport();
     });
     paintLayerToggles();
+    paintRadarToggle();
+    paintHailScopeRadarBar();
     setMyLocationVisible(db.settings.showMyLocation !== false);
     paintFieldMap();
     paintFieldSheet();

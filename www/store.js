@@ -17,6 +17,7 @@ function blank() {
       showDone: true,
       showMarks: true,
       showMyLocation: true,
+      showRadar: true,
       done_pin_scale: 1,
       humor: 40,
       honesty: 98,
