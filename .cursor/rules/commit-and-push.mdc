@@ -5,7 +5,9 @@ alwaysApply: true
 
 # Commit and push
 
-- After finishing work, create a git commit and push it. Do not ask whether to commit or push.
+- **Every time** you change code, commit and push before you stop. No exceptions. Do not ask whether to commit or push.
+- If the user says "push this" or similar, push immediately — even if you think it was already pushed; run `git push origin HEAD:main` and report the result.
+- After finishing any task (bug fix, feature, config), create a git commit and push in the same turn. Never leave unpushed commits on `master`.
 - Push with `git push origin HEAD:main` (local `master` tracks `origin/main`). Do not force-push.
 - PowerShell: pass the commit message with a here-string, not bash HEREDOC.
 - Do not skip hooks. Do not update git config.
