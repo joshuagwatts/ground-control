@@ -61,7 +61,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.98";
+} from "./wx.js?v=0.2.99";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1760,6 +1760,20 @@ async function finishWxBoot(gen) {
 async function warmMapViewStorms(gen) {
   try {
     if (wxPinSelected()) return;
+    const onRefetch = async (filters) => {
+      if (gen !== hailTapGen && gen !== wxRenderGen) return null;
+      const fresh = await viewportDossier(db.settings, filters);
+      if (!fresh) return null;
+      wxState.data = fresh;
+      return fresh;
+    };
+    if (wxState.viewport && wxState.data?.hail?.length) {
+      const sheet = $("#hs-sheet");
+      if (sheet && gen === wxRenderGen && isHailTab()) {
+        syncHailScopeView(sheet, wxState.data, esc, { onRefetch, revealSheet: false });
+      }
+      return;
+    }
     const data = await viewportDossier(db.settings);
     if (gen !== wxRenderGen || !isHailTab() || !data) return;
     if (wxPinSelected()) return;
@@ -1773,13 +1787,6 @@ async function warmMapViewStorms(gen) {
     if (addrBoxWarm && /^map\s*view$/i.test(String(addrBoxWarm.value || "").trim())) addrBoxWarm.value = "";
     const sheet = $("#hs-sheet");
     if (!sheet) return;
-    const onRefetch = async (filters) => {
-      if (gen !== hailTapGen && gen !== wxRenderGen) return null;
-      const fresh = await viewportDossier(db.settings, filters);
-      if (!fresh) return null;
-      wxState.data = fresh;
-      return fresh;
-    };
     syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: false });
   } catch {
     /* quiet warm — sheet still works on demand */

@@ -1,9 +1,12 @@
 import {
   collapseHailByDate,
   filterDossier,
+  filterHailRaw,
   mergeHailRows,
   stormPassesSizeFilter,
   HOUSE_HAIL_KM,
+  PIN_FETCH_MIN_KM,
+  dossierFetchKm,
 } from "../www/wx.js";
 
 function assert(cond, msg) {
@@ -87,5 +90,14 @@ const { hail: bigOnly } = filterDossier(
 );
 assert(bigOnly.some((h) => h.date === "2026-03-15"), "small+ filter keeps the 45-hit day");
 assert(!bigOnly.some((h) => h.date === near.date), "small+ filter drops single-hit day");
+
+assert(dossierFetchKm({ km: 10 }) === PIN_FETCH_MIN_KM, "pin fetch should be at least PIN_FETCH_MIN_KM");
+const nearRow = { date: "2025-05-01", lat: 35.47, lon: -97.52, size_in: "1.00" };
+const farRow = { date: "2025-06-01", lat: 35.58, lon: -97.516, size_in: "1.25" };
+const pinData = { lat: 35.467, lon: -97.516, hail: [nearRow, farRow] };
+assert(filterHailRaw(pinData, { km: 10, hailIn: 0, days: 730, year: "all" }).length === 1, "NEAR filters cached pin list");
+assert(filterHailRaw(pinData, { km: 40, hailIn: 0, days: 730, year: "all" }).length === 2, "wider NEAR shows more cached storms");
+const vpData = { viewport: true, hail: [nearRow, farRow], _meta: { viewport: true, listLocked: true } };
+assert(filterHailRaw(vpData, { km: 10, hailIn: 0, days: 730, year: "all" }).length === 2, "viewport list ignores NEAR km");
 
 console.log("hail-days ok");

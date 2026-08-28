@@ -47,6 +47,8 @@ export const DEFAULT_FILTERS = {
   sort: "date",
   stormSize: "any",
 };
+/** Pin dossiers always fetch at least this far; NEAR filters the cached list. */
+export const PIN_FETCH_MIN_KM = 50;
 /** Hail that can count for this roof (~1 mi). Bigger reports farther out are context, not the claim size. */
 export const HOUSE_HAIL_KM = 1.6;
 /** Draw filled zones only this close to the pin. Dots still show the rest of the radius. */
@@ -76,6 +78,10 @@ export function getWxUnits() {
 function filterKm(filters = wxFilters) {
   const n = Number(filters.km);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_FILTERS.km;
+}
+
+export function dossierFetchKm(filters = wxFilters) {
+  return Math.max(filterKm(filters), PIN_FETCH_MIN_KM);
 }
 
 function kmToMi(km) {
@@ -2120,8 +2126,8 @@ export function renderStormGraph(hailDays, esc, selectedDate = null, { viewport 
     .slice(-24);
   if (!rows.length) {
     const hint = viewport
-      ? "No hail days in the current map view — pan/zoom or widen WINDOW."
-      : `No hail days within ${formatDistance(filterKm())} of this pin — widen NEAR / WINDOW or run DEEP RESEARCH.`;
+      ? "No hail days match these filters."
+      : `No hail days within ${formatDistance(filterKm())} of this pin — widen NEAR or loosen hail/storm filters.`;
     return `<div class="wx-storm-graph empty"><p class="muted">${hint}</p></div>`;
   }
   const maxSz = Math.max(...rows.map((h) => parseFloat(h.size_in) || 0), 1);
@@ -2205,9 +2211,6 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
     } catch (err) {
       console.warn("drawHailMarkers failed", err);
     }
-  }
-  if (hasSelectedStormDates()) {
-    scheduleHailMapFill(60);
   }
   if (hasSelectedStormDates() && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
@@ -2556,7 +2559,8 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const filterDays = Number(filters.days) || 730;
   const archiveDays = Math.min(filterDays, 730);
   const swdiDays = Math.min(filterDays, 730);
-  const km = filterKm(filters);
+  const viewport = Boolean(filters.viewport);
+  const km = viewport ? filterKm(filters) : dossierFetchKm(filters);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const geo = await geoP;
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
@@ -2618,7 +2622,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     ...ownerFields(people0),
   };
   if (onPartial) onPartial(partial);
-  const km = filterKm();
+  const km = dossierFetchKm();
   const days = Number(wxFilters.days) || 730;
   // Owner lookups must not gate storm history — run them beside hail sources.
   const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
@@ -2710,7 +2714,7 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
     const norm = normalizeDossier(remote) || local;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, filterKm());
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierFetchKm());
     if ((local.hail?.length || 0) > (norm.hail?.length || 0)) {
       norm.hail = local.hail;
       norm.wind = local.wind || [];
@@ -2777,7 +2781,7 @@ export async function quickPin(settings, lat, lon) {
     const norm = normalizeDossier(remote) || remote;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, filterKm());
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierFetchKm());
     return norm;
   }
   const [geo, wx] = await Promise.all([
@@ -2787,10 +2791,10 @@ export async function quickPin(settings, lat, lon) {
   return { ok: true, geo, lat, lon, address: geo?.address || "", weather: wx, hail: [], recent_storms: [] };
 }
 
-function pinFilterHailRows(rows, lat, lon, km = DEFAULT_FILTERS.km) {
+function pinFilterHailRows(rows, lat, lon, km = PIN_FETCH_MIN_KM) {
   const pinLat = Number(lat);
   const pinLon = Number(lon);
-  const radius = Number(km) || DEFAULT_FILTERS.km;
+  const radius = Number(km) || PIN_FETCH_MIN_KM;
   return (rows || [])
     .map((h) => {
       if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon) || !Number.isFinite(h.lat) || !Number.isFinite(h.lon)) {
@@ -2891,15 +2895,15 @@ export async function viewportDossier(settings, filters = wxFilters) {
   data.viewport = true;
   data.lat = q.lat;
   data.lon = q.lon;
-  data.hail = hailInMapView(data.hail).map((h) => ({
+  data.hail = (data.hail || []).map((h) => ({
     ...h,
     distance_km: Math.round(haversineKm(q.lat, q.lon, h.lat, h.lon) * 10) / 10,
   }));
-  data.wind = hailInMapView(data.wind).map((w) => ({
+  data.wind = (data.wind || []).map((w) => ({
     ...w,
     distance_km: Math.round(haversineKm(q.lat, q.lon, w.lat, w.lon) * 10) / 10,
   }));
-  data._meta = { ...(data._meta || {}), viewport: true, fetchedKm: km, lat: q.lat, lon: q.lon };
+  data._meta = { ...(data._meta || {}), viewport: true, fetchedKm: km, lat: q.lat, lon: q.lon, listLocked: true };
   return data;
 }
 
@@ -4931,10 +4935,9 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     document.getElementById("hs-map-shell")?.classList.remove("map-moving");
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
-    if (hasSelectedStormDates()) {
+    if (hasSelectedStormDates() && lastHailRows.length) {
       lastHailDrawSig = "";
-      if (lastHailRows.length) drawHailMarkers(lastHailRows, lastWindRows);
-      scheduleHailMapFill();
+      drawHailMarkers(lastHailRows, lastWindRows);
     }
   });
   addLocateControl();
@@ -5537,7 +5540,6 @@ export function filterHailRaw(data, filters = wxFilters) {
   const pinLatN = Number(data.lat ?? data._meta?.lat);
   const pinLonN = Number(data.lon ?? data._meta?.lon);
   const viewport = Boolean(data.viewport || data._meta?.viewport);
-  const viewBounds = viewport ? mapViewBounds(0.02) : null;
   return (data.hail || []).filter((h) => {
     if (year !== "all") {
       if (!h.date || !String(h.date).startsWith(year)) return false;
@@ -5545,7 +5547,6 @@ export function filterHailRaw(data, filters = wxFilters) {
       return false;
     }
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
-    if (viewBounds && !viewBounds.contains([h.lat, h.lon])) return false;
     if (!viewport) {
       let dist = h.distance_km;
       if (Number.isFinite(pinLatN) && Number.isFinite(pinLonN)) {
@@ -5992,7 +5993,7 @@ function hailScopeHtml(data, days, esc) {
         <option value="storm"${wxFilters.sort === "storm" ? " selected" : ""}>Biggest storm</option>
       </select>
     </div>
-    <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport })}</div>`;
+    <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
 
 function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
@@ -6020,7 +6021,7 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     }
     const box = root.querySelector(".hs-dates");
     if (box) {
-      box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport });
+      box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
       bindHailScopeDates(root, data, esc, { onRefetch });
     }
   };
@@ -6033,13 +6034,22 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
   });
 }
 
-function hailScopeDateRows(days, esc, { viewport = false } = {}) {
+function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
   if (!days.length) {
+    const cached = (data?.hail || []).length;
+    if (cached > 0) {
+      const msg = hailSearchQ
+        ? "No storms match that search — clear search or loosen filters."
+        : viewport
+          ? "No storms match these filters — try a smaller hail/storm size or longer window."
+          : `No storms within ${formatDistance(filterKm())} — widen NEAR or loosen hail/storm filters.`;
+      return `<p class="hs-empty">${msg}</p>`;
+    }
     const empty = viewport
-      ? "No storms in the current map view. Pan or zoom the map, then open the sheet again, or widen filters."
+      ? "No hail signatures in this area for the selected window."
       : hailSearchQ
         ? "No storms match that search."
-        : "No storms in this window. Widen the radius, drop hail/storm size, or tap another place.";
+        : "No hail signatures found near this address in the selected window.";
     return `<p class="hs-empty">${empty}</p>`;
   }
   return days
@@ -6076,7 +6086,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
       hailSearchQ = String(qEl.value || "").trim().toLowerCase();
       const box = root.querySelector(".hs-dates");
       if (box) {
-        box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport });
+        box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
         bindHailScopeDates(root, data, esc, { onRefetch });
       }
     };
@@ -6091,8 +6101,9 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
       if (key === "km" && wxPinSelected()) drawPinRadius();
       const needRefetch =
         onRefetch &&
+        !meta.listLocked &&
         (viewport
-          ? key === "days" || key === "km"
+          ? key === "days"
           : (key === "days" && Number(wxFilters.days) > (meta.fetchedDays || 0)) ||
             (key === "km" && Number(wxFilters.km) > (meta.fetchedKm || 0)));
       if (needRefetch) {
