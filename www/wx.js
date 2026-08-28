@@ -159,14 +159,19 @@ function zillowUrl(address) {
 function bindPlaceLinks(root) {
   if (!root) return;
   root.querySelectorAll("a.hs-zillow, a.hs-assessor").forEach((a) => {
+    if (a.dataset.placeBound) return;
+    a.dataset.placeBound = "1";
     a.addEventListener("click", async (e) => {
       const href = a.getAttribute("href");
       if (!href || !/^https?:/i.test(href)) return;
+      const cap = window.Capacitor;
+      const inApp = Boolean(cap?.Plugins?.Browser || cap?.Plugins?.App?.openUrl);
+      if (!inApp) return;
       e.preventDefault();
       try {
         await openUrl(href);
       } catch {
-        window.open(href, "_blank");
+        window.open(href, "_blank", "noopener,noreferrer");
       }
     });
   });
@@ -186,7 +191,7 @@ function ownerFields(people = {}, assessor = null) {
 
 function placeContactHtml(data, esc) {
   const addr = data.address || "";
-  const zurl = data.zillow_url || zillowUrl(addr);
+  const zurl = zillowUrl(addr) || data.zillow_url || "";
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
@@ -1040,8 +1045,7 @@ function refreshZoomScaledUi(force = false) {
     windFieldCenterDot.setRadius(Math.max(3, br * ui));
   }
   for (const [id, marker] of livePinMarkers.done) {
-    const h = fieldOverlay.done?.find((x) => String(x.id) === id);
-    if (h) marker.setIcon(donePinIcon(h.iconScale ?? fieldOverlay.donePinScale, ui));
+    marker.setIcon(donePinIcon(fieldOverlay.donePinScale, ui));
   }
   for (const [id, marker] of livePinMarkers.marks) {
     const m = fieldOverlay.marks?.find((x) => String(x.id) === id);
@@ -3385,8 +3389,13 @@ export function updatePinScaleLive(kind, id, item) {
 
 export function applyDonePinScaleLive(scale) {
   if (!map) return;
-  fieldOverlay.donePinScale = clampPinScale(scale);
+  const next = clampPinScale(scale);
+  fieldOverlay.donePinScale = next;
   lastZoomUiScale = 0;
+  const ui = zoomUiScale();
+  for (const marker of livePinMarkers.done.values()) {
+    marker.setIcon(donePinIcon(next, ui));
+  }
   scheduleZoomUiRefresh(true);
 }
 
@@ -3799,7 +3808,7 @@ export function destroyMap() {
   activeWxProduct = "precip";
 }
 
-export function mountMap(container, config, { onTap, onHold, center, product, base } = {}) {
+export function mountMap(container, config, { onTap, onHold, center, product, base, initialPin = true } = {}) {
   if (!window.L) throw new Error("Leaflet not loaded");
   destroyMap();
   const c = center || config.center || { lat: 0, lon: 0 };
@@ -3905,7 +3914,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   if (onHold) bindLongPress(onHold);
   setFieldOverlay(fieldOverlay);
   refreshMapSize();
-  if (Number.isFinite(c.lat) && Number.isFinite(c.lon)) setWxPin(c.lat, c.lon);
+  if (initialPin !== false && Number.isFinite(c.lat) && Number.isFinite(c.lon)) setWxPin(c.lat, c.lon);
   return map;
 }
 
@@ -4580,12 +4589,12 @@ export function patchHailScopePartial(root, partial, esc) {
   if (place) place.outerHTML = placeContactHtml(partial, esc);
   else {
     pin.insertAdjacentHTML("afterend", placeContactHtml(partial, esc));
-    bindPlaceLinks(root);
   }
+  bindPlaceLinks(root);
 }
 
 /** One coordinated map + sheet refresh after dossier data arrives. */
-export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = true } = {}) {
+export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
   syncHailStormDateSelection(data);
   const hailRows = filterHailRaw(data, wxFilters);

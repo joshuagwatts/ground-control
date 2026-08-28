@@ -56,7 +56,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.50";
+} from "./wx.js?v=0.2.52";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1479,18 +1479,7 @@ function paintFieldSheet() {
       paintFieldSheet();
     };
   }
-  const pinScale = $("#hs-done-pin-scale");
-  if (pinScale) {
-    pinScale.oninput = () => {
-      const scale = clampPinScale(Number(pinScale.value) / 100);
-      const lab = $("#hs-done-pin-scale-lab");
-      if (lab) lab.textContent = `${Math.round(scale * 100)}%`;
-      applyDonePinScale(scale, { live: true });
-    };
-    pinScale.onchange = () => {
-      applyDonePinScale(clampPinScale(Number(pinScale.value) / 100), { live: false });
-    };
-  }
+  wirePinSizeSlider();
   const clr = $("#hs-done-clear");
   if (clr) {
     clr.onclick = () => {
@@ -1602,7 +1591,6 @@ async function loadDoneAddresses() {
             address: hit.address || addr,
             lat: hit.lat,
             lon: hit.lon,
-            iconScale: db.settings.done_pin_scale,
           },
           `done-${i}`,
         ),
@@ -1684,7 +1672,6 @@ async function finishWxBoot(gen) {
     refreshMapSize();
     if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
       flyToPin(center.lat, center.lon, undefined, { stay: true });
-      await onHailTap(center.lat, center.lon);
     }
   } catch (e) {
     if (isHailTab()) setStatus(String(e.message || e).slice(0, 48));
@@ -1744,7 +1731,13 @@ async function renderWx() {
     const center = defaultMapCenter(db.settings);
     const cfg = quickMapConfig(db.settings);
     wireHsShell(cfg);
-    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat" });
+    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat", initialPin: false });
+    clearWxPin();
+    wxState.lat = null;
+    wxState.lon = null;
+    wxState.address = "";
+    wxState.data = null;
+    wxState.viewport = false;
     bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
     bindSelectPinDblTap(onHailViewport);
     paintLayerToggles();
@@ -1781,7 +1774,7 @@ async function onHailViewport() {
     return fresh;
   };
   try {
-    const data = await viewportDossier(db.settings, wxFilters);
+    const data = await viewportDossier(db.settings);
     if (gen !== hailTapGen || !isHailTab()) return;
     if (!data) {
       if (sheet) sheet.innerHTML = '<p class="hs-empty">Could not load storms for this map view.</p>';
@@ -1789,7 +1782,7 @@ async function onHailViewport() {
       return;
     }
     wxState.data = data;
-    syncHailScopeView(sheet, data, esc, { onRefetch, fit: false });
+    syncHailScopeView(sheet, data, esc, { onRefetch, fit: false, revealSheet: false });
     setStatus("");
   } catch (e) {
     if (gen !== hailTapGen) return;
@@ -1838,16 +1831,18 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     }
     wxState.address = data.address || "";
     wxState.data = data;
-    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch });
-    if (sheet && !(data.hail || []).length) {
-      const loading = sheet.querySelector(".hs-empty");
-      if (loading) loading.textContent = "Searching a longer hail window…";
-    }
-    const full = await onRefetch({ ...data._meta, days: 730 });
-    if (gen !== hailTapGen || !isHailTab()) return;
-    if (full) {
-      wxState.data = full;
-      syncHailScopeView($("#hs-sheet"), full, esc, { onRefetch });
+    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: false });
+    if (!(data.hail || []).length) {
+      if (sheet) {
+        const loading = sheet.querySelector(".hs-empty");
+        if (loading) loading.textContent = "Searching a longer hail window…";
+      }
+      const full = await onRefetch({ days: 730 });
+      if (gen !== hailTapGen || !isHailTab()) return;
+      if (full) {
+        wxState.data = full;
+        syncHailScopeView($("#hs-sheet"), full, esc, { onRefetch, revealSheet: false });
+      }
     }
     setStatus("");
   } catch (e) {
