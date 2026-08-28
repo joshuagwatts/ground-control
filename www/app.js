@@ -57,7 +57,7 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.71";
+} from "./wx.js?v=0.2.72";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1537,7 +1537,7 @@ function paintLayerToggles() {
     e.preventDefault();
     e.stopPropagation();
     if (b.dataset.ov === "me") {
-      db.settings.showMyLocation = !meOn;
+      db.settings.showMyLocation = !(db.settings.showMyLocation !== false);
       setMyLocationVisible(db.settings.showMyLocation);
     }
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
@@ -1697,10 +1697,41 @@ async function finishWxBoot(gen) {
     wireHsShell(cfg);
     refreshMapSize();
     if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+      // Frame the map only — do not drop a select pin on boot
       flyToPin(center.lat, center.lon, undefined, { stay: true });
     }
+    // Warm storm dates for the visible map; leave none selected (no zones yet)
+    void warmMapViewStorms(gen);
   } catch (e) {
     if (isHailTab()) setStatus(String(e.message || e).slice(0, 48));
+  }
+}
+
+/** Prefetch map-view storm list without selecting a date or drawing zones. */
+async function warmMapViewStorms(gen) {
+  try {
+    if (wxPinSelected()) return;
+    const data = await viewportDossier(db.settings);
+    if (gen !== wxRenderGen || !isHailTab() || !data) return;
+    if (wxPinSelected()) return;
+    clearSelectedStormDate();
+    wxState.lat = null;
+    wxState.lon = null;
+    wxState.address = "Map view";
+    wxState.viewport = true;
+    wxState.data = data;
+    const sheet = $("#hs-sheet");
+    if (!sheet) return;
+    const onRefetch = async (filters) => {
+      if (gen !== hailTapGen && gen !== wxRenderGen) return null;
+      const fresh = await viewportDossier(db.settings, filters);
+      if (!fresh) return null;
+      wxState.data = fresh;
+      return fresh;
+    };
+    syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: false });
+  } catch {
+    /* quiet warm — sheet still works on demand */
   }
 }
 

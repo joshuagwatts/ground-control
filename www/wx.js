@@ -2348,6 +2348,7 @@ export function clearWxPin() {
   pinLat = null;
   pinLon = null;
   selectedStormDate = null;
+  lastHailDrawSig = "";
   if (pinRadiusLayer) {
     try {
       map.removeLayer(pinRadiusLayer);
@@ -2359,6 +2360,12 @@ export function clearWxPin() {
   if (pin) {
     try {
       map.removeLayer(pin);
+    } catch {
+      /* ignore */
+    }
+    try {
+      pin.off?.();
+      pin.remove?.();
     } catch {
       /* ignore */
     }
@@ -2461,6 +2468,7 @@ function windNearPin(rows, day = null) {
 export function setWxPin(lat, lon) {
   pinLat = Number(lat);
   pinLon = Number(lon);
+  placeSelectPin([lat, lon]);
   drawPinRadius();
   if (lastHailRows.length || lastWindRows.length) {
     drawHailMarkers(lastHailRows, lastWindRows);
@@ -3092,6 +3100,16 @@ function drawMyLocationLayers(hit) {
 export function setMyLocationVisible(on) {
   showMyLocation = on !== false;
   syncMyLocationDot();
+  // Turning back on: nudge a fresh GPS fix so the blue dot can reappear
+  if (showMyLocation && map) {
+    locateDevice({}, httpGet, { force: true })
+      .then((hit) => {
+        if (hit && showMyLocation) updateMyLocation(hit);
+      })
+      .catch(() => {
+        /* keep watching via watchGps */
+      });
+  }
 }
 
 function syncMyLocationDot() {
@@ -3654,8 +3672,18 @@ function ensureSelectPane() {
 function placeSelectPin(latlng) {
   if (!map || !window.L || !latlng) return;
   ensureSelectPane();
-  if (pin) pin.setLatLng(latlng);
-  else {
+  if (pin) {
+    pin.setLatLng(latlng);
+    // After clear/remove, the marker object can linger without being on the map
+    if (!map.hasLayer(pin)) {
+      try {
+        pin.addTo(map);
+      } catch {
+        pin = null;
+      }
+    }
+  }
+  if (!pin) {
     pin = window.L.marker(latlng, {
       pane: "selectPin",
       keyboard: false,
@@ -4096,14 +4124,16 @@ export function setMapLayer(id) {
 
 export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
-  if (opts.radius === false) placeSelectPin([lat, lon]);
-  else setWxPin(lat, lon);
-  placeSelectPin([lat, lon]);
-  if (opts.stay === true) return;
+  // stay:true = just frame the map (boot / recenter) — do not drop/keep a select pin
+  if (!opts.stay) {
+    if (opts.radius === false) placeSelectPin([lat, lon]);
+    else setWxPin(lat, lon);
+    placeSelectPin([lat, lon]);
+  }
   const inView = Boolean(map.getBounds?.()?.pad(0.08)?.contains([lat, lon]));
   const zoomOk = Math.abs((map.getZoom?.() || 0) - zoom) <= 1;
-  if (inView && zoomOk) return;
-  map.setView([lat, lon], zoom, { animate: false });
+  if (opts.stay !== true && inView && zoomOk) return;
+  map.setView([lat, lon], zoom, { animate: opts.stay ? false : true });
 }
 
 /** Expand / collapse map — scroll up opens full screen; swipe down on map bar peeks address. */
@@ -5027,9 +5057,11 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
   const viewport = Boolean(data.viewport || data._meta?.viewport);
   const pickDate = (date) => {
     const hailRows = filterHailRaw(data, wxFilters);
-    selectStormDate(date, { fit: false, requireDate: true, hailRows });
+    // Tap selected date again to deselect — keep list, clear zones
+    const next = selectedStormDate && selectedStormDate === String(date).slice(0, 10) ? null : date;
+    selectStormDate(next, { fit: false, requireDate: true, hailRows });
     // Map-view date with no house pin → fullscreen overview of that storm across the frame
-    if (viewport && !wxPinSelected()) {
+    if (next && viewport && !wxPinSelected()) {
       setWxMapExpanded(true);
     }
     const pinEl = root.querySelector(".hs-pin");
