@@ -993,6 +993,46 @@ const MAP_MAX_ZOOM = 22;
 const HOUSE_NUM_ZOOM = 16;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
+const ZOOM_UI_REF = 18;
+let lastZoomUiScale = 0;
+const hailDotMarkers = [];
+let windFieldCenterDot = null;
+
+/** Screen-pixel scale for map icons — shrinks when zoomed out, ~1.0 at street zoom. */
+export function zoomUiScale(z) {
+  const zoom = Number.isFinite(z) ? z : map?.getZoom?.();
+  if (!Number.isFinite(zoom)) return 1;
+  return Math.min(1.1, Math.max(0.2, Math.pow(2, (zoom - ZOOM_UI_REF) / 2.6)));
+}
+
+function hailZoneOpacityBoost(base) {
+  const z = map?.getZoom?.() ?? ZOOM_UI_REF;
+  const boost = Math.min(0.14, Math.max(0, (z - 15) * 0.018));
+  return Math.min(0.48, base + boost);
+}
+
+function refreshZoomScaledUi(force = false) {
+  if (!map) return;
+  const ui = zoomUiScale();
+  if (!force && Math.abs(ui - lastZoomUiScale) < 0.035) return;
+  lastZoomUiScale = ui;
+  for (const m of hailDotMarkers) {
+    const br = m.options.baseRadius || 6;
+    m.setRadius(Math.max(2, br * ui));
+  }
+  if (windFieldCenterDot) {
+    const br = windFieldCenterDot.options.baseRadius || 10;
+    windFieldCenterDot.setRadius(Math.max(3, br * ui));
+  }
+  for (const [id, marker] of livePinMarkers.done) {
+    const h = fieldOverlay.done?.find((x) => String(x.id) === id);
+    if (h) marker.setIcon(donePinIcon(h.iconScale, ui));
+  }
+  for (const [id, marker] of livePinMarkers.marks) {
+    const m = fieldOverlay.marks?.find((x) => String(x.id) === id);
+    if (m) marker.setIcon(markDivIcon(m, ui));
+  }
+}
 const HOUSE_NUM_MAX = 400;
 /** Keep tiles warm while panning/zooming — avoids blank flashes and reload stutter. */
 const BASE_TILE_OPTS = {
@@ -2296,7 +2336,7 @@ function hailFootprintM(sizeIn, source) {
   const sz = parseFloat(sizeIn);
   const s = Number.isNaN(sz) ? 0.75 : sz;
   const spot = /spc|lsr|spot|iem/i.test(String(source || ""));
-  return Math.max(220, Math.min(1800, (spot ? 280 : 420) + s * (spot ? 280 : 380)));
+  return Math.max(280, Math.min(2200, (spot ? 360 : 540) + s * (spot ? 360 : 480)));
 }
 
 function buildDetailedZoneRings(zone, rawPts) {
@@ -2325,7 +2365,7 @@ function buildDetailedZoneRings(zone, rawPts) {
       if (hitDistKm({ ...p, lat: cLat, lon: cLon }) > HOUSE_ZONE_KM) continue;
       const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0;
       rings.push({
-        ring: padPolygon(ring, Math.max(80, maxSz * 50)),
+        ring: padPolygon(ring, Math.max(100, maxSz * 62)),
         maxSize: maxSz,
         hits: 1,
         confirmed: false,
@@ -2353,7 +2393,7 @@ function buildDetailedZoneRings(zone, rawPts) {
     if (!hull) continue;
     const maxSz = Math.max(...cluster.map((p) => parseFloat(p.size_in) || 0));
     rings.push({
-      ring: padPolygon(hull, Math.max(80, maxSz * 55)),
+      ring: padPolygon(hull, Math.max(100, maxSz * 68)),
       maxSize: maxSz,
       hits: cluster.length,
       confirmed,
@@ -2413,9 +2453,11 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${opts.fit ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
+    refreshZoomScaledUi();
     return;
   }
   lastHailDrawSig = drawSig;
+  hailDotMarkers.length = 0;
   if (requireDate && !activeDay) {
     if (hailLayer) {
       try {
@@ -2500,8 +2542,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       window.L.polygon(sub.ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: isConfirm ? (sz >= 2 ? 0.26 : 0.18) : sz >= 2 ? 0.16 : sz >= 1 ? 0.11 : 0.07,
-        weight: isConfirm ? (sz >= 2 ? 2.6 : 2) : sz >= 2 ? 2 : 1.2,
+        fillOpacity: hailZoneOpacityBoost(
+          isConfirm ? (sz >= 2 ? 0.28 : 0.2) : sz >= 2 ? 0.18 : sz >= 1 ? 0.13 : 0.09,
+        ),
+        weight: isConfirm ? (sz >= 2 ? 2.8 : 2.2) : sz >= 2 ? 2.2 : 1.4,
         opacity: 0.92,
         dashArray: isConfirm ? null : sz >= 1 ? "4 4" : "6 5",
         pane: "hailVectors",
@@ -2535,10 +2579,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
     const toDraw = [...radar.slice(0, 180), ...spots.slice(0, 120)];
+    const ui = zoomUiScale();
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
+      const baseR = isSpot ? 8 : 7;
       const mark = window.L.circleMarker([p.lat, p.lon], {
-        radius: isSpot ? 8 : 6,
+        radius: Math.max(2.5, baseR * ui),
         color: isSpot ? "#ffffff" : "#b8ff6a",
         fillColor: isSpot ? "#ff2d2d" : "#4caf2a",
         fillOpacity: isSpot ? 0.95 : 0.92,
@@ -2547,12 +2593,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         renderer: hailSvg,
         className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
       });
-      if (!isSpot) {
+      mark.options.baseRadius = baseR;
+      hailDotMarkers.push(mark);
+      if (!isSpot && ui >= 0.42) {
+        const pSz = parseFloat(p.size_in) || 0.75;
         window.L.circle([p.lat, p.lon], {
-          radius: 55,
+          radius: Math.max(48, Math.min(140, 52 + pSz * 38)),
           color: "#7dff5a",
           fillColor: "#3f8f32",
-          fillOpacity: 0.35,
+          fillOpacity: 0.28 + Math.min(0.14, pSz * 0.06),
           weight: 1,
           pane: "hailVectors",
           renderer: hailSvg,
@@ -2616,6 +2665,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       /* ignore */
     }
   }
+  refreshZoomScaledUi(true);
 }
 
 function syncHazardLayers() {
@@ -2700,13 +2750,15 @@ async function refreshWindField() {
     })
       .bindPopup(`Wind ${Math.round(spd)} mph · gust ${Math.round(gust)} · from ${Math.round(dir)}°`)
       .addTo(windFieldLayer);
-    window.L.circleMarker([c.lat, c.lng], {
-      radius: Math.min(18, 5 + spd / 4),
+    const windBaseR = Math.min(18, 5 + spd / 4);
+    windFieldCenterDot = window.L.circleMarker([c.lat, c.lng], {
+      radius: Math.max(3, windBaseR * zoomUiScale()),
       color,
       fillColor: color,
       fillOpacity: 0.75,
       weight: 1,
     }).addTo(windFieldLayer);
+    windFieldCenterDot.options.baseRadius = windBaseR;
     if (activeWxProduct === "wind") windFieldLayer.addTo(map);
   } catch {
     /* wind field optional */
@@ -3152,11 +3204,11 @@ function ensureFieldPanes() {
   }
 }
 
-function markDivIcon(mark) {
+function markDivIcon(mark, zoomUi = zoomUiScale()) {
   const meta = kindMeta(mark.kind);
   const prod = String(mark.productId || "").replace(/[^a-z0-9:-]/gi, "");
   const text = markBadge(mark);
-  const scale = clampPinScale(mark.iconScale);
+  const scale = clampPinScale(mark.iconScale) * zoomUi;
   const w = Math.round(52 * scale);
   const h = Math.round(22 * scale);
   const fs = Math.max(9, Math.round(11 * scale));
@@ -3168,8 +3220,8 @@ function markDivIcon(mark) {
   });
 }
 
-function donePinIcon(scaleRaw = 1) {
-  const scale = clampPinScale(scaleRaw);
+function donePinIcon(scaleRaw = 1, zoomUi = zoomUiScale()) {
+  const scale = clampPinScale(scaleRaw) * zoomUi;
   const w = Math.round(25 * scale);
   const h = Math.round(41 * scale);
   return window.L.divIcon({
@@ -3187,8 +3239,9 @@ const livePinMarkers = { marks: new Map(), done: new Map() };
 export function updatePinScaleLive(kind, id, item) {
   const ref = kind === "done" ? livePinMarkers.done.get(String(id)) : livePinMarkers.marks.get(String(id));
   if (!ref) return false;
-  if (kind === "done") ref.setIcon(donePinIcon(item?.iconScale));
-  else ref.setIcon(markDivIcon(item));
+  const ui = zoomUiScale();
+  if (kind === "done") ref.setIcon(donePinIcon(item?.iconScale, ui));
+  else ref.setIcon(markDivIcon(item, ui));
   return true;
 }
 
@@ -3402,6 +3455,7 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
       });
     }
   }
+  refreshZoomScaledUi(true);
 }
 
 function bindLongPress(onHold) {
@@ -3685,6 +3739,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   map.on("moveend zoomend", () => {
     mapBusy = Math.max(0, mapBusy - 1);
     if (mapBusy > 0) return;
+    refreshZoomScaledUi();
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
   });
