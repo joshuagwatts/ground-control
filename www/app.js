@@ -61,7 +61,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.99";
+} from "./wx.js?v=0.2.100";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1750,16 +1750,37 @@ async function finishWxBoot(gen) {
       flyToPin(center.lat, center.lon, undefined, { stay: true });
     }
     // Storm-date warm already kicked off at mount; refresh once framed if still no pin
-    if (!wxPinSelected()) void warmMapViewStorms(gen);
+    if (!wxPinSelected()) scheduleWarmMapViewStorms(gen, { afterMs: 180 });
   } catch (e) {
     if (isHailTab()) setStatus(String(e.message || e).slice(0, 48));
   }
 }
 
-/** Prefetch map-view storm list without selecting a date or drawing zones. */
+
+/** Prefetch map-view storm list in the background — never blocks map chrome. */
+let warmStormToken = 0;
+let warmStormTimer = 0;
+
+function scheduleWarmMapViewStorms(gen, { afterMs = 0 } = {}) {
+  if (warmStormTimer) clearTimeout(warmStormTimer);
+  const kick = () => {
+    warmStormTimer = 0;
+    const run = () => void warmMapViewStorms(gen);
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(run, { timeout: 900 });
+    } else {
+      setTimeout(run, 0);
+    }
+  };
+  if (afterMs > 0) warmStormTimer = setTimeout(kick, afterMs);
+  else kick();
+}
+
 async function warmMapViewStorms(gen) {
   try {
     if (wxPinSelected()) return;
+    if (gen !== wxRenderGen || !isHailTab()) return;
+    const token = ++warmStormToken;
     const onRefetch = async (filters) => {
       if (gen !== hailTapGen && gen !== wxRenderGen) return null;
       const fresh = await viewportDossier(db.settings, filters);
@@ -1767,17 +1788,30 @@ async function warmMapViewStorms(gen) {
       wxState.data = fresh;
       return fresh;
     };
-    if (wxState.viewport && wxState.data?.hail?.length) {
+    const paintWarm = (data) => {
       const sheet = $("#hs-sheet");
-      if (sheet && gen === wxRenderGen && isHailTab()) {
-        syncHailScopeView(sheet, wxState.data, esc, { onRefetch, revealSheet: false });
-      }
+      if (!sheet || gen !== wxRenderGen || !isHailTab() || wxPinSelected()) return;
+      // Idle paint so map pans/zooms stay responsive while the list fills in.
+      const go = () => {
+        if (token !== warmStormToken || gen !== wxRenderGen || wxPinSelected()) return;
+        syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: false });
+      };
+      if (typeof requestIdleCallback === "function") requestIdleCallback(go, { timeout: 400 });
+      else setTimeout(go, 0);
+    };
+    if (wxState.viewport && wxState.data?.hail?.length) {
+      paintWarm(wxState.data);
       return;
     }
+    const sheet0 = $("#hs-sheet");
+    if (sheet0 && !sheet0.querySelector(".hs-date") && !sheet0.querySelector(".hs-pin-ready")) {
+      sheet0.innerHTML =
+        '<p class="hs-pin"><strong>Map view</strong>Loading storm dates…</p><p class="hs-empty">Fetching recent hail for this area…</p>';
+    }
     const data = await viewportDossier(db.settings);
-    if (gen !== wxRenderGen || !isHailTab() || !data) return;
+    if (token !== warmStormToken || gen !== wxRenderGen || !isHailTab() || !data) return;
     if (wxPinSelected()) return;
-    clearSelectedStormDate();
+    // Keep any dates the user already checked while this fetch was in flight.
     wxState.lat = null;
     wxState.lon = null;
     wxState.address = "";
@@ -1785,9 +1819,7 @@ async function warmMapViewStorms(gen) {
     wxState.data = data;
     const addrBoxWarm = $("#hs-addr-q");
     if (addrBoxWarm && /^map\s*view$/i.test(String(addrBoxWarm.value || "").trim())) addrBoxWarm.value = "";
-    const sheet = $("#hs-sheet");
-    if (!sheet) return;
-    syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: false });
+    paintWarm(data);
   } catch {
     /* quiet warm — sheet still works on demand */
   }
@@ -1839,7 +1871,7 @@ async function renderWx() {
           <input type="search" id="hs-addr-q" placeholder="Go to an address" enterkeyhint="search" />
         </form>
         <div class="hs-sheet" id="hs-sheet">
-          <p class="hs-empty">Tap the map or type an address above. Storm dates show up here.</p>
+          <p class="hs-empty">Loading storm dates for this area…</p>
         </div>
       </div>
       <div class="hs-field" id="hs-field"></div>
@@ -1859,9 +1891,22 @@ async function renderWx() {
     bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
     bindSelectPinDblTap(onHailViewport);
     bindStormSheetOpen(() => {
-      // No house pin: load storms for the visible map (no radius) when sheet opens
+      // No house pin: list should already be warm; only fetch if still empty
       if (wxPinSelected()) return;
-      if (wxState.viewport && wxState.data) return;
+      if (wxState.viewport && wxState.data) {
+        const sheet = $("#hs-sheet");
+        if (sheet && !sheet.querySelector(".hs-date")) {
+          syncHailScopeView(sheet, wxState.data, esc, {
+            onRefetch: async (filters) => {
+              const fresh = await viewportDossier(db.settings, filters);
+              if (fresh) wxState.data = fresh;
+              return fresh;
+            },
+            revealSheet: false,
+          });
+        }
+        return;
+      }
       void onHailViewport();
     });
     paintLayerToggles();
@@ -1875,7 +1920,7 @@ async function renderWx() {
     // Map UI first — keep the shell snappy; warm recent storm dates in the background
     setWxMapExpanded(true);
     refreshMapSize();
-    void warmMapViewStorms(gen);
+    scheduleWarmMapViewStorms(gen, { afterMs: 60 });
     void finishWxBoot(gen);
   } catch (e) {
     if (!isHailTab()) return;

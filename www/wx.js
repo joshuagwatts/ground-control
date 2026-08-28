@@ -3480,10 +3480,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   lastHailRows = hailRows || [];
   lastWindRows = windRows || [];
   const requireDate = opts.requireDate === true || (opts.requireDate !== false && hailScopeMode);
+  // Do not prune selection from map-visible hits — that cleared taps when a day's
+  // points were off-screen or still loading. Filters/sheet own pruning.
   const nearHail = hailNearPin(hailRows || [], null);
   const collapsed = collapseHailByDate(nearHail);
-  const daySet = new Set(collapsed.map((h) => h.date));
-  pruneStormDateSelection(daySet);
   const activeDays = selectedStormDates;
   const pin = pinCoords();
   const b = mapViewBounds(0);
@@ -5207,9 +5207,10 @@ export function revealHailAddressPeek() {
   // No house yet: show a Map view peek so the second swipe has chrome to pull
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     const sheet = document.getElementById("hs-sheet");
-    if (sheet && !sheet.querySelector(".hs-pin")) {
+    // Keep any warm-loaded list; only seed a loading peek when the sheet is empty.
+    if (sheet && !sheet.querySelector(".hs-pin") && !sheet.querySelector(".hs-date")) {
       sheet.innerHTML =
-        '<p class="hs-pin"><strong>Map view</strong></p><p class="hs-empty">Storm dates load on the next swipe.</p>';
+        '<p class="hs-pin"><strong>Map view</strong></p><p class="hs-empty">Loading storm dates…</p>';
     }
   }
   if (wasExpanded) {
@@ -5996,41 +5997,52 @@ function hailScopeHtml(data, days, esc) {
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
 
-function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
+function paintHailScopeDateSelection(root, data, esc) {
+  if (!root) return;
   const viewport = Boolean(data.viewport || data._meta?.viewport);
-  const pickDate = (date) => {
-    const hailRows = filterHailRaw(data, wxFilters);
+  const pinEl = root.querySelector(".hs-pin");
+  if (pinEl) {
+    pinEl.classList.add("hs-pin-ready");
+    const addr = data.address || (viewport ? "Map view" : "Dropped pin");
+    const pinLine = selectedStormsPinText(esc);
+    pinEl.innerHTML = `<strong>${esc(addr)}</strong>${
+      pinLine
+        ? pinLine
+        : viewport
+          ? "Storms in the visible map area — tap dates to overlay (multi-check)"
+          : "Tap storm dates to overlay hail zones (multi-check)"
+    }`;
+  }
+  root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
+    const on = isStormDateSelected(row.getAttribute("data-storm-date"));
+    row.classList.toggle("on", on);
+    row.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
+  const box = root.querySelector(".hs-dates");
+  if (!box) return;
+  box._hsData = data;
+  box._hsEsc = esc;
+  if (box._hsDateBound) return;
+  box._hsDateBound = true;
+  box.addEventListener("click", (e) => {
+    const row = e.target?.closest?.(".hs-date[data-storm-date]");
+    if (!row || !box.contains(row)) return;
+    e.preventDefault?.();
+    e.stopPropagation?.();
+    const live = box._hsData || data;
+    const liveEsc = box._hsEsc || esc;
+    const date = row.getAttribute("data-storm-date");
+    const hailRows = filterHailRaw(live, wxFilters);
     try {
       selectStormDate(date, { fit: false, requireDate: true, hailRows, toggle: true });
     } catch (err) {
       console.warn("selectStormDate failed", err);
     }
-    // Keep the storm sheet open so dates stay tappable (no jump to fullscreen)
-    const pinEl = root.querySelector(".hs-pin");
-    if (pinEl) {
-      pinEl.classList.add("hs-pin-ready");
-      const addr = data.address || (viewport ? "Map view" : "Dropped pin");
-      const pinLine = selectedStormsPinText(esc);
-      pinEl.innerHTML = `<strong>${esc(addr)}</strong>${
-        pinLine
-          ? pinLine
-          : viewport
-            ? "Storms in the visible map area — tap dates to overlay (multi-check)"
-            : "Tap storm dates to overlay hail zones (multi-check)"
-      }`;
-    }
-    const box = root.querySelector(".hs-dates");
-    if (box) {
-      box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
-      bindHailScopeDates(root, data, esc, { onRefetch });
-    }
-  };
-  root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
-    row.onclick = (e) => {
-      e.preventDefault?.();
-      e.stopPropagation?.();
-      pickDate(row.getAttribute("data-storm-date"));
-    };
+    // Toggle classes in place — full list rebuild was dropping taps mid-gesture.
+    paintHailScopeDateSelection(root, live, liveEsc);
   });
 }
 
