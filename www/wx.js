@@ -2266,6 +2266,10 @@ function wireSelectPinDblTap(marker) {
   const fire = (e) => {
     if (!selectPinDblTapHandler) return;
     window.L.DomEvent.stop(e);
+    if (e.originalEvent) {
+      e.originalEvent.preventDefault?.();
+      e.originalEvent.stopPropagation?.();
+    }
     wxSuppressMapTap = true;
     selectPinDblTapHandler();
     setTimeout(() => {
@@ -2275,6 +2279,7 @@ function wireSelectPinDblTap(marker) {
   marker.on("dblclick", fire);
   let lastTap = 0;
   marker.on("touchend", (e) => {
+    window.L.DomEvent.stop(e);
     const now = Date.now();
     if (now - lastTap < 350) {
       fire(e);
