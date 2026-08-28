@@ -5,7 +5,7 @@ import { locateDevice, watchGps } from "./geo.js";
 import { lookupPlaceContacts, formatPhone, phoneDigits, mergeContacts, listingForPin, parseStreetAddress } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
-import { kindMeta, validMarkCoord, markBadge, markTint } from "./marks.js";
+import { kindMeta, validMarkCoord, markBadge, markTint, clampPinScale } from "./marks.js";
 
 let map = null;
 let pin = null;
@@ -3092,21 +3092,139 @@ function markDivIcon(mark) {
   const meta = kindMeta(mark.kind);
   const prod = String(mark.productId || "").replace(/[^a-z0-9:-]/gi, "");
   const text = markBadge(mark);
+  const scale = clampPinScale(mark.iconScale);
+  const w = Math.round(52 * scale);
+  const h = Math.round(22 * scale);
+  const fs = Math.max(9, Math.round(11 * scale));
   return window.L.divIcon({
     className: `hs-mark hs-mark-${meta.id}${prod ? ` hs-mark-p` : ""}`,
-    html: `<span style="background:${markTint(mark)}">${text}</span>`,
-    iconSize: [52, 22],
-    iconAnchor: [26, 22],
+    html: `<span style="background:${markTint(mark)};font-size:${fs}px;transform:scale(1);line-height:1.1">${text}</span>`,
+    iconSize: [w, h],
+    iconAnchor: [Math.round(w / 2), h],
   });
 }
 
-function donePinIcon() {
+function donePinIcon(scaleRaw = 1) {
+  const scale = clampPinScale(scaleRaw);
+  const w = Math.round(25 * scale);
+  const h = Math.round(41 * scale);
   return window.L.divIcon({
     className: "hs-done-pin",
-    html: `<svg viewBox="0 0 32 48" aria-hidden="true"><path fill="#ffcc00" fill-rule="evenodd" d="M16 0C7.16 0 0 7.16 0 16c0 11.2 16 32 16 32s16-20.8 16-32C32 7.16 24.84 0 16 0zm0 21.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11z"/></svg>`,
-    iconSize: [25, 41],
-    iconAnchor: [12, 41],
+    html: `<svg viewBox="0 0 32 48" width="${w}" height="${h}" aria-hidden="true"><path fill="#ffcc00" fill-rule="evenodd" d="M16 0C7.16 0 0 7.16 0 16c0 11.2 16 32 16 32s16-20.8 16-32C32 7.16 24.84 0 16 0zm0 21.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11z"/></svg>`,
+    iconSize: [w, h],
+    iconAnchor: [Math.round(w * 0.48), h],
   });
+}
+
+let pinScalePopover = null;
+let pinScaleMoveOff = null;
+const livePinMarkers = { marks: new Map(), done: new Map() };
+
+export function updatePinScaleLive(kind, id, item) {
+  const ref = kind === "done" ? livePinMarkers.done.get(String(id)) : livePinMarkers.marks.get(String(id));
+  if (!ref) return false;
+  if (kind === "done") ref.setIcon(donePinIcon(item?.iconScale));
+  else ref.setIcon(markDivIcon(item));
+  return true;
+}
+
+export function hidePinScalePopover() {
+  if (pinScaleMoveOff) {
+    try {
+      pinScaleMoveOff();
+    } catch {
+      /* ignore */
+    }
+    pinScaleMoveOff = null;
+  }
+  if (pinScalePopover) {
+    pinScalePopover.remove();
+    pinScalePopover = null;
+  }
+}
+
+/** Small slider popover — hold a done/mark pin to open. */
+export function showPinScalePopover({ lat, lon, scale = 1, title = "Pin size", onChange, onDone }) {
+  hidePinScalePopover();
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  if (!map || !shell || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const pop = document.createElement("div");
+  pop.className = "hs-pin-scale-pop";
+  const pct = Math.round(clampPinScale(scale) * 100);
+  pop.innerHTML = `<strong>${String(title || "Pin size").replace(/[<>&]/g, "")}</strong>
+    <input type="range" min="50" max="250" step="5" value="${pct}" aria-label="Pin size" />
+    <span class="hs-pin-scale-val">${pct}%</span>
+    <button type="button" class="hs-pin-scale-done">Done</button>`;
+  shell.appendChild(pop);
+  pinScalePopover = pop;
+
+  const place = () => {
+    const pt = map.latLngToContainerPoint([lat, lon]);
+    const rect = shell.getBoundingClientRect();
+    const left = Math.max(8, Math.min(rect.width - 168, pt.x - 84));
+    const top = Math.max(8, pt.y - 72);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+  };
+  place();
+  pinScaleMoveOff = () => {
+    map.off("move zoom", place);
+  };
+  map.on("move zoom", place);
+
+  const slider = pop.querySelector("input");
+  const val = pop.querySelector(".hs-pin-scale-val");
+  slider.oninput = () => {
+    const next = clampPinScale(Number(slider.value) / 100);
+    if (val) val.textContent = `${Math.round(next * 100)}%`;
+    onChange?.(next);
+  };
+  pop.querySelector(".hs-pin-scale-done")?.addEventListener("click", () => {
+    onDone?.(clampPinScale(Number(slider.value) / 100));
+    hidePinScalePopover();
+  });
+}
+
+function bindPinScaleHold(marker, { onHold }) {
+  if (!marker || typeof onHold !== "function") return;
+  const HOLD_MS = 520;
+  let timer = 0;
+  let start = null;
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = 0;
+    start = null;
+  };
+  const fire = (e) => {
+    clear();
+    if (e) window.L.DomEvent.stopPropagation(e);
+    wxSuppressMapTap = true;
+    holdHouseOutlines(1800);
+    onHold();
+    setTimeout(() => {
+      wxSuppressMapTap = false;
+    }, 450);
+  };
+  const arm = (e) => {
+    window.L.DomEvent.stopPropagation(e);
+    const oe = e.originalEvent || e;
+    if (oe.touches && oe.touches.length > 1) return;
+    start = oe.touches?.[0] || oe;
+    timer = setTimeout(() => fire(e), HOLD_MS);
+  };
+  const move = (e) => {
+    if (!start) return;
+    const oe = e.originalEvent || e;
+    const pt = oe.touches?.[0] || oe;
+    if (Math.abs(pt.clientX - start.clientX) > 12 || Math.abs(pt.clientY - start.clientY) > 12) clear();
+  };
+  marker.on("mousedown", arm);
+  marker.on("touchstart", arm);
+  marker.on("mousemove", move);
+  marker.on("touchmove", move);
+  marker.on("mouseup", clear);
+  marker.on("touchend", clear);
+  marker.on("contextmenu", (e) => fire(e));
 }
 
 function ensureSelectPane() {
@@ -3129,14 +3247,16 @@ function placeSelectPin(latlng) {
   }
 }
 
-export function setFieldOverlay({ marks = [], done = [], showMarks = true, showDone = true, onMark, onDone } = {}) {
-  fieldOverlay = { marks, done, showMarks, showDone, onMark, onDone };
+export function setFieldOverlay({ marks = [], done = [], showMarks = true, showDone = true, onMark, onDone, onMarkScale, onDoneScale } = {}) {
+  fieldOverlay = { marks, done, showMarks, showDone, onMark, onDone, onMarkScale, onDoneScale };
   if (!map || !window.L) return;
   ensureFieldPanes();
   if (!markLayer) markLayer = window.L.layerGroup().addTo(map);
   if (!doneLayer) doneLayer = window.L.layerGroup().addTo(map);
   markLayer.clearLayers();
   doneLayer.clearLayers();
+  livePinMarkers.marks.clear();
+  livePinMarkers.done.clear();
   if (showMarks) {
     for (const m of marks || []) {
       if (!validMarkCoord(m.lat, m.lon)) continue;
@@ -3157,7 +3277,7 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
           })
           .addTo(markLayer);
       }
-      window.L.marker([m.lat, m.lon], {
+      const marker = window.L.marker([m.lat, m.lon], {
         pane: "fieldMarks",
         icon: markDivIcon(m),
         keyboard: false,
@@ -3167,14 +3287,28 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
           onMark?.(m);
         })
         .addTo(markLayer);
+      livePinMarkers.marks.set(String(m.id), marker);
+      bindPinScaleHold(marker, {
+        onHold: () => {
+          if (typeof onMarkScale !== "function") return;
+          showPinScalePopover({
+            lat: m.lat,
+            lon: m.lon,
+            scale: m.iconScale,
+            title: m.label || kindMeta(m.kind).label,
+            onChange: (s) => onMarkScale(m, s, { live: true }),
+            onDone: (s) => onMarkScale(m, s, { live: false }),
+          });
+        },
+      });
     }
   }
   if (showDone) {
     for (const h of done || []) {
       if (!validMarkCoord(h.lat, h.lon)) continue;
-      window.L.marker([h.lat, h.lon], {
+      const marker = window.L.marker([h.lat, h.lon], {
         pane: "doneHouses",
-        icon: donePinIcon(),
+        icon: donePinIcon(h.iconScale),
         keyboard: false,
         title: h.address || "Completed house",
       })
@@ -3188,6 +3322,20 @@ export function setFieldOverlay({ marks = [], done = [], showMarks = true, showD
           }, 500);
         })
         .addTo(doneLayer);
+      livePinMarkers.done.set(String(h.id), marker);
+      bindPinScaleHold(marker, {
+        onHold: () => {
+          if (typeof onDoneScale !== "function") return;
+          showPinScalePopover({
+            lat: h.lat,
+            lon: h.lon,
+            scale: h.iconScale,
+            title: h.address || "Done house",
+            onChange: (s) => onDoneScale(h, s, { live: true }),
+            onDone: (s) => onDoneScale(h, s, { live: false }),
+          });
+        },
+      });
     }
   }
 }
@@ -3349,6 +3497,7 @@ export function destroyMap() {
   stopMyLocation();
   stopHouseNumbers();
   stopFieldOverlay();
+  hidePinScalePopover();
   houseLayer = null;
   lastHailDrawSig = "";
   mapBusy = 0;

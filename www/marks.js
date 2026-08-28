@@ -75,6 +75,13 @@ export function validMarkCoord(lat, lon) {
   return Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && !(la === 0 && lo === 0);
 }
 
+/** Map pin scale — 50%–250%, default 100%. */
+export function clampPinScale(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(2.5, Math.max(0.5, n));
+}
+
 export function normalizeMark(raw = {}) {
   const kind = KIND_IDS.has(String(raw.kind || "").toLowerCase()) ? String(raw.kind).toLowerCase() : "note";
   const lat = Number(raw.lat);
@@ -94,6 +101,7 @@ export function normalizeMark(raw = {}) {
     lat,
     lon,
     radiusM,
+    iconScale: clampPinScale(raw.iconScale),
     created: String(raw.created || new Date().toISOString()),
     updated: String(raw.updated || raw.created || new Date().toISOString()),
     source: String(raw.source || "hold"),

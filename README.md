@@ -28,6 +28,18 @@ Open http://127.0.0.1:4173
 
 Paste a **Gemini / OpenAI / Anthropic / OpenRouter** key in Settings, leave **Cloud** on, then use Lens.
 
+### Control Room (home PC GPU)
+
+On the same Wi‑Fi as your phone, run on your PC:
+
+```bash
+npm run control-room
+```
+
+Install [Ollama](https://ollama.com) and pull a model (`ollama pull llama3.2`; for Lens vision also `ollama pull llava`). The server prints a LAN URL like `http://192.168.x.x:7420` — phone **Settings → Connect**, or let auto-scan find it.
+
+Allow port **7420** through Windows Firewall if Connect fails.
+
 ## Certainty rules
 
 Lens is not a guessing model with a roof prompt. A local gate throws out any product name that is not a unique row in `www/catalog.js`. One photo is never enough. Exact **date** requires a readable back stamp or bundle wrapper — weathering is era, not a date.

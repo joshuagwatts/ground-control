@@ -1809,6 +1809,46 @@ body.wx-map-expanded .hs-sheet { display: none; }
   opacity: 0.5;
   background: transparent !important;
 }
+.hs-pin-scale-pop {
+  position: absolute;
+  z-index: 900;
+  width: min(168px, calc(100% - 16px));
+  padding: 0.55rem 0.65rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid var(--trim);
+  background: rgba(18, 18, 20, 0.96);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+.hs-pin-scale-pop strong {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+  color: var(--trim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hs-pin-scale-pop input[type="range"] {
+  width: 100%;
+  margin: 0.15rem 0 0.25rem;
+  accent-color: var(--trim);
+}
+.hs-pin-scale-pop .hs-pin-scale-val {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 2.5rem;
+}
+.hs-pin-scale-pop .hs-pin-scale-done {
+  float: right;
+  font-size: 11px;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
 .hs-night-tiles {
   filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.35) contrast(0.95);
 }

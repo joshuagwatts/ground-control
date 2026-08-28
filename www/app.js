@@ -43,14 +43,16 @@ import {
   reverseGeocode,
   setFieldOverlay,
   mapContainer,
-} from "./wx.js?v=0229";
+  hidePinScalePopover,
+  updatePinScaleLive,
+} from "./wx.js?v=0230";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts } from "./marks.js";
-import { parseDoneList, withCity, MAX_DONE } from "./done.js";
+import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse } from "./done.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -103,6 +105,7 @@ function leaveWx() {
     wxWatch.stop();
     wxWatch = null;
   }
+  hidePinScalePopover();
   setHailScopeMode(false);
   destroyMap();
   document.body.classList.remove("wx-tab", "hs-tab", "wx-map-expanded");
@@ -1025,6 +1028,30 @@ function doneHouses() {
   return Array.isArray(db.done?.houses) ? db.done.houses : [];
 }
 
+function setMarkScale(mark, scale, { live = false } = {}) {
+  const next = { ...mark, iconScale: scale };
+  const { list } = upsertMark(fieldMarks(), next);
+  db.marks = list;
+  if (live) {
+    updatePinScaleLive("mark", mark.id, { ...next, iconScale: scale });
+    return;
+  }
+  persist();
+  paintFieldMap();
+}
+
+function setDoneScale(house, scale, { live = false } = {}) {
+  const next = normalizeDoneHouse({ ...house, iconScale: scale }, house.id);
+  const houses = doneHouses().map((h) => (h.id === house.id ? next : h));
+  db.done = { ...(db.done || {}), houses };
+  if (live) {
+    updatePinScaleLive("done", house.id, next);
+    return;
+  }
+  persist();
+  paintFieldMap();
+}
+
 function paintFieldMap() {
   setFieldOverlay({
     marks: fieldMarks(),
@@ -1032,6 +1059,8 @@ function paintFieldMap() {
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
     onMark: (m) => openMarkComposer(m),
+    onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
+    onDoneScale: (h, scale, opts) => setDoneScale(h, scale, opts),
     onDone: (h) => {
       if (!h || !Number.isFinite(Number(h.lat))) return;
       const box = $("#hs-addr-q");
@@ -1255,7 +1284,7 @@ function paintFieldSheet() {
       <strong>Completed jobs</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "Paste the houses you already built"}</span>
     </div>
-    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to select it. Lines without a city use Settings city.</p>
+    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to select it · hold a pin to resize. Lines without a city use Settings city.</p>
     <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>
@@ -1263,7 +1292,7 @@ function paintFieldSheet() {
     </div>
     <div class="hs-field-head">
       <strong>Field marks</strong>
-      <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"}</span>
+      <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"} · hold any pin to resize</span>
     </div>
     <div class="hs-mark-tools">
       <select id="hs-mark-filter" aria-label="Filter marks">
@@ -1404,7 +1433,7 @@ async function loadDoneAddresses() {
         }
         await new Promise((r) => setTimeout(r, 900));
       }
-      houses.push({ id: `done-${i}`, address: hit.address || addr, lat: hit.lat, lon: hit.lon });
+      houses.push(normalizeDoneHouse({ id: `done-${i}`, address: hit.address || addr, lat: hit.lat, lon: hit.lon }, `done-${i}`));
     }
     db.done = { text, houses, geo };
     persist();
@@ -1648,7 +1677,7 @@ function renderKeys() {
       </select>
     </div>
     <h3>Control Room</h3>
-    <p class="muted">Homebase GPU for Lens — auto-pairs on same Wi‑Fi (Pip desktop port 7420). Manual Connect only if auto-scan fails.</p>
+    <p class="muted">Homebase GPU for Lens. On your PC run <code>npm run control-room</code> (port 7420), same Wi‑Fi as the phone, then Connect — or paste the LAN URL below.</p>
     <div class="field"><span>Desktop URL</span><input id="set-desktop-url" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.162:7420" autocomplete="off" spellcheck="false" /></div>
     <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}` : "Not connected"}</p>
     <div class="actions">

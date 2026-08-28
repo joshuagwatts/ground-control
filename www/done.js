@@ -1,5 +1,7 @@
 /** Completed-job addresses → yellow map dots. */
 
+import { clampPinScale } from "./marks.js";
+
 export const MAX_DONE = 400;
 
 export function parseDoneList(text) {
@@ -29,4 +31,14 @@ export function withCity(address, city) {
   if (new RegExp(place.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(addr)) return addr;
   if (/,/.test(addr)) return addr;
   return `${addr}, ${place}`;
+}
+
+export function normalizeDoneHouse(raw = {}, idFallback = "") {
+  return {
+    id: String(raw.id || idFallback || "").trim(),
+    address: String(raw.address || "").trim().slice(0, 200),
+    lat: Number(raw.lat),
+    lon: Number(raw.lon),
+    iconScale: clampPinScale(raw.iconScale),
+  };
 }

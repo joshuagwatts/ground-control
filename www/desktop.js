@@ -402,7 +402,7 @@ export async function connectDesktop(settings, onProgress) {
     if (!hit) {
       if (protonHint) throw new Error(protonHint);
       throw new Error(
-        "scan found nothing — desktop DATA → COPY URL → paste → CONNECT. Or Proton → Allow LAN connections.",
+        "scan found nothing — on your PC run npm run control-room, same Wi‑Fi, then Connect. Or paste http://YOUR-PC-IP:7420",
       );
     }
   }
