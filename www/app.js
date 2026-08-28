@@ -50,6 +50,7 @@ import {
   advanceHailBottomReveal,
   syncHailBottomChrome,
   setWxMapExpanded,
+  setMyLocationVisible,
   wxPinSelected,
   viewportDossier,
   setWxUnits,
@@ -62,7 +63,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.55";
+} from "./wx.js?v=0.2.56";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1531,7 +1532,9 @@ function paintLayerToggles() {
   if (!el) return;
   const doneOn = db.settings.showDone !== false;
   const marksOn = db.settings.showMarks !== false;
+  const meOn = db.settings.showMyLocation !== false;
   el.innerHTML = `
+    <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
   el.onclick = (e) => {
@@ -1539,6 +1542,10 @@ function paintLayerToggles() {
     if (!b) return;
     e.preventDefault();
     e.stopPropagation();
+    if (b.dataset.ov === "me") {
+      db.settings.showMyLocation = !meOn;
+      setMyLocationVisible(db.settings.showMyLocation);
+    }
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
     if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
     persist();
@@ -1750,6 +1757,7 @@ async function renderWx() {
     bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
     bindSelectPinDblTap(onHailViewport);
     paintLayerToggles();
+    setMyLocationVisible(db.settings.showMyLocation !== false);
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();

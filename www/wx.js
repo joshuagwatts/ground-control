@@ -108,6 +108,7 @@ let meRing = null;
 let meStop = null;
 let lastMe = null;
 let locateBtnEl = null;
+let showMyLocation = true;
 let houseLayer = null;
 let houseTimer = 0;
 let houseGen = 0;
@@ -2944,11 +2945,29 @@ function ensureMePane() {
   }
 }
 
-function updateMyLocation(hit) {
+function hideMyLocationLayers() {
+  if (meMarker) {
+    try {
+      map.removeLayer(meMarker);
+    } catch {
+      /* ignore */
+    }
+    meMarker = null;
+  }
+  if (meRing) {
+    try {
+      map.removeLayer(meRing);
+    } catch {
+      /* ignore */
+    }
+    meRing = null;
+  }
+}
+
+function drawMyLocationLayers(hit) {
   if (!map || !window.L || !hit) return;
   const { lat, lon } = hit;
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-  lastMe = hit;
   ensureMePane();
   const acc = Number(hit.acc);
   const radius = Number.isFinite(acc) && acc > 8 && acc < 400 ? acc : 0;
@@ -2965,6 +2984,13 @@ function updateMyLocation(hit) {
         interactive: false,
       }).addTo(map);
     }
+  } else if (meRing) {
+    try {
+      map.removeLayer(meRing);
+    } catch {
+      /* ignore */
+    }
+    meRing = null;
   }
   if (meMarker) meMarker.setLatLng([lat, lon]);
   else {
@@ -2981,7 +3007,30 @@ function updateMyLocation(hit) {
       }),
     }).addTo(map);
   }
+}
+
+export function setMyLocationVisible(on) {
+  showMyLocation = on !== false;
+  syncMyLocationDot();
+}
+
+function syncMyLocationDot() {
+  if (!map) return;
+  if (!showMyLocation || !lastMe) {
+    hideMyLocationLayers();
+    if (locateBtnEl) locateBtnEl.classList.toggle("on", showMyLocation && Boolean(lastMe));
+    return;
+  }
+  drawMyLocationLayers(lastMe);
   if (locateBtnEl) locateBtnEl.classList.add("on");
+}
+
+function updateMyLocation(hit) {
+  if (!hit) return;
+  const { lat, lon } = hit;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  lastMe = hit;
+  syncMyLocationDot();
 }
 
 function panToMe() {

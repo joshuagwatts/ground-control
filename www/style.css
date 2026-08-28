@@ -1761,6 +1761,22 @@ body.wx-map-expanded .hs-sheet {
   background: rgba(22,22,24,0.92); color: var(--text);
 }
 .hs-layers button.on { background: var(--trim); color: #1c1400; }
+.hs-layers button.hs-me-toggle {
+  padding: 0.32rem 0.55rem;
+  line-height: 1;
+}
+.hs-layers button.hs-me-toggle .hs-me-dot {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.35);
+}
+.hs-layers button.hs-me-toggle.on .hs-me-dot {
+  background: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4);
+}
 .hs-composer {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 720;
   padding: 0.55rem 0.7rem 0.75rem;
