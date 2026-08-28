@@ -42,6 +42,9 @@ import {
   bindWxMapScrollExpand,
   bindSelectPinDblTap,
   clearWxPin,
+  clearSelectedStormDate,
+  applyDonePinScaleLive,
+  revealHailBottomPanel,
   viewportDossier,
   setWxUnits,
   reverseGeocode,
@@ -53,7 +56,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.49";
+} from "./wx.js?v=0.2.50";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1154,7 +1157,7 @@ function setAllDonePinScale(scale, { live = false } = {}) {
   const next = clampPinScale(scale);
   db.settings.done_pin_scale = next;
   if (live) {
-    paintFieldMap();
+    applyDonePinScaleLive(next);
     wirePinSizeSlider();
     return;
   }
@@ -1698,6 +1701,7 @@ async function renderWx() {
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
+    wirePinSizeSlider();
     setStatus("");
     return;
   }
@@ -1725,11 +1729,13 @@ async function renderWx() {
         <div id="wx-map"></div>
         <div class="hs-composer" id="hs-composer" hidden></div>
       </div>
-      <form class="hs-goto" id="hs-search" autocomplete="off">
-        <input type="search" id="hs-addr-q" placeholder="Go to an address" enterkeyhint="search" />
-      </form>
-      <div class="hs-sheet" id="hs-sheet">
-        <p class="hs-empty">Tap the map or type an address above. Storm dates show up here.</p>
+      <div class="hs-bottom-panel" id="hs-bottom-panel">
+        <form class="hs-goto" id="hs-search" autocomplete="off">
+          <input type="search" id="hs-addr-q" placeholder="Go to an address" enterkeyhint="search" />
+        </form>
+        <div class="hs-sheet" id="hs-sheet">
+          <p class="hs-empty">Tap the map or type an address above. Storm dates show up here.</p>
+        </div>
       </div>
       <div class="hs-field" id="hs-field"></div>
     </div>`;
@@ -1744,6 +1750,7 @@ async function renderWx() {
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
+    wirePinSizeSlider();
     refreshMapSize();
     void finishWxBoot(gen);
   } catch (e) {
@@ -1754,6 +1761,7 @@ async function renderWx() {
 
 async function onHailViewport() {
   const gen = ++hailTapGen;
+  clearSelectedStormDate();
   clearWxPin();
   wxState.lat = null;
   wxState.lon = null;
@@ -1792,6 +1800,7 @@ async function onHailViewport() {
 
 async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   const gen = ++hailTapGen;
+  clearSelectedStormDate();
   wxState.lat = lat;
   wxState.lon = lon;
   wxState.viewport = false;
@@ -1802,6 +1811,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   if (sheet) {
     sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
   }
+  revealHailBottomPanel();
   setStatus("Finding storms…");
   const onRefetch = async (filters) => {
     if (gen !== hailTapGen) return null;

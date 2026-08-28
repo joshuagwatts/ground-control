@@ -2578,9 +2578,6 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (selectedStormDate && !daySet.has(selectedStormDate)) {
     selectedStormDate = null;
   }
-  if (!selectedStormDate && collapsed.length && !requireDate) {
-    selectedStormDate = [...collapsed].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0]?.date || null;
-  }
   const activeDay = selectedStormDate;
   const pin = pinCoords();
   const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${opts.fit ? 1 : 0}`;
@@ -3378,6 +3375,13 @@ export function updatePinScaleLive(kind, id, item) {
   return true;
 }
 
+export function applyDonePinScaleLive(scale) {
+  if (!map) return;
+  fieldOverlay.donePinScale = clampPinScale(scale);
+  lastZoomUiScale = 0;
+  scheduleZoomUiRefresh(true);
+}
+
 export function hidePinScalePopover() {
   if (pinScaleMoveOff) {
     try {
@@ -3651,6 +3655,93 @@ function bindLongPress(onHold) {
   });
 }
 
+function bindPinchZoomInertia(leafletMap) {
+  const el = leafletMap.getContainer();
+  let tracking = false;
+  let samples = [];
+  let focal = null;
+
+  const stopCoast = () => {
+    try {
+      leafletMap.stop();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const pinchSpan = (touches) => {
+    if (touches.length < 2) return 0;
+    return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  };
+
+  const pinchFocal = (touches) => {
+    if (touches.length < 2) return leafletMap.getCenter();
+    const rect = el.getBoundingClientRect();
+    const x = (touches[0].clientX + touches[1].clientX) / 2 - rect.left;
+    const y = (touches[0].clientY + touches[1].clientY) / 2 - rect.top;
+    return leafletMap.containerPointToLatLng([x, y]);
+  };
+
+  const onStart = (e) => {
+    if (e.touches.length !== 2) return;
+    stopCoast();
+    tracking = true;
+    focal = pinchFocal(e.touches);
+    samples = [{ t: performance.now(), z: leafletMap.getZoom(), span: pinchSpan(e.touches) }];
+  };
+
+  const onMove = (e) => {
+    if (!tracking || e.touches.length < 2) return;
+    const now = performance.now();
+    focal = pinchFocal(e.touches);
+    samples.push({ t: now, z: leafletMap.getZoom(), span: pinchSpan(e.touches) });
+    while (samples.length > 2 && now - samples[0].t > 240) samples.shift();
+  };
+
+  const onEnd = (e) => {
+    if (e.touches.length >= 2) return;
+    if (!tracking) return;
+    tracking = false;
+    const now = performance.now();
+    const win = samples.filter((s) => now - s.t <= 220);
+    if (win.length < 2 || !focal) return;
+
+    const first = win[0];
+    const last = win[win.length - 1];
+    const dt = (last.t - first.t) / 1000;
+    if (dt < 0.035) return;
+
+    const zoomVel = (last.z - first.z) / dt;
+    const avgSpan = Math.max(1, (first.span + last.span) / 2);
+    const spanVel = (last.span - first.span) / dt;
+    const spanZoomVel = (spanVel / avgSpan) * 2.8;
+    let vel = zoomVel * 0.5 + spanZoomVel * 0.5;
+    vel = Math.max(-7, Math.min(7, vel * 0.92));
+    if (Math.abs(vel) < 0.28) return;
+
+    const minZ = leafletMap.getMinZoom();
+    const maxZ = leafletMap.getMaxZoom();
+    const z = leafletMap.getZoom();
+    const targetZ = Math.max(minZ, Math.min(maxZ, z + vel * 0.3));
+    if (Math.abs(targetZ - z) < 0.08) return;
+    const duration = Math.min(0.48, 0.16 + Math.abs(vel) * 0.04);
+    leafletMap.flyTo(focal, targetZ, { duration, easeLinearity: 0.28, animate: true });
+  };
+
+  el.addEventListener("touchstart", onStart, { passive: true });
+  el.addEventListener("touchmove", onMove, { passive: true });
+  el.addEventListener("touchend", onEnd, { passive: true });
+  el.addEventListener("touchcancel", onEnd, { passive: true });
+
+  return () => {
+    stopCoast();
+    el.removeEventListener("touchstart", onStart);
+    el.removeEventListener("touchmove", onMove);
+    el.removeEventListener("touchend", onEnd);
+    el.removeEventListener("touchcancel", onEnd);
+  };
+}
+
 export function destroyMap() {
   stopRadarPlay();
   stopHourPlay();
@@ -3672,6 +3763,7 @@ export function destroyMap() {
   livePinMarkers.done.clear();
   if (map) {
     try {
+      map._pinchInertiaOff?.();
       map.off();
       map.remove();
     } catch {
@@ -3719,6 +3811,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     inertiaDeceleration: 2800,
     inertiaMaxSpeed: 1600,
   }).setView([c.lat, c.lon], zoom);
+  map._pinchInertiaOff = bindPinchZoomInertia(map);
   if (container?.style) {
     container.style.background = "#000";
     container.style.position = "absolute";
@@ -3872,15 +3965,38 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   requestAnimationFrame(() => requestAnimationFrame(invalidate));
   clearTimeout(setWxMapExpanded._sizeTimer);
   setWxMapExpanded._sizeTimer = setTimeout(invalidate, MAP_SHELL_MS + 48);
-  if (!on && scrollToSheet && sheet) {
+  if (!on && scrollToSheet) {
+    const panel = document.getElementById("hs-bottom-panel");
+    const target = panel || sheet;
+    if (!target) return;
     setTimeout(() => {
       try {
-        sheet.scrollIntoView({ behavior: "smooth", block: "start" });
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch {
         /* ignore */
       }
     }, MAP_SHELL_MS - 80);
   }
+}
+
+/** Slide the address search + storm sheet into view after a map tap. */
+export function revealHailBottomPanel() {
+  const panel = document.getElementById("hs-bottom-panel");
+  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
+  if (shell?.classList.contains("expanded")) {
+    setWxMapExpanded(false, { scrollToSheet: false });
+  }
+  if (!panel) return;
+  panel.classList.remove("hs-bottom-reveal");
+  void panel.offsetWidth;
+  panel.classList.add("hs-bottom-reveal");
+  requestAnimationFrame(() => {
+    try {
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch {
+      /* ignore */
+    }
+  });
 }
 
 export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
@@ -4421,15 +4537,20 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   return hail.filter((h) => hailDayMatchesQuery(h, q));
 }
 
-function ensureHailStormDate(data) {
+function syncHailStormDateSelection(data) {
   const days = hailScopeDays(data);
   if (!days.length) {
     selectedStormDate = null;
     return;
   }
-  if (selectedStormDate && days.some((h) => h.date === selectedStormDate)) return;
-  const atRoof = days.filter((h) => (h.near_hits || 0) > 0);
-  selectedStormDate = (atRoof[0] || days[0])?.date || null;
+  if (selectedStormDate && !days.some((h) => h.date === selectedStormDate)) {
+    selectedStormDate = null;
+  }
+}
+
+export function clearSelectedStormDate() {
+  selectedStormDate = null;
+  lastHailDrawSig = "";
 }
 
 /** Update address/contacts while storm list still loading — avoids wiping the sheet. */
@@ -4454,23 +4575,11 @@ export function patchHailScopePartial(root, partial, esc) {
 /** One coordinated map + sheet refresh after dossier data arrives. */
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = true } = {}) {
   if (!root || !data) return;
-  ensureHailStormDate(data);
+  syncHailStormDateSelection(data);
   const hailRows = filterHailRaw(data, wxFilters);
   drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
   renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
-  if (!revealSheet) return;
-  const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
-  if (shell?.classList.contains("expanded")) {
-    setWxMapExpanded(false, { scrollToSheet: true });
-  } else {
-    requestAnimationFrame(() => {
-      try {
-        root.scrollIntoView({ behavior: "smooth", block: "start" });
-      } catch {
-        /* ignore */
-      }
-    });
-  }
+  if (revealSheet) revealHailBottomPanel();
 }
 
 function hailScopeHtml(data, days, esc) {
@@ -4619,7 +4728,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
           /* fall through */
         }
       }
-      ensureHailStormDate(data);
+      syncHailStormDateSelection(data);
       renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
       drawHailMarkers(filterHailRaw(data, wxFilters), [], { requireDate: true });
     };
