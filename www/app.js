@@ -48,6 +48,7 @@ import {
   revealHailAddressPeek,
   revealHailStormSheet,
   advanceHailBottomReveal,
+  getHailBottomTier,
   syncHailBottomChrome,
   setWxMapExpanded,
   setMyLocationVisible,
@@ -63,7 +64,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.56";
+} from "./wx.js?v=0.2.58";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1554,12 +1555,31 @@ function paintLayerToggles() {
   };
 }
 
-async function loadDoneAddresses() {
+function needsDoneGeocode() {
+  const text = (db.done?.text || "").trim();
+  if (!text) return false;
+  const parsed = parseDoneList(text);
+  if (!parsed.length) return false;
+  const houses = doneHouses();
+  if (houses.length !== parsed.length) return true;
+  return houses.some((h) => !Number.isFinite(Number(h.lat)));
+}
+
+async function ensureDoneHousesOnMap() {
   if (doneBusy) return;
-  const text = $("#hs-done-text")?.value ?? db.done?.text ?? "";
+  if (!needsDoneGeocode()) {
+    if (doneHouses().some((h) => Number.isFinite(Number(h.lat)))) paintFieldMap();
+    return;
+  }
+  await loadDoneAddresses({ auto: true });
+}
+
+async function loadDoneAddresses({ auto = false } = {}) {
+  if (doneBusy) return;
+  const text = ($("#hs-done-text")?.value ?? db.done?.text ?? "").trim();
   const parsed = parseDoneList(text);
   if (!parsed.length) {
-    setStatus("Paste completed addresses first");
+    if (!auto) setStatus("Paste completed addresses first");
     return;
   }
   const lines = parsed.slice(0, MAX_DONE);

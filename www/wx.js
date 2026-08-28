@@ -4097,7 +4097,7 @@ export function revealHailStormSheet() {
   });
 }
 
-/** First step: address peek. Second step: storm sheet. */
+/** First step: address peek. Second step: storm sheet + fullscreen map. */
 export function advanceHailBottomReveal() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (shell?.classList.contains("expanded") || hailBottomTier === "hidden") {
@@ -4106,12 +4106,13 @@ export function advanceHailBottomReveal() {
   }
   if (hailBottomTier === "address") {
     revealHailStormSheet();
+    setWxMapExpanded(true, { keepTier: true });
     return "sheet";
   }
   return hailBottomTier;
 }
 
-export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
+export function setWxMapExpanded(on, { scrollToSheet = false, keepTier = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const view = document.getElementById("view");
   if (!shell) return;
@@ -4123,7 +4124,7 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   setWxMapExpanded._animTimer = setTimeout(() => {
     document.body.classList.remove("wx-map-animating");
   }, MAP_SHELL_MS);
-  if (on) hailBottomTier = "hidden";
+  if (on && !keepTier) hailBottomTier = "hidden";
   syncHailBottomChrome();
   if (view) view.style.overflowY = on ? "hidden" : "";
   const invalidate = () => {
@@ -4179,13 +4180,17 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     return false;
   };
+  const revealStormSheetFullscreen = () => {
+    revealHailStormSheet();
+    setWxMapExpanded(true, { keepTier: true });
+  };
   const tryTabSwipeUp = () => {
     if (isExpanded()) {
       setWxMapExpanded(false, { scrollToSheet: true });
       return true;
     }
     if (hailBottomTier === "address") {
-      revealHailStormSheet();
+      revealStormSheetFullscreen();
       return true;
     }
     return false;
@@ -4206,7 +4211,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       }
       if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0) {
         e.preventDefault();
-        revealHailStormSheet();
+        revealStormSheetFullscreen();
         return;
       }
       if (isExpanded() && e.deltaY > 0 && !e.target.closest("#wx-map, .leaflet-container")) {
@@ -4242,7 +4247,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     if (!isExpanded() && hailBottomTier === "address" && touchAccum < -12) {
       e.preventDefault();
-      revealHailStormSheet();
+      revealStormSheetFullscreen();
       touchAccum = 0;
       return;
     }
