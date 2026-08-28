@@ -62,7 +62,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.113";
+} from "./wx.js?v=0.2.114";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1735,7 +1735,10 @@ async function renderWx() {
     paintFieldSheet();
     wirePinSizeSlider();
     syncHailBottomChrome();
-    setWxMapExpanded(true); void ensureDoneHousesPlaced();
+    setWxMapExpanded(false);
+    if (wxState.data) revealHailStormSheet({ interactive: true, scroll: false });
+    else revealHailAddressPeek();
+    void ensureDoneHousesPlaced();
     setStatus("");
     return;
   }
@@ -1815,8 +1818,9 @@ async function renderWx() {
     paintFieldSheet();
     wirePinSizeSlider();
     syncHailBottomChrome();
-    // Map UI first — keep the shell snappy; warm recent storm dates in the background
-    setWxMapExpanded(true);
+    // Interactive UI by default — fullscreen only via address-bar swipe down
+    setWxMapExpanded(false);
+    revealHailAddressPeek();
     refreshMapSize();
     scheduleWarmMapViewStorms(gen, { afterMs: 60 });
     void finishWxBoot(gen);

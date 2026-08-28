@@ -5518,9 +5518,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       clearTimeout(houseTimer);
       houseTimer = 0;
     }
-    if (!wxSuppressMapTap && hailBottomTier !== "hidden" && !addressSwipeOpeningSheet) {
-      setWxMapExpanded(true);
-    }
+    // Pan/zoom must not yank the storm sheet into fullscreen — that kills date loading.
   });
   map.on("zoom", () => scheduleZoomUiRefresh());
   map.on("zoomend", () => {
@@ -5598,7 +5596,7 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   map.setView([lat, lon], zoom, { animate: opts.stay ? false : true });
 }
 
-/** Expand / collapse map — scroll up opens full screen; swipe down on map bar peeks address. */
+/** Expand / collapse map — swipe down on the address bar for fullscreen; swipe up from tabs to peek again. */
 const MAP_SHELL_MS = 360;
 
 function scrollViewToAddressPeek() {
@@ -5867,7 +5865,7 @@ export function revealHailStormSheet({ interactive = false, scroll = true } = {}
   }
 }
 
-/** First swipe: address peek. Second swipe: storm dates. Pan the map to go fullscreen. */
+/** First swipe up: address peek. Second: storm dates. Fullscreen only via address-bar swipe down. */
 export function advanceHailBottomReveal() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (shell?.classList.contains("expanded") || hailBottomTier === "hidden") {
@@ -5926,22 +5924,24 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   const tabNav = tabs || document.getElementById("tabs");
   const isExpanded = () => shell.classList.contains("expanded");
   const onPeekBand = (t) => Boolean(t?.closest?.("#hs-bottom-panel"));
+  /** Address search strip — swipe down here enters fullscreen (not map pan). */
+  const onAddressBar = (t) =>
+    Boolean(t?.closest?.("#hs-search, #hs-goto, .hs-goto, .hs-pin, .hs-place"));
   const blockMapChrome = (e) =>
     e.target.closest(".leaflet-control, .hs-composer, .hs-pin-scale-pop, .hs-layers, input, select, textarea");
   const collapseFromBar = (e) => {
     if (!isExpanded() || !mapBar?.contains(e.target)) return false;
     return true;
   };
-  const tryExpand = () => {
-    if (!isExpanded() && view.scrollTop <= 8) {
-      setWxMapExpanded(true);
-      return true;
-    }
-    return false;
+  const tryExpandFromAddressBar = () => {
+    if (isExpanded()) return false;
+    if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return false;
+    setWxMapExpanded(true);
+    return true;
   };
   const tryCollapse = () => {
     if (isExpanded()) {
-      // Swipe-down collapse lands on address peek (first tier)
+      // Leave fullscreen → address peek (interactive UI again)
       revealHailAddressPeek();
       return true;
     }
@@ -5953,7 +5953,6 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     if (hailBottomTier === "sheet" && !isExpanded()) return false;
     lockHailTierGesture();
     if (hailBottomTier === "address") {
-      // Second swipe from tabs: open + soft feed nudge (peek drag uses 1:1 scroll)
       revealHailStormSheet({ interactive: true, scroll: false });
       scheduleSheetScroll(() => {
         const v = document.getElementById("view");
@@ -5975,16 +5974,17 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         tryCollapse();
         return;
       }
+      // Address bar: wheel down → fullscreen
+      if (!isExpanded() && e.deltaY > 0 && onAddressBar(e.target)) {
+        e.preventDefault();
+        tryExpandFromAddressBar();
+        return;
+      }
       // Address peek: wheel up opens dates + scrolls like a feed
       if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0 && onPeekBand(e.target)) {
         e.preventDefault();
         revealHailStormSheet({ interactive: true, scroll: false });
         view.scrollTop += Math.min(140, Math.max(28, -e.deltaY));
-        return;
-      }
-      if (!isExpanded() && view.scrollTop <= 8 && e.deltaY < 0) {
-        e.preventDefault();
-        tryExpand();
         return;
       }
       if (isExpanded() && e.deltaY > 0 && !e.target.closest("#wx-map, .leaflet-container")) {
@@ -5997,6 +5997,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   let touchY = 0;
   let touchStartScroll = 0;
   let touchInBar = false;
+  let touchOnAddr = false;
   let touchAccum = 0;
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) return;
@@ -6004,6 +6005,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     touchY = e.touches[0].clientY;
     touchStartScroll = view.scrollTop;
     touchInBar = Boolean(mapBar?.contains(e.target) && !e.target.closest('input[type="range"]'));
+    touchOnAddr = onAddressBar(e.target);
     touchAccum = 0;
   };
   const onTouchMove = (e) => {
@@ -6015,12 +6017,12 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     touchAccum += dy;
     // Peek band owns upward swipes (address → storm feed) — don't fullscreen over it
     if (onPeekBand(e.target) && (hailBottomTier === "address" || hailBottomTier === "sheet")) {
-      return;
-    }
-    if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
-      e.preventDefault();
-      tryExpand();
-      touchAccum = 0;
+      // Except: deliberate swipe-down on the address strip → fullscreen
+      if (touchOnAddr && touchAccum > 14) {
+        e.preventDefault();
+        tryExpandFromAddressBar();
+        touchAccum = 0;
+      }
       return;
     }
     if (isExpanded() && touchInBar && touchAccum > 10) {
