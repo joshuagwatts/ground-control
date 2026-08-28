@@ -3575,8 +3575,9 @@ function walkBinaryExterior(grid, w, h, sx, sy, cellKm, xyToLatLon) {
     if (ring.length >= 4 && (!best || ring.length > best.length)) best = ring;
   }
   if (!best || best.length < 4) return null;
-  if (best.length > 100) {
-    const stride = Math.max(1, Math.ceil(best.length / 72));
+  // Light slim only — aggressive striding turned long perimeters into straight boxy runs.
+  if (best.length > 260) {
+    const stride = Math.max(1, Math.ceil(best.length / 200));
     const slim = [];
     for (let i = 0; i < best.length - 1; i += stride) slim.push(best[i]);
     slim.push(slim[0]);
@@ -3660,9 +3661,22 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
  * Inspired by MESH isosurfaces + Hailswath footprint accumulation.
  */
 function buildHailSwathRings(rawPts, zone = {}) {
-  const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  let pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   const z = map?.getZoom?.() ?? 14;
   const wide = z < 11;
+  // Zoomed in: mesh only hits near the viewport so grid cells stay fine where the
+  // user is looking (statewide day pools otherwise force coarse, off-center grids).
+  if (!wide && pts.length > 2) {
+    try {
+      const b = map?.getBounds?.()?.pad?.(1.2);
+      if (b) {
+        const inView = pts.filter((p) => b.contains([p.lat, p.lon]));
+        if (inView.length) pts = inView;
+      }
+    } catch {
+      /* keep all */
+    }
+  }
   // Never paint raw SWDI polygons as separate bubbles — fold them into the mesh so
   // nested bands + cutouts stay clean (no double-fill / fake subtraction).
   const swdiRings = [];
@@ -3742,20 +3756,21 @@ function buildHailSwathRings(rawPts, zone = {}) {
   maxY += pad;
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
-  // Zoomed-out: coarser cells + stronger close → continuous weather-pattern corridors.
-  const maxCells = wide ? 160 : hasSelectedStormDates() ? 192 : 128;
-  const cellKm = Math.max(wide ? 0.35 : 0.18, Math.min(wide ? 1.4 : 0.85, span / maxCells));
-  const w = Math.min(maxCells, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
-  const h = Math.min(maxCells, Math.max(16, Math.ceil((maxY - minY) / cellKm)));
+  // Cell size scales with data span so the grid ALWAYS covers every hit — a cap on
+  // cellKm used to clip statewide swaths to one corner (boxy edges, vanishing zones).
+  const maxCells = wide ? 176 : hasSelectedStormDates() ? 192 : 128;
+  const cellKm = Math.max(wide ? 0.35 : 0.18, span / maxCells);
+  const w = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
+  const h = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxY - minY) / cellKm)));
   const field = new Float32Array(w * h);
 
   for (const k of kernels) {
-    const reach = k.rKm * 1.15;
+    const reach = k.rKm * 1.3;
     const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const sigma = Math.max(0.08, k.rKm * 0.55);
+    const sigma = Math.max(0.1, k.rKm * 0.68);
     const twoSig2 = 2 * sigma * sigma;
     const radarBoost = k.spot ? 1 : 1.55;
     for (let gy = gy0; gy <= gy1; gy++) {
@@ -3788,7 +3803,7 @@ function buildHailSwathRings(rawPts, zone = {}) {
     }
     if (!any) continue;
     // Close enough to bridge scan gaps; avoid over-dilating cores into circles.
-    const closePasses = wide ? (thr <= 1 ? 4 : thr <= 1.5 ? 3 : 2) : thr <= 1 ? 2 : thr <= 1.5 ? 1 : 1;
+    const closePasses = wide ? (thr <= 1 ? 4 : thr <= 1.5 ? 3 : 2) : thr <= 1 ? 3 : 2;
     const closed = morphClose(binary, w, h, closePasses);
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, wide ? 8 : 12);
     for (const ring of rings) {
@@ -4149,8 +4164,22 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const showRadarHalos = dotsAllowed && (stormOn ? zNow >= 12 : zNow >= 15.5);
     const radarCap = stormOn ? (zNow < 9 ? 420 : 320) : 180;
     const spotCap = stormOn ? (zNow < 9 ? 280 : 200) : 120;
+    // Cap keeps the dots nearest map center — a raw first-N slice dropped the
+    // visible ones whenever a statewide day pool exceeded the cap.
+    const c = map?.getCenter?.();
+    const nearest = (arr, cap) => {
+      if (arr.length <= cap || !c) return arr.slice(0, cap);
+      return arr
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.lat - c.lat) * (a.lat - c.lat) + (a.lon - c.lng) * (a.lon - c.lng) -
+            ((b.lat - c.lat) * (b.lat - c.lat) + (b.lon - c.lng) * (b.lon - c.lng)),
+        )
+        .slice(0, cap);
+    };
     const toDraw = showRadarDots || showSpotDots
-      ? [...(showRadarDots ? radar.slice(0, radarCap) : []), ...(showSpotDots ? spots.slice(0, spotCap) : [])]
+      ? [...(showRadarDots ? nearest(radar, radarCap) : []), ...(showSpotDots ? nearest(spots, spotCap) : [])]
       : [];
     const dotUi = hailDotZoomScale(zNow);
     for (const p of toDraw) {
@@ -5771,6 +5800,14 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       drawHailMarkers(lastHailRows, lastWindRows);
     }
   });
+  map.on("moveend", () => {
+    // Zoomed in, the mesh is viewport-focused — re-mesh after panning so zones
+    // follow the view instead of staying where the map used to be.
+    const zm = map?.getZoom?.() ?? 14;
+    if (zm >= 11 && hasSelectedStormDates() && lastHailRows.length) {
+      scheduleSelectedStormZoneRedraw(lastHailRows, lastWindRows);
+    }
+  });
   map.on("moveend zoomend", () => {
     mapBusy = Math.max(0, mapBusy - 1);
     if (mapBusy > 0) return;
@@ -7197,8 +7234,12 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     const liveEsc = box._hsEsc || esc;
     const date = row.getAttribute("data-storm-date");
     const hailRows = mapHailRows(live, wxFilters);
+    // State overview: center the map on the storm being turned on. Zoomed in
+    // (or deselecting) keep the current view.
+    const turningOn = !isStormDateSelected(date);
+    const zNow = map?.getZoom?.() ?? 14;
     try {
-      selectStormDate(date, { fit: false, requireDate: true, hailRows, toggle: true });
+      selectStormDate(date, { fit: turningOn && zNow < 11, requireDate: true, hailRows, toggle: true });
     } catch (err) {
       console.warn("selectStormDate failed", err);
     }
