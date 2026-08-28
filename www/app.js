@@ -49,7 +49,7 @@ import {
   hidePinScalePopover,
   updatePinScaleLive,
 } from "./wx.js?v=0233";
-import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady } from "./vision.js";
+import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
@@ -970,10 +970,19 @@ async function runLens({ force = false } = {}) {
       lastLensSig = sig;
       return;
     }
-    const cloudReady = visionProvidersReady(db.settings).filter((id) => id !== "desktop");
-    if (!cloudReady.length && !desktopConfigured(db.settings)) {
-      await ensureControlRoom(db.settings).catch(() => {});
+    setStatus("Control Room…");
+    const room = await ensureControlRoom(db.settings, {
+      onProgress: (m) => setStatus(String(m).slice(0, 50)),
+    }).catch(() => ({ ok: false, error: "connect failed" }));
+    if (room?.ok) persist();
+    if (!room?.ok && !cloudVisionReady(db.settings).length) {
+      throw new Error(
+        room?.error === "not paired"
+          ? "Pair Control Room — Settings → Connect (PC running npm run control-room, same Wi‑Fi)"
+          : `Control Room offline — ${room?.error || "same Wi‑Fi? VPN off?"}`,
+      );
     }
+    setStatus("Reading shots…");
     const hit = await identifyShingles(db.settings, L.photos, L.photos.map((p) => p.shot));
     if (hit.photos?.length) {
       L.photos = hit.photos;
