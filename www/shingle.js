@@ -17,6 +17,41 @@ import {
 
 export { SHOTS, gateVerdict, nextShotPrompt, discontinuedFor, yearRange };
 
+const SHOT_LABEL = Object.fromEntries(SHOTS.map((s) => [s.id, s.label]));
+
+export function orderShinglePhotos(photos) {
+  const order = [...SHINGLE_CORE, ...SHINGLE_EXTRA];
+  return [...(photos || [])].sort((a, b) => {
+    const ia = order.indexOf(a.shot);
+    const ib = order.indexOf(b.shot);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || (a.at || 0) - (b.at || 0);
+  });
+}
+
+/** Plain-text prompt for ChatGPT / share sheet (phone Lens). */
+export function buildSharePrompt(rows) {
+  const sorted = orderShinglePhotos(rows);
+  const lines = [
+    "Identify this roofing shingle from the attached inspection photos.",
+    "",
+    "Each photo is labeled by angle:",
+    ...sorted.map((p, i) => {
+      const label = SHOT_LABEL[p.shot] || p.shot || "roof detail";
+      return `- Photo ${i + 1}: ${label}`;
+    }),
+    "",
+    "Reply with:",
+    "1. Manufacturer (GAF, Owens Corning, CertainTeed, Atlas, TAMKO, etc.)",
+    "2. Product line and color name",
+    "3. Construction type (3-tab, architectural laminate, designer, etc.)",
+    "4. Confidence (high / medium / low) and the visual tells you used",
+    "5. Any extra photo needed (wrapper, back stamp, nailing strip) if not sure",
+    "",
+    "Do not guess install date from weathering alone — only from back stamp or bundle wrapper if visible.",
+  ];
+  return lines.join("\n");
+}
+
 const SHOT_IDS = [...SHINGLE_CORE, ...SHINGLE_EXTRA];
 
 function extractJson(raw) {

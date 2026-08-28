@@ -50,7 +50,8 @@ import {
   updatePinScaleLive,
 } from "./wx.js?v=0233";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
-import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
+import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
+import { shareToChatGpt } from "./share.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
@@ -75,11 +76,17 @@ function lensPhotoSig(L) {
 }
 
 function scheduleLensRun(delay = 500, { force = false } = {}) {
+  if (isPhoneApp() && lensMode() === "shingle") return;
   clearTimeout(lensRunTimer);
   lensRunTimer = setTimeout(() => {
     lensRunTimer = null;
     void runLens({ force });
   }, delay);
+}
+
+function isPhoneApp() {
+  const p = window.Capacitor?.getPlatform?.();
+  return p === "android" || p === "ios";
 }
 let pendingShot = "granules_close";
 let markDraft = null;
@@ -126,11 +133,13 @@ function renderPrivacy() {
     tog.classList.toggle("on", secure);
     tog.classList.toggle("leaky", !secure);
     tog.textContent = secure ? "On-device" : "Cloud";
-    tog.title = secure
-      ? "Vision stays on this device. Connect Control Room or flip Cloud."
-      : desktopConfigured(db.settings)
-        ? "Control Room GPU ready for Lens."
-        : "Cloud vision is on for Lens.";
+    tog.title = isPhoneApp()
+      ? "Phone Lens shares guided photos to ChatGPT. Cloud mode is for web/API keys."
+      : secure
+        ? "Vision stays on this device. Connect Control Room or flip Cloud."
+        : desktopConfigured(db.settings)
+          ? "Control Room GPU ready for Lens."
+          : "Cloud vision is on for Lens.";
   }
 }
 
@@ -671,6 +680,30 @@ function shingleCoreDone(L) {
   return SHINGLE_CORE.every((id) => have.has(id));
 }
 
+async function shareShinglePack({ auto = false } = {}) {
+  const L = lensPhotos();
+  const coreHave = SHINGLE_CORE.filter((id) => haveShots(L).has(id)).length;
+  if (!L.photos.length) return;
+  if (!shingleCoreDone(L)) {
+    setStatus(`Need ${SHINGLE_CORE.length - coreHave} more core shot${SHINGLE_CORE.length - coreHave === 1 ? "" : "s"}`);
+    return;
+  }
+  const rows = L.photos.filter((p) => p.mode !== "damage");
+  const text = buildSharePrompt(rows);
+  if (!auto) setStatus("Opening share…");
+  try {
+    const hit = await shareToChatGpt({ text, photos: rows });
+    setStatus(
+      hit.ok
+        ? "Pick ChatGPT in the share sheet"
+        : hit.message || "Prompt copied — paste in ChatGPT and attach photos",
+    );
+  } catch (e) {
+    if (/abort|cancel/i.test(String(e.message || e))) setStatus("Share cancelled");
+    else setStatus(String(e.message || e).slice(0, 56));
+  }
+}
+
 function setLensMode(mode, { openCamera = false } = {}) {
   const L = lensPhotos();
   L.mode = mode === "damage" ? "damage" : "shingle";
@@ -721,10 +754,13 @@ function renderLens() {
   const have = haveShots(L);
   const coreHave = SHINGLE_CORE.filter((id) => have.has(id)).length;
 
-  const roomOn = desktopConfigured(db.settings);
-  const roomLine = roomOn
-    ? `Control Room · ${esc(db.settings.desktop_model || "GPU paired")}`
-    : "Pairing Control Room at homebase in the background — or add a cloud vision key in Settings.";
+  const phoneShingle = isPhoneApp() && mode === "shingle";
+  const roomOn = !phoneShingle && desktopConfigured(db.settings);
+  const roomLine = phoneShingle
+    ? "Take 4 guided roof photos, then share them into ChatGPT."
+    : roomOn
+      ? `Control Room · ${esc(db.settings.desktop_model || "GPU paired")}`
+      : "Add a vision key in Settings, or use Control Room on desktop.";
 
   if (!L.session) {
     $("#view").innerHTML = `
@@ -734,7 +770,11 @@ function renderLens() {
         <p class="muted">What are you shooting?</p>
         <button type="button" class="lens-pick-card" id="pick-shingle">
           <strong>Shingle identifier</strong>
-          <span>Snap photos — Lens classifies angles and identifies automatically. 95% locks the product; wrapper or back stamp hits 100% on date.</span>
+          <span>${
+            isPhoneApp()
+              ? "App walks you through 4 required angles, then opens share → pick ChatGPT. Wrapper or back stamp optional for date."
+              : "Snap photos — Lens classifies angles and identifies automatically. 95% locks the product; wrapper or back stamp hits 100% on date."
+          }</span>
         </button>
         <button type="button" class="lens-pick-card" id="pick-damage">
           <strong>Damage highlighter</strong>
@@ -752,6 +792,16 @@ function renderLens() {
     mode === "shingle" && v?.needed?.[0] && Number(v?.pct) < 85
       ? `${shotSpec(v.needed[0].id).label} would help — or keep snapping, Lens will sort it.`
       : "";
+  const guideShot = next || shotSpec(pendingShot);
+  const guideHtml = phoneShingle
+    ? `<div class="lens-progress">${SHINGLE_CORE.map((id) => `<i class="${have.has(id) ? "have" : id === guideShot.id ? "now" : ""}" title="${esc(shotSpec(id).label)}"></i>`).join("")}</div>
+       <div class="lens-shot-card">
+         <div class="lens-shot-kicker">${coreDone ? "Core set complete · optional extras" : `Required ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
+         <h3>${esc(guideShot.label)}</h3>
+         <p>${esc(guideShot.how)}</p>
+         <p class="muted">${esc(guideShot.why)}</p>
+       </div>`
+    : "";
   const cardHtml =
     mode === "damage"
       ? formatChatBody(
@@ -759,51 +809,76 @@ function renderLens() {
             ? `${marksN} mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit.`
             : "Snap the damaged area. Circles and arrows come next — we'll dial this in later.",
         )
-      : lensBusy
-        ? formatChatBody("Reading photos…")
-        : last
-          ? formatChatBody(formatVerdict(last))
-          : formatChatBody(
-              L.photos.length ? "Tap Re-run to identify, or snap another photo." : "Snap the roof to start.",
-            );
+      : phoneShingle
+        ? formatChatBody(
+            coreDone
+              ? "Core shots ready. Share opens with all photos + a shingle ID prompt — pick ChatGPT."
+              : `Snap each required angle above. ${SHINGLE_CORE.length - coreHave} more before ChatGPT share unlocks.`,
+          )
+        : lensBusy
+          ? formatChatBody("Reading photos…")
+          : last
+            ? formatChatBody(formatVerdict(last))
+            : formatChatBody(
+                L.photos.length ? "Tap Re-run to identify, or snap another photo." : "Snap the roof to start.",
+              );
 
-  const pct = Number.isFinite(Number(v?.pct)) ? Number(v.pct) : L.photos.length ? Math.min(40, L.photos.length * 10) : 0;
+  const pct = phoneShingle
+    ? Math.round((coreHave / SHINGLE_CORE.length) * 100)
+    : Number.isFinite(Number(v?.pct))
+      ? Number(v.pct)
+      : L.photos.length
+        ? Math.min(40, L.photos.length * 10)
+        : 0;
   const leader =
     (status === "KNOW" && k.manufacturer
       ? `${k.manufacturer} ${k.product}${k.color ? ` · ${k.color}` : ""}`
       : "") ||
     (n.manufacturer ? `${n.manufacturer}${n.product ? ` ${n.product}` : ""}${n.color ? ` · ${n.color}` : ""}` : "");
-  const meterHint =
-    pct >= 100
+  const meterHint = phoneShingle
+    ? coreDone
+      ? "Tap ChatGPT to share photos + prompt."
+      : `${guideShot.label} — ${guideShot.how}`
+    : pct >= 100
       ? "Locked. Date stamp read."
       : pct >= 95
         ? "Product locked. Back stamp or wrapper for 100% date."
         : needHint || (L.photos.length ? "Keep snapping — Lens re-runs after each photo." : "Snap the roof to start.");
   const meterHtml =
-    mode === "shingle"
+    mode === "shingle" && !phoneShingle
       ? `<div class="lens-meter${pct >= 95 ? " lock" : pct >= 70 ? " hot" : ""}">
           <div class="lens-meter-top"><strong>${esc(leader || "Collecting tells")}</strong><span>${pct}%</span></div>
           <div class="lens-meter-track"><i style="width:${pct}%"></i></div>
           <p class="muted">${esc(meterHint)}</p>
         </div>`
-      : "";
+      : phoneShingle
+        ? `<div class="lens-meter${coreDone ? " lock" : coreHave >= 2 ? " hot" : ""}">
+          <div class="lens-meter-top"><strong>${esc(coreDone ? "Ready for ChatGPT" : guideShot.label)}</strong><span>${pct}%</span></div>
+          <div class="lens-meter-track"><i style="width:${pct}%"></i></div>
+          <p class="muted">${esc(meterHint)}</p>
+        </div>`
+        : "";
 
   $("#view").innerHTML = `
     <div class="lens-wrap">
       <div class="lens-session-head">
         <button type="button" id="lens-back">Back</button>
         <strong>${mode === "damage" ? "Damage highlighter" : "Shingle identifier"}</strong>
-        ${roomOn ? `<span class="lens-room on">Control Room</span>` : `<span class="lens-room">Cloud</span>`}
+        ${phoneShingle ? `<span class="lens-room on">ChatGPT</span>` : roomOn ? `<span class="lens-room on">Control Room</span>` : `<span class="lens-room">Cloud</span>`}
       </div>
       ${
         mode === "shingle"
-          ? `${meterHtml}${needHint ? `<p class="muted lens-need-hint">${esc(needHint)}</p>` : ""}`
+          ? `${guideHtml}${meterHtml}${!phoneShingle && needHint ? `<p class="muted lens-need-hint">${esc(needHint)}</p>` : ""}`
           : `<p class="muted">Snap the damaged area. Marking tools come after the photo.</p>`
       }
       <div class="actions">
         <button type="button" id="lens-snap" class="primary">Snap</button>
         ${mode === "shingle" ? `<button type="button" id="lens-gallery">Gallery</button>` : ""}
-        <button type="button" id="lens-read"${L.photos.length ? "" : " disabled"}>${mode === "damage" ? "Mark last" : "Re-run"}</button>
+        ${
+          phoneShingle
+            ? `<button type="button" id="lens-send-chatgpt"${coreDone ? ' class="primary"' : ""}${coreDone ? "" : " disabled"}>ChatGPT</button>`
+            : `<button type="button" id="lens-read"${L.photos.length ? "" : " disabled"}>${mode === "damage" ? "Mark last" : "Re-run"}</button>`
+        }
         <button type="button" id="lens-clear">Start over</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos
@@ -813,9 +888,11 @@ function renderLens() {
         )
         .join("")}</div>
       <div class="lens-status ${statusCls}">${esc(
-        mode === "damage"
-          ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
-          : `${pct}% · ${leader || (L.photos.length ? (lensBusy ? "reading…" : status.replace("_", " ")) : "waiting for photos")}`,
+        phoneShingle
+          ? `${coreHave}/${SHINGLE_CORE.length} core · ${coreDone ? "ready to share" : guideShot.label}`
+          : mode === "damage"
+            ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` · ${marksN} marks` : ""}`
+            : `${pct}% · ${leader || (L.photos.length ? (lensBusy ? "reading…" : status.replace("_", " ")) : "waiting for photos")}`,
       )}</div>
       <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
@@ -848,7 +925,10 @@ function renderLens() {
       L.last = null;
       persist();
       renderLens();
-      if (mode === "shingle" && L.photos.length) scheduleLensRun(500, { force: true });
+      if (mode === "shingle" && L.photos.length) {
+        if (isPhoneApp()) bump();
+        else scheduleLensRun(500, { force: true });
+      }
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-retag]").forEach((em) => {
@@ -863,7 +943,7 @@ function renderLens() {
       persist();
       renderLens();
       setStatus(`Retagged · ${shotSpec(p.shot).label}`);
-      scheduleLensRun(800, { force: true });
+      if (!isPhoneApp()) scheduleLensRun(800, { force: true });
     };
   });
   $("#lens-strip")?.querySelectorAll("[data-edit]").forEach((el) => {
@@ -905,13 +985,24 @@ function renderLens() {
         return;
       }
       for (const file of picked) {
-        L.photos.push({ url: await fileToDataUrl(file, 1400, 0.78), shot: "", mode: "shingle", at: Date.now() });
+        const shotId = pendingShot || nextShingleShot(L) || SHINGLE_CORE[0];
+        L.photos.push({
+          url: await fileToDataUrl(file, 1400, 0.78),
+          shot: isPhoneApp() ? shotId : "",
+          mode: "shingle",
+          at: Date.now(),
+        });
       }
       L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
       L.last = null;
       persist();
       renderLens();
-      scheduleLensRun(500, { force: true });
+      if (isPhoneApp()) {
+        bump();
+        if (shingleCoreDone(L)) setTimeout(() => shareShinglePack({ auto: true }), 700);
+      } else {
+        scheduleLensRun(500, { force: true });
+      }
     } catch (e) {
       if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 50));
     }
@@ -925,7 +1016,8 @@ function renderLens() {
     pendingShot = SHINGLE_CORE[0];
     renderLens();
   };
-  $("#lens-read").onclick = () => runLens();
+  $("#lens-read")?.addEventListener("click", () => runLens());
+  $("#lens-send-chatgpt")?.addEventListener("click", () => shareShinglePack());
   $("#lens-to-job").onclick = () => {
     const job = newJob({
       address: wxState.address || db.settings.city || "",
@@ -950,6 +1042,9 @@ async function runLens({ force = false } = {}) {
   const L = lensPhotos();
   const mode = lensMode();
   if (!L.photos.length || lensBusy) return;
+  if (isPhoneApp() && mode === "shingle") {
+    return shareShinglePack();
+  }
   const sig = lensPhotoSig(L);
   if (!force && sig === lastLensSig && L.last) return;
   lensBusy = true;
@@ -1704,6 +1799,17 @@ function renderKeys() {
   const roomOn = desktopConfigured(s);
   const roomModel = String(s.desktop_model || "").trim();
   const roomVision = String(s.desktop_vision || "").trim();
+  const phone = isPhoneApp();
+  const roomBlock = phone
+    ? `<p class="muted">Phone Lens shares guided photos to ChatGPT — no API keys needed for shingle ID. Keys below are optional for chat.</p>`
+    : `<h3>Control Room</h3>
+    <p class="muted">Desktop-only GPU for web Lens. Double-click <code>Control Room.bat</code> on your PC if you use the browser editor.</p>
+    <div class="field"><span>Desktop URL</span><input id="set-desktop-url" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.162:7420" autocomplete="off" spellcheck="false" /></div>
+    <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}${roomVision ? ` · vision: ${esc(roomVision)}` : ""}` : "Not connected"}</p>
+    <div class="actions">
+      <button type="button" id="room-connect" class="primary">Connect</button>
+      <button type="button" id="room-disconnect"${roomOn ? "" : " disabled"}>Disconnect</button>
+    </div>`;
   $("#view").innerHTML = `
     <h3>Settings</h3>
     <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
@@ -1715,18 +1821,11 @@ function renderKeys() {
         <option value="metric"${s.units === "metric" ? " selected" : ""}>Metric — kilometers</option>
       </select>
     </div>
-    <h3>Control Room</h3>
-    <p class="muted">Homebase GPU for Lens. On your PC: double-click <code>Control Room.bat</code>, same Wi‑Fi as the phone, then Connect. Lens photos need a <strong>vision</strong> model in Ollama — run <code>ollama pull llava</code> once on the PC (or double-click <code>Install Lens Vision.bat</code>).</p>
-    <div class="field"><span>Desktop URL</span><input id="set-desktop-url" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.162:7420" autocomplete="off" spellcheck="false" /></div>
-    <p class="muted room-status" id="room-status">${roomOn ? `Connected${roomModel ? ` · ${esc(roomModel)}` : ""}${roomVision ? ` · vision: ${esc(roomVision)}` : " · needs ollama pull llava on PC for photos"}` : "Not connected"}</p>
-    <div class="actions">
-      <button type="button" id="room-connect" class="primary">Connect</button>
-      <button type="button" id="room-disconnect"${roomOn ? "" : " disabled"}>Disconnect</button>
-    </div>
+    ${roomBlock}
     <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
-    <p class="muted">${keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : roomOn ? "Lens uses Control Room GPU." : "No keys yet — connect Control Room or paste Gemini for Lens."}</p>
+    <p class="muted">${phone ? "Chat keys optional on phone." : keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : roomOn ? "Lens uses Control Room on web." : "Paste keys for web Lens or chat."}</p>
     <h3>API keys</h3>
-    <p class="muted">Chat can use every keyed API. Lens prefers Control Room when connected; otherwise needs a vision key (Gemini, OpenAI, Anthropic, or OpenRouter).</p>
+    <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
     <h3>Discontinued lookup</h3>
