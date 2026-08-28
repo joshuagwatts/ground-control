@@ -115,6 +115,7 @@ let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
 let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, onMark: null, onDone: null };
+const livePinMarkers = { marks: new Map(), done: new Map() };
 
 export function setHailScopeMode(on) {
   hailScopeMode = Boolean(on);
@@ -998,23 +999,35 @@ let lastZoomUiScale = 0;
 const hailDotMarkers = [];
 let windFieldCenterDot = null;
 
-/** Screen-pixel scale — gentle shrink when zoomed out; ~1.0 at street zoom. Pin slider sets base size. */
+/** Screen-pixel scale — shrinks when zoomed out; ~1.0 at street zoom. Pin slider sets base size. */
 export function zoomUiScale(z) {
   const zoom = Number.isFinite(z) ? z : map?.getZoom?.();
   if (!Number.isFinite(zoom)) return 1;
-  return Math.min(1, Math.max(0.55, Math.pow(2, (zoom - ZOOM_UI_REF) / 4)));
+  return Math.min(1, Math.max(0.4, Math.pow(2, (zoom - ZOOM_UI_REF) / 3)));
+}
+
+let zoomUiFrame = 0;
+
+function scheduleZoomUiRefresh(force = false) {
+  if (!map) return;
+  if (zoomUiFrame) cancelAnimationFrame(zoomUiFrame);
+  zoomUiFrame = requestAnimationFrame(() => {
+    zoomUiFrame = 0;
+    refreshZoomScaledUi(force);
+  });
 }
 
 function refreshZoomScaledUi(force = false) {
   if (!map) return;
   const ui = zoomUiScale();
-  if (!force && Math.abs(ui - lastZoomUiScale) < 0.035) return;
+  if (!force && Math.abs(ui - lastZoomUiScale) < 0.02) return;
   lastZoomUiScale = ui;
   for (const m of hailDotMarkers) {
+    if (!m?.setRadius) continue;
     const br = m.options.baseRadius || 6;
     m.setRadius(Math.max(2, br * ui));
   }
-  if (windFieldCenterDot) {
+  if (windFieldCenterDot?.setRadius) {
     const br = windFieldCenterDot.options.baseRadius || 10;
     windFieldCenterDot.setRadius(Math.max(3, br * ui));
   }
@@ -2573,7 +2586,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${opts.fit ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
-    refreshZoomScaledUi();
+    scheduleZoomUiRefresh();
     return;
   }
   lastHailDrawSig = drawSig;
@@ -2763,7 +2776,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       .addTo(windLayer);
   }
   syncHazardLayers();
-  refreshZoomScaledUi(true);
+  scheduleZoomUiRefresh(true);
   if (opts.fit && map) {
     const pts = [];
     if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) pts.push([pinLat, pinLon]);
@@ -2881,7 +2894,7 @@ async function refreshWindField() {
     }).addTo(windFieldLayer);
     windFieldCenterDot.options.baseRadius = windBaseR;
     if (activeWxProduct === "wind") windFieldLayer.addTo(map);
-    refreshZoomScaledUi(true);
+    scheduleZoomUiRefresh(true);
   } catch {
     /* wind field optional */
   }
@@ -3356,7 +3369,6 @@ function donePinIcon(scaleRaw = 1, zoomUi = zoomUiScale()) {
 
 let pinScalePopover = null;
 let pinScaleMoveOff = null;
-const livePinMarkers = { marks: new Map(), done: new Map() };
 
 export function updatePinScaleLive(kind, id, item) {
   const ref = kind === "done" ? livePinMarkers.done.get(String(id)) : livePinMarkers.marks.get(String(id));
@@ -3573,7 +3585,7 @@ export function setFieldOverlay({
       livePinMarkers.done.set(String(h.id), marker);
     }
   }
-  refreshZoomScaledUi(true);
+  scheduleZoomUiRefresh(true);
 }
 
 function bindLongPress(onHold) {
@@ -3639,94 +3651,6 @@ function bindLongPress(onHold) {
   });
 }
 
-/** Fast pinch continues zooming briefly after fingers lift (Maps-style coast). */
-function bindPinchZoomInertia(leafletMap) {
-  const el = leafletMap.getContainer();
-  let tracking = false;
-  let samples = [];
-  let focal = null;
-
-  const stopCoast = () => {
-    try {
-      leafletMap.stop();
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const pinchSpan = (touches) => {
-    if (touches.length < 2) return 0;
-    return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
-  };
-
-  const pinchFocal = (touches) => {
-    if (touches.length < 2) return leafletMap.getCenter();
-    const rect = el.getBoundingClientRect();
-    const x = (touches[0].clientX + touches[1].clientX) / 2 - rect.left;
-    const y = (touches[0].clientY + touches[1].clientY) / 2 - rect.top;
-    return leafletMap.containerPointToLatLng([x, y]);
-  };
-
-  const onStart = (e) => {
-    if (e.touches.length !== 2) return;
-    stopCoast();
-    tracking = true;
-    focal = pinchFocal(e.touches);
-    samples = [{ t: performance.now(), z: leafletMap.getZoom(), span: pinchSpan(e.touches) }];
-  };
-
-  const onMove = (e) => {
-    if (!tracking || e.touches.length < 2) return;
-    const now = performance.now();
-    focal = pinchFocal(e.touches);
-    samples.push({ t: now, z: leafletMap.getZoom(), span: pinchSpan(e.touches) });
-    while (samples.length > 2 && now - samples[0].t > 240) samples.shift();
-  };
-
-  const onEnd = (e) => {
-    if (e.touches.length >= 2) return;
-    if (!tracking) return;
-    tracking = false;
-    const now = performance.now();
-    const win = samples.filter((s) => now - s.t <= 220);
-    if (win.length < 2 || !focal) return;
-
-    const first = win[0];
-    const last = win[win.length - 1];
-    const dt = (last.t - first.t) / 1000;
-    if (dt < 0.035) return;
-
-    const zoomVel = (last.z - first.z) / dt;
-    const avgSpan = Math.max(1, (first.span + last.span) / 2);
-    const spanVel = (last.span - first.span) / dt;
-    const spanZoomVel = (spanVel / avgSpan) * 2.8;
-    let vel = zoomVel * 0.5 + spanZoomVel * 0.5;
-    vel = Math.max(-7, Math.min(7, vel * 0.92));
-    if (Math.abs(vel) < 0.28) return;
-
-    const minZ = leafletMap.getMinZoom();
-    const maxZ = leafletMap.getMaxZoom();
-    const z = leafletMap.getZoom();
-    const targetZ = Math.max(minZ, Math.min(maxZ, z + vel * 0.3));
-    if (Math.abs(targetZ - z) < 0.08) return;
-    const duration = Math.min(0.48, 0.16 + Math.abs(vel) * 0.04);
-    leafletMap.flyTo(focal, targetZ, { duration, easeLinearity: 0.28, animate: true });
-  };
-
-  el.addEventListener("touchstart", onStart, { passive: true });
-  el.addEventListener("touchmove", onMove, { passive: true });
-  el.addEventListener("touchend", onEnd, { passive: true });
-  el.addEventListener("touchcancel", onEnd, { passive: true });
-
-  return () => {
-    stopCoast();
-    el.removeEventListener("touchstart", onStart);
-    el.removeEventListener("touchmove", onMove);
-    el.removeEventListener("touchend", onEnd);
-    el.removeEventListener("touchcancel", onEnd);
-  };
-}
-
 export function destroyMap() {
   stopRadarPlay();
   stopHourPlay();
@@ -3737,9 +3661,17 @@ export function destroyMap() {
   houseLayer = null;
   lastHailDrawSig = "";
   mapBusy = 0;
+  hailDotMarkers.length = 0;
+  windFieldCenterDot = null;
+  lastZoomUiScale = 0;
+  if (zoomUiFrame) {
+    cancelAnimationFrame(zoomUiFrame);
+    zoomUiFrame = 0;
+  }
+  livePinMarkers.marks.clear();
+  livePinMarkers.done.clear();
   if (map) {
     try {
-      map._pinchInertiaOff?.();
       map.off();
       map.remove();
     } catch {
@@ -3794,7 +3726,6 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     container.style.width = "100%";
     container.style.height = "100%";
   }
-  map._pinchInertiaOff = bindPinchZoomInertia(map);
   if (!isPhoneUi()) {
     window.L.control.zoom({ position: "bottomleft" }).addTo(map);
   }
@@ -3813,8 +3744,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
             maxZoom: MAP_MAX_ZOOM,
             tileSize: 256,
             detectRetina: false,
-            updateWhenIdle: false,
-            updateWhenZooming: true,
+            updateWhenIdle: true,
+            updateWhenZooming: false,
             keepBuffer: 4,
           }
         : BASE_TILE_OPTS),
@@ -3856,10 +3787,14 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       houseTimer = 0;
     }
   });
+  map.on("zoom", () => scheduleZoomUiRefresh());
+  map.on("zoomend", () => {
+    lastZoomUiScale = 0;
+    scheduleZoomUiRefresh(true);
+  });
   map.on("moveend zoomend", () => {
     mapBusy = Math.max(0, mapBusy - 1);
     if (mapBusy > 0) return;
-    refreshZoomScaledUi();
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
   });
