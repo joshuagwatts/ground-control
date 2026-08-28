@@ -28,6 +28,13 @@ export function upsertJob(db, job) {
   return next;
 }
 
+export function deleteJob(db, id) {
+  if (!db.jobs) db.jobs = [];
+  const before = db.jobs.length;
+  db.jobs = db.jobs.filter((j) => String(j.id) !== String(id));
+  return db.jobs.length < before;
+}
+
 export function jobSummary(job) {
   if (!job) return "";
   const bits = [job.address || "Unpinned job"];

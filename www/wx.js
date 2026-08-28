@@ -1292,44 +1292,40 @@ export function zoomUiScale(z) {
   return Math.min(1, Math.max(0.4, Math.pow(2, (zoom - ZOOM_UI_REF) / 3)));
 }
 
-/** Hail spot/radar dots shrink hard when zoomed out. */
+/** Hail spot/radar dots — keep readable when a storm day is selected and zoomed out. */
 export function hailDotZoomScale(z) {
   const zoom = Number.isFinite(z) ? z : map?.getZoom?.();
   if (!Number.isFinite(zoom)) return 1;
-  return Math.min(1, Math.max(0.08, Math.pow(2, (zoom - ZOOM_UI_REF) / 1.85)));
+  const raw = Math.min(1, Math.max(0.08, Math.pow(2, (zoom - ZOOM_UI_REF) / 1.85)));
+  if (hasSelectedStormDates()) return Math.min(1, Math.max(0.42, raw));
+  return raw;
 }
 
-/** Stroke style for hail/wind topo — dashes look filthy when zoomed out, so solidify far away. */
+/** Stroke style for hail/wind topo — keep zoomed-in weight/detail when far out. */
 function hailZoneStrokeStyle(isConfirm, sz, z) {
   const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
   const size = Number(sz) || 0;
-  if (zoom < 9) {
-    return {
-      weight: isConfirm ? 1.35 : 1,
-      opacity: isConfirm ? 0.84 : 0.52,
-      dashArray: null,
-    };
-  }
+  // Same quality language at every zoom; only solidify dashes when far out so edges don't glitter.
+  const base = {
+    weight: isConfirm ? (size >= 2 ? 2.8 : 2.2) : size >= 2 ? 2.2 : 1.4,
+    opacity: 0.92,
+    dashArray: isConfirm ? null : size >= 1 ? "4 4" : "6 5",
+  };
   if (zoom < 11) {
     return {
-      weight: isConfirm ? 1.15 : 0.85,
-      opacity: isConfirm ? 0.78 : 0.42,
+      weight: base.weight,
+      opacity: isConfirm ? 0.94 : 0.82,
       dashArray: null,
     };
   }
   if (zoom < 13) {
     return {
-      weight: isConfirm ? 1.55 : 1.05,
-      opacity: isConfirm ? 0.86 : 0.55,
-      // Longer gaps / shorter dashes so the outline still reads as a shape, not glitter
-      dashArray: isConfirm ? null : "1.5 7",
+      weight: base.weight,
+      opacity: isConfirm ? 0.92 : 0.78,
+      dashArray: isConfirm ? null : "2 6",
     };
   }
-  return {
-    weight: isConfirm ? (size >= 2 ? 2.8 : 2.2) : size >= 2 ? 2.2 : 1.4,
-    opacity: 0.92,
-    dashArray: isConfirm ? null : size >= 1 ? "4 4" : "6 5",
-  };
+  return base;
 }
 
 function hailCoreStrokeStyle(z) {
@@ -3322,9 +3318,11 @@ function buildHailSwathRings(rawPts, zone = {}) {
   maxY += pad;
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
-  const cellKm = Math.min(1.1, Math.max(0.35, span / 48));
-  const w = Math.min(96, Math.max(12, Math.ceil((maxX - minX) / cellKm)));
-  const h = Math.min(96, Math.max(12, Math.ceil((maxY - minY) / cellKm)));
+  // Keep mesh quality when zoomed out / statewide — old 96-cell cap went coarse on big swaths.
+  const maxCells = hasSelectedStormDates() ? 192 : 128;
+  const cellKm = Math.max(0.18, Math.min(0.85, span / maxCells));
+  const w = Math.min(maxCells, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
+  const h = Math.min(maxCells, Math.max(16, Math.ceil((maxY - minY) / cellKm)));
   const field = new Float32Array(w * h);
 
   // Accumulate max hail size (MESH-like) with soft disk kernels
@@ -3544,8 +3542,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
 
   const day = activeDays.size ? activeDays : null;
   const zDraw = map?.getZoom?.() ?? 14;
+  // Zoomed-out overlays keep the same zone budget as close-in (detail over culling).
   const zoneLimit = day
-    ? Math.min(220, Math.max(80, activeDays.size * 40) + (zDraw < 9 ? 100 : zDraw < 11 ? 50 : 0))
+    ? Math.min(320, Math.max(120, activeDays.size * 55) + (zDraw < 9 ? 80 : 0))
     : 36;
   const zones = collapsed
     .filter((h) => !day || day.has(h.date))
@@ -3637,12 +3636,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
     const zNow = map?.getZoom?.() || 14;
-    // Far out: hide glitter dots; nested swath polygons carry the weather look
-    const showRadarDots = zNow >= 13.5;
-    const showSpotDots = zNow >= 12;
-    const showRadarHalos = zNow >= 15.5;
+    // Selected storm days keep spot/radar detail at every zoom; otherwise ease dots in closer.
+    const stormOn = hasSelectedStormDates();
+    const showRadarDots = stormOn || zNow >= 11;
+    const showSpotDots = stormOn || zNow >= 10;
+    const showRadarHalos = stormOn ? zNow >= 12 : zNow >= 15.5;
+    const radarCap = stormOn ? (zNow < 9 ? 320 : 260) : 180;
+    const spotCap = stormOn ? (zNow < 9 ? 220 : 180) : 120;
     const toDraw = showRadarDots || showSpotDots
-      ? [...(showRadarDots ? radar.slice(0, 180) : []), ...(showSpotDots ? spots.slice(0, 120) : [])]
+      ? [...(showRadarDots ? radar.slice(0, radarCap) : []), ...(showSpotDots ? spots.slice(0, spotCap) : [])]
       : [];
     const dotUi = hailDotZoomScale(zNow);
     for (const p of toDraw) {

@@ -61,12 +61,12 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.100";
+} from "./wx.js?v=0.2.101";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
-import { newJob, upsertJob, jobSummary } from "./inspect.js";
+import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale } from "./marks.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse } from "./done.js";
@@ -1612,9 +1612,9 @@ async function ensureDoneHousesPlaced() {
   if (!doneBusy) await loadDoneAddresses();
 }
 
-async function loadDoneAddresses() {
+async function loadDoneAddresses({ textId = "hs-done-text" } = {}) {
   if (doneBusy) return;
-  const text = $("#hs-done-text")?.value ?? db.done?.text ?? "";
+  const text = document.querySelector("#" + textId)?.value ?? db.done?.text ?? "";
   const parsed = parseDoneList(text);
   if (!parsed.length) {
     setStatus("Paste completed addresses first");
@@ -1680,6 +1680,7 @@ async function loadDoneAddresses() {
   } finally {
     doneBusy = false;
     paintFieldSheet();
+    if (tab === "jobs" && document.getElementById("job-done-text")) renderJobs();
   }
 }
 
@@ -1873,8 +1874,8 @@ async function renderWx() {
         <div class="hs-sheet" id="hs-sheet">
           <p class="hs-empty">Loading storm dates for this area…</p>
         </div>
+        <div class="hs-field" id="hs-field"></div>
       </div>
-      <div class="hs-field" id="hs-field"></div>
     </div>`;
 
   try {
@@ -2062,6 +2063,7 @@ function renderJobs() {
   const marks = fieldMarks();
   const houses = doneHouses();
   const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
+  const rawText = String(db.done?.text || "");
   $("#view").innerHTML = `
     <h3>Jobs</h3>
     <p class="muted">Roof inspections on this phone, completed houses, and drive-by field marks.</p>
@@ -2071,15 +2073,29 @@ function renderJobs() {
         ? jobs
             .map(
               (j) =>
-                `<article class="job-card" data-id="${esc(j.id)}"><strong>${esc(j.address || "Unpinned")}</strong><p class="muted">${esc(jobSummary(j))}</p><p class="muted">${esc(String(j.created || "").slice(0, 10))}</p></article>`,
+                `<article class="job-card" data-id="${esc(j.id)}">
+                  <strong>${esc(j.address || "Unpinned")}</strong>
+                  <p class="muted">${esc(jobSummary(j))}</p>
+                  <p class="muted">${esc(String(j.created || "").slice(0, 10))}</p>
+                  <div class="actions job-card-actions">
+                    <button type="button" data-job-edit="${esc(j.id)}">Edit</button>
+                    <button type="button" data-job-del="${esc(j.id)}">Delete</button>
+                  </div>
+                </article>`,
             )
             .join("")
         : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
-    <h3>Completed jobs</h3>
-    <p class="muted">${placed.length ? `${placed.length} yellow markers on HailScope. Paste more addresses there to add houses.` : "Paste finished house addresses on HailScope to plot yellow markers."}</p>
+    <h3>Completed houses</h3>
+    <p class="muted">Paste finished addresses (one per line), then load yellow markers on HailScope. Lines without a city use Settings city.</p>
+    <textarea id="job-done-text" rows="6" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
+    <div class="actions">
+      <button type="button" class="primary" id="job-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load yellow markers"}</button>
+      <button type="button" id="job-done-clear"${houses.length ? "" : " disabled"}>Clear markers</button>
+    </div>
+    <p class="muted">${placed.length ? `${placed.length} yellow marker${placed.length === 1 ? "" : "s"} ready — open HailScope to see them.` : "No yellow markers yet."}</p>
     ${placed
-      .slice(0, 20)
+      .slice(0, 30)
       .map((h) => `<article class="job-card"><strong>${esc(h.address || "House")}</strong></article>`)
       .join("")}
     <h3>Field marks</h3>
@@ -2095,10 +2111,90 @@ function renderJobs() {
     const job = newJob({ address: wxState.address || "", lat: wxState.lat, lon: wxState.lon });
     upsertJob(db, job);
     persist();
+    openJobEditor(job.id);
+  };
+  document.querySelectorAll("[data-job-edit]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openJobEditor(btn.getAttribute("data-job-edit"));
+    };
+  });
+  document.querySelectorAll("[data-job-del]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.getAttribute("data-job-del");
+      const job = (db.jobs || []).find((j) => String(j.id) === String(id));
+      if (!job) return;
+      if (!confirm(`Delete job "${job.address || "Unpinned"}"?`)) return;
+      deleteJob(db, id);
+      persist();
+      renderJobs();
+      setStatus("Job deleted");
+    };
+  });
+  const doneBox = $("#job-done-text");
+  if (doneBox) {
+    doneBox.oninput = () => {
+      if (!db.done) db.done = { text: "", houses: [] };
+      db.done.text = doneBox.value;
+      persist();
+    };
+  }
+  const loadBtn = $("#job-done-load");
+  if (loadBtn) loadBtn.onclick = () => void loadDoneAddresses({ textId: "job-done-text" });
+  const clr = $("#job-done-clear");
+  if (clr) {
+    clr.onclick = () => {
+      if (!db.done) db.done = { text: "", houses: [] };
+      db.done.houses = [];
+      persist();
+      paintFieldMap();
+      renderJobs();
+      setStatus("Cleared yellow markers");
+    };
+  }
+}
+
+function openJobEditor(id) {
+  const job = (db.jobs || []).find((j) => String(j.id) === String(id));
+  if (!job) return;
+  leaveWx();
+  document.body.classList.remove("comm");
+  $("#view").innerHTML = `
+    <h3>Edit job</h3>
+    <label class="muted">Address</label>
+    <input id="job-edit-addr" type="text" value="${esc(job.address || "")}" placeholder="House address" />
+    <label class="muted">Notes</label>
+    <textarea id="job-edit-notes" rows="4" placeholder="Job notes">${esc(job.notes || "")}</textarea>
+    <label class="muted">Status</label>
+    <select id="job-edit-status">
+      <option value="open"${job.status === "open" || !job.status ? " selected" : ""}>Open</option>
+      <option value="done"${job.status === "done" ? " selected" : ""}>Done</option>
+      <option value="hold"${job.status === "hold" ? " selected" : ""}>On hold</option>
+    </select>
+    <div class="actions" style="margin-top:0.8rem">
+      <button type="button" class="primary" id="job-edit-save">Save</button>
+      <button type="button" id="job-edit-back">Back</button>
+      <button type="button" id="job-edit-del">Delete</button>
+    </div>`;
+  $("#job-edit-save").onclick = () => {
+    job.address = ($("#job-edit-addr")?.value || "").trim();
+    job.notes = ($("#job-edit-notes")?.value || "").trim();
+    job.status = $("#job-edit-status")?.value || "open";
+    upsertJob(db, job);
+    persist();
+    setStatus("Job saved");
+    renderJobs();
+  };
+  $("#job-edit-back").onclick = () => renderJobs();
+  $("#job-edit-del").onclick = () => {
+    if (!confirm(`Delete job "${job.address || "Unpinned"}"?`)) return;
+    deleteJob(db, job.id);
+    persist();
+    setStatus("Job deleted");
     renderJobs();
   };
 }
-
 function renderKeys() {
   leaveWx();
   document.body.classList.remove("comm");

@@ -1971,6 +1971,14 @@ body.wx-map-expanded .hs-sheet {
     max-height var(--map-expand-ms) var(--map-expand-ease),
     padding var(--sheet-reveal-ms) ease;
 }
+.hs-bottom-panel:not(.hs-sheet-open) .hs-field {
+  max-height: 0 !important;
+  opacity: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
+}
 .hs-field.hs-field-open {
   max-height: 2200px;
   opacity: 1;
@@ -1986,11 +1994,14 @@ body.wx-map-expanded .hs-field {
   pointer-events: none !important;
   transform: translate3d(0, 12px, 0);
 }
-.hs-field textarea#hs-done-text {
+.hs-field textarea#hs-done-text,
+#job-done-text {
   width: 100%; min-height: 6.5rem; margin: 0 0 0.55rem;
   background: var(--inset); border: 1px solid var(--line);
   padding: 0.55rem 0.7rem; font-size: 14px; line-height: 1.4;
 }
+.job-card-actions { margin-top: 0.45rem; gap: 0.35rem; }
+.job-card-actions button { width: auto; font-size: 13px; padding: 0.35rem 0.7rem; }
 .hs-field-head { display: flex; justify-content: space-between; gap: 0.8rem; align-items: baseline; margin: 0.4rem 0 0.45rem; }
 .hs-mark-tools { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.55rem; }
 .hs-mark-tools select, .hs-mark-tools button { width: auto; font-size: 13px; padding: 0.4rem 0.65rem; }
