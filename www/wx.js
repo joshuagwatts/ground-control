@@ -2801,12 +2801,18 @@ function erodeBinary(grid, w, h) {
   const out = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      let on = 1;
+      let on = grid[y * w + x] ? 1 : 0;
+      if (!on) {
+        out[y * w + x] = 0;
+        continue;
+      }
       for (let dy = -1; dy <= 1 && on; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           const xx = x + dx;
           const yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h || !grid[yy * w + xx]) on = 0;
+          // Ignore OOB — don't eat the swath edge on thin grids
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          if (!grid[yy * w + xx]) on = 0;
         }
       }
       out[y * w + x] = on;

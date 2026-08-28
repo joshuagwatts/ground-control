@@ -47,9 +47,12 @@ function erodeBinary(grid, w, h) {
 }
 
 const w = 5;
-const h = 1;
-const g = new Uint8Array([1, 0, 1, 0, 0]);
+const h = 3;
+// Gap at (1,1) between two hail footprint cells — close should fill it
+const g = new Uint8Array(w * h);
+g[1 * w + 0] = 1;
+g[1 * w + 2] = 1;
 const closed = erodeBinary(dilateBinary(g, w, h), w, h);
-assert.equal(closed[1], 1, "morph close fills one-cell hailswath gap");
+assert.equal(closed[1 * w + 1], 1, "morph close fills one-cell hailswath gap");
 
 console.log("hail-swath ok");
