@@ -2751,11 +2751,278 @@ function hailFootprintM(sizeIn, source) {
   return Math.max(280, Math.min(2200, (spot ? 360 : 540) + s * (spot ? 360 : 480)));
 }
 
+/**
+ * Hailswath / MESH-style region builder (Cheresnick & Basara 2005; MRMS MESH contouring).
+ * Rasterize size-weighted footprints onto a local km grid, morphologically close gaps
+ * between volume-scan-like hits, then extract nested isosurfaces at hail-size thresholds.
+ */
+const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.5, 2.0, 2.5];
+
+function chaikinSmoothRing(ring, iters = 2) {
+  if (!ring || ring.length < 4) return ring;
+  let pts = ring.slice();
+  const closed =
+    pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
+  if (!closed) pts = pts.concat([pts[0]]);
+  for (let n = 0; n < iters; n++) {
+    const next = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    next.push(next[0]);
+    pts = next;
+  }
+  return pts;
+}
+
+function dilateBinary(grid, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dy = -1; dy <= 1 && !on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          if (grid[yy * w + xx]) on = 1;
+        }
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+function erodeBinary(grid, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 1;
+      for (let dy = -1; dy <= 1 && on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h || !grid[yy * w + xx]) on = 0;
+        }
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+/** Morphological close — fills small gaps between successive radar footprints (Hailswath smoothing). */
+function morphClose(grid, w, h, passes = 1) {
+  let g = grid;
+  for (let i = 0; i < passes; i++) g = erodeBinary(dilateBinary(g, w, h), w, h);
+  return g;
+}
+
+/**
+ * Connected components on a binary grid → smoothed exterior rings (Hailswath footprint union).
+ * Uses edge-cell hulls (stable) rather than fragile contour walking.
+ */
+function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24) {
+  const seen = new Uint8Array(w * h);
+  const rings = [];
+  const isOn = (x, y) => x >= 0 && y >= 0 && x < w && y < h && grid[y * w + x];
+  const DX = [1, -1, 0, 0, 1, 1, -1, -1];
+  const DY = [0, 0, 1, -1, 1, -1, 1, -1];
+
+  for (let y = 0; y < h && rings.length < maxRings; y++) {
+    for (let x = 0; x < w && rings.length < maxRings; x++) {
+      const start = y * w + x;
+      if (!grid[start] || seen[start]) continue;
+      const q = [[x, y]];
+      seen[start] = 1;
+      const edgePts = [];
+      let qi = 0;
+      while (qi < q.length) {
+        const [cx, cy] = q[qi++];
+        let edge = false;
+        for (let k = 0; k < 8; k++) {
+          const nx = cx + DX[k];
+          const ny = cy + DY[k];
+          if (!isOn(nx, ny)) {
+            edge = true;
+            continue;
+          }
+          const ni = ny * w + nx;
+          if (seen[ni]) continue;
+          seen[ni] = 1;
+          q.push([nx, ny]);
+        }
+        if (edge || q.length === 1) {
+          edgePts.push({
+            lat: xyToLatLon((cx + 0.5) * cellKm, (cy + 0.5) * cellKm)[0],
+            lon: xyToLatLon((cx + 0.5) * cellKm, (cy + 0.5) * cellKm)[1],
+          });
+        }
+      }
+      if (edgePts.length < 3) continue;
+      const hull = convexHullLatLon(edgePts);
+      if (!hull || hull.length < 3) continue;
+      const closed = hull[0][0] === hull[hull.length - 1][0] && hull[0][1] === hull[hull.length - 1][1] ? hull : hull.concat([hull[0]]);
+      rings.push(chaikinSmoothRing(closed, 2));
+    }
+  }
+  return rings;
+}
+
+/**
+ * Build nested hail-swath polygons from point/radar hits.
+ * Inspired by MESH isosurfaces + Hailswath footprint accumulation.
+ */
+function buildHailSwathRings(rawPts, zone = {}) {
+  const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  // Prefer SWDI polygons as strong seeds when present
+  const swdiRings = [];
+  for (const p of pts) {
+    if (p.swdi_ring && p.swdi_ring.length >= 3) {
+      const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+      swdiRings.push({
+        ring: padPolygon(p.swdi_ring, Math.max(80, maxSz * 48)),
+        maxSize: maxSz,
+        hits: 1,
+        confirmed: false,
+        source: "radar-poly",
+      });
+    }
+  }
+
+  if (pts.length < 2 && !swdiRings.length) {
+    if (pts.length === 1) {
+      const p = pts[0];
+      const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+      return [
+        {
+          ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source), 14),
+          maxSize: sz,
+          hits: 1,
+          confirmed: isSpotterHail(p),
+          source: isSpotterHail(p) ? "spot+radar" : "radar-merge",
+        },
+      ];
+    }
+    return swdiRings;
+  }
+
+  const oLat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
+  const oLon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
+  const cos = Math.cos((oLat * Math.PI) / 180);
+  const toXY = (lat, lon) => ({
+    x: ((lon - oLon) * 111.32 * Math.max(0.2, cos)),
+    y: (lat - oLat) * 111.32,
+  });
+  const xyToLatLon = (xKm, yKm) => [
+    oLat + yKm / 111.32,
+    oLon + xKm / (111.32 * Math.max(0.2, cos)),
+  ];
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const kernels = pts.map((p) => {
+    const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+    const rKm = hailFootprintM(sz, p.source) / 1000;
+    const { x, y } = toXY(p.lat, p.lon);
+    minX = Math.min(minX, x - rKm);
+    maxX = Math.max(maxX, x + rKm);
+    minY = Math.min(minY, y - rKm);
+    maxY = Math.max(maxY, y + rKm);
+    return { x, y, rKm, size: sz, spot: isSpotterHail(p) };
+  });
+  const pad = 1.2;
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+
+  const span = Math.max(maxX - minX, maxY - minY, 2);
+  const cellKm = Math.min(1.1, Math.max(0.35, span / 48));
+  const w = Math.min(96, Math.max(12, Math.ceil((maxX - minX) / cellKm)));
+  const h = Math.min(96, Math.max(12, Math.ceil((maxY - minY) / cellKm)));
+  const field = new Float32Array(w * h);
+
+  // Accumulate max hail size (MESH-like) with soft disk kernels
+  for (const k of kernels) {
+    const gx0 = Math.max(0, Math.floor((k.x - k.rKm - minX) / cellKm));
+    const gx1 = Math.min(w - 1, Math.ceil((k.x + k.rKm - minX) / cellKm));
+    const gy0 = Math.max(0, Math.floor((k.y - k.rKm - minY) / cellKm));
+    const gy1 = Math.min(h - 1, Math.ceil((k.y + k.rKm - minY) / cellKm));
+    const r2 = k.rKm * k.rKm;
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const cx = minX + (gx + 0.5) * cellKm;
+        const cy = minY + (gy + 0.5) * cellKm;
+        const d2 = (cx - k.x) * (cx - k.x) + (cy - k.y) * (cy - k.y);
+        if (d2 > r2) continue;
+        // Soft falloff toward edge — continuous field for nicer isosurfaces
+        const t = 1 - Math.sqrt(d2) / Math.max(0.05, k.rKm);
+        const contrib = k.size * (0.55 + 0.45 * t);
+        const i = gy * w + gx;
+        if (contrib > field[i]) field[i] = contrib;
+      }
+    }
+  }
+
+  const confirmed = kernels.some((k) => k.spot);
+  const out = [...swdiRings];
+  const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
+
+  // Nested isosurfaces: outer (small hail) first → inner severe cores
+  for (const thr of HAIL_SWATH_THRESHOLDS) {
+    const binary = new Uint8Array(w * h);
+    let any = 0;
+    for (let i = 0; i < field.length; i++) {
+      if (field[i] >= thr) {
+        binary[i] = 1;
+        any = 1;
+      }
+    }
+    if (!any) continue;
+    // Close small gaps between successive radar footprints (Hailswath paper)
+    const closed = morphClose(binary, w, h, thr <= 1 ? 2 : 1);
+    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
+    for (const ring of rings) {
+      if (!ring || ring.length < 4) continue;
+      out.push({
+        ring: padPolygon(ring, Math.max(60, thr * 40)),
+        maxSize: thr,
+        hits: kernels.filter((k) => k.size >= thr).length,
+        confirmed: confirmed && thr >= 1,
+        source: confirmed ? "spot+radar" : "mesh-swath",
+      });
+    }
+  }
+
+  if (!out.length) {
+    return [
+      {
+        ring: topoZoneRing(zone, rawPts),
+        maxSize: parseFloat(zone.size_in) || 0.75,
+        hits: pts.length,
+        confirmed,
+        source: confirmed ? "spot+radar" : "radar-merge",
+      },
+    ];
+  }
+  return out;
+}
+
 function buildDetailedZoneRings(zone, rawPts) {
-  const day = zone.date;
+  // Prefer research-style nested swaths when we have enough hits
   const hits = (rawPts || []).filter(
-    (p) => String(p.date || "").slice(0, 10) === day && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+    (p) => String(p.date || "").slice(0, 10) === zone.date && Number.isFinite(p.lat) && Number.isFinite(p.lon),
   );
+  if (hits.length >= 2 || hits.some((p) => p.swdi_ring?.length >= 3)) {
+    return buildHailSwathRings(hits.length ? hits : rawPts, zone);
+  }
   const fromZone = (zone.zone_pts || []).map((p) => ({
     lat: p.lat,
     lon: p.lon,
@@ -2990,7 +3257,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
     const zNow = map?.getZoom?.() || 14;
-    // Far out: topo regions carry the look — skip glitter dots until you're closer
+    // Far out: hide glitter dots; nested swath polygons carry the weather look
     const showRadarDots = zNow >= 13.5;
     const showSpotDots = zNow >= 12;
     const showRadarHalos = zNow >= 15.5;
