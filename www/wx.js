@@ -298,6 +298,20 @@ let windFrameIdx = 0;
 let windPlayTimer = 0;
 let windPlaying = false;
 let windFetchGen = 0;
+/** Shared HailScope live playhead (precip + wind on one scrubber). */
+let liveTlIdx = 0;
+/** Amber wind noise field — distinct from precip greens/blues. */
+const WIND_FIELD_COLOR = "#ff9f1a";
+const windNoise = {
+  canvas: null,
+  ctx: null,
+  particles: [],
+  frame: null,
+  raf: 0,
+  lastTs: 0,
+  bound: false,
+  reseedTimer: 0,
+};
 /** Map + timeline layer visibility. */
 export const wxTimelineFilters = { precip: true, hail: true, wind: true, temp: true };
 let wxSuppressMapTap = false;
@@ -1412,10 +1426,6 @@ function refreshZoomScaledUi(force = false) {
     m.setRadius(Math.max(spot ? 1.4 : 0.9, br * dotUi));
   }
   applyHailStrokeZoomStyles(force);
-  if (windFieldCenterDot?.setRadius) {
-    const br = windFieldCenterDot.options.baseRadius || 10;
-    windFieldCenterDot.setRadius(Math.max(3, br * ui));
-  }
   for (const [id, marker] of livePinMarkers.done) {
     marker.setIcon(donePinIcon(fieldOverlay.donePinScale, ui));
   }
@@ -1686,10 +1696,12 @@ export function stopRadarPlay() {
     clearTimeout(radarPlayRaf);
     radarPlayRaf = null;
   }
-  const btn = document.getElementById("wx-radar-play");
-  if (btn) {
-    btn.textContent = "PLAY";
-    btn.classList.remove("on");
+  for (const id of ["wx-radar-play", "hs-live-play"]) {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.textContent = "PLAY";
+      btn.classList.remove("on");
+    }
   }
 }
 
@@ -1700,27 +1712,79 @@ export function stopHourPlay() {
   }
 }
 
-function hailScopeRadarScrubberInnerHtml() {
-  if (!hailScopeRadarActive() || radarFrames.length < 2 || !hailScopeRadarFilters.precip) return "";
-  const max = radarFrames.length - 1;
-  return `<div class="wx-radar-scrub-row">
-    <button type="button" id="wx-radar-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
-    <span class="wx-radar-tag">LIVE PRECIP</span>
-    <input type="range" id="wx-radar-range" min="0" max="${max}" value="${radarFrameIdx}" step="1" />
-    <span id="wx-radar-label" class="wx-radar-label">…</span>
-  </div>`;
+function hailScopeLiveTimeline() {
+  const f = hailScopeRadarFilters;
+  // Prefer RainViewer cadence when precip is on — denser than hourly wind.
+  if (f.precip && radarFrames.length >= 2) {
+    return radarFrames.map((fr, i) => ({ time: fr.time, radarIdx: i }));
+  }
+  if (f.wind && windFrames.length >= 2) {
+    return windFrames.map((fr, i) => ({ time: fr.time, windIdx: i }));
+  }
+  return [];
 }
 
-function hailScopeWindScrubberInnerHtml() {
-  if (!hailScopeRadarActive() || !hailScopeRadarFilters.wind || windFrames.length < 2) return "";
-  const max = windFrames.length - 1;
-  const frame = windFrames[windFrameIdx] || windFrames[0];
-  const tag = frame ? `${Math.round(frame.speed)} mph` : "WIND";
-  return `<div class="wx-radar-scrub-row wx-wind-scrub-row">
-    <button type="button" id="wx-wind-play" class="wx-play-btn${windPlaying ? " on" : ""}">${windPlaying ? "PAUSE" : "PLAY"}</button>
-    <span class="wx-radar-tag wx-wind-tag">LIVE WIND</span>
-    <input type="range" id="wx-wind-range" min="0" max="${max}" value="${windFrameIdx}" step="1" />
-    <span id="wx-wind-label" class="wx-radar-label">${tag}</span>
+function nearestFrameIdx(frames, timeSec) {
+  let best = 0;
+  let bestD = Infinity;
+  const t = Number(timeSec) || 0;
+  for (let i = 0; i < frames.length; i++) {
+    const d = Math.abs((Number(frames[i].time) || 0) - t);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function updateHailScopeLiveLabel(timeSec) {
+  const label = document.getElementById("hs-live-label") || document.getElementById("wx-radar-label");
+  if (!label) return;
+  const d = new Date((Number(timeSec) || 0) * 1000);
+  const when = Number.isFinite(d.getTime())
+    ? d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "…";
+  const windOn = hailScopeRadarFilters.wind && windFrames[windFrameIdx];
+  const mph = windOn ? ` · ${Math.round(windFrames[windFrameIdx].speed || 0)} mph` : "";
+  label.textContent = `${when}${mph}`;
+}
+
+export function setHailScopeLiveFrame(idx, { crossfade = false } = {}) {
+  const steps = hailScopeLiveTimeline();
+  if (!steps.length) return;
+  const i = Math.max(0, Math.min(steps.length - 1, Number(idx) || 0));
+  liveTlIdx = i;
+  const t = steps[i].time;
+  if (hailScopeRadarFilters.precip && radarFrames.length) {
+    setRadarFrame(nearestFrameIdx(radarFrames, t), { crossfade });
+  }
+  if (hailScopeRadarFilters.wind && windFrames.length) {
+    const wi = nearestFrameIdx(windFrames, t);
+    windFrameIdx = wi;
+    paintWindFieldFromFrame(windFrames[wi]);
+  }
+  updateHailScopeLiveLabel(t);
+  const range = document.getElementById("hs-live-range") || document.getElementById("wx-radar-range");
+  if (range && String(range.value) !== String(i)) range.value = String(i);
+}
+
+function hailScopeLiveScrubberInnerHtml() {
+  if (!hailScopeRadarActive()) return "";
+  const f = hailScopeRadarFilters;
+  if (!f.precip && !f.wind) return "";
+  const steps = hailScopeLiveTimeline();
+  if (steps.length < 2) return "";
+  const max = steps.length - 1;
+  const idx = Math.max(0, Math.min(max, liveTlIdx));
+  const tag =
+    f.precip && f.wind ? "LIVE" : f.precip ? "LIVE PRECIP" : "LIVE WIND";
+  const tagCls = f.wind && !f.precip ? "wx-radar-tag hs-live-tag-wind" : "wx-radar-tag";
+  return `<div class="wx-radar-scrub-row">
+    <button type="button" id="hs-live-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
+    <span class="${tagCls}">${tag}</span>
+    <input type="range" id="hs-live-range" min="0" max="${max}" value="${idx}" step="1" />
+    <span id="hs-live-label" class="wx-radar-label">…</span>
   </div>`;
 }
 
@@ -1728,21 +1792,50 @@ export function hailScopeRadarBarHtml(settings) {
   if (settings) hailScopeRadarOn = settings.showRadar !== false;
   if (!hailScopeRadarActive()) return "";
   const f = hailScopeRadarFilters;
-  const radar = hailScopeRadarScrubberInnerHtml();
-  const wind = hailScopeWindScrubberInnerHtml();
+  const scrub = hailScopeLiveScrubberInnerHtml();
   return `<div class="hs-radar-bar" id="hs-radar-bar">
     <div class="wx-tl-filters hs-radar-filters">
       <button type="button" data-hs-radar-fl="precip" class="${f.precip ? "on" : ""}">PRECIP</button>
       <button type="button" data-hs-radar-fl="wind" class="${f.wind ? "on" : ""}">WIND</button>
     </div>
-    ${radar ? `<div class="wx-radar-scrub" id="wx-radar-scrub">${radar}</div>` : ""}
-    ${wind ? `<div class="wx-radar-scrub wx-wind-scrub" id="wx-wind-scrub">${wind}</div>` : ""}
+    ${scrub ? `<div class="wx-radar-scrub hs-live-scrub" id="hs-live-scrub">${scrub}</div>` : ""}
   </div>`;
 }
 
+function bindHailScopeLiveScrubber(root = document) {
+  const range = root.querySelector?.("#hs-live-range") || document.getElementById("hs-live-range");
+  const play = root.querySelector?.("#hs-live-play") || document.getElementById("hs-live-play");
+  if (!range) return;
+  setHailScopeLiveFrame(liveTlIdx);
+  range.oninput = () => {
+    stopRadarPlay();
+    stopWindPlay();
+    setHailScopeLiveFrame(range.value);
+  };
+  if (play) {
+    play.onclick = () => {
+      if (radarPlaying) {
+        stopRadarPlay();
+        return;
+      }
+      const steps = hailScopeLiveTimeline();
+      if (steps.length < 2) return;
+      play.textContent = "PAUSE";
+      play.classList.add("on");
+      radarPlaying = true;
+      const tick = () => {
+        if (!radarPlaying) return;
+        const next = (liveTlIdx + 1) % hailScopeLiveTimeline().length;
+        setHailScopeLiveFrame(next, { crossfade: true });
+        radarPlayRaf = window.setTimeout(tick, 520);
+      };
+      tick();
+    };
+  }
+}
+
 export function bindHailScopeRadar(root = document) {
-  bindRadarScrubber(root);
-  bindWindScrubber(root);
+  bindHailScopeLiveScrubber(root);
   root.querySelectorAll("[data-hs-radar-fl]").forEach((btn) => {
     btn.onclick = async () => {
       const k = btn.dataset.hsRadarFl;
@@ -1753,7 +1846,20 @@ export function bindHailScopeRadar(root = document) {
       }
       if (k === "wind" && hailScopeRadarFilters.wind) {
         await ensureWindFrames({ force: true });
+        // Keep shared playhead time when wind joins precip.
+        if (hailScopeRadarFilters.precip && radarFrames[radarFrameIdx]) {
+          windFrameIdx = nearestFrameIdx(windFrames, radarFrames[radarFrameIdx].time);
+        }
         paintWindFieldFromFrame(windFrames[windFrameIdx] || windFrames[windFrames.length - 1]);
+      }
+      // Snap live index onto the active timeline without jumping the clock.
+      const steps = hailScopeLiveTimeline();
+      if (steps.length) {
+        const prefer =
+          (hailScopeRadarFilters.precip && radarFrames[radarFrameIdx]?.time) ||
+          (hailScopeRadarFilters.wind && windFrames[windFrameIdx]?.time) ||
+          steps[Math.min(liveTlIdx, steps.length - 1)].time;
+        liveTlIdx = nearestFrameIdx(steps, prefer);
       }
       syncHailScopeRadarLayers();
       const host = root.querySelector?.("#hs-radar-bar") || document.getElementById("hs-radar-bar");
@@ -1833,6 +1939,7 @@ export async function ensureHailScopeRadarLayers(settings) {
   const shell = document.getElementById("hs-map-shell");
   const bar = document.getElementById("hs-radar-bar");
   if (shell && bar && hailScopeRadarActive()) {
+    if (radarFrames.length) liveTlIdx = radarFrameIdx;
     bar.outerHTML = hailScopeRadarBarHtml();
     bindHailScopeRadar(shell);
   }
@@ -1893,6 +2000,12 @@ export function syncHailScopeRadar(settings) {
   if (hailScopeRadarFilters.wind) {
     void ensureWindFrames().then(() => {
       if (!hailScopeRadarActive() || !hailScopeRadarFilters.wind) return;
+      if (hailScopeRadarFilters.precip && radarFrames[radarFrameIdx]) {
+        windFrameIdx = nearestFrameIdx(windFrames, radarFrames[radarFrameIdx].time);
+        liveTlIdx = radarFrameIdx;
+      } else {
+        liveTlIdx = windFrameIdx;
+      }
       paintWindFieldFromFrame(windFrames[windFrameIdx] || windFrames[windFrames.length - 1]);
       const shell = document.getElementById("hs-map-shell");
       const bar = document.getElementById("hs-radar-bar");
@@ -1901,6 +2014,8 @@ export function syncHailScopeRadar(settings) {
         bindHailScopeRadar(shell);
       }
     });
+  } else if (hailScopeRadarFilters.precip && radarFrames.length) {
+    liveTlIdx = radarFrameIdx;
   }
 }
 
@@ -3909,7 +4024,36 @@ async function refreshWindField() {
   }
 }
 
+function windHash01(n) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function stopWindNoiseAnim() {
+  if (windNoise.raf) {
+    cancelAnimationFrame(windNoise.raf);
+    windNoise.raf = 0;
+  }
+  windNoise.lastTs = 0;
+}
+
 function clearWindFieldLayer() {
+  stopWindNoiseAnim();
+  if (windNoise.reseedTimer) {
+    clearTimeout(windNoise.reseedTimer);
+    windNoise.reseedTimer = 0;
+  }
+  if (windNoise.canvas?.parentNode) {
+    try {
+      windNoise.canvas.remove();
+    } catch {
+      /* ignore */
+    }
+  }
+  windNoise.canvas = null;
+  windNoise.ctx = null;
+  windNoise.particles = [];
+  windNoise.frame = null;
   if (windFieldLayer) {
     try {
       map.removeLayer(windFieldLayer);
@@ -3921,76 +4065,172 @@ function clearWindFieldLayer() {
   windFieldCenterDot = null;
 }
 
-function windColor(mph) {
-  const n = Number(mph) || 0;
-  if (n >= 50) return "#ff4d4d";
-  if (n >= 35) return "#f0b429";
-  if (n >= 20) return "#5bbcff";
-  return "#7dd3fc";
+function onWindMapGeom() {
+  if (!windNoise.frame) return;
+  if (windNoise.reseedTimer) clearTimeout(windNoise.reseedTimer);
+  windNoise.reseedTimer = window.setTimeout(() => {
+    windNoise.reseedTimer = 0;
+    if (!windNoise.frame || !map) return;
+    sizeWindNoiseCanvas();
+    seedWindNoiseParticles();
+    drawWindNoiseField(performance.now());
+  }, 80);
 }
 
-function windArrowIcon(dirFrom, speed, color) {
-  // Meteorological direction is where wind comes FROM — draw flow TO.
-  const to = (Number(dirFrom) + 180) % 360;
-  const len = Math.max(14, Math.min(28, 10 + (Number(speed) || 0) * 0.35));
-  return window.L.divIcon({
-    className: "hs-wind-arrow-icon",
-    iconSize: [len, len],
-    iconAnchor: [len / 2, len / 2],
-    html: `<span class="hs-wind-arrow" style="--wind-rot:${to.toFixed(1)}deg;--wind-color:${color};--wind-len:${len}px" aria-hidden="true"></span>`,
-  });
+function ensureWindNoiseCanvas() {
+  if (!map) return null;
+  if (!map.getPane("windField")) {
+    map.createPane("windField");
+    const pane = map.getPane("windField");
+    pane.style.zIndex = 460;
+    pane.style.pointerEvents = "none";
+  }
+  if (!windNoise.canvas) {
+    const canvas = document.createElement("canvas");
+    canvas.className = "hs-wind-noise";
+    canvas.setAttribute("aria-hidden", "true");
+    map.getPane("windField").appendChild(canvas);
+    windNoise.canvas = canvas;
+    windNoise.ctx = canvas.getContext("2d");
+    if (!windNoise.bound) {
+      windNoise.bound = true;
+      map.on("move zoom resize viewreset", onWindMapGeom);
+    }
+  }
+  sizeWindNoiseCanvas();
+  return windNoise.ctx;
+}
+
+function sizeWindNoiseCanvas() {
+  if (!map || !windNoise.canvas || !windNoise.ctx) return;
+  const size = map.getSize();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  windNoise.canvas.width = Math.max(1, Math.floor(size.x * dpr));
+  windNoise.canvas.height = Math.max(1, Math.floor(size.y * dpr));
+  windNoise.canvas.style.width = `${size.x}px`;
+  windNoise.canvas.style.height = `${size.y}px`;
+  windNoise.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function seedWindNoiseParticles() {
+  if (!map) return;
+  const size = map.getSize();
+  // Speckle density like precip noise — jittered cells, not a rigid arrow grid.
+  const target = Math.min(240, Math.max(70, Math.round((size.x * size.y) / 850)));
+  const aspect = size.x / Math.max(1, size.y);
+  const cols = Math.max(5, Math.round(Math.sqrt(target * aspect)));
+  const rows = Math.max(5, Math.round(target / cols));
+  const particles = [];
+  let id = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const jx = windHash01(id * 3.17 + 0.71);
+      const jy = windHash01(id * 5.91 + 1.37);
+      particles.push({
+        x: ((c + jx) / cols) * size.x,
+        y: ((r + jy) / rows) * size.y,
+        phase: windHash01(id * 9.23),
+        lenJ: 0.55 + windHash01(id * 2.41) * 0.9,
+        dirJ: (windHash01(id * 4.13) - 0.5) * 22,
+        alpha: 0.22 + windHash01(id * 6.61) * 0.58,
+      });
+      id += 1;
+    }
+  }
+  windNoise.particles = particles;
+}
+
+function drawWindNoiseField(ts) {
+  const ctx = windNoise.ctx;
+  const frame = windNoise.frame;
+  if (!ctx || !frame || !map) return;
+  const size = map.getSize();
+  ctx.clearRect(0, 0, size.x, size.y);
+  const spd = Number(frame.speed) || 0;
+  const gust = Number(frame.gust) || spd;
+  // Meteorological FROM → flow TO (0 = north).
+  const baseTo = (((Number(frame.dir) || 0) + 180) * Math.PI) / 180;
+  const baseLen = Math.max(5, Math.min(16, 4.5 + spd * 0.26));
+  const pulseBoost = 0.55 + Math.min(0.45, gust / 55);
+
+  for (const p of windNoise.particles) {
+    const ang = baseTo + (p.dirJ * Math.PI) / 180;
+    const breathe = 0.88 + 0.12 * Math.sin(ts / 1100 + p.phase * 6.283);
+    const len = baseLen * p.lenJ * breathe;
+    const sx = Math.sin(ang) * len;
+    const sy = -Math.cos(ang) * len;
+    const x0 = p.x - sx * 0.4;
+    const y0 = p.y - sy * 0.4;
+    const x1 = p.x + sx * 0.6;
+    const y1 = p.y + sy * 0.6;
+    ctx.globalAlpha = Math.min(0.92, p.alpha * pulseBoost);
+    ctx.strokeStyle = WIND_FIELD_COLOR;
+    ctx.fillStyle = WIND_FIELD_COLOR;
+    ctx.lineWidth = 1.25;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    // Tiny tip — reads as motion flecks, not a heavy arrow grid.
+    const tip = Math.max(2.2, len * 0.22);
+    const ax = Math.sin(ang + 2.7) * tip;
+    const ay = -Math.cos(ang + 2.7) * tip;
+    const bx = Math.sin(ang - 2.7) * tip;
+    const by = -Math.cos(ang - 2.7) * tip;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x1 + ax, y1 + ay);
+    ctx.lineTo(x1 + bx, y1 + by);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function startWindNoiseAnim() {
+  if (windNoise.raf) return;
+  const loop = (ts) => {
+    const want =
+      windNoise.frame &&
+      map &&
+      (activeWxProduct === "wind" || (hailScopeRadarActive() && hailScopeRadarFilters.wind));
+    if (!want) {
+      windNoise.raf = 0;
+      return;
+    }
+    const frame = windNoise.frame;
+    const spd = Number(frame.speed) || 0;
+    const ang = (((Number(frame.dir) || 0) + 180) * Math.PI) / 180;
+    const dt = windNoise.lastTs ? Math.min(48, ts - windNoise.lastTs) : 16;
+    windNoise.lastTs = ts;
+    // Slow advection — suggests flow without thrashing markers.
+    const drift = (0.012 + spd * 0.00105) * dt;
+    const size = map.getSize();
+    const pad = 24;
+    for (const p of windNoise.particles) {
+      p.x += Math.sin(ang) * drift;
+      p.y += -Math.cos(ang) * drift;
+      if (p.x < -pad) p.x += size.x + pad * 2;
+      else if (p.x > size.x + pad) p.x -= size.x + pad * 2;
+      if (p.y < -pad) p.y += size.y + pad * 2;
+      else if (p.y > size.y + pad) p.y -= size.y + pad * 2;
+    }
+    drawWindNoiseField(ts);
+    windNoise.raf = requestAnimationFrame(loop);
+  };
+  windNoise.raf = requestAnimationFrame(loop);
 }
 
 function paintWindFieldFromFrame(frame) {
-  if (!map || !window.L || !frame) return;
-  clearWindFieldLayer();
-  const b = map.getBounds?.();
-  if (!b) return;
-  const spd = Number(frame.speed) || 0;
-  const gust = Number(frame.gust) || spd;
-  const dir = Number(frame.dir) || 0;
-  const color = windColor(gust || spd);
-  windFieldLayer = window.L.layerGroup();
-  if (!map.getPane("windField")) {
-    map.createPane("windField");
-    map.getPane("windField").style.zIndex = 460;
-    map.getPane("windField").style.pointerEvents = "none";
-  }
-  const rows = 5;
-  const cols = 6;
-  const south = b.getSouth();
-  const north = b.getNorth();
-  const west = b.getWest();
-  const east = b.getEast();
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const lat = south + ((r + 0.5) / rows) * (north - south);
-      const lon = west + ((c + 0.5) / cols) * (east - west);
-      window.L.marker([lat, lon], {
-        pane: "windField",
-        icon: windArrowIcon(dir, spd, color),
-        interactive: false,
-        keyboard: false,
-      }).addTo(windFieldLayer);
-    }
-  }
-  const center = map.getCenter();
-  windFieldCenterDot = window.L.circleMarker([center.lat, center.lng], {
-    pane: "windField",
-    radius: Math.max(4, Math.min(10, 4 + spd / 8)),
-    color,
-    fillColor: color,
-    fillOpacity: 0.55,
-    weight: 1.4,
-    opacity: 0.9,
-    interactive: false,
-  }).addTo(windFieldLayer);
-  windFieldCenterDot.bindTooltip(
-    `Wind ${Math.round(spd)} mph · gust ${Math.round(gust)} · from ${Math.round(dir)}°`,
-    { direction: "top", opacity: 0.92 },
-  );
-  windFieldLayer.addTo(map);
+  if (!map || !frame) return;
+  windNoise.frame = frame;
+  ensureWindNoiseCanvas();
+  if (!windNoise.particles.length) seedWindNoiseParticles();
+  drawWindNoiseField(performance.now());
+  startWindNoiseAnim();
   updateWindScrubLabel(frame);
+  updateHailScopeLiveLabel(frame.time);
 }
 
 function updateWindScrubLabel(frame) {
@@ -4065,8 +4305,8 @@ export function setWindFrame(idx) {
   windFrameIdx = i;
   const frame = windFrames[i];
   paintWindFieldFromFrame(frame);
-  const range = document.getElementById("wx-wind-range");
-  if (range && String(range.value) !== String(i)) range.value = String(i);
+  const windRange = document.getElementById("wx-wind-range");
+  if (windRange && String(windRange.value) !== String(i)) windRange.value = String(i);
 }
 
 export function stopWindPlay() {
@@ -5058,8 +5298,10 @@ export function destroyMap() {
   stopFieldOverlay();
   hidePinScalePopover();
   clearWindFieldLayer();
+  windNoise.bound = false;
   windFrames = [];
   windFrameIdx = 0;
+  liveTlIdx = 0;
   houseLayer = null;
   lastHailDrawSig = "";
   mapBusy = 0;
@@ -5217,7 +5459,14 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     if (mapBusy > 0) return;
     document.getElementById("hs-map-shell")?.classList.remove("map-moving");
     if (activeWxProduct === "wind" || (hailScopeRadarActive() && hailScopeRadarFilters.wind)) {
-      void refreshWindField();
+      if (windNoise.frame) {
+        sizeWindNoiseCanvas();
+        seedWindNoiseParticles();
+        drawWindNoiseField(performance.now());
+        startWindNoiseAnim();
+      } else {
+        void refreshWindField();
+      }
     }
     scheduleHouseNumbers();
     // Widen storm footprint as the map covers more ground (merge into cache — no screen-space rebuild).

@@ -1884,8 +1884,9 @@ body.wx-map-expanded .hs-sheet {
 .hs-radar-top {
   position: absolute;
   z-index: 500;
-  left: 50%;
-  transform: translateX(-50%);
+  left: auto;
+  right: 12px;
+  transform: none;
   top: 12px;
   pointer-events: auto;
 }
@@ -1952,46 +1953,18 @@ body.wx-map-expanded .hs-sheet {
   padding-top: 0.15rem;
   border-top: 1px dashed var(--line);
 }
-.hs-radar-bar .wx-wind-scrub {
-  border-top-color: rgba(91, 188, 255, 0.35);
+.hs-radar-bar .wx-radar-scrub.hs-live-scrub {
+  border-top-color: rgba(255, 159, 26, 0.28);
 }
-.wx-wind-tag { color: #5bbcff !important; }
-.leaflet-div-icon.hs-wind-arrow-icon {
-  background: transparent !important;
-  border: none !important;
-}
-.hs-wind-arrow {
-  display: block;
-  width: var(--wind-len, 18px);
-  height: var(--wind-len, 18px);
-  transform: rotate(var(--wind-rot, 0deg));
-  transform-origin: 50% 50%;
-  position: relative;
-  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.55));
-}
-.hs-wind-arrow::before {
-  content: "";
+.wx-wind-tag,
+.hs-live-tag-wind { color: #ff9f1a !important; }
+.hs-wind-noise {
   position: absolute;
-  left: 50%;
-  top: 8%;
-  width: 2px;
-  height: 62%;
-  margin-left: -1px;
-  background: var(--wind-color, #5bbcff);
-  border-radius: 1px;
-  opacity: 0.95;
-}
-.hs-wind-arrow::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 4%;
-  width: 0;
-  height: 0;
-  margin-left: -5px;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-bottom: 8px solid var(--wind-color, #5bbcff);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
 }
 .hs-composer {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 720;
