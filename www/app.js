@@ -44,11 +44,9 @@ import {
   clearWxPin,
   clearSelectedStormDate,
   applyDonePinScaleLive,
-  revealHailBottomPanel,
   revealHailAddressPeek,
   revealHailStormSheet,
   advanceHailBottomReveal,
-  getHailBottomTier,
   syncHailBottomChrome,
   setWxMapExpanded,
   setMyLocationVisible,
@@ -64,7 +62,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.58";
+} from "./wx.js?v=0.2.57";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1555,31 +1553,29 @@ function paintLayerToggles() {
   };
 }
 
-function needsDoneGeocode() {
-  const text = (db.done?.text || "").trim();
-  if (!text) return false;
-  const parsed = parseDoneList(text);
-  if (!parsed.length) return false;
-  const houses = doneHouses();
-  if (houses.length !== parsed.length) return true;
-  return houses.some((h) => !Number.isFinite(Number(h.lat)));
-}
 
-async function ensureDoneHousesOnMap() {
-  if (doneBusy) return;
-  if (!needsDoneGeocode()) {
-    if (doneHouses().some((h) => Number.isFinite(Number(h.lat)))) paintFieldMap();
+async function ensureDoneHousesPlaced() {
+  const text = (db.done?.text || "").trim();
+  const lines = parseDoneList(text);
+  if (!lines.length) {
+    paintFieldMap();
     return;
   }
-  await loadDoneAddresses({ auto: true });
+  const houses = doneHouses();
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (placed >= lines.length && houses.length >= lines.length) {
+    paintFieldMap();
+    return;
+  }
+  if (!doneBusy) await loadDoneAddresses();
 }
 
-async function loadDoneAddresses({ auto = false } = {}) {
+async function loadDoneAddresses() {
   if (doneBusy) return;
-  const text = ($("#hs-done-text")?.value ?? db.done?.text ?? "").trim();
+  const text = $("#hs-done-text")?.value ?? db.done?.text ?? "";
   const parsed = parseDoneList(text);
   if (!parsed.length) {
-    if (!auto) setStatus("Paste completed addresses first");
+    setStatus("Paste completed addresses first");
     return;
   }
   const lines = parsed.slice(0, MAX_DONE);
@@ -1695,6 +1691,7 @@ function wireHsShell(cfg) {
 }
 
 async function finishWxBoot(gen) {
+  void ensureDoneHousesPlaced();
   try {
     const center = await resolveMapCenter(db.settings);
     if (gen !== wxRenderGen || !isHailTab() || !mapIsLive()) return;
@@ -1724,7 +1721,7 @@ async function renderWx() {
     paintFieldSheet();
     wirePinSizeSlider();
     syncHailBottomChrome();
-    if (!wxPinSelected()) revealHailAddressPeek();
+    setWxMapExpanded(true); void ensureDoneHousesPlaced();
     setStatus("");
     return;
   }
@@ -1843,7 +1840,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   if (sheet) {
     sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
   }
-  revealHailBottomPanel();
+  revealHailAddressPeek();
   setStatus("Finding storms…");
   const onRefetch = async (filters) => {
     if (gen !== hailTapGen) return null;

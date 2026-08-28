@@ -3955,6 +3955,9 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       clearTimeout(houseTimer);
       houseTimer = 0;
     }
+    if (!wxSuppressMapTap && hailBottomTier !== "hidden") {
+      setWxMapExpanded(true);
+    }
   });
   map.on("zoom", () => scheduleZoomUiRefresh());
   map.on("zoomend", () => {
@@ -4061,7 +4064,7 @@ function pulseBottomPanel() {
   panel.classList.add("hs-bottom-reveal");
 }
 
-/** Slide up address search only — storm dates on the next swipe/tap. */
+/** Slide up address search only — storm sheet stays hidden until explicitly opened. */
 export function revealHailAddressPeek() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   hailBottomTier = "address";
@@ -4097,7 +4100,7 @@ export function revealHailStormSheet() {
   });
 }
 
-/** First step: address peek. Second step: storm sheet + fullscreen map. */
+/** First step: address peek. Second step: back to fullscreen map. */
 export function advanceHailBottomReveal() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (shell?.classList.contains("expanded") || hailBottomTier === "hidden") {
@@ -4105,14 +4108,13 @@ export function advanceHailBottomReveal() {
     return "address";
   }
   if (hailBottomTier === "address") {
-    revealHailStormSheet();
-    setWxMapExpanded(true, { keepTier: true });
-    return "sheet";
+    setWxMapExpanded(true);
+    return "hidden";
   }
   return hailBottomTier;
 }
 
-export function setWxMapExpanded(on, { scrollToSheet = false, keepTier = false } = {}) {
+export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const view = document.getElementById("view");
   if (!shell) return;
@@ -4124,7 +4126,7 @@ export function setWxMapExpanded(on, { scrollToSheet = false, keepTier = false }
   setWxMapExpanded._animTimer = setTimeout(() => {
     document.body.classList.remove("wx-map-animating");
   }, MAP_SHELL_MS);
-  if (on && !keepTier) hailBottomTier = "hidden";
+  if (on) hailBottomTier = "hidden";
   syncHailBottomChrome();
   if (view) view.style.overflowY = on ? "hidden" : "";
   const invalidate = () => {
@@ -4148,10 +4150,9 @@ export function setWxMapExpanded(on, { scrollToSheet = false, keepTier = false }
   }
 }
 
-/** Slide the address search + storm sheet into view after a map tap. */
+/** Slide the address peek into view after a map tap (storm sheet stays hidden). */
 export function revealHailBottomPanel() {
-  if (wxPinSelected()) revealHailStormSheet();
-  else revealHailAddressPeek();
+  revealHailAddressPeek();
 }
 
 export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
@@ -4180,17 +4181,13 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     return false;
   };
-  const revealStormSheetFullscreen = () => {
-    revealHailStormSheet();
-    setWxMapExpanded(true, { keepTier: true });
-  };
   const tryTabSwipeUp = () => {
     if (isExpanded()) {
       setWxMapExpanded(false, { scrollToSheet: true });
       return true;
     }
     if (hailBottomTier === "address") {
-      revealStormSheetFullscreen();
+      setWxMapExpanded(true);
       return true;
     }
     return false;
@@ -4211,7 +4208,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       }
       if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0) {
         e.preventDefault();
-        revealStormSheetFullscreen();
+        setWxMapExpanded(true);
         return;
       }
       if (isExpanded() && e.deltaY > 0 && !e.target.closest("#wx-map, .leaflet-container")) {
@@ -4247,7 +4244,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     if (!isExpanded() && hailBottomTier === "address" && touchAccum < -12) {
       e.preventDefault();
-      revealStormSheetFullscreen();
+      setWxMapExpanded(true);
       touchAccum = 0;
       return;
     }
@@ -4760,7 +4757,7 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
   const hailRows = filterHailRaw(data, wxFilters);
   drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
   renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
-  if (revealSheet) revealHailBottomPanel();
+  if (revealSheet) revealHailAddressPeek();
 }
 
 function hailScopeHtml(data, days, esc) {

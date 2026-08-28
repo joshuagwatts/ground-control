@@ -1642,38 +1642,6 @@ body.wx-map-expanded .hs-bottom-panel {
   pointer-events: none;
   overflow: hidden;
 }
-body.wx-map-expanded .hs-bottom-panel.hs-sheet-open {
-  opacity: 1;
-  transform: none;
-  max-height: min(42vh, 340px);
-  margin: 0;
-  padding: 0.5rem 0.75rem 0.35rem;
-  pointer-events: auto;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: calc(var(--tab-h) + var(--safe-bottom));
-  z-index: 9;
-  background: var(--bg);
-  box-shadow: 0 -6px 28px rgba(0, 0, 0, 0.4);
-  border-top: 1px solid var(--line);
-}
-body.wx-map-expanded .hs-bottom-panel.hs-sheet-open .hs-goto {
-  flex-shrink: 0;
-  padding-top: 0.35rem;
-}
-body.wx-map-expanded .hs-bottom-panel.hs-sheet-open .hs-sheet {
-  opacity: 1 !important;
-  transform: none;
-  max-height: none !important;
-  pointer-events: auto !important;
-  overflow-y: auto;
-  flex: 1 1 auto;
-  min-height: 0;
-}
 body.wx-map-expanded .hs-sheet {
   opacity: 1;
   transform: none;
