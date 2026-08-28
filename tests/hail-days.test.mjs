@@ -78,6 +78,7 @@ assert(
   "spotter flood must not drop SWDI radar hits",
 );
 assert(merged.filter((h) => h.source === "noaa-swdi-radar").length === 50, "keep the radar batch");
+assert(merged.filter((h) => h.source === "iem-lsr").length === 300, "spotters stay after radar priority");
 
 const spread = Array.from({ length: 45 }, (_, i) => ({
   date: "2026-03-15",

@@ -752,7 +752,7 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
   let cursor = new Date(today);
   // Wider rings use fewer, longer chunks so SWDI doesn't stall the sheet.
   const span = km >= 100 ? 45 : days > 365 ? 28 : days > 120 ? 18 : 13;
-  const maxChunks = km >= 100 ? Math.min(12, Math.ceil(days / span) + 1) : Math.min(24, Math.ceil(days / span) + 1);
+  const maxChunks = Math.min(km >= 100 ? 18 : 28, Math.ceil(days / span) + 1);
   while (cursor > startLimit && chunks.length < maxChunks) {
     const chunkEnd = new Date(cursor);
     const chunkStart = new Date(cursor);
@@ -995,23 +995,27 @@ function hailZoneColor(sizeIn) {
 
 export function mergeHailRows(...groups) {
   const seen = new Set();
-  const uniq = [];
+  const spots = [];
+  const radar = [];
   for (const h of groups.flat()) {
     if (!h) continue;
     const key = `${String(h.date || "").slice(0, 10)}|${Number(h.lat).toFixed(3)}|${Number(h.lon).toFixed(3)}|${h.size_in}|${isSpotterHail(h) ? "s" : "r"}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    uniq.push(h);
+    if (isSpotterHail(h)) spots.push(h);
+    else radar.push(h);
   }
+  // Radar drives zones — never let a spotter flood push SWDI out of the cache.
+  const maxTotal = 3200;
+  const radarKeep = radar.slice(0, 2000);
+  const spotKeep = spots.slice(0, Math.max(0, maxTotal - radarKeep.length));
+  const uniq = [...radarKeep, ...spotKeep];
   uniq.sort((a, b) => {
     const ds = String(b.date || "").localeCompare(String(a.date || ""));
     if (ds) return ds;
     return (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
   });
-  // Keep radar + spotter — old 280/420 cap was dropping SWDI when the ring got wide.
-  const spots = uniq.filter(isSpotterHail);
-  const radar = uniq.filter((h) => !isSpotterHail(h));
-  return [...spots.slice(0, 900), ...radar.slice(0, 2400)];
+  return uniq;
 }
 
 /**
@@ -1436,18 +1440,17 @@ function refreshZoomScaledUi(force = false) {
 }
 
 function hailZoneOpacityBoost(base) {
-  // Unused for cut-out fills (pane opacity handles readability). Kept for stroke helpers.
-  return base;
-}
-
-/** Pane opacity so overlapping hail fills overwrite each other instead of stacking mud. */
-function hailFillPaneOpacity() {
   const z = map?.getZoom?.() ?? ZOOM_UI_REF;
   const sat = activeLayer === "sat";
-  let o = sat ? 0.4 : 0.34;
+  let o = sat ? base + 0.08 : base;
+  if (hasSelectedStormDates()) o += 0.06;
   if (z < 9) o += 0.04;
-  if (z < 7) o += 0.04;
-  return Math.min(sat ? 0.48 : 0.42, o);
+  return Math.min(sat ? 0.58 : 0.52, o);
+}
+
+/** Keep pane at 1 — per-shape fillOpacity handles overlap; pane opacity broke SVG zones on some devices. */
+function hailFillPaneOpacity() {
+  return 1;
 }
 
 function ensureHailPanes() {
@@ -2822,6 +2825,10 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, days).catch(() => []);
   const swdiFastP = fetchSwdiHail(lat, lon, fastKm, days);
   const spcFastP = fetchSpcReports(lat, lon, fastKm, 30);
+  const wideFetch = wideKm > fastKm + 1;
+  const lsrWideP = wideFetch ? fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []) : null;
+  const swdiWideP = wideFetch ? fetchSwdiHail(lat, lon, wideKm, days) : null;
+  const spcWideP = wideFetch ? fetchSpcReports(lat, lon, wideKm, 30) : null;
 
   const lsrFast = await lsrFastP;
   let hail = mergeHailRows([], [], lsrFast);
@@ -2847,16 +2854,12 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     wind,
     storms: enrichStormDates([], hail, wind),
     zillow_url: pickZillowUrl({ address: addr, zillow_url: placeHit.zillow_url }),
-    _meta: { fetchedDays: days, fetchedKm: fastKm, deep: false, partial: "fast", loading: wideKm > fastKm + 1 },
+    _meta: { fetchedDays: days, fetchedKm: fastKm, deep: false, partial: "fast", loading: wideFetch },
   };
   if (onPartial) onPartial(enriched);
 
-  if (wideKm > fastKm + 1) {
-    const [lsrWide, swdiWide, spcWide] = await Promise.all([
-      fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []),
-      fetchSwdiHail(lat, lon, wideKm, days),
-      fetchSpcReports(lat, lon, wideKm, 30),
-    ]);
+  if (wideFetch) {
+    const [lsrWide, swdiWide, spcWide] = await Promise.all([lsrWideP, swdiWideP, spcWideP]);
     hail = mergeHailRows(spcWide.hail || [], swdiWide || [], lsrWide, hail);
     wind = spcWide.wind?.length ? spcWide.wind : wind;
     enriched = {
@@ -2923,12 +2926,10 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
     const norm = normalizeDossier(remote) || local;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierWideKm());
-    if ((local.hail?.length || 0) > (norm.hail?.length || 0)) {
-      norm.hail = local.hail;
-      norm.wind = local.wind || [];
-      norm.storms = local.storms || [];
-    }
+    const merged = mergeHailRows(norm.hail || [], local.hail || []);
+    norm.hail = pinFilterHailRows(merged, lat, lon, dossierWideKm());
+    norm.wind = (local.wind?.length || 0) >= (norm.wind?.length || 0) ? local.wind : norm.wind;
+    norm.storms = local.storms?.length ? local.storms : norm.storms;
     norm._meta = local._meta || norm._meta;
     return norm;
   }
@@ -3781,7 +3782,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         radius: Math.max(50, Math.min(140, 48 + sz * 42)),
         color: "#ffcc00",
         fillColor: col.fill,
-        fillOpacity: 1,
+        fillOpacity: hailZoneOpacityBoost(sz >= 1 ? 0.44 : 0.36),
         weight: 3,
         opacity: 1,
         pane: "hailDots",
@@ -3804,13 +3805,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const isConfirm = sub.confirmed || sub.source === "spot+radar";
       fitPts.push(...sub.ring);
       const stroke = hailZoneStrokeStyle(isConfirm, sz);
+      const baseFill = isConfirm ? 0.44 : sz >= 1 ? 0.38 : 0.32;
       trackHailStroke(
         window.L.polygon(sub.ring, {
           color: col.stroke,
           fillColor: col.fill,
-          fillOpacity: 1,
+          fillOpacity: hailZoneOpacityBoost(baseFill),
           weight: stroke.weight + (sat && (map?.getZoom?.() || 14) < 13 ? 0.35 : 0),
-          opacity: 1,
+          opacity: Math.min(1, stroke.opacity + (sat ? 0.06 : 0)),
           dashArray: stroke.dashArray,
           pane: "hailFills",
           renderer: hailFillSvg,
@@ -3828,9 +3830,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
             color: col.core,
             fillColor: col.core,
-            fillOpacity: 1,
+            fillOpacity: hailZoneOpacityBoost(0.34),
             weight: coreStroke.weight,
-            opacity: 1,
+            opacity: coreStroke.opacity,
             dashArray: coreStroke.dashArray,
             pane: "hailFills",
             renderer: hailFillSvg,
@@ -3946,7 +3948,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
 
 function syncHazardLayers() {
   if (!map) return;
-  const showHail = wxTimelineFilters.hail || (hailScopeMode && activeWxProduct === "hail");
+  const showHail = hailScopeMode || wxTimelineFilters.hail || activeWxProduct === "hail";
   const showWind = wxTimelineFilters.wind;
   try {
     if (hailLayer) {
@@ -6450,6 +6452,7 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
 function syncHailStormDateSelection(data) {
   const days = hailScopeDays(data);
   if (!days.length) {
+    if (data?._meta?.loading) return;
     clearStormDateSelection();
     return;
   }
