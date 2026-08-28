@@ -60,13 +60,6 @@ export const HOUSE_ZONE_KM = 2.5;
 /** Cap is soft guidance only — user can overlay as many storm dates as they want. */
 export const MAX_STORM_DATES = 500;
 const HAIL_IN_CHOICES = [0, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6];
-const STORM_SIZE_CHOICES = [
-  { value: "any", label: "Any size" },
-  { value: "small", label: "Small+" },
-  { value: "medium", label: "Medium+" },
-  { value: "large", label: "Large+" },
-  { value: "giant", label: "Giant+" },
-];
 let wxFilters = { ...DEFAULT_FILTERS };
 const RADIUS_KM = [5, 10, 16, 25, 40, 50];
 let wxUnits = "imperial";
@@ -191,14 +184,6 @@ function hailInOptionHtml(cur = wxFilters.hailIn, { short = false } = {}) {
     const label = v === 0 ? (short ? "any" : "Any size") : short ? `${v}"` : `${v}″+`;
     const sel = Number(cur) === Number(v) ? " selected" : "";
     return `<option value="${v}"${sel}>${label}</option>`;
-  }).join("");
-}
-
-function stormSizeOptionHtml(cur = wxFilters.stormSize) {
-  const c = String(cur || "any");
-  return STORM_SIZE_CHOICES.map((o) => {
-    const sel = c === o.value ? " selected" : "";
-    return `<option value="${o.value}"${sel}>${o.label}</option>`;
   }).join("");
 }
 
@@ -373,7 +358,6 @@ function placeContactHtml(data, esc) {
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
-  const mail = String(data.owner_mail || "").trim();
   const homestead = Boolean(data.homestead);
   const e164 = phoneDigits(phone);
   const assessorUrl = String(data.assessor_url || "").trim();
@@ -388,9 +372,7 @@ function placeContactHtml(data, esc) {
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
-  if (mail && mail.replace(/\s+/g, " ").toLowerCase() !== String(addr).replace(/\s+/g, " ").toLowerCase()) {
-    bits.push(`<span class="hs-mail-addr" title="Mailing address on assessor file">Mail: ${esc(mail)}</span>`);
-  }
+  // Mailing address omitted — street address is already shown above the contacts row.
   if (homestead) bits.push(`<span class="hs-homestead" title="Homestead exemption on file">Homestead</span>`);
   const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
   return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
@@ -6562,9 +6544,6 @@ function roofDossierHtml(data, esc, onResearch) {
           <label>HAIL ≥ <select id="wx-f-hail">
             ${hailInOptionHtml(wxFilters.hailIn, { short: true })}
           </select></label>
-          <label>STORM <select id="wx-f-storm">
-            ${stormSizeOptionHtml(wxFilters.stormSize)}
-          </select></label>
           <label>WIND ≥ <select id="wx-f-wind">
             <option value="0"${wxFilters.windMph == 0 ? " selected" : ""}>any</option>
             <option value="38"${wxFilters.windMph == 38 ? " selected" : ""}>38 mph</option>
@@ -6707,7 +6686,6 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
   };
   bind("#wx-f-km", "km", Number);
   bind("#wx-f-hail", "hailIn", Number);
-  bind("#wx-f-storm", "stormSize", String);
   bind("#wx-f-wind", "windMph", Number);
   bind("#wx-f-days", "days", Number);
   bind("#wx-f-year", "year", String);
@@ -6895,7 +6873,7 @@ function hailScopePinHtml(data, esc) {
   }
   const addr = data.address || "Dropped pin";
   const loading = data._meta?.loading ? " · loading radar…" : "";
-  return `<p class="hs-pin hs-pin-ready"><strong>${esc(addr)}</strong>${
+  return `<p class="hs-pin hs-pin-ready"><strong class="hs-addr-copy" role="button" tabindex="0" title="Tap to copy address" data-copy="${esc(addr)}">${esc(addr)}</strong>${
     pinLine || `Tap storm dates to overlay hail zones (multi-check)${loading}`
   }</p>`;
 }
@@ -6915,32 +6893,29 @@ function hailScopeHtml(data, days, esc) {
       ${
         viewport
           ? ""
-          : `<select id="hs-f-km" aria-label="Radius">
+          : `<label class="hs-select"><span class="hs-select-lab">Near</span><select id="hs-f-km" aria-label="Radius">
         ${radiusOptionHtml()}
-      </select>`
+      </select></label>`
       }
-      <select id="hs-f-hail" aria-label="Hail size">
+      <label class="hs-select"><span class="hs-select-lab">Hail</span><select id="hs-f-hail" aria-label="Hail size">
         ${hailInOptionHtml(wxFilters.hailIn)}
-      </select>
-      <select id="hs-f-storm" aria-label="Storm size">
-        ${stormSizeOptionHtml(wxFilters.stormSize)}
-      </select>
-      <select id="hs-f-days" aria-label="Time window">
+      </select></label>
+      <label class="hs-select"><span class="hs-select-lab">Window</span><select id="hs-f-days" aria-label="Time window">
         <option value="30"${wxFilters.days == 30 ? " selected" : ""}>30 days</option>
         <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90 days</option>
         <option value="180"${wxFilters.days == 180 ? " selected" : ""}>6 months</option>
         <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1 year</option>
         <option value="730"${wxFilters.days == 730 ? " selected" : ""}>2 years</option>
-      </select>
-      <select id="hs-f-year" aria-label="Year">
+      </select></label>
+      <label class="hs-select"><span class="hs-select-lab">Year</span><select id="hs-f-year" aria-label="Year">
         <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>All years</option>
         ${years.map((y) => `<option value="${esc(y)}"${String(wxFilters.year) === y ? " selected" : ""}>${esc(y)}</option>`).join("")}
-      </select>
-      <select id="hs-f-sort" aria-label="Sort">
+      </select></label>
+      <label class="hs-select"><span class="hs-select-lab">Sort</span><select id="hs-f-sort" aria-label="Sort">
         <option value="date"${wxFilters.sort !== "size" && wxFilters.sort !== "storm" ? " selected" : ""}>Newest</option>
         <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>Largest hail</option>
         <option value="storm"${wxFilters.sort === "storm" ? " selected" : ""}>Biggest storm</option>
-      </select>
+      </select></label>
     </div>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
@@ -6992,17 +6967,17 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
     const cached = (data?.hail || []).length;
     if (cached > 0) {
       const msg = hailSearchQ
-        ? "No storms match that search — clear search or loosen filters."
+        ? "Nothing matches that search — clear the search box or loosen filters."
         : viewport
-          ? "No storms match these filters — try a smaller hail/storm size or longer window."
-          : `No storms within ${formatDistance(filterKm())} — widen NEAR or loosen hail/storm filters.`;
+          ? "Adjust filters to see dates — try a longer window or lower hail size."
+          : `Adjust filters to see dates — widen Near (${formatDistance(filterKm())}) or lower hail size.`;
       return `<p class="hs-empty">${msg}</p>`;
     }
     const empty = viewport
-      ? "No hail signatures in this area for the selected window."
+      ? "Adjust filters or pan the map — try a longer time window."
       : hailSearchQ
-        ? "No storms match that search."
-        : "No hail signatures found near this address in the selected window.";
+        ? "Nothing matches that search — clear the search box or loosen filters."
+        : "Adjust filters to see storm dates — try a longer window or lower hail size.";
     return `<p class="hs-empty">${empty}</p>`;
   }
   return days
@@ -7077,10 +7052,68 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   };
   bind("#hs-f-km", "km", Number);
   bind("#hs-f-hail", "hailIn", Number);
-  bind("#hs-f-storm", "stormSize", String);
   bind("#hs-f-days", "days", Number);
   bind("#hs-f-year", "year", String);
   bind("#hs-f-sort", "sort", String);
+  bindHailAddrCopy(root);
+}
+
+async function copyTextToClipboard(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(t);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;left:-9999px;top:0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function bindHailAddrCopy(root) {
+  if (!root || root._hsAddrCopyBound) return;
+  root._hsAddrCopyBound = true;
+  const flash = (el, ok) => {
+    if (!el) return;
+    el.classList.toggle("copied", ok);
+    el.classList.toggle("copy-fail", !ok);
+    clearTimeout(el._copyFlash);
+    el._copyFlash = setTimeout(() => {
+      el.classList.remove("copied", "copy-fail");
+    }, 1200);
+  };
+  root.addEventListener("click", async (e) => {
+    const el = e.target?.closest?.(".hs-addr-copy");
+    if (!el || !root.contains(el)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const text = el.getAttribute("data-copy") || el.textContent || "";
+    const ok = await copyTextToClipboard(text);
+    flash(el, ok);
+  });
+  root.addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const el = e.target?.closest?.(".hs-addr-copy");
+    if (!el || !root.contains(el)) return;
+    e.preventDefault();
+    const text = el.getAttribute("data-copy") || el.textContent || "";
+    const ok = await copyTextToClipboard(text);
+    flash(el, ok);
+  });
 }
 
 export function renderHailScopeSheet(root, data, esc, { onRefetch, drawMap = true } = {}) {

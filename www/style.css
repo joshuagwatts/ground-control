@@ -2157,6 +2157,35 @@ body.wx-map-expanded .hs-field {
   font-size: 13px; color: var(--muted); margin: 0 0 0.85rem;
 }
 .hs-pin strong { display: block; color: var(--text); font-size: 1.05rem; font-weight: 650; margin-bottom: 0.15rem; }
+.hs-addr-copy {
+  cursor: pointer;
+  border-radius: 6px;
+  margin: -0.1rem -0.25rem 0.15rem;
+  padding: 0.1rem 0.25rem;
+  transition: background 0.15s ease, color 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.hs-addr-copy:active,
+.hs-addr-copy:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+.hs-addr-copy.copied {
+  color: #b8f0c8;
+}
+.hs-addr-copy.copied::after {
+  content: " · copied";
+  font-size: 0.72em;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.hs-addr-copy.copy-fail::after {
+  content: " · couldn’t copy";
+  font-size: 0.72em;
+  font-weight: 600;
+  color: var(--muted);
+}
 .hs-legend {
   display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between;
   gap: 0.35rem; font-size: clamp(10px, 2.7vw, 11px); color: var(--muted);
@@ -2191,10 +2220,6 @@ body.wx-map-expanded .hs-field {
 }
 .hs-zillow { color: #1c1400 !important; background: var(--trim) !important; border-color: var(--trim) !important; }
 .hs-assessor { color: #d9f0e3 !important; border-color: #2f6f4e !important; }
-.hs-mail-addr {
-  width: 100%; font-size: 12px; color: var(--muted); font-weight: 500;
-  padding: 0.15rem 0;
-}
 .hs-homestead {
   display: inline-flex; align-items: center;
   padding: 0.28rem 0.55rem;
@@ -2210,13 +2235,77 @@ body.wx-map-expanded .hs-field {
 .hs-mail { word-break: break-all; }
 .hs-place-miss { font-size: 12px; color: var(--muted); }
 .hs-filters {
-  display: flex; flex-wrap: wrap; gap: 0.45rem;
+  display: flex; flex-wrap: wrap; gap: 0.5rem;
   margin-bottom: 0.85rem;
+  align-items: stretch;
 }
-.hs-filters input, .hs-filters select {
-  width: auto; min-width: 0; flex: 1 1 7rem;
-  background: var(--inset); border: 1px solid var(--line);
-  padding: 0.4rem 0.55rem; font-size: 13px;
+.hs-filters input[type="search"],
+.hs-filters #hs-q {
+  flex: 1 1 100%;
+  width: auto;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.hs-filters input[type="search"]:focus,
+.hs-filters #hs-q:focus {
+  outline: none;
+  border-color: rgba(240, 180, 41, 0.45);
+  background: rgba(255, 255, 255, 0.06);
+}
+.hs-select {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1 1 calc(50% - 0.5rem);
+  min-width: 7.5rem;
+  margin: 0;
+}
+.hs-select-lab {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-left: 0.15rem;
+}
+.hs-select select,
+.hs-filters select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  background-color: rgba(255, 255, 255, 0.045);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath stroke='%239a9a9e' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M1.5 1.8 6 6.2l4.5-4.4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 10px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.55rem 1.85rem 0.55rem 0.7rem;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  line-height: 1.25;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+}
+.hs-select select:focus,
+.hs-filters select:focus {
+  outline: none;
+  border-color: rgba(240, 180, 41, 0.45);
+  background-color: rgba(255, 255, 255, 0.07);
+}
+.hs-select select:active {
+  background-color: rgba(255, 255, 255, 0.08);
 }
 .hs-dates { display: flex; flex-direction: column; gap: 0.3rem; }
 .hs-date {
@@ -2255,7 +2344,6 @@ body.wx-map-expanded .hs-field {
 .hs-date .meta { grid-column: 2 / -1; color: var(--muted); font-size: 12px; line-height: 1.35; }
 .hs-empty { color: var(--muted); padding: 1.2rem 0.2rem; line-height: 1.45; }
 .hs-goto, .hs-styles, .hs-map-bar, .hs-radar-top, .hs-radar-bar { pointer-events: auto; }
-.hs-filters #hs-q { flex: 1 1 100%; }
 .hs-map-shell .leaflet-top.leaflet-right {
   top: 8px;
   right: 8px;
