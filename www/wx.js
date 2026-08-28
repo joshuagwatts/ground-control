@@ -284,6 +284,12 @@ let hourPlayTimer = null;
 /** Dual-buffer radar tiles — crossfade instead of black flash between frames. */
 let radarLayers = [null, null];
 let radarActiveSlot = 0;
+/** Open-Meteo hourly wind frames for the HailScope wind scrubber. */
+let windFrames = [];
+let windFrameIdx = 0;
+let windPlayTimer = 0;
+let windPlaying = false;
+let windFetchGen = 0;
 /** Map + timeline layer visibility. */
 export const wxTimelineFilters = { precip: true, hail: true, wind: true, temp: true };
 let wxSuppressMapTap = false;
@@ -1672,26 +1678,50 @@ function hailScopeRadarScrubberInnerHtml() {
   </div>`;
 }
 
+function hailScopeWindScrubberInnerHtml() {
+  if (!hailScopeRadarActive() || !hailScopeRadarFilters.wind || windFrames.length < 2) return "";
+  const max = windFrames.length - 1;
+  const frame = windFrames[windFrameIdx] || windFrames[0];
+  const tag = frame ? `${Math.round(frame.speed)} mph` : "WIND";
+  return `<div class="wx-radar-scrub-row wx-wind-scrub-row">
+    <button type="button" id="wx-wind-play" class="wx-play-btn${windPlaying ? " on" : ""}">${windPlaying ? "PAUSE" : "PLAY"}</button>
+    <span class="wx-radar-tag wx-wind-tag">LIVE WIND</span>
+    <input type="range" id="wx-wind-range" min="0" max="${max}" value="${windFrameIdx}" step="1" />
+    <span id="wx-wind-label" class="wx-radar-label">${tag}</span>
+  </div>`;
+}
+
 export function hailScopeRadarBarHtml(settings) {
   if (settings) hailScopeRadarOn = settings.showRadar !== false;
   if (!hailScopeRadarActive()) return "";
   const f = hailScopeRadarFilters;
   const radar = hailScopeRadarScrubberInnerHtml();
+  const wind = hailScopeWindScrubberInnerHtml();
   return `<div class="hs-radar-bar" id="hs-radar-bar">
     <div class="wx-tl-filters hs-radar-filters">
       <button type="button" data-hs-radar-fl="precip" class="${f.precip ? "on" : ""}">PRECIP</button>
       <button type="button" data-hs-radar-fl="wind" class="${f.wind ? "on" : ""}">WIND</button>
     </div>
     ${radar ? `<div class="wx-radar-scrub" id="wx-radar-scrub">${radar}</div>` : ""}
+    ${wind ? `<div class="wx-radar-scrub wx-wind-scrub" id="wx-wind-scrub">${wind}</div>` : ""}
   </div>`;
 }
 
 export function bindHailScopeRadar(root = document) {
   bindRadarScrubber(root);
+  bindWindScrubber(root);
   root.querySelectorAll("[data-hs-radar-fl]").forEach((btn) => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const k = btn.dataset.hsRadarFl;
       if (k === "precip" || k === "wind") hailScopeRadarFilters[k] = !hailScopeRadarFilters[k];
+      if (k === "wind" && !hailScopeRadarFilters.wind) {
+        stopWindPlay();
+        clearWindFieldLayer();
+      }
+      if (k === "wind" && hailScopeRadarFilters.wind) {
+        await ensureWindFrames({ force: true });
+        paintWindFieldFromFrame(windFrames[windFrameIdx] || windFrames[windFrames.length - 1]);
+      }
       syncHailScopeRadarLayers();
       const host = root.querySelector?.("#hs-radar-bar") || document.getElementById("hs-radar-bar");
       if (host) {
@@ -1821,10 +1851,24 @@ export function syncHailScopeRadar(settings) {
   if (!hailScopeMode || !map) return;
   if (!hailScopeRadarActive()) {
     stopRadarPlay();
+    stopWindPlay();
+    clearWindFieldLayer();
     syncHailScopeRadarLayers();
     return;
   }
   void ensureHailScopeRadarLayers(settings);
+  if (hailScopeRadarFilters.wind) {
+    void ensureWindFrames().then(() => {
+      if (!hailScopeRadarActive() || !hailScopeRadarFilters.wind) return;
+      paintWindFieldFromFrame(windFrames[windFrameIdx] || windFrames[windFrames.length - 1]);
+      const shell = document.getElementById("hs-map-shell");
+      const bar = document.getElementById("hs-radar-bar");
+      if (shell && bar) {
+        bar.outerHTML = hailScopeRadarBarHtml();
+        bindHailScopeRadar(shell);
+      }
+    });
+  }
 }
 
 function radarScrubberInnerHtml() {
@@ -3778,13 +3822,7 @@ function applyOverlays() {
   }
   const wantWindField = activeWxProduct === "wind" || (hsRadar && hailScopeRadarFilters.wind);
   if (wantWindField) refreshWindField();
-  else if (windFieldLayer) {
-    try {
-      map.removeLayer(windFieldLayer);
-    } catch {
-      /* ignore */
-    }
-  }
+  else clearWindFieldLayer();
   syncHazardLayers();
   refreshZoomScaledUi(true);
 }
@@ -3792,7 +3830,16 @@ function applyOverlays() {
 async function refreshWindField() {
   if (!map || !window.L) return;
   const hsRadar = hailScopeRadarActive();
-  if (activeWxProduct !== "wind" && !(hsRadar && hailScopeRadarFilters.wind)) return;
+  if (activeWxProduct !== "wind" && !(hsRadar && hailScopeRadarFilters.wind)) {
+    clearWindFieldLayer();
+    return;
+  }
+  if (hsRadar && hailScopeRadarFilters.wind) {
+    await ensureWindFrames();
+    paintWindFieldFromFrame(windFrames[windFrameIdx] || windFrames[windFrames.length - 1]);
+    return;
+  }
+  // Legacy wind product: single current reading at map center
   const c = map.getCenter();
   if (!c) return;
   try {
@@ -3800,49 +3847,223 @@ async function refreshWindField() {
       latitude: c.lat,
       longitude: c.lng,
       current: "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
-      hourly: "wind_speed_10m,wind_direction_10m",
-      forecast_days: "1",
       wind_speed_unit: "mph",
       timezone: "auto",
     });
     const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 8000);
     const data = JSON.parse(body || "{}");
     const cur = data.current || {};
-    const spd = Number(cur.wind_speed_10m) || 0;
-    const gust = Number(cur.wind_gusts_10m) || spd;
-    const dir = Number(cur.wind_direction_10m) || 0;
-    if (windFieldLayer) {
-      try {
-        map.removeLayer(windFieldLayer);
-      } catch {
-        /* ignore */
-      }
-    }
-    windFieldLayer = window.L.layerGroup();
-    const color = gust >= 50 ? "#ff3a3a" : gust >= 35 ? "#d4a84b" : "#4a9eff";
-    window.L.circle([c.lat, c.lng], {
-      radius: Math.max(2500, Math.min(18000, gust * 220)),
-      color,
-      fillColor: color,
-      fillOpacity: 0.15,
-      weight: 2,
-    })
-      .bindPopup(`Wind ${Math.round(spd)} mph · gust ${Math.round(gust)} · from ${Math.round(dir)}°`)
-      .addTo(windFieldLayer);
-    const windBaseR = Math.min(18, 5 + spd / 4);
-    windFieldCenterDot = window.L.circleMarker([c.lat, c.lng], {
-      radius: Math.max(3, windBaseR * zoomUiScale()),
-      color,
-      fillColor: color,
-      fillOpacity: 0.75,
-      weight: 1,
-    }).addTo(windFieldLayer);
-    windFieldCenterDot.options.baseRadius = windBaseR;
-    const showWind = activeWxProduct === "wind" || (hsRadar && hailScopeRadarFilters.wind);
-    if (showWind) windFieldLayer.addTo(map);
-    scheduleZoomUiRefresh(true);
+    paintWindFieldFromFrame({
+      speed: Number(cur.wind_speed_10m) || 0,
+      gust: Number(cur.wind_gusts_10m) || Number(cur.wind_speed_10m) || 0,
+      dir: Number(cur.wind_direction_10m) || 0,
+      time: Date.now() / 1000,
+    });
   } catch {
     /* wind field optional */
+  }
+}
+
+function clearWindFieldLayer() {
+  if (windFieldLayer) {
+    try {
+      map.removeLayer(windFieldLayer);
+    } catch {
+      /* ignore */
+    }
+  }
+  windFieldLayer = null;
+  windFieldCenterDot = null;
+}
+
+function windColor(mph) {
+  const n = Number(mph) || 0;
+  if (n >= 50) return "#ff4d4d";
+  if (n >= 35) return "#f0b429";
+  if (n >= 20) return "#5bbcff";
+  return "#7dd3fc";
+}
+
+function windArrowIcon(dirFrom, speed, color) {
+  // Meteorological direction is where wind comes FROM — draw flow TO.
+  const to = (Number(dirFrom) + 180) % 360;
+  const len = Math.max(14, Math.min(28, 10 + (Number(speed) || 0) * 0.35));
+  return window.L.divIcon({
+    className: "hs-wind-arrow-icon",
+    iconSize: [len, len],
+    iconAnchor: [len / 2, len / 2],
+    html: `<span class="hs-wind-arrow" style="--wind-rot:${to.toFixed(1)}deg;--wind-color:${color};--wind-len:${len}px" aria-hidden="true"></span>`,
+  });
+}
+
+function paintWindFieldFromFrame(frame) {
+  if (!map || !window.L || !frame) return;
+  clearWindFieldLayer();
+  const b = map.getBounds?.();
+  if (!b) return;
+  const spd = Number(frame.speed) || 0;
+  const gust = Number(frame.gust) || spd;
+  const dir = Number(frame.dir) || 0;
+  const color = windColor(gust || spd);
+  windFieldLayer = window.L.layerGroup();
+  if (!map.getPane("windField")) {
+    map.createPane("windField");
+    map.getPane("windField").style.zIndex = 460;
+    map.getPane("windField").style.pointerEvents = "none";
+  }
+  const rows = 5;
+  const cols = 6;
+  const south = b.getSouth();
+  const north = b.getNorth();
+  const west = b.getWest();
+  const east = b.getEast();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const lat = south + ((r + 0.5) / rows) * (north - south);
+      const lon = west + ((c + 0.5) / cols) * (east - west);
+      window.L.marker([lat, lon], {
+        pane: "windField",
+        icon: windArrowIcon(dir, spd, color),
+        interactive: false,
+        keyboard: false,
+      }).addTo(windFieldLayer);
+    }
+  }
+  const center = map.getCenter();
+  windFieldCenterDot = window.L.circleMarker([center.lat, center.lng], {
+    pane: "windField",
+    radius: Math.max(4, Math.min(10, 4 + spd / 8)),
+    color,
+    fillColor: color,
+    fillOpacity: 0.55,
+    weight: 1.4,
+    opacity: 0.9,
+    interactive: false,
+  }).addTo(windFieldLayer);
+  windFieldCenterDot.bindTooltip(
+    `Wind ${Math.round(spd)} mph · gust ${Math.round(gust)} · from ${Math.round(dir)}°`,
+    { direction: "top", opacity: 0.92 },
+  );
+  windFieldLayer.addTo(map);
+  updateWindScrubLabel(frame);
+}
+
+function updateWindScrubLabel(frame) {
+  const label = document.getElementById("wx-wind-label");
+  if (!label || !frame) return;
+  const d = new Date((frame.time || 0) * 1000);
+  const when = Number.isFinite(d.getTime())
+    ? d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "";
+  label.textContent = `${Math.round(frame.speed || 0)} mph${when ? ` · ${when}` : ""}`;
+}
+
+async function ensureWindFrames({ force = false } = {}) {
+  if (!map) return;
+  if (windFrames.length && !force) return;
+  const c = map.getCenter();
+  if (!c) return;
+  const gen = ++windFetchGen;
+  try {
+    const params = new URLSearchParams({
+      latitude: c.lat,
+      longitude: c.lng,
+      hourly: "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+      past_days: "1",
+      forecast_days: "1",
+      wind_speed_unit: "mph",
+      timezone: "auto",
+    });
+    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 10000);
+    if (gen !== windFetchGen) return;
+    const data = JSON.parse(body || "{}");
+    const h = data.hourly || {};
+    const times = h.time || [];
+    const speeds = h.wind_speed_10m || [];
+    const dirs = h.wind_direction_10m || [];
+    const gusts = h.wind_gusts_10m || [];
+    const frames = [];
+    const now = Date.now() / 1000;
+    for (let i = 0; i < times.length; i++) {
+      const t = Date.parse(times[i]);
+      if (!Number.isFinite(t)) continue;
+      const sec = t / 1000;
+      // Keep roughly last 12h through next 12h for a precip-like scrub window
+      if (sec < now - 12 * 3600 || sec > now + 12 * 3600) continue;
+      frames.push({
+        time: sec,
+        speed: Number(speeds[i]) || 0,
+        gust: Number(gusts[i]) || Number(speeds[i]) || 0,
+        dir: Number(dirs[i]) || 0,
+      });
+    }
+    if (!frames.length) return;
+    windFrames = frames;
+    let nearest = 0;
+    let best = Infinity;
+    for (let i = 0; i < frames.length; i++) {
+      const d = Math.abs(frames[i].time - now);
+      if (d < best) {
+        best = d;
+        nearest = i;
+      }
+    }
+    windFrameIdx = nearest;
+  } catch {
+    /* wind timeline optional */
+  }
+}
+
+export function setWindFrame(idx) {
+  if (!windFrames.length) return;
+  const i = Math.max(0, Math.min(windFrames.length - 1, Number(idx) || 0));
+  windFrameIdx = i;
+  const frame = windFrames[i];
+  paintWindFieldFromFrame(frame);
+  const range = document.getElementById("wx-wind-range");
+  if (range && String(range.value) !== String(i)) range.value = String(i);
+}
+
+export function stopWindPlay() {
+  windPlaying = false;
+  if (windPlayTimer) {
+    clearTimeout(windPlayTimer);
+    windPlayTimer = 0;
+  }
+  const btn = document.getElementById("wx-wind-play");
+  if (btn) {
+    btn.textContent = "PLAY";
+    btn.classList.remove("on");
+  }
+}
+
+export function bindWindScrubber(root = document) {
+  const range = root.querySelector?.("#wx-wind-range") || document.getElementById("wx-wind-range");
+  const play = root.querySelector?.("#wx-wind-play") || document.getElementById("wx-wind-play");
+  if (!range) return;
+  setWindFrame(windFrameIdx);
+  range.oninput = () => {
+    stopWindPlay();
+    setWindFrame(range.value);
+  };
+  if (play) {
+    play.onclick = () => {
+      if (windPlaying) {
+        stopWindPlay();
+        return;
+      }
+      if (windFrames.length < 2) return;
+      play.textContent = "PAUSE";
+      play.classList.add("on");
+      windPlaying = true;
+      const tick = () => {
+        if (!windPlaying) return;
+        const next = (windFrameIdx + 1) % windFrames.length;
+        setWindFrame(next);
+        windPlayTimer = window.setTimeout(tick, 700);
+      };
+      tick();
+    };
   }
 }
 
@@ -4785,11 +5006,15 @@ function bindPinchZoomInertia(leafletMap) {
 
 export function destroyMap() {
   stopRadarPlay();
+  stopWindPlay();
   stopHourPlay();
   stopMyLocation();
   stopHouseNumbers();
   stopFieldOverlay();
   hidePinScalePopover();
+  clearWindFieldLayer();
+  windFrames = [];
+  windFrameIdx = 0;
   houseLayer = null;
   lastHailDrawSig = "";
   mapBusy = 0;
@@ -4946,7 +5171,9 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     mapBusy = Math.max(0, mapBusy - 1);
     if (mapBusy > 0) return;
     document.getElementById("hs-map-shell")?.classList.remove("map-moving");
-    if (activeWxProduct === "wind") refreshWindField();
+    if (activeWxProduct === "wind" || (hailScopeRadarActive() && hailScopeRadarFilters.wind)) {
+      void refreshWindField();
+    }
     scheduleHouseNumbers();
     // Hail zones are geographic — leave them alone on pan/zoom (stroke/dot scale
     // already refreshes via scheduleZoomUiRefresh on zoom).

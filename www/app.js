@@ -61,7 +61,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.104";
+} from "./wx.js?v=0.2.105";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1868,7 +1868,7 @@ async function onHailViewport() {
 
 async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   const gen = ++hailTapGen;
-  clearSelectedStormDate();
+  // Keep checked storm dates — accidental house taps should not wipe the overlay.
   wxState.lat = lat;
   wxState.lon = lon;
   wxState.viewport = false;
