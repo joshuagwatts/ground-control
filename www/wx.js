@@ -4313,34 +4313,30 @@ function bindAddressSwipeToStormSheet(el) {
     scrub = 0;
   };
 
-  /** Spring settle to 0 or 1 from current scrub + velocity (gesture-driven, not a fixed timeline). */
+  /** Ease-out settle from current scrub — modern sheet pace, still continuous with the gesture. */
   const settle = (open) => {
     settling = true;
     const target = open ? 1 : 0;
-    let t = scrub;
-    // Convert finger px/ms into scrub units/ms
-    let v = Math.max(-0.008, Math.min(0.012, velY / SCRUB_PX));
-    if (open && v < 0.003) v = 0.004;
-    if (!open && v > -0.002) v = -0.003;
-    let prev = performance.now();
+    const from = scrub;
+    const remaining = Math.abs(target - from);
+    // ~520ms full travel open, a bit quicker when already mostly open / closing
+    const baseMs = open ? 520 : 360;
+    const duration = Math.max(open ? 380 : 260, baseMs * (0.45 + remaining * 0.55));
+    // Nudge start with a little of the release velocity so it doesn't feel glued
+    const flick = Math.max(-0.12, Math.min(0.18, (velY / SCRUB_PX) * 40));
+    const t0 = performance.now();
+    const easeOutCubic = (p) => 1 - (1 - p) ** 3;
     const tick = (now) => {
       if (!settling) return;
-      const dt = Math.min(34, now - prev);
-      prev = now;
-      const stiffness = 0.0055;
-      const damping = Math.pow(0.82, dt / 16);
-      v = (v + (target - t) * stiffness * dt) * damping;
-      t += v * dt;
-      if (t < 0) {
-        t = 0;
-        v = 0;
-      } else if (t > 1) {
-        t = 1;
-        v = 0;
-      }
+      const p = Math.min(1, (now - t0) / duration);
+      // Ease the scrub; early frames lean slightly with release flick, then pure ease-out
+      const eased = easeOutCubic(p);
+      const flickFade = (1 - p) * (1 - p);
+      let t = from + (target - from) * eased + flick * 0.08 * flickFade;
+      if (target > from) t = Math.min(target, Math.max(from, t));
+      else t = Math.max(target, Math.min(from, t));
       setScrub(t);
-      const closeEnough = Math.abs(target - t) < 0.018 && Math.abs(v) < 0.00035;
-      if (!closeEnough) {
+      if (p < 1) {
         requestAnimationFrame(tick);
         return;
       }
@@ -4405,16 +4401,16 @@ function bindAddressSwipeToStormSheet(el) {
       unlockHailTierGesture();
       return;
     }
-    // Tap on address words with almost no drag → fling open from a small impulse
+    // Tap on address words with almost no drag → gentle open settle (not a snap)
     if (!moved) {
       const p = pt(e);
       const dy = startY - (p?.clientY ?? startY);
       if (Math.abs(dy) < 6) {
         moved = true;
         addressSwipeOpeningSheet = true;
-        scrub = 0.08;
+        scrub = 0.04;
         setScrub(scrub);
-        velY = 0.9;
+        velY = 0.22;
       }
     }
     if (!moved) {

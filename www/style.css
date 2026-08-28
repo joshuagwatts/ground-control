@@ -19,7 +19,7 @@
   --gc-header-h: calc(2.35rem + var(--safe-top));
   --map-expand-ms: 360ms;
   --map-expand-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --sheet-reveal-ms: 280ms;
+  --sheet-reveal-ms: 420ms;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
