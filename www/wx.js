@@ -1051,6 +1051,8 @@ const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
 let lastZoomUiScale = 0;
 const hailDotMarkers = [];
+/** @type {{ layer: object, confirmed: boolean, size: number, kind: "zone"|"core"|"wind" }[]} */
+const hailStrokeLayers = [];
 let windFieldCenterDot = null;
 
 /** Screen-pixel scale — shrinks when zoomed out; ~1.0 at street zoom. Pin slider sets base size. */
@@ -1067,6 +1069,71 @@ export function hailDotZoomScale(z) {
   return Math.min(1, Math.max(0.22, Math.pow(2, (zoom - ZOOM_UI_REF) / 2.4)));
 }
 
+/** Stroke style for hail/wind topo — dashes look filthy when zoomed out, so solidify far away. */
+function hailZoneStrokeStyle(isConfirm, sz, z) {
+  const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
+  const size = Number(sz) || 0;
+  if (zoom < 11) {
+    return {
+      weight: isConfirm ? 1.15 : 0.85,
+      opacity: isConfirm ? 0.78 : 0.42,
+      dashArray: null,
+    };
+  }
+  if (zoom < 13) {
+    return {
+      weight: isConfirm ? 1.55 : 1.05,
+      opacity: isConfirm ? 0.86 : 0.55,
+      // Longer gaps / shorter dashes so the outline still reads as a shape, not glitter
+      dashArray: isConfirm ? null : "1.5 7",
+    };
+  }
+  return {
+    weight: isConfirm ? (size >= 2 ? 2.8 : 2.2) : size >= 2 ? 2.2 : 1.4,
+    opacity: 0.92,
+    dashArray: isConfirm ? null : size >= 1 ? "4 4" : "6 5",
+  };
+}
+
+function hailCoreStrokeStyle(z) {
+  const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
+  if (zoom < 12) return { weight: 0.9, opacity: 0.55, dashArray: null };
+  if (zoom < 14) return { weight: 1.1, opacity: 0.75, dashArray: "2 5" };
+  return { weight: 1.4, opacity: 0.9, dashArray: "3 4" };
+}
+
+function trackHailStroke(layer, meta) {
+  if (!layer) return layer;
+  hailStrokeLayers.push({ layer, ...meta });
+  return layer;
+}
+
+function applyHailStrokeZoomStyles(force = false) {
+  if (!hailStrokeLayers.length) return;
+  const z = map?.getZoom?.();
+  const bucket = !Number.isFinite(z) ? 14 : z < 11 ? 0 : z < 13 ? 1 : z < 14 ? 2 : 3;
+  if (!force && applyHailStrokeZoomStyles._bucket === bucket) return;
+  applyHailStrokeZoomStyles._bucket = bucket;
+  for (const entry of hailStrokeLayers) {
+    const { layer, confirmed, size, kind } = entry;
+    if (!layer?.setStyle) continue;
+    const style =
+      kind === "core"
+        ? hailCoreStrokeStyle(z)
+        : kind === "wind"
+          ? (() => {
+              const s = hailZoneStrokeStyle(false, size, z);
+              return { weight: Math.min(1.4, s.weight), opacity: Math.min(0.65, s.opacity), dashArray: s.dashArray };
+            })()
+          : hailZoneStrokeStyle(confirmed, size, z);
+    try {
+      layer.setStyle(style);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 let zoomUiFrame = 0;
 
 function scheduleZoomUiRefresh(force = false) {
@@ -1081,7 +1148,10 @@ function scheduleZoomUiRefresh(force = false) {
 function refreshZoomScaledUi(force = false) {
   if (!map) return;
   const ui = zoomUiScale();
-  if (!force && Math.abs(ui - lastZoomUiScale) < 0.02) return;
+  if (!force && Math.abs(ui - lastZoomUiScale) < 0.02) {
+    applyHailStrokeZoomStyles(false);
+    return;
+  }
   lastZoomUiScale = ui;
   const dotUi = hailDotZoomScale();
   for (const m of hailDotMarkers) {
@@ -1089,6 +1159,7 @@ function refreshZoomScaledUi(force = false) {
     const br = m.options.baseRadius || 6;
     m.setRadius(Math.max(1.2, br * dotUi));
   }
+  applyHailStrokeZoomStyles(force);
   if (windFieldCenterDot?.setRadius) {
     const br = windFieldCenterDot.options.baseRadius || 10;
     windFieldCenterDot.setRadius(Math.max(3, br * ui));
@@ -2697,6 +2768,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   }
   lastHailDrawSig = drawSig;
   hailDotMarkers.length = 0;
+  hailStrokeLayers.length = 0;
+  applyHailStrokeZoomStyles._bucket = -1;
   if (requireDate && !activeDay) {
     if (hailLayer) {
       try {
@@ -2778,41 +2851,49 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const col = hailZoneColor(sz);
       const isConfirm = sub.confirmed || sub.source === "spot+radar";
       fitPts.push(...sub.ring);
-      window.L.polygon(sub.ring, {
-        color: col.stroke,
-        fillColor: col.fill,
-        fillOpacity: hailZoneOpacityBoost(
-          isConfirm ? (sz >= 2 ? 0.28 : 0.2) : sz >= 2 ? 0.18 : sz >= 1 ? 0.13 : 0.09,
-        ),
-        weight: isConfirm ? (sz >= 2 ? 2.8 : 2.2) : sz >= 2 ? 2.2 : 1.4,
-        opacity: 0.92,
-        dashArray: isConfirm ? null : sz >= 1 ? "4 4" : "6 5",
-        pane: "hailVectors",
-        renderer: hailSvg,
-        className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
-      })
-        .bindPopup(
-          hailPopupHtml(
-            { ...h, hits: sub.hits || h.hits, size_in: String(sub.maxSize || h.size_in) },
-            activeDay,
+      const stroke = hailZoneStrokeStyle(isConfirm, sz);
+      trackHailStroke(
+        window.L.polygon(sub.ring, {
+          color: col.stroke,
+          fillColor: col.fill,
+          fillOpacity: hailZoneOpacityBoost(
+            isConfirm ? (sz >= 2 ? 0.28 : 0.2) : sz >= 2 ? 0.18 : sz >= 1 ? 0.13 : 0.09,
           ),
-        )
-        .addTo(hailLayer);
+          weight: stroke.weight,
+          opacity: stroke.opacity,
+          dashArray: stroke.dashArray,
+          pane: "hailVectors",
+          renderer: hailSvg,
+          className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
+        })
+          .bindPopup(
+            hailPopupHtml(
+              { ...h, hits: sub.hits || h.hits, size_in: String(sub.maxSize || h.size_in) },
+              activeDay,
+            ),
+          )
+          .addTo(hailLayer),
+        { confirmed: isConfirm, size: sz, kind: "zone" },
+      );
       if (sz >= 0.75 && isConfirm) {
         const cLat = sub.ring.reduce((a, c) => a + c[0], 0) / sub.ring.length;
         const cLon = sub.ring.reduce((a, c) => a + c[1], 0) / sub.ring.length;
         const coreR = Math.max(280, hailFootprintM(sz, "noaa-spc") * 0.45);
-        window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
-          color: col.core,
-          fillColor: col.core,
-          fillOpacity: 0.32,
-          weight: 1.4,
-          opacity: 0.9,
-          dashArray: "3 4",
-          pane: "hailVectors",
-          renderer: hailSvg,
-          className: "wx-hail-topo-core",
-        }).addTo(hailLayer);
+        const coreStroke = hailCoreStrokeStyle();
+        trackHailStroke(
+          window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
+            color: col.core,
+            fillColor: col.core,
+            fillOpacity: 0.32,
+            weight: coreStroke.weight,
+            opacity: coreStroke.opacity,
+            dashArray: coreStroke.dashArray,
+            pane: "hailVectors",
+            renderer: hailSvg,
+            className: "wx-hail-topo-core",
+          }).addTo(hailLayer),
+          { confirmed: true, size: sz, kind: "core" },
+        );
       }
     }
     const spots = dayHits.filter(isSpotterHail);
@@ -2869,17 +2950,21 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   for (const w of [...windDays.values()].slice(0, 24)) {
     if (!Number.isFinite(w.lat) || !Number.isFinite(w.lon)) continue;
     const mph = Number(w.wind_mph) || 0;
-    window.L.polygon(ringPolygon(w.lat, w.lon, Math.max(1200, Math.min(9000, mph * 75)), 6), {
-      color: "#4a9eff",
-      fillColor: "#4a9eff",
-      fillOpacity: 0.1,
-      weight: 1.4,
-      opacity: 0.65,
-      dashArray: "5 6",
-      className: "wx-wind-topo",
-    })
-      .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km != null ? `${formatDistance(w.distance_km)} from pin` : ""}`)
-      .addTo(windLayer);
+    const stroke = hailZoneStrokeStyle(false, Math.min(2, mph / 40));
+    trackHailStroke(
+      window.L.polygon(ringPolygon(w.lat, w.lon, Math.max(1200, Math.min(9000, mph * 75)), 6), {
+        color: "#4a9eff",
+        fillColor: "#4a9eff",
+        fillOpacity: 0.1,
+        weight: Math.min(1.4, stroke.weight),
+        opacity: Math.min(0.65, stroke.opacity),
+        dashArray: stroke.dashArray || "5 6",
+        className: "wx-wind-topo",
+      })
+        .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km != null ? `${formatDistance(w.distance_km)} from pin` : ""}`)
+        .addTo(windLayer),
+      { confirmed: false, size: mph / 40, kind: "wind" },
+    );
   }
   syncHazardLayers();
   scheduleZoomUiRefresh(true);
@@ -3944,6 +4029,8 @@ export function destroyMap() {
   lastHailDrawSig = "";
   mapBusy = 0;
   hailDotMarkers.length = 0;
+  hailStrokeLayers.length = 0;
+  applyHailStrokeZoomStyles._bucket = -1;
   windFieldCenterDot = null;
   lastZoomUiScale = 0;
   if (zoomUiFrame) {
