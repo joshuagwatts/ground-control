@@ -5,8 +5,11 @@ import {
   mergeHailRows,
   stormPassesSizeFilter,
   HOUSE_HAIL_KM,
+  PIN_FETCH_FAST_KM,
+  PIN_FETCH_WIDE_KM,
   PIN_FETCH_MIN_KM,
   dossierFetchKm,
+  dossierWideKm,
 } from "../www/wx.js";
 
 function assert(cond, msg) {
@@ -44,8 +47,14 @@ assert(away.near_hits === 0, "far-only day is not at this roof");
 const nearDay = { ...near, date: "2026-06-01", size_in: "1.00" };
 const farDay = { ...far, date: "2026-07-01" };
 const { hail } = filterDossier({ hail: [farDay, nearDay] }, { km: 10, hailIn: 0.75, windMph: 0, days: 730, year: "all", sort: "date" });
-assert(hail[0].date === "2026-06-01", `dates with roof evidence sort first, got ${hail.map((h) => h.date).join(",")}`);
-assert(hail[0].near_hits > 0 && hail[1].near_hits === 0, "second row should be the far-only storm");
+assert(hail[0].date === "2026-07-01", `newest sort is pure date order, got ${hail.map((h) => h.date).join(",")}`);
+assert(hail[1].date === "2026-06-01", "older roof-near day stays second in newest mode");
+
+const { hail: sizeSorted } = filterDossier(
+  { hail: [farDay, nearDay] },
+  { km: 10, hailIn: 0.75, windMph: 0, days: 730, year: "all", sort: "size" },
+);
+assert(sizeSorted[0].near_hits > 0, "size sort still prefers roof-near first");
 
 const spots = Array.from({ length: 300 }, (_, i) => ({
   date: "2026-04-02",
@@ -91,8 +100,11 @@ const { hail: bigOnly } = filterDossier(
 assert(bigOnly.some((h) => h.date === "2026-03-15"), "small+ filter keeps the 45-hit day");
 assert(!bigOnly.some((h) => h.date === near.date), "small+ filter drops single-hit day");
 
-assert(dossierFetchKm({ km: 10 }) === PIN_FETCH_MIN_KM, "pin fetch should be at least PIN_FETCH_MIN_KM");
-assert(PIN_FETCH_MIN_KM >= 150, "pin fetch should reach regional storm footprints");
+assert(dossierFetchKm({ km: 10 }) === PIN_FETCH_FAST_KM, "first paint uses fast center radius");
+assert(dossierWideKm({ km: 10 }) === PIN_FETCH_WIDE_KM, "background widen uses wide radius");
+assert(PIN_FETCH_FAST_KM <= 50, "fast ring stays snappy");
+assert(PIN_FETCH_WIDE_KM >= 100, "wide ring still covers regional footprints");
+assert(PIN_FETCH_MIN_KM === PIN_FETCH_FAST_KM, "PIN_FETCH_MIN_KM aliases fast ring");
 const nearRow = { date: "2025-05-01", lat: 35.47, lon: -97.52, size_in: "1.00" };
 const farRow = { date: "2025-06-01", lat: 35.58, lon: -97.516, size_in: "1.25" };
 const pinData = { lat: 35.467, lon: -97.516, hail: [nearRow, farRow] };

@@ -47,8 +47,12 @@ export const DEFAULT_FILTERS = {
   sort: "date",
   stormSize: "any",
 };
-/** Pin dossiers always fetch at least this far; NEAR filters the date list only. */
-export const PIN_FETCH_MIN_KM = 200;
+/** First paint radius — center-out so OKC lists land in ~1 request. */
+export const PIN_FETCH_FAST_KM = 40;
+/** Background widen after first paint (regional storm footprint). */
+export const PIN_FETCH_WIDE_KM = 120;
+/** @deprecated use PIN_FETCH_FAST_KM / PIN_FETCH_WIDE_KM */
+export const PIN_FETCH_MIN_KM = PIN_FETCH_FAST_KM;
 /** Hail that can count for this roof (~1 mi). Bigger reports farther out are context, not the claim size. */
 export const HOUSE_HAIL_KM = 1.6;
 /** Draw filled zones only this close to the pin. Dots still show the rest of the radius. */
@@ -81,7 +85,11 @@ function filterKm(filters = wxFilters) {
 }
 
 export function dossierFetchKm(filters = wxFilters) {
-  return Math.max(filterKm(filters), PIN_FETCH_MIN_KM);
+  return Math.max(filterKm(filters), PIN_FETCH_FAST_KM);
+}
+
+export function dossierWideKm(filters = wxFilters) {
+  return Math.max(filterKm(filters), PIN_FETCH_WIDE_KM);
 }
 
 function kmToMi(km) {
@@ -728,8 +736,9 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
   startLimit.setDate(startLimit.getDate() - days);
   const chunks = [];
   let cursor = new Date(today);
-  const span = days > 365 ? 28 : days > 120 ? 18 : 13;
-  const maxChunks = Math.min(36, Math.ceil(days / span) + 1);
+  // Wider rings use fewer, longer chunks so SWDI doesn't stall the sheet.
+  const span = km >= 100 ? 45 : days > 365 ? 28 : days > 120 ? 18 : 13;
+  const maxChunks = km >= 100 ? Math.min(12, Math.ceil(days / span) + 1) : Math.min(24, Math.ceil(days / span) + 1);
   while (cursor > startLimit && chunks.length < maxChunks) {
     const chunkEnd = new Date(cursor);
     const chunkStart = new Date(cursor);
@@ -740,14 +749,15 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
     cursor.setDate(cursor.getDate() - 1);
   }
   const hits = new Map();
-  const batch = 6;
+  const batch = km >= 100 ? 3 : 5;
+  const timeout = km >= 100 ? 14000 : 18000;
   for (let i = 0; i < chunks.length; i += batch) {
     const part = await Promise.all(
       chunks.slice(i, i + batch).map(async ({ start, end }) => {
         const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
         const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
         try {
-          const { body } = await httpGet(url, 22000);
+          const { body } = await httpGet(url, timeout);
           const data = JSON.parse(body || "{}");
           return data.result || [];
         } catch {
@@ -984,9 +994,10 @@ export function mergeHailRows(...groups) {
     if (ds) return ds;
     return (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
   });
+  // Keep radar + spotter — old 280/420 cap was dropping SWDI when the ring got wide.
   const spots = uniq.filter(isSpotterHail);
   const radar = uniq.filter((h) => !isSpotterHail(h));
-  return [...spots.slice(0, 280), ...radar.slice(0, 420)];
+  return [...spots.slice(0, 900), ...radar.slice(0, 2400)];
 }
 
 /**
@@ -2625,7 +2636,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const archiveDays = Math.min(filterDays, 730);
   const swdiDays = Math.min(filterDays, 730);
   const viewport = Boolean(filters.viewport);
-  const km = viewport ? filterKm(filters) : dossierFetchKm(filters);
+  const km = viewport ? filterKm(filters) : dossierWideKm(filters);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const geo = await geoP;
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
@@ -2687,33 +2698,33 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     ...ownerFields(people0),
   };
   if (onPartial) onPartial(partial);
-  const km = dossierFetchKm();
+  // Center-out: paint ~40km first (LSR → SWDI/SPC), then widen in the background.
+  const fastKm = dossierFetchKm();
+  const wideKm = dossierWideKm();
   const days = Number(wxFilters.days) || 730;
-  // Owner lookups must not gate storm history — run them beside hail sources.
   const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
   const wxP = currentWeather(lat, lon).catch(() => ({ ok: false }));
-  const spcP = fetchSpcReports(lat, lon, km, 30);
-  const swdiP = fetchSwdiHail(lat, lon, km, days);
-  const lsrP = fetchIemLsrHail(lat, lon, km, days).catch(() => []);
+  const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, days).catch(() => []);
+  const swdiFastP = fetchSwdiHail(lat, lon, fastKm, days);
+  const spcFastP = fetchSpcReports(lat, lon, fastKm, 30);
 
-  // Spotter LSR is usually one request — paint storm dates as soon as it lands.
-  const lsr = await lsrP;
-  let hail = mergeHailRows([], [], lsr);
+  const lsrFast = await lsrFastP;
+  let hail = mergeHailRows([], [], lsrFast);
   let wind = [];
-  if (hail.length && onPartial) {
+  if (onPartial) {
     onPartial({
       ...partial,
       hail,
       wind,
       storms: enrichStormDates([], hail, wind),
-      _meta: { fetchedDays: days, fetchedKm: km, deep: false, partial: "lsr" },
+      _meta: { fetchedDays: days, fetchedKm: fastKm, deep: false, partial: "lsr", loading: true },
     });
   }
 
-  const [wxNow, spc, swdi, placeHit] = await Promise.all([wxP, spcP, swdiP, placeP]);
-  hail = mergeHailRows(spc.hail || [], swdi || [], lsr);
-  wind = spc.wind || [];
-  const enriched = {
+  const [wxNow, spcFast, swdiFast, placeHit] = await Promise.all([wxP, spcFastP, swdiFastP, placeP]);
+  hail = mergeHailRows(spcFast.hail || [], swdiFast || [], lsrFast);
+  wind = spcFast.wind || [];
+  let enriched = {
     ...partial,
     ...placeHit,
     weather: wxNow,
@@ -2721,9 +2732,27 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     wind,
     storms: enrichStormDates([], hail, wind),
     zillow_url: pickZillowUrl({ address: addr, zillow_url: placeHit.zillow_url }),
-    _meta: { fetchedDays: days, fetchedKm: km, deep: false },
+    _meta: { fetchedDays: days, fetchedKm: fastKm, deep: false, partial: "fast", loading: wideKm > fastKm + 1 },
   };
   if (onPartial) onPartial(enriched);
+
+  if (wideKm > fastKm + 1) {
+    const [lsrWide, swdiWide, spcWide] = await Promise.all([
+      fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []),
+      fetchSwdiHail(lat, lon, wideKm, days),
+      fetchSpcReports(lat, lon, wideKm, 30),
+    ]);
+    hail = mergeHailRows(spcWide.hail || [], swdiWide || [], lsrWide, hail);
+    wind = spcWide.wind?.length ? spcWide.wind : wind;
+    enriched = {
+      ...enriched,
+      hail,
+      wind,
+      storms: enrichStormDates([], hail, wind),
+      _meta: { fetchedDays: days, fetchedKm: wideKm, deep: false },
+    };
+    if (onPartial) onPartial(enriched);
+  }
   return enriched;
 }
 
@@ -2779,7 +2808,7 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
     const norm = normalizeDossier(remote) || local;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierFetchKm());
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierWideKm());
     if ((local.hail?.length || 0) > (norm.hail?.length || 0)) {
       norm.hail = local.hail;
       norm.wind = local.wind || [];
@@ -2846,7 +2875,7 @@ export async function quickPin(settings, lat, lon) {
     const norm = normalizeDossier(remote) || remote;
     norm.lat = lat;
     norm.lon = lon;
-    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierFetchKm());
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, dossierWideKm());
     return norm;
   }
   const [geo, wx] = await Promise.all([
@@ -2856,10 +2885,10 @@ export async function quickPin(settings, lat, lon) {
   return { ok: true, geo, lat, lon, address: geo?.address || "", weather: wx, hail: [], recent_storms: [] };
 }
 
-function pinFilterHailRows(rows, lat, lon, km = PIN_FETCH_MIN_KM) {
+function pinFilterHailRows(rows, lat, lon, km = PIN_FETCH_WIDE_KM) {
   const pinLat = Number(lat);
   const pinLon = Number(lon);
-  const radius = Number(km) || PIN_FETCH_MIN_KM;
+  const radius = Number(km) || PIN_FETCH_WIDE_KM;
   return (rows || [])
     .map((h) => {
       if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon) || !Number.isFinite(h.lat) || !Number.isFinite(h.lon)) {
@@ -5800,7 +5829,7 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
   // Selected storm overlay: paint the full fetched footprint (not the NEAR list radius).
   const skipDist = forMap && (viewport || hasSelectedStormDates());
   const paintKm = forMap
-    ? Math.max(km, Number(data._meta?.fetchedKm) || 0, PIN_FETCH_MIN_KM, mapViewFetchKm())
+    ? Math.max(km, Number(data._meta?.fetchedKm) || 0, PIN_FETCH_WIDE_KM, mapViewFetchKm())
     : km;
   return (data.hail || []).filter((h) => {
     if (year !== "all") {
@@ -5836,6 +5865,10 @@ export function filterDossier(data, filters = wxFilters) {
   // One extremeness tag per date (HailTrace-style).
   let hail = collapseHailByDate(hailRaw).filter((h) => stormPassesSizeFilter(h, filters));
   hail = [...hail].sort((a, b) => {
+    // Newest mode: pure date order — no near_hits reshuffle as partials land.
+    if (sort === "date") {
+      return String(b.date).localeCompare(String(a.date)) || (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
+    }
     const aNear = (a.near_hits || 0) > 0 ? 0 : 1;
     const bNear = (b.near_hits || 0) > 0 ? 0 : 1;
     if (aNear !== bNear) return aNear - bNear;
