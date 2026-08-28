@@ -1394,17 +1394,17 @@ async function renderWx() {
   $("#view").innerHTML = `
     <div class="hs-wrap">
       <div class="hs-map-shell" id="hs-map-shell">
-        <form class="hs-search" id="hs-search" autocomplete="off">
-          <input type="search" id="hs-addr-q" placeholder="Search an address" enterkeyhint="search" />
-        </form>
         <div class="hs-layers" id="hs-layers"></div>
         <div class="hs-styles" id="hs-styles"></div>
         <span class="hs-map-hint">Hold to drop a pin · double-tap to expand</span>
         <div id="wx-map"></div>
         <div class="hs-composer" id="hs-composer" hidden></div>
       </div>
+      <form class="hs-goto" id="hs-search" autocomplete="off">
+        <input type="search" id="hs-addr-q" placeholder="Go to an address" enterkeyhint="search" />
+      </form>
       <div class="hs-sheet" id="hs-sheet">
-        <p class="hs-empty">Tap the map or search an address. Storm dates show up here.</p>
+        <p class="hs-empty">Tap the map or type an address above. Storm dates show up here.</p>
       </div>
       <div class="hs-field" id="hs-field"></div>
     </div>`;

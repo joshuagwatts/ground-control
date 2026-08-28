@@ -1568,7 +1568,7 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
 body.wx-map-expanded #view { overflow: hidden; }
 body.wx-map-expanded .hs-sheet { display: none; }
 .hs-map-hint {
-  position: absolute; z-index: 500; left: 54px; bottom: 16px;
+  position: absolute; z-index: 500; left: 12px; bottom: 16px;
   font-size: 11px; color: var(--muted);
   background: rgba(22,22,24,0.88); border: 1px solid var(--line);
   padding: 0.28rem 0.55rem; pointer-events: none;
@@ -1581,20 +1581,22 @@ body.wx-map-expanded .hs-sheet { display: none; }
   user-select: none;
   -webkit-touch-callout: none;
 }
-.hs-search {
-  position: absolute; z-index: 500; left: 12px; right: 12px; top: 12px;
-  display: flex; gap: 0.4rem;
+.hs-goto {
+  padding: 0.75rem 1rem 0.15rem;
 }
-.hs-search input {
-  flex: 1; min-width: 0;
-  background: rgba(22,22,24,0.92);
+.hs-goto input {
+  width: 100%;
+  background: var(--inset);
   border: 1px solid var(--line);
-  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
-  padding: 0.75rem 0.9rem;
+  padding: 0.7rem 0.85rem;
   font-size: 15px;
 }
+.hs-goto + .hs-sheet { padding-top: 0.45rem; }
+@media (pointer: fine) {
+  .hs-map-hint { left: 54px; }
+}
 .hs-layers {
-  position: absolute; z-index: 500; left: 12px; top: 62px;
+  position: absolute; z-index: 500; left: 12px; top: 12px;
   display: flex; gap: 0.3rem;
 }
 .hs-styles {
@@ -1752,10 +1754,13 @@ body.wx-map-expanded .hs-sheet { display: none; }
 .hs-date .size { color: var(--trim); font-weight: 650; }
 .hs-date .meta { grid-column: 1 / -1; color: var(--muted); font-size: 13px; }
 .hs-empty { color: var(--muted); padding: 1.2rem 0.2rem; line-height: 1.45; }
-.hs-search, .hs-styles { pointer-events: auto; }
+.hs-goto, .hs-styles { pointer-events: auto; }
 .hs-filters #hs-q { flex: 1 1 100%; }
-.hs-map-shell .leaflet-top.leaflet-left {
-  top: auto;
+.hs-map-shell .leaflet-top.leaflet-right {
+  top: 8px;
+  right: 8px;
+}
+.hs-map-shell .leaflet-bottom.leaflet-left {
   bottom: 44px;
   left: 8px;
 }
@@ -1765,6 +1770,9 @@ body.wx-map-expanded .hs-sheet { display: none; }
   border: 0 !important;
   width: 34px; height: 34px; line-height: 34px;
   font-size: 16px;
+}
+@media (pointer: coarse) {
+  .hs-map-shell .leaflet-control-zoom { display: none !important; }
 }
 .hs-map-shell .leaflet-bar { border: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
 .hs-map-shell .leaflet-control-attribution {

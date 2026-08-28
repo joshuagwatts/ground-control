@@ -2591,10 +2591,19 @@ function panToMe() {
   map.setView([lastMe.lat, lastMe.lon], z, { animate: true });
 }
 
+function isPhoneUi() {
+  try {
+    if (window.Capacitor?.getPlatform?.() === "android" || window.Capacitor?.getPlatform?.() === "ios") return true;
+  } catch {
+    /* web */
+  }
+  return window.matchMedia?.("(pointer: coarse)").matches === true;
+}
+
 function addLocateControl() {
   if (!map || !window.L) return;
   const Ctl = window.L.Control.extend({
-    options: { position: "topleft" },
+    options: { position: "topright" },
     onAdd() {
       const wrap = window.L.DomUtil.create("div", "leaflet-bar hs-locate-ctl");
       const btn = window.L.DomUtil.create("a", "hs-locate-btn", wrap);
@@ -2739,14 +2748,10 @@ function ringCentroid(ring) {
 }
 
 function paintHouseLayer(rings, nums, style) {
-  const sig = `${houseCache.key}|${style.weight}|${style.fillOpacity}|${(rings || []).length}|${(nums || []).length}`;
+  const sig = `${houseCache.key}|${(nums || []).length}`;
   if (sig === housePaintSig && houseLayer?.getLayers?.().length) return;
   housePaintSig = sig;
   houseLayer.clearLayers();
-  for (const ring of rings || []) {
-    if (!ring || ring.length < 4) continue;
-    window.L.polygon(ring, style).addTo(houseLayer);
-  }
   for (const n of nums || []) {
     const icon = window.L.divIcon({
       className: "hs-housenum",
@@ -2900,10 +2905,9 @@ async function refreshHouseNumbers() {
     housePaintSig = "";
     return;
   }
-  const style = buildingStyle();
   const key = houseBoundsKey(b, z);
-  if (houseCache.key === key && (houseCache.rings.length || houseCache.nums.length)) {
-    paintHouseLayer(houseCache.rings, houseCache.nums, style);
+  if (houseCache.key === key && houseCache.nums.length) {
+    paintHouseLayer([], houseCache.nums);
     return;
   }
   const padB = b.pad(0.18);
@@ -2912,15 +2916,11 @@ async function refreshHouseNumbers() {
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  const [foot, osm] = await Promise.all([
-    fetchStructureFootprints(south, west, north, east).catch(() => []),
-    fetchOsmHouseData(south, west, north, east).catch(() => ({ rings: [], nums: [] })),
-  ]);
+  const osm = await fetchOsmHouseData(south, west, north, east).catch(() => ({ rings: [], nums: [] }));
   if (gen !== houseGen || !map) return;
-  const rings = foot.length ? foot : osm.rings || [];
   const nums = osm.nums || [];
-  houseCache = { key, rings, nums };
-  paintHouseLayer(rings, nums, style);
+  houseCache = { key, rings: [], nums };
+  paintHouseLayer([], nums);
 }
 
 function stopFieldOverlay() {
@@ -3164,13 +3164,16 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   const c = center || config.center || { lat: 0, lon: 0 };
   const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : HOUSE_ZOOM;
   map = window.L.map(container, {
-    zoomControl: true,
+    zoomControl: false,
     preferCanvas: true,
     scrollWheelZoom: true,
     touchZoom: true,
     doubleClickZoom: false,
     maxZoom: MAP_MAX_ZOOM,
   }).setView([c.lat, c.lon], zoom);
+  if (!isPhoneUi()) {
+    window.L.control.zoom({ position: "bottomleft" }).addTo(map);
+  }
   const all = config.layers || [];
   for (const layer of all) {
     if (layer.synthetic || !layer.url) continue;
