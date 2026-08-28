@@ -2053,9 +2053,6 @@ body.wx-map-expanded .hs-sheet {
   background: var(--panel);
   color: var(--text);
 }
-.leaflet-layer.hs-sat-tiles {
-  filter: contrast(1.08) saturate(1.07) brightness(1.02);
-}
 .hs-night-tiles {
   filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.35) contrast(0.95);
 }

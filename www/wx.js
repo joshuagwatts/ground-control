@@ -1416,7 +1416,6 @@ const BASE_LAYERS = [
     subdomains: GOOGLE_SUBDOMAINS,
     maxNativeZoom: 21,
     attribution: "© Google",
-    className: "hs-sat-tiles",
   },
 ];
 
