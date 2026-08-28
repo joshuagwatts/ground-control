@@ -57,7 +57,7 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.83";
+} from "./wx.js?v=0.2.84";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1869,19 +1869,21 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   wxState.lat = lat;
   wxState.lon = lon;
   wxState.viewport = false;
-  if (prefAddr) wxState.address = prefAddr;
-  else if (/^map\s*view$/i.test(String(wxState.address || "").trim())) wxState.address = "";
+  wxState.data = null;
+  // Map taps must not reuse the previous house address — reverse-geocode the new pin.
+  const knownAddr = String(prefAddr || "").trim();
+  wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : "";
   setWxPin(lat, lon);
   const sheet = $("#hs-sheet");
-  const addr0 = prefAddr || wxState.address || "Dropped pin";
+  const addr0 = wxState.address || "Dropped pin";
   if (sheet) {
     sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
   }
   const addrBox = $("#hs-addr-q");
-  // Never stuff viewport labels into the search box
+  // Never stuff viewport labels / stale pins into the search box
   if (addrBox) {
-    if (addr0 && addr0 !== "Dropped pin" && !/^map\s*view$/i.test(addr0)) addrBox.value = addr0;
-    else if (/^map\s*view$/i.test(String(addrBox.value || "").trim())) addrBox.value = "";
+    if (wxState.address && parseStreetAddress(wxState.address).house) addrBox.value = wxState.address;
+    else addrBox.value = "";
   }
   revealHailAddressPeek();
   setStatus("Finding storms…");
@@ -1894,11 +1896,17 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   };
   try {
     const data = await pinDossier(db.settings, lat, lon, {
-      address: prefAddr || wxState.address || "",
+      address: wxState.address,
       onPartial: (partial) => {
         if (gen !== hailTapGen || !isHailTab()) return;
+        // Ignore stale coords if a newer tap already moved the pin
+        if (Number.isFinite(partial.lat) && Number.isFinite(partial.lon)) {
+          const dLat = Math.abs(partial.lat - lat);
+          const dLon = Math.abs(partial.lon - lon);
+          if (dLat > 1e-5 || dLon > 1e-5) return;
+        }
         const nextAddr = partial.address || "";
-        if (!prefAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
+        if (!knownAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
         wxState.data = partial;
         if ((partial.hail || []).length) {
           syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: false });
