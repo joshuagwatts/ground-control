@@ -1133,11 +1133,41 @@ export function zoomUiScale(z) {
   return Math.min(1, Math.max(0.4, Math.pow(2, (zoom - ZOOM_UI_REF) / 3)));
 }
 
-/** Hail spot/radar dots shrink more aggressively when zoomed out. */
+/** Hail spot/radar dots shrink hard when zoomed out — overview uses topo regions, not glitter. */
 export function hailDotZoomScale(z) {
   const zoom = Number.isFinite(z) ? z : map?.getZoom?.();
   if (!Number.isFinite(zoom)) return 1;
-  return Math.min(1, Math.max(0.22, Math.pow(2, (zoom - ZOOM_UI_REF) / 2.4)));
+  return Math.min(1, Math.max(0.08, Math.pow(2, (zoom - ZOOM_UI_REF) / 1.85)));
+}
+
+/** Zoom buckets that change how hail is drawn (dots vs weather-pattern regions). */
+function hailTopoZoomBucket(z) {
+  const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
+  if (zoom < 10) return 0;
+  if (zoom < 12) return 1;
+  if (zoom < 14) return 2;
+  if (zoom < 16) return 3;
+  return 4;
+}
+
+/** Cluster distance grows when zoomed out so similar radar hits form one weather pattern. */
+function hailClusterSplitKm(z) {
+  const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
+  if (zoom < 10) return 22;
+  if (zoom < 12) return 12;
+  if (zoom < 14) return 5.5;
+  if (zoom < 16) return 2.4;
+  return 1.5;
+}
+
+function hailSizeBand(sizeIn) {
+  const sz = parseFloat(sizeIn) || 0;
+  if (sz >= 2.5) return 5;
+  if (sz >= 2) return 4;
+  if (sz >= 1.5) return 3;
+  if (sz >= 1) return 2;
+  if (sz >= 0.75) return 1;
+  return 0;
 }
 
 /** Stroke style for hail/wind topo — dashes look filthy when zoomed out, so solidify far away. */
@@ -1228,7 +1258,8 @@ function refreshZoomScaledUi(force = false) {
   for (const m of hailDotMarkers) {
     if (!m?.setRadius) continue;
     const br = m.options.baseRadius || 6;
-    m.setRadius(Math.max(1.2, br * dotUi));
+    const spot = /wx-hail-spot/.test(String(m.options.className || ""));
+    m.setRadius(Math.max(spot ? 1.4 : 0.9, br * dotUi));
   }
   applyHailStrokeZoomStyles(force);
   if (windFieldCenterDot?.setRadius) {
@@ -1246,8 +1277,12 @@ function refreshZoomScaledUi(force = false) {
 
 function hailZoneOpacityBoost(base) {
   const z = map?.getZoom?.() ?? ZOOM_UI_REF;
-  const boost = Math.min(0.14, Math.max(0, (z - 15) * 0.018));
-  return Math.min(0.48, base + boost);
+  const sat = activeLayer === "sat";
+  // Sat imagery eats pastel fills — push opacity up so topo zones read
+  let boost = Math.min(0.16, Math.max(0, (z - 15) * 0.02));
+  if (sat) boost += 0.14;
+  if (z < 13) boost += 0.1; // weather-pattern fills need body when zoomed out
+  return Math.min(sat ? 0.58 : 0.5, base + boost);
 }
 
 const HOUSE_NUM_MAX = 400;
@@ -2738,6 +2773,22 @@ function clusterPoints(pts, splitKm = 1.5) {
   return clusters.map((c) => c.pts);
 }
 
+/** HailTrace-ish: only merge hits in the same size band, then proximity-cluster. */
+function clusterPointsBySize(pts, splitKm = 1.5) {
+  const byBand = new Map();
+  for (const p of pts || []) {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+    const band = hailSizeBand(p.size_in);
+    if (!byBand.has(band)) byBand.set(band, []);
+    byBand.get(band).push(p);
+  }
+  const out = [];
+  for (const group of byBand.values()) {
+    out.push(...clusterPoints(group, splitKm));
+  }
+  return out;
+}
+
 /** Roofer/industry-style footprint radius from hail size + source type. */
 function hailFootprintM(sizeIn, source) {
   const sz = parseFloat(sizeIn);
@@ -2787,20 +2838,26 @@ function buildDetailedZoneRings(zone, rawPts) {
     size_in: p.size_in || zone.size_in,
     source: p.source || zone.source,
   }));
-  const clusters = clusterPoints(clusterInput, 1.5);
+  const z = map?.getZoom?.() || 14;
+  const splitKm = hailClusterSplitKm(z);
+  // Far out: inflate footprints so same-size radar hits read as one weather blob
+  const inflate = z < 10 ? 3.2 : z < 12 ? 2.4 : z < 14 ? 1.7 : 1;
+  const clusters = clusterPointsBySize(clusterInput, splitKm);
   for (const cluster of clusters) {
     const samples = [];
     let confirmed = false;
     for (const p of cluster) {
       if (/spc|lsr|spot|iem/i.test(String(p.source || ""))) confirmed = true;
-      const r = hailFootprintM(p.size_in, p.source);
-      for (const [la, lo] of ringPolygon(p.lat, p.lon, r, 12)) samples.push({ lat: la, lon: lo });
+      const r = hailFootprintM(p.size_in, p.source) * inflate;
+      const sides = z < 13 ? 8 : 12;
+      for (const [la, lo] of ringPolygon(p.lat, p.lon, r, sides)) samples.push({ lat: la, lon: lo });
     }
     const hull = convexHullLatLon(samples);
     if (!hull) continue;
     const maxSz = Math.max(...cluster.map((p) => parseFloat(p.size_in) || 0));
+    const pad = Math.max(100, maxSz * 68) * (z < 12 ? 1.8 : z < 14 ? 1.35 : 1);
     rings.push({
-      ring: padPolygon(hull, Math.max(100, maxSz * 68)),
+      ring: padPolygon(hull, pad),
       maxSize: maxSz,
       hits: cluster.length,
       confirmed,
@@ -2842,7 +2899,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const boundKey = b
     ? `${b.getSouth().toFixed(3)}|${b.getWest().toFixed(3)}|${b.getNorth().toFixed(3)}|${b.getEast().toFixed(3)}`
     : "";
-  const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${boundKey}|${opts.fit ? 1 : 0}`;
+  const topoBucket = hailTopoZoomBucket();
+  const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${boundKey}|${topoBucket}|${activeLayer}|${opts.fit ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -2925,23 +2983,33 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       }).addTo(hailLayer);
     }
     const onBlock = dayHits.filter((p) => hitDistKm(p) <= 0.5);
-    const zoneHits = onBlock.length ? onBlock : dayHits;
+    // Map-fill / overview: use every hit in view so size-banded clusters form weather patterns
+    const zoneHits =
+      selectedStormDate || !pinCoords() ? dayHits : onBlock.length ? onBlock : dayHits;
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
+    const sat = activeLayer === "sat";
     for (const sub of subRings) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
       const isConfirm = sub.confirmed || sub.source === "spot+radar";
       fitPts.push(...sub.ring);
       const stroke = hailZoneStrokeStyle(isConfirm, sz);
+      const baseFill = isConfirm
+        ? sz >= 2
+          ? 0.3
+          : 0.22
+        : sz >= 2
+          ? 0.2
+          : sz >= 1
+            ? 0.15
+            : 0.11;
       trackHailStroke(
         window.L.polygon(sub.ring, {
           color: col.stroke,
           fillColor: col.fill,
-          fillOpacity: hailZoneOpacityBoost(
-            isConfirm ? (sz >= 2 ? 0.28 : 0.2) : sz >= 2 ? 0.18 : sz >= 1 ? 0.13 : 0.09,
-          ),
-          weight: stroke.weight,
-          opacity: stroke.opacity,
+          fillOpacity: hailZoneOpacityBoost(sat ? baseFill + 0.06 : baseFill),
+          weight: stroke.weight + (sat && (map?.getZoom?.() || 14) < 13 ? 0.35 : 0),
+          opacity: Math.min(1, stroke.opacity + (sat ? 0.08 : 0)),
           dashArray: stroke.dashArray,
           pane: "hailVectors",
           renderer: hailSvg,
@@ -2974,17 +3042,24 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     }
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
-    const toDraw = [...radar.slice(0, 180), ...spots.slice(0, 120)];
-    const dotUi = hailDotZoomScale();
+    const zNow = map?.getZoom?.() || 14;
+    // Far out: topo regions carry the look — skip glitter dots until you're closer
+    const showRadarDots = zNow >= 13.5;
+    const showSpotDots = zNow >= 12;
+    const showRadarHalos = zNow >= 15.5;
+    const toDraw = showRadarDots || showSpotDots
+      ? [...(showRadarDots ? radar.slice(0, 180) : []), ...(showSpotDots ? spots.slice(0, 120) : [])]
+      : [];
+    const dotUi = hailDotZoomScale(zNow);
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
-      const baseR = isSpot ? 8 : 7;
+      const baseR = isSpot ? 7 : 5.5;
       const mark = window.L.circleMarker([p.lat, p.lon], {
-        radius: Math.max(1.2, baseR * dotUi),
+        radius: Math.max(isSpot ? 1.4 : 0.9, baseR * dotUi),
         color: isSpot ? "#ffffff" : "#b8ff6a",
         fillColor: isSpot ? "#ff2d2d" : "#4caf2a",
-        fillOpacity: isSpot ? 0.95 : 0.92,
-        weight: isSpot ? 2 : 1.6,
+        fillOpacity: isSpot ? 0.95 : 0.88,
+        weight: isSpot ? 1.6 : 1.1,
         pane: "hailVectors",
         renderer: hailSvg,
         interactive: false,
@@ -2992,7 +3067,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       });
       mark.options.baseRadius = baseR;
       hailDotMarkers.push(mark);
-      if (!isSpot && dotUi >= 0.5) {
+      if (!isSpot && showRadarHalos && dotUi >= 0.55) {
         const pSz = parseFloat(p.size_in) || 0.75;
         window.L.circle([p.lat, p.lon], {
           radius: Math.max(48, Math.min(140, 52 + pSz * 38)),
@@ -4297,6 +4372,10 @@ export function setMapLayer(id) {
   applyOverlays();
   activeLayer = id;
   scheduleHouseNumbers();
+  if (selectedStormDate && (lastHailRows.length || lastWindRows.length)) {
+    lastHailDrawSig = "";
+    drawHailMarkers(lastHailRows, lastWindRows);
+  }
 }
 
 export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
