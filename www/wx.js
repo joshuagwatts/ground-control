@@ -4165,10 +4165,10 @@ function bindAddressSwipeToStormSheet(el) {
       if (hailTierGestureLocked) return;
       const dx = e.touches[0].clientX - origin.x;
       const dy = e.touches[0].clientY - origin.y;
-      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       origin = null;
       // Only upward swipe on the peek opens storm dates
-      if (dy < -10 && Math.abs(dy) >= Math.abs(dx)) {
+      if (dy < -8 && Math.abs(dy) >= Math.abs(dx)) {
         lockHailTierGesture();
         addressSwipeOpeningSheet = true;
         e.preventDefault();
@@ -4202,49 +4202,70 @@ function bindAddressSwipeToStormSheet(el) {
 
 function scrollViewToStormSheet() {
   const view = document.getElementById("view");
+  const panel = document.getElementById("hs-bottom-panel");
   const sheet = document.getElementById("hs-sheet");
-  if (!view || !sheet) return scrollViewToAddressPeek();
-  view.scrollTo({ top: Math.max(0, sheet.offsetTop - 12), behavior: "smooth" });
+  if (!view) return;
+  const target = panel || sheet;
+  if (!target) return scrollViewToAddressPeek();
+  // Park the bottom panel near the top so storm dates + completed jobs are both in frame
+  view.scrollTo({ top: Math.max(0, target.offsetTop - 6), behavior: "smooth" });
 }
 
 /** Apply address-only vs full storm sheet visibility. */
 export function syncHailBottomChrome() {
   const panel = document.getElementById("hs-bottom-panel");
-  if (!panel) return;
-  panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
-  panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
+  const field = document.getElementById("hs-field");
+  const wrap = document.querySelector(".hs-wrap");
+  if (panel) {
+    panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
+    panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
+  }
+  // Completed jobs / field marks ride with the storm sheet tier
+  field?.classList.toggle("hs-field-open", hailBottomTier === "sheet");
+  wrap?.classList.toggle("hs-tier-sheet", hailBottomTier === "sheet");
+  wrap?.classList.toggle("hs-tier-address", hailBottomTier === "address");
 }
 
 function pulseBottomPanel({ light = false } = {}) {
   const panel = document.getElementById("hs-bottom-panel");
   if (!panel) return;
-  panel.classList.remove("hs-bottom-reveal");
+  panel.classList.remove("hs-bottom-reveal", "hs-bottom-reveal-light");
   void panel.offsetWidth;
-  if (light) panel.classList.add("hs-bottom-reveal-light");
-  else panel.classList.add("hs-bottom-reveal");
+  panel.classList.add(light ? "hs-bottom-reveal-light" : "hs-bottom-reveal");
   clearTimeout(pulseBottomPanel._t);
   pulseBottomPanel._t = setTimeout(() => {
     panel.classList.remove("hs-bottom-reveal", "hs-bottom-reveal-light");
   }, MAP_SHELL_MS + 40);
 }
 
+function scheduleSheetScroll(fn, { waitForMap = false } = {}) {
+  const run = () => {
+    try {
+      fn();
+    } catch {
+      /* ignore */
+    }
+  };
+  if (waitForMap) {
+    // Let the map height ease down a beat, then scroll so dates + jobs land in view
+    setTimeout(() => requestAnimationFrame(run), Math.round(MAP_SHELL_MS * 0.45));
+  } else {
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  }
+}
+
 /** Slide up address search only — storm sheet stays hidden until explicitly opened. */
 export function revealHailAddressPeek() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const fromHidden = hailBottomTier === "hidden" || shell?.classList.contains("expanded");
+  const wasExpanded = Boolean(shell?.classList.contains("expanded"));
   hailBottomTier = "address";
   syncHailBottomChrome();
-  if (shell?.classList.contains("expanded")) {
+  if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
   if (fromHidden) pulseBottomPanel();
-  requestAnimationFrame(() => {
-    try {
-      scrollViewToAddressPeek();
-    } catch {
-      /* ignore */
-    }
-  });
+  scheduleSheetScroll(scrollViewToAddressPeek, { waitForMap: wasExpanded });
 }
 
 /** Optional hook when storm sheet opens with no house pin (e.g. load map-view storms). */
@@ -4253,24 +4274,19 @@ export function bindStormSheetOpen(fn) {
   stormSheetOpenHook = typeof fn === "function" ? fn : null;
 }
 
-/** Slide up the full storm date sheet. */
+/** Slide open storm dates + completed jobs list. */
 export function revealHailStormSheet() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const fromAddress = hailBottomTier === "address";
+  const wasExpanded = Boolean(shell?.classList.contains("expanded"));
   hailBottomTier = "sheet";
   syncHailBottomChrome();
-  if (shell?.classList.contains("expanded")) {
+  if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
-  // Address → sheet: light settle only (storm list CSS-transitions in). Full pulse from fullscreen.
-  pulseBottomPanel({ light: fromAddress });
-  requestAnimationFrame(() => {
-    try {
-      scrollViewToStormSheet();
-    } catch {
-      /* ignore */
-    }
-  });
+  // Address → sheet: light settle (storm list + jobs CSS-transition in). Full pulse from fullscreen.
+  pulseBottomPanel({ light: fromAddress && !wasExpanded });
+  scheduleSheetScroll(scrollViewToStormSheet, { waitForMap: wasExpanded });
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     try {
       stormSheetOpenHook?.();
@@ -4369,15 +4385,14 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     return false;
   };
-  /** Bottom double-swipe: 1) address  2) storm dates. One step per gesture. */
+  /** Bottom double-swipe: 1) address  2) storm dates + jobs. One step per quick swipe. */
   const tryBottomSwipeUp = () => {
     if (hailTierGestureLocked) return false;
     if (hailBottomTier === "sheet" && !isExpanded()) return false;
     lockHailTierGesture();
     advanceHailBottomReveal();
-    // Wheel/trackpad has no touchend — release after settle so the next flick can step again
     clearTimeout(tryBottomSwipeUp._unlock);
-    tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 320);
+    tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 220);
     return true;
   };
   view.addEventListener(
@@ -4427,7 +4442,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     const dy = y - touchY;
     touchY = y;
     touchAccum += dy;
-    if (!isExpanded() && hailBottomTier === "address" && touchOnPeek && touchAccum < -12) {
+    if (!isExpanded() && hailBottomTier === "address" && touchOnPeek && touchAccum < -8) {
       e.preventDefault();
       tryBottomSwipeUp();
       touchAccum = 0;
@@ -4482,7 +4497,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         const dy = y - tabTouchY;
         tabTouchY = y;
         tabAccum += dy;
-        if (tabAccum < -12) {
+        if (tabAccum < -8) {
           e.preventDefault();
           tryBottomSwipeUp();
           tabAccum = 0;

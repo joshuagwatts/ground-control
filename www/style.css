@@ -1841,7 +1841,35 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-kind.on, .hs-prod.on { background: var(--k, var(--trim)); color: #1c1400; border-color: transparent; }
 .hs-composer-actions { display: flex; gap: 0.4rem; margin-top: 0.55rem; }
-.hs-field { padding: 0 1rem 1.4rem; }
+.hs-field {
+  padding: 0 1rem 1.4rem;
+  max-height: 0;
+  opacity: 0;
+  transform: translate3d(0, 14px, 0);
+  overflow: hidden;
+  pointer-events: none;
+  margin: 0;
+  transition:
+    opacity var(--sheet-reveal-ms) var(--map-expand-ease),
+    transform var(--sheet-reveal-ms) var(--map-expand-ease),
+    max-height var(--map-expand-ms) var(--map-expand-ease),
+    padding var(--sheet-reveal-ms) ease;
+}
+.hs-field.hs-field-open {
+  max-height: 2200px;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  pointer-events: auto;
+  padding: 0.35rem 1rem 1.4rem;
+}
+body.wx-map-expanded .hs-field {
+  max-height: 0 !important;
+  opacity: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  pointer-events: none !important;
+  transform: translate3d(0, 12px, 0);
+}
 .hs-field textarea#hs-done-text {
   width: 100%; min-height: 6.5rem; margin: 0 0 0.55rem;
   background: var(--inset); border: 1px solid var(--line);
