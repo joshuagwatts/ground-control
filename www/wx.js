@@ -4009,6 +4009,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     placeSelectPin(e.latlng);
     if (onTap) onTap(lat, lng);
   });
+  // Address peek: upward swipe opens storm sheet (capture before Leaflet pans → fullscreen).
+  bindAddressSwipeToStormSheet(map.getContainer());
   map.on("movestart zoomstart", () => {
     mapBusy += 1;
     document.getElementById("hs-map-shell")?.classList.add("map-moving");
@@ -4016,7 +4018,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       clearTimeout(houseTimer);
       houseTimer = 0;
     }
-    if (!wxSuppressMapTap && hailBottomTier !== "hidden") {
+    if (!wxSuppressMapTap && hailBottomTier !== "hidden" && !addressSwipeOpeningSheet) {
       setWxMapExpanded(true);
     }
   });
@@ -4098,6 +4100,66 @@ function scrollViewToAddressPeek() {
 
 /** Bottom panel tier: hidden (fullscreen) → address → sheet. */
 let hailBottomTier = "hidden";
+/** True while an address-peek upward swipe is opening the storm sheet (blocks movestart→fullscreen). */
+let addressSwipeOpeningSheet = false;
+
+/** Capture upward swipes over el when address peek is open → storm sheet (not fullscreen map). */
+function bindAddressSwipeToStormSheet(el) {
+  if (!el || el.dataset.addrSwipeBound) return;
+  el.dataset.addrSwipeBound = "1";
+  let origin = null;
+  el.addEventListener(
+    "touchstart",
+    (e) => {
+      if (hailBottomTier !== "address" || e.touches.length !== 1) {
+        origin = null;
+        return;
+      }
+      origin = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    },
+    { capture: true, passive: true },
+  );
+  el.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!origin || hailBottomTier !== "address" || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - origin.x;
+      const dy = e.touches[0].clientY - origin.y;
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      origin = null;
+      // Dominant upward swipe → storm dates sheet
+      if (dy < -10 && Math.abs(dy) >= Math.abs(dx)) {
+        addressSwipeOpeningSheet = true;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        revealHailStormSheet();
+        requestAnimationFrame(() => {
+          addressSwipeOpeningSheet = false;
+        });
+        return;
+      }
+      // Sideways / down drag on the map → fullscreen (dragging is disabled in address peek)
+      e.preventDefault();
+      setWxMapExpanded(true);
+    },
+    { capture: true, passive: false },
+  );
+  el.addEventListener(
+    "touchend",
+    () => {
+      origin = null;
+    },
+    { capture: true, passive: true },
+  );
+  el.addEventListener(
+    "touchcancel",
+    () => {
+      origin = null;
+      addressSwipeOpeningSheet = false;
+    },
+    { capture: true, passive: true },
+  );
+}
 
 function scrollViewToStormSheet() {
   const view = document.getElementById("view");
@@ -4112,6 +4174,15 @@ export function syncHailBottomChrome() {
   if (!panel) return;
   panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
   panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
+  // While address peek is open, Leaflet drag would steal upward swipes → fullscreen.
+  // Own the gesture here; pan/zoom still leave address via the swipe binder + zoomstart.
+  try {
+    if (!map?.dragging) return;
+    if (hailBottomTier === "address") map.dragging.disable();
+    else map.dragging.enable();
+  } catch {
+    /* ignore */
+  }
 }
 
 function pulseBottomPanel() {
@@ -4220,6 +4291,9 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       revealHailStormSheet();
     });
   }
+  // Swipe up on the address band itself also opens storm dates
+  bindAddressSwipeToStormSheet(document.getElementById("hs-bottom-panel"));
+  bindAddressSwipeToStormSheet(sheet);
   const mapBar = shell.querySelector(".hs-map-bar");
   const tabNav = tabs || document.getElementById("tabs");
   const isExpanded = () => shell.classList.contains("expanded");

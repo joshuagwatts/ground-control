@@ -55,7 +55,7 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.66";
+} from "./wx.js?v=0.2.67";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";

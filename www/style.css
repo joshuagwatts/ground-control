@@ -1648,7 +1648,7 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin { cursor: pointer; }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
-  content: "Tap for storm dates ▾";
+  content: "Swipe up for storm dates";
   display: block;
   font-size: 11px;
   color: var(--muted);
