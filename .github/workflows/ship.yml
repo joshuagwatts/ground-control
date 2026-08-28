@@ -18,8 +18,10 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - run: npm run sync-version
       - run: npm test
       - run: npm run check
+      - run: node scripts/check-app-imports.mjs
       - run: npx cap sync android
       - name: Ensure CapacitorHttp native plugin
         run: |
@@ -101,16 +103,23 @@ jobs:
       - uses: actions/download-artifact@v4
       - name: Flatten downloads
         run: mv GroundControl-apk/GroundControl.apk GroundControl.apk
+      - name: Read package version
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
         with:
-          tag_name: phone
-          name: Ground Control
+          tag_name: v${{ steps.pkg.outputs.version }}
+          name: Ground Control v${{ steps.pkg.outputs.version }}
           make_latest: true
-          overwrite_files: true
+          generate_release_notes: true
           body: |
+            **Ground Control v${{ steps.pkg.outputs.version }}**
+
             Sideload **GroundControl.apk**. After the first signed build, tap the APK to **update** — do not uninstall.
+
+            Check the version in the app header (`v${{ steps.pkg.outputs.version }}`) to confirm you are on this build.
 
             Same package (`com.holowatts.groundcontrol`) and the same signing key every ship. Keys and jobs stay on the phone.
 

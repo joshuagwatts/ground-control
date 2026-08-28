@@ -1,4 +1,9 @@
-await import("./app.js?v=0240").catch((err) => {
+import { APP_VERSION, CACHE_BUST } from "./version.js";
+
+const ver = document.getElementById("app-version");
+if (ver) ver.textContent = `v${APP_VERSION}`;
+
+await import(`./app.js?v=${CACHE_BUST}`).catch((err) => {
   const root = document.getElementById("view");
   const msg = String(err?.message || err || "boot failed");
   if (root) {

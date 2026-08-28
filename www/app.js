@@ -37,7 +37,7 @@ import {
   setHailScopeMode,
   renderHailScopeSheet,
   baseLayerButtons,
-  bindWxMapExpand,
+  bindWxMapScrollExpand,
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
@@ -48,7 +48,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0240";
+} from "./wx.js?v=0.2.41";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
