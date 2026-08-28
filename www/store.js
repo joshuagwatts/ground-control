@@ -16,6 +16,7 @@ function blank() {
       marksLastProduct: "atlas-glassmaster",
       showDone: true,
       showMarks: true,
+      done_pin_scale: 1,
       humor: 40,
       honesty: 98,
       privacy_mode: "leaky",
