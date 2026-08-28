@@ -1482,15 +1482,13 @@ function refreshZoomScaledUi(force = false) {
 }
 
 function hailZoneOpacityBoost(base) {
-  const z = map?.getZoom?.() ?? ZOOM_UI_REF;
+  // Solid nested bands — translucent stacking was the muddy overlap look.
+  void base;
   const sat = activeLayer === "sat";
-  let o = sat ? base + 0.1 : base + 0.04;
-  if (hasSelectedStormDates()) o += 0.14;
-  if (z < 9) o += 0.05;
-  return Math.min(sat ? 0.78 : 0.72, o);
+  return sat ? 0.9 : 0.86;
 }
 
-/** Keep pane at 1 — per-shape fillOpacity handles overlap; pane opacity broke SVG zones on some devices. */
+/** Pane stays fully opaque; nested solid fills overwrite (HailTrace cut-out). */
 function hailFillPaneOpacity() {
   return 1;
 }
@@ -3404,12 +3402,15 @@ function clusterPoints(pts, splitKm = 1.5) {
 }
 
 /** Roofer/industry-style footprint radius from hail size + source type. */
-function hailFootprintM(sizeIn, source) {
+function hailFootprintM(sizeIn, source, zoom) {
   const sz = parseFloat(sizeIn);
   const s = Number.isNaN(sz) ? 0.75 : sz;
   const radar = /swdi|radar/i.test(String(source || ""));
-  // Radar/MESH footprints are wider than a spotter ping — HailTrace-style swaths.
-  return Math.max(450, Math.min(3800, (radar ? 820 : 380) + s * (radar ? 640 : 380)));
+  const z = Number.isFinite(zoom) ? zoom : map?.getZoom?.() || 14;
+  // Zoomed-out: fatten kernels so pockets merge into continuous news-radar corridors.
+  const zoomScale = z < 8 ? 2.8 : z < 10 ? 2.1 : z < 12 ? 1.45 : 1;
+  const base = (radar ? 900 : 420) + s * (radar ? 720 : 400);
+  return Math.max(500, Math.min(6200, base * zoomScale));
 }
 
 /**
@@ -3418,6 +3419,7 @@ function hailFootprintM(sizeIn, source) {
  * between volume-scan-like hits, then extract nested isosurfaces at hail-size thresholds.
  */
 const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.5, 2.0, 2.5];
+const HAIL_SWATH_THRESHOLDS_WIDE = [0.75, 1.25, 2.0];
 
 function chaikinSmoothRing(ring, iters = 2) {
   if (!ring || ring.length < 4) return ring;
@@ -3490,8 +3492,68 @@ function morphClose(grid, w, h, passes = 1) {
 }
 
 /**
- * Connected components on a binary grid → smoothed exterior rings (Hailswath footprint union).
- * Uses edge-cell hulls (stable) rather than fragile contour walking.
+ * Moore neighborhood exterior walk — keeps elongated storm corridors instead of
+ * ballooning them into convex-hull bubbles (the HailTrace / TV-radar look).
+ */
+function walkBinaryExterior(grid, w, h, sx, sy, cellKm, xyToLatLon) {
+  const isOn = (x, y) => x >= 0 && y >= 0 && x < w && y < h && grid[y * w + x];
+  const DX = [1, 1, 0, -1, -1, -1, 0, 1];
+  const DY = [0, 1, 1, 1, 0, -1, -1, -1];
+  if (!isOn(sx, sy)) return null;
+  let startDir = -1;
+  for (let d = 0; d < 8; d++) {
+    if (!isOn(sx + DX[d], sy + DY[d])) {
+      startDir = d;
+      break;
+    }
+  }
+  if (startDir < 0) return null;
+
+  const ring = [];
+  let x = sx;
+  let y = sy;
+  let dir = startDir;
+  const maxSteps = w * h * 4;
+  for (let step = 0; step < maxSteps; step++) {
+    ring.push(xyToLatLon((x + 0.5) * cellKm, (y + 0.5) * cellKm));
+    let nextDir = -1;
+    let nx = x;
+    let ny = y;
+    for (let k = 0; k < 8; k++) {
+      const d = (dir + 6 + k) % 8;
+      const tx = x + DX[d];
+      const ty = y + DY[d];
+      if (isOn(tx, ty)) {
+        nextDir = d;
+        nx = tx;
+        ny = ty;
+        break;
+      }
+    }
+    if (nextDir < 0) break;
+    x = nx;
+    y = ny;
+    dir = nextDir;
+    if (x === sx && y === sy && ring.length > 3) break;
+  }
+  if (ring.length < 4) return null;
+  const closed =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring
+      : ring.concat([ring[0]]);
+  if (closed.length > 48) {
+    const stride = Math.ceil(closed.length / 36);
+    const slim = [];
+    for (let i = 0; i < closed.length - 1; i += stride) slim.push(closed[i]);
+    slim.push(slim[0]);
+    return slim;
+  }
+  return closed;
+}
+
+/**
+ * Connected components on a binary grid → smoothed exterior rings.
+ * Prefers contour walking (elongated swaths) over convex hulls (bubble look).
  */
 function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24) {
   const seen = new Uint8Array(w * h);
@@ -3506,34 +3568,53 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
       if (!grid[start] || seen[start]) continue;
       const q = [[x, y]];
       seen[start] = 1;
-      const edgePts = [];
+      let seedX = x;
+      let seedY = y;
       let qi = 0;
       while (qi < q.length) {
         const [cx, cy] = q[qi++];
-        let edge = false;
+        for (let k = 0; k < 8; k++) {
+          if (!isOn(cx + DX[k], cy + DY[k])) {
+            seedX = cx;
+            seedY = cy;
+            break;
+          }
+        }
         for (let k = 0; k < 8; k++) {
           const nx = cx + DX[k];
           const ny = cy + DY[k];
-          if (!isOn(nx, ny)) {
-            edge = true;
-            continue;
-          }
+          if (!isOn(nx, ny)) continue;
           const ni = ny * w + nx;
           if (seen[ni]) continue;
           seen[ni] = 1;
           q.push([nx, ny]);
         }
-        if (edge || q.length === 1) {
+      }
+      let closed = walkBinaryExterior(grid, w, h, seedX, seedY, cellKm, xyToLatLon);
+      if (!closed || closed.length < 4) {
+        const edgePts = [];
+        for (const [cx, cy] of q) {
+          let edge = false;
+          for (let k = 0; k < 8; k++) {
+            if (!isOn(cx + DX[k], cy + DY[k])) {
+              edge = true;
+              break;
+            }
+          }
+          if (!edge && q.length > 1) continue;
           edgePts.push({
             lat: xyToLatLon((cx + 0.5) * cellKm, (cy + 0.5) * cellKm)[0],
             lon: xyToLatLon((cx + 0.5) * cellKm, (cy + 0.5) * cellKm)[1],
           });
         }
+        if (edgePts.length < 3) continue;
+        const hull = convexHullLatLon(edgePts);
+        if (!hull || hull.length < 3) continue;
+        closed =
+          hull[0][0] === hull[hull.length - 1][0] && hull[0][1] === hull[hull.length - 1][1]
+            ? hull
+            : hull.concat([hull[0]]);
       }
-      if (edgePts.length < 3) continue;
-      const hull = convexHullLatLon(edgePts);
-      if (!hull || hull.length < 3) continue;
-      const closed = hull[0][0] === hull[hull.length - 1][0] && hull[0][1] === hull[hull.length - 1][1] ? hull : hull.concat([hull[0]]);
       rings.push(chaikinSmoothRing(closed, 2));
     }
   }
@@ -3546,18 +3627,23 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
  */
 function buildHailSwathRings(rawPts, zone = {}) {
   const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
-  // Prefer SWDI polygons as strong seeds when present
+  const z = map?.getZoom?.() ?? 14;
+  const wide = z < 11;
+  // Prefer SWDI polygons as seeds when zoomed in; when zoomed out fold them into the mesh
+  // so they don't paint as a field of disconnected bubbles.
   const swdiRings = [];
-  for (const p of pts) {
-    if (p.swdi_ring && p.swdi_ring.length >= 3) {
-      const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-      swdiRings.push({
-        ring: padPolygon(p.swdi_ring, Math.max(160, maxSz * 90)),
-        maxSize: maxSz,
-        hits: 1,
-        confirmed: true,
-        source: "radar-poly",
-      });
+  if (!wide) {
+    for (const p of pts) {
+      if (p.swdi_ring && p.swdi_ring.length >= 3) {
+        const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+        swdiRings.push({
+          ring: padPolygon(p.swdi_ring, Math.max(160, maxSz * 90)),
+          maxSize: maxSz,
+          hits: 1,
+          confirmed: true,
+          source: "radar-poly",
+        });
+      }
     }
   }
 
@@ -3567,7 +3653,7 @@ function buildHailSwathRings(rawPts, zone = {}) {
       const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
       return [
         {
-          ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source), 14),
+          ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source, z), wide ? 20 : 14),
           maxSize: sz,
           hits: 1,
           confirmed: isSpotterHail(p),
@@ -3596,7 +3682,7 @@ function buildHailSwathRings(rawPts, zone = {}) {
   let maxY = -Infinity;
   const kernels = pts.map((p) => {
     const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-    const rKm = hailFootprintM(sz, p.source) / 1000;
+    const rKm = hailFootprintM(sz, p.source, z) / 1000;
     const { x, y } = toXY(p.lat, p.lon);
     minX = Math.min(minX, x - rKm);
     maxX = Math.max(maxX, x + rKm);
@@ -3604,21 +3690,37 @@ function buildHailSwathRings(rawPts, zone = {}) {
     maxY = Math.max(maxY, y + rKm);
     return { x, y, rKm, size: sz, spot: isSpotterHail(p) };
   });
-  const pad = 1.2;
+  // Zoomed-out: also seed kernels from SWDI polygon centroids so radar polygons
+  // participate in the continuous swath instead of floating as separate bubbles.
+  if (wide) {
+    for (const p of pts) {
+      if (!p.swdi_ring || p.swdi_ring.length < 3) continue;
+      const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+      const cLat = p.swdi_ring.reduce((a, c) => a + c[0], 0) / p.swdi_ring.length;
+      const cLon = p.swdi_ring.reduce((a, c) => a + c[1], 0) / p.swdi_ring.length;
+      const rKm = hailFootprintM(sz, "noaa-swdi-radar", z) / 1000;
+      const { x, y } = toXY(cLat, cLon);
+      minX = Math.min(minX, x - rKm);
+      maxX = Math.max(maxX, x + rKm);
+      minY = Math.min(minY, y - rKm);
+      maxY = Math.max(maxY, y + rKm);
+      kernels.push({ x, y, rKm, size: Math.max(sz, 0.85), spot: false });
+    }
+  }
+  const pad = wide ? 2.4 : 1.2;
   minX -= pad;
   minY -= pad;
   maxX += pad;
   maxY += pad;
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
-  // Keep mesh quality when zoomed out / statewide — old 96-cell cap went coarse on big swaths.
-  const maxCells = hasSelectedStormDates() ? 192 : 128;
-  const cellKm = Math.max(0.18, Math.min(0.85, span / maxCells));
+  // Zoomed-out: coarser cells + stronger close → continuous weather-pattern corridors.
+  const maxCells = wide ? 160 : hasSelectedStormDates() ? 192 : 128;
+  const cellKm = Math.max(wide ? 0.35 : 0.18, Math.min(wide ? 1.4 : 0.85, span / maxCells));
   const w = Math.min(maxCells, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
   const h = Math.min(maxCells, Math.max(16, Math.ceil((maxY - minY) / cellKm)));
   const field = new Float32Array(w * h);
 
-  // Accumulate max hail size (MESH-like) with soft disk kernels
   for (const k of kernels) {
     const gx0 = Math.max(0, Math.floor((k.x - k.rKm - minX) / cellKm));
     const gx1 = Math.min(w - 1, Math.ceil((k.x + k.rKm - minX) / cellKm));
@@ -3631,10 +3733,9 @@ function buildHailSwathRings(rawPts, zone = {}) {
         const cy = minY + (gy + 0.5) * cellKm;
         const d2 = (cx - k.x) * (cx - k.x) + (cy - k.y) * (cy - k.y);
         if (d2 > r2) continue;
-        // Soft falloff toward edge — continuous field for nicer isosurfaces
         const t = 1 - Math.sqrt(d2) / Math.max(0.05, k.rKm);
-        const radarBoost = k.spot ? 1 : 1.5;
-        const contrib = k.size * (0.55 + 0.45 * t) * radarBoost;
+        const radarBoost = k.spot ? 1 : 1.65;
+        const contrib = k.size * (0.5 + 0.5 * t) * radarBoost;
         const i = gy * w + gx;
         if (contrib > field[i]) field[i] = contrib;
       }
@@ -3645,9 +3746,9 @@ function buildHailSwathRings(rawPts, zone = {}) {
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
+  const thresholds = wide ? HAIL_SWATH_THRESHOLDS_WIDE : HAIL_SWATH_THRESHOLDS;
 
-  // Nested isosurfaces: outer (small hail) first → inner severe cores
-  for (const thr of HAIL_SWATH_THRESHOLDS) {
+  for (const thr of thresholds) {
     const binary = new Uint8Array(w * h);
     let any = 0;
     for (let i = 0; i < field.length; i++) {
@@ -3657,14 +3758,17 @@ function buildHailSwathRings(rawPts, zone = {}) {
       }
     }
     if (!any) continue;
-    const closed = morphClose(binary, w, h, thr <= 1 ? 3 : thr <= 1.5 ? 2 : 1);
-    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
+    // Aggressive close when zoomed out — fills gaps into continuous swaths like TV radar.
+    const closePasses = wide ? (thr <= 1 ? 6 : thr <= 1.5 ? 4 : 3) : thr <= 1 ? 3 : thr <= 1.5 ? 2 : 1;
+    const closed = morphClose(binary, w, h, closePasses);
+    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, wide ? 8 : 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
+      const smooth = chaikinSmoothRing(ring, wide ? 3 : 2);
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.75) || (radarCount >= 1 && thr >= 1);
       out.push({
-        ring: padPolygon(ring, Math.max(90, thr * 55)),
+        ring: padPolygon(smooth, Math.max(wide ? 140 : 90, thr * (wide ? 80 : 55))),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
@@ -3684,6 +3788,8 @@ function buildHailSwathRings(rawPts, zone = {}) {
       },
     ];
   }
+  // Prefer continuous mesh corridors over a pile of tiny radar-poly bubbles.
+  out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
   return out;
 }
 
@@ -3738,6 +3844,41 @@ function topoZoneRing(zone, rawPts) {
   return ringPolygon(lat, lon, baseM, sz >= 1.5 ? 8 : 6);
 }
 
+function hailZonePopupHtml(h, sub) {
+  const sz = sub.maxSize || parseFloat(h.size_in) || 0;
+  const srcKey =
+    sub.source === "mesh-swath" || sub.source === "radar-poly" || sub.source === "radar-merge"
+      ? "noaa-swdi-radar"
+      : sub.source === "spot+radar"
+        ? "mixed"
+        : sub.source || h.source;
+  const src = hailSourceLabel({ source: srcKey });
+  const when = prettyStormDate(h.date);
+  const hits = sub.hits || h.hits || 1;
+  const span = h.span_km ? ` · ${formatDistance(h.span_km)} wide` : "";
+  const near = (h.near_hits || 0) > 0 ? ` · ${h.near_hits} at roof` : "";
+  return `<div class="hs-zone-pop">
+    <strong>${when}</strong>
+    <span class="hs-zone-size">${Number(sz).toFixed(2)}″ · ${hailSeverityLabel(sz)}</span>
+    <span class="hs-zone-meta">${src} · ${hits} sig${span}${near}</span>
+  </div>`;
+}
+
+function bindHailZoneTap(layer, h, sub) {
+  if (!layer || !window.L) return layer;
+  layer.on("click", (e) => {
+    window.L.DomEvent.stopPropagation(e);
+    window.L.DomEvent.preventDefault(e);
+    const latlng = e.latlng || layer.getBounds?.()?.getCenter?.();
+    if (!latlng || !map) return;
+    window.L.popup({ className: "hs-zone-popup", closeButton: true, maxWidth: 260 })
+      .setLatLng(latlng)
+      .setContent(hailZonePopupHtml(h, sub))
+      .openOn(map);
+  });
+  return layer;
+}
+
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (!map || !window.L) return;
   lastHailRows = hailRows || [];
@@ -3750,8 +3891,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const activeDays = selectedStormDates;
   const pin = pinCoords();
   const radarN = (hailRows || []).filter(isRadarHail).length;
+  const zDraw = map?.getZoom?.() ?? 14;
+  const zBucket = zDraw < 9 ? 0 : zDraw < 11 ? 1 : zDraw < 13 ? 2 : 3;
   // Geometry is lat/lon — do not key the draw cache on map bounds or zones morph while panning.
-  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}|r${radarN}`;
+  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}|r${radarN}|z${zBucket}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -3802,7 +3945,6 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const hailDotSvg = window.L.svg({ pane: "hailDots", padding: 0.6 });
 
   const day = activeDays.size ? activeDays : null;
-  const zDraw = map?.getZoom?.() ?? 14;
   // Zoomed-out overlays keep the same zone budget as close-in (detail over culling).
   const zoneLimit = day
     ? Math.min(400, Math.max(160, activeDays.size * 70) + (zDraw < 9 ? 120 : 0))
@@ -3811,6 +3953,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     .filter((h) => !day || day.has(h.date))
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
     .slice(0, zoneLimit);
+  const wideView = zDraw < 11;
 
   const fitPts = [];
   for (const h of zones) {
@@ -3820,21 +3963,26 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const pin = pinCoords();
     const subRings = [];
     const roofHit = (h.near_hits || 0) > 0 || atRoof.length > 0;
-    if (roofHit && pin) {
+    // Close-in only — yellow roof ring reads as a bubble when zoomed out.
+    if (roofHit && pin && !wideView) {
       const sz = atRoof.reduce((m, p) => Math.max(m, parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0);
       const col = hailZoneColor(sz);
-      window.L.circle([pin.lat, pin.lon], {
-        radius: Math.max(50, Math.min(140, 48 + sz * 42)),
-        color: "#ffcc00",
-        fillColor: col.fill,
-        fillOpacity: hailZoneOpacityBoost(sz >= 1 ? 0.44 : 0.36),
-        weight: 3,
-        opacity: 1,
-        pane: "hailDots",
-        renderer: hailDotSvg,
-        interactive: false,
-        className: "wx-hail-pin-zone",
-      }).addTo(hailLayer);
+      bindHailZoneTap(
+        window.L.circle([pin.lat, pin.lon], {
+          radius: Math.max(50, Math.min(140, 48 + sz * 42)),
+          color: "#ffcc00",
+          fillColor: col.fill,
+          fillOpacity: hailZoneOpacityBoost(0.9),
+          weight: 3,
+          opacity: 1,
+          pane: "hailDots",
+          renderer: hailDotSvg,
+          interactive: true,
+          className: "wx-hail-pin-zone",
+        }).addTo(hailLayer),
+        h,
+        { maxSize: sz, hits: atRoof.length || 1, source: "spot+radar" },
+      );
     }
     const zoneHits = dayHits;
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
@@ -3847,7 +3995,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         source: dayHits.some((p) => !isSpotterHail(p)) ? "spot+radar" : "spotter",
       });
     }
-    // Outer / weaker first, then cores on top — opaque fills cut through (no opacity stack).
+    // Outer / weaker first, then cores on top — solid fills overwrite (no opacity mud).
     subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
     const sat = activeLayer === "sat";
     for (const sub of subRings) {
@@ -3857,54 +4005,52 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const isConfirm = Boolean(sub.confirmed) || sub.source === "spot+radar" || isRadarZone;
       fitPts.push(...sub.ring);
       const stroke = hailZoneStrokeStyle(isConfirm, sz, undefined, { radar: isRadarZone });
-      const baseFill = isRadarZone ? 0.58 + Math.min(0.12, sz * 0.04) : isConfirm ? 0.62 : 0.42;
-      trackHailStroke(
-        window.L.polygon(sub.ring, {
-          color: col.stroke,
-          fillColor: col.fill,
-          fillOpacity: hailZoneOpacityBoost(baseFill),
-          weight: stroke.weight + (sat && (map?.getZoom?.() || 14) < 13 ? 0.45 : 0),
-          opacity: Math.min(1, stroke.opacity + (sat ? 0.08 : 0.04)),
-          dashArray: stroke.dashArray,
-          pane: "hailFills",
-          renderer: hailFillSvg,
-          interactive: false,
-          className: isConfirm
-            ? "wx-hail-topo wx-hail-confirmed"
-            : isRadarZone
-              ? "wx-hail-topo wx-hail-radar"
-              : "wx-hail-topo",
-        }).addTo(hailLayer),
-        { confirmed: isConfirm, size: sz, kind: "zone" },
-      );
-      if (sz >= 0.75 && isConfirm) {
+      const poly = window.L.polygon(sub.ring, {
+        color: col.stroke,
+        fillColor: col.fill,
+        fillOpacity: hailZoneOpacityBoost(1),
+        weight: Math.max(1.2, stroke.weight + (wideView ? 0.6 : sat && zDraw < 13 ? 0.45 : 0)),
+        opacity: 1,
+        dashArray: wideView ? null : stroke.dashArray,
+        pane: "hailFills",
+        renderer: hailFillSvg,
+        interactive: true,
+        bubblingMouseEvents: false,
+        className: isConfirm
+          ? "wx-hail-topo wx-hail-confirmed"
+          : isRadarZone
+            ? "wx-hail-topo wx-hail-radar"
+            : "wx-hail-topo",
+      }).addTo(hailLayer);
+      trackHailStroke(bindHailZoneTap(poly, h, sub), { confirmed: isConfirm, size: sz, kind: "zone" });
+      // Inner cores only when zoomed in — they read as bubble clutter far out.
+      if (sz >= 1 && isConfirm && !wideView) {
         const cLat = sub.ring.reduce((a, c) => a + c[0], 0) / sub.ring.length;
         const cLon = sub.ring.reduce((a, c) => a + c[1], 0) / sub.ring.length;
-        const coreR = Math.max(320, hailFootprintM(sz, isRadarZone ? "noaa-swdi-radar" : "noaa-spc") * 0.5);
+        const coreR = Math.max(320, hailFootprintM(sz, isRadarZone ? "noaa-swdi-radar" : "noaa-spc", zDraw) * 0.45);
         const coreStroke = hailCoreStrokeStyle();
-        trackHailStroke(
-          window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
-            color: col.core,
-            fillColor: col.core,
-            fillOpacity: hailZoneOpacityBoost(0.48),
-            weight: coreStroke.weight + 0.25,
-            opacity: Math.min(1, coreStroke.opacity + 0.12),
-            dashArray: coreStroke.dashArray,
-            pane: "hailFills",
-            renderer: hailFillSvg,
-            interactive: false,
-            className: "wx-hail-topo-core",
-          }).addTo(hailLayer),
-          { confirmed: true, size: sz, kind: "core" },
-        );
+        const core = window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
+          color: col.core,
+          fillColor: col.core,
+          fillOpacity: hailZoneOpacityBoost(1),
+          weight: coreStroke.weight + 0.25,
+          opacity: 1,
+          dashArray: null,
+          pane: "hailFills",
+          renderer: hailFillSvg,
+          interactive: true,
+          bubblingMouseEvents: false,
+          className: "wx-hail-topo-core",
+        }).addTo(hailLayer);
+        trackHailStroke(bindHailZoneTap(core, h, { ...sub, maxSize: sz }), { confirmed: true, size: sz, kind: "core" });
       }
     }
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
     const zNow = map?.getZoom?.() || 14;
-    // Selected storm days keep spot/radar detail at every zoom; otherwise ease dots in closer.
+    // Zoomed-out storm view: continuous swaths only — dots read as bubble clutter.
     const stormOn = hasSelectedStormDates();
-    const dotsAllowed = fieldOverlay.showHailDots !== false;
+    const dotsAllowed = fieldOverlay.showHailDots !== false && !wideView;
     const showRadarDots = dotsAllowed && (stormOn || zNow >= 11);
     const showSpotDots = dotsAllowed && (stormOn || zNow >= 10);
     const showRadarHalos = dotsAllowed && (stormOn ? zNow >= 12 : zNow >= 15.5);
@@ -5497,6 +5643,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   applyOverlays();
   map.on("click", (e) => {
     if (wxSuppressMapTap) return;
+    // Storm overlay mode: taps hit zones for info — don't drop/move the blue pin.
+    if (hasSelectedStormDates()) return;
     let { lat, lng } = e.latlng;
     const snap = nearestHouseAddress(lat, lng);
     let address = "";
@@ -5524,6 +5672,11 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   map.on("zoomend", () => {
     lastZoomUiScale = 0;
     scheduleZoomUiRefresh(true);
+    // Re-mesh swaths when crossing zoom bands (wide corridors ↔ detail bubbles).
+    if (hasSelectedStormDates() && (lastHailRows.length || lastWindRows.length)) {
+      lastHailDrawSig = "";
+      drawHailMarkers(lastHailRows, lastWindRows);
+    }
   });
   map.on("moveend zoomend", () => {
     mapBusy = Math.max(0, mapBusy - 1);
