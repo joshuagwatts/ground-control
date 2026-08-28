@@ -16,6 +16,7 @@
   --safe-top: max(env(safe-area-inset-top, 0px), 12px);
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
   --tab-h: 3.4rem;
+  --gc-header-h: calc(2.35rem + var(--safe-top));
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
@@ -37,6 +38,7 @@ header.stat {
   flex-shrink: 0;
   background: rgba(11, 11, 13, 0.88);
   backdrop-filter: blur(16px);
+  z-index: 12;
 }
 .mark {
   color: var(--text);
@@ -215,7 +217,7 @@ nav.tabs {
   background: rgba(11, 11, 13, 0.92);
   backdrop-filter: blur(18px);
   padding: 0.2rem 0.3rem var(--safe-bottom);
-  z-index: 5;
+  z-index: 12;
 }
 nav.tabs::-webkit-scrollbar { display: none; }
 nav.tabs button {
@@ -1595,30 +1597,14 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
   position: fixed;
   left: 0;
   right: 0;
-  top: 0;
+  top: var(--gc-header-h);
   bottom: calc(var(--tab-h) + var(--safe-bottom));
   height: auto;
   min-height: 0;
   max-height: none;
-  z-index: 9;
+  z-index: 8;
   border: none;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
-}
-body.wx-map-expanded header.stat {
-  z-index: 11;
-  background: rgba(11, 11, 13, 0.12);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border-bottom-color: transparent;
-  pointer-events: none;
-  transition: background 0.35s ease, backdrop-filter 0.35s ease;
-}
-body.wx-map-expanded header.stat .mark,
-body.wx-map-expanded header.stat .app-ver,
-body.wx-map-expanded header.stat .privacy-chip,
-body.wx-map-expanded header.stat .spacer {
-  opacity: 0;
-  transition: opacity 0.28s ease;
+  box-shadow: none;
 }
 body.wx-map-expanded #view { overflow: hidden; }
 body.wx-map-expanded .hs-sheet { display: none; }

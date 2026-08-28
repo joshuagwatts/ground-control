@@ -48,7 +48,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.42";
+} from "./wx.js?v=0.2.43";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1734,7 +1734,7 @@ async function renderWx() {
     const cfg = quickMapConfig(db.settings);
     wireHsShell(cfg);
     mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat" });
-    bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"));
+    bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();

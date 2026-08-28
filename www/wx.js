@@ -993,55 +993,26 @@ const MAP_MAX_ZOOM = 22;
 const HOUSE_NUM_ZOOM = 16;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
-const ZOOM_UI_REF = 18;
-let lastZoomUiScale = 0;
-const hailDotMarkers = [];
-let windFieldCenterDot = null;
-
-/** Screen-pixel scale for map icons — shrinks when zoomed out, ~1.0 at street zoom. */
-export function zoomUiScale(z) {
-  const zoom = Number.isFinite(z) ? z : map?.getZoom?.();
-  if (!Number.isFinite(zoom)) return 1;
-  return Math.min(1.1, Math.max(0.2, Math.pow(2, (zoom - ZOOM_UI_REF) / 2.6)));
+/** @deprecated Pin size uses the slider only — always 1. */
+export function zoomUiScale() {
+  return 1;
 }
 
 function hailZoneOpacityBoost(base) {
-  const z = map?.getZoom?.() ?? ZOOM_UI_REF;
+  const z = map?.getZoom?.() ?? 18;
   const boost = Math.min(0.14, Math.max(0, (z - 15) * 0.018));
   return Math.min(0.48, base + boost);
 }
 
-function refreshZoomScaledUi(force = false) {
-  if (!map) return;
-  const ui = zoomUiScale();
-  if (!force && Math.abs(ui - lastZoomUiScale) < 0.035) return;
-  lastZoomUiScale = ui;
-  for (const m of hailDotMarkers) {
-    const br = m.options.baseRadius || 6;
-    m.setRadius(Math.max(2, br * ui));
-  }
-  if (windFieldCenterDot) {
-    const br = windFieldCenterDot.options.baseRadius || 10;
-    windFieldCenterDot.setRadius(Math.max(3, br * ui));
-  }
-  const doneScale = fieldOverlay.donePinScale ?? 1;
-  for (const [, marker] of livePinMarkers.done) {
-    marker.setIcon(donePinIcon(doneScale, ui));
-  }
-  for (const [id, marker] of livePinMarkers.marks) {
-    const m = fieldOverlay.marks?.find((x) => String(x.id) === id);
-    if (m) marker.setIcon(markDivIcon(m, ui));
-  }
-}
 const HOUSE_NUM_MAX = 400;
 /** Keep tiles warm while panning/zooming — avoids blank flashes and reload stutter. */
 const BASE_TILE_OPTS = {
   maxZoom: MAP_MAX_ZOOM,
   tileSize: 256,
   detectRetina: false,
-  updateWhenIdle: false,
-  updateWhenZooming: true,
-  keepBuffer: 8,
+  updateWhenIdle: true,
+  updateWhenZooming: false,
+  keepBuffer: 6,
 };
 const FEMA_STRUCTURES =
   "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0/query";
@@ -2453,11 +2424,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const drawSig = `${activeDay || ""}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${opts.fit ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
-    refreshZoomScaledUi();
     return;
   }
   lastHailDrawSig = drawSig;
-  hailDotMarkers.length = 0;
   if (requireDate && !activeDay) {
     if (hailLayer) {
       try {
@@ -2579,12 +2548,11 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
     const toDraw = [...radar.slice(0, 180), ...spots.slice(0, 120)];
-    const ui = zoomUiScale();
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
       const baseR = isSpot ? 8 : 7;
       const mark = window.L.circleMarker([p.lat, p.lon], {
-        radius: Math.max(2.5, baseR * ui),
+        radius: baseR,
         color: isSpot ? "#ffffff" : "#b8ff6a",
         fillColor: isSpot ? "#ff2d2d" : "#4caf2a",
         fillOpacity: isSpot ? 0.95 : 0.92,
@@ -2593,9 +2561,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         renderer: hailSvg,
         className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
       });
-      mark.options.baseRadius = baseR;
-      hailDotMarkers.push(mark);
-      if (!isSpot && ui >= 0.42) {
+      if (!isSpot) {
         const pSz = parseFloat(p.size_in) || 0.75;
         window.L.circle([p.lat, p.lon], {
           radius: Math.max(48, Math.min(140, 52 + pSz * 38)),
@@ -2665,7 +2631,6 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       /* ignore */
     }
   }
-  refreshZoomScaledUi(true);
 }
 
 function syncHazardLayers() {
@@ -2751,14 +2716,13 @@ async function refreshWindField() {
       .bindPopup(`Wind ${Math.round(spd)} mph · gust ${Math.round(gust)} · from ${Math.round(dir)}°`)
       .addTo(windFieldLayer);
     const windBaseR = Math.min(18, 5 + spd / 4);
-    windFieldCenterDot = window.L.circleMarker([c.lat, c.lng], {
-      radius: Math.max(3, windBaseR * zoomUiScale()),
+    window.L.circleMarker([c.lat, c.lng], {
+      radius: Math.max(3, windBaseR),
       color,
       fillColor: color,
       fillOpacity: 0.75,
       weight: 1,
     }).addTo(windFieldLayer);
-    windFieldCenterDot.options.baseRadius = windBaseR;
     if (activeWxProduct === "wind") windFieldLayer.addTo(map);
   } catch {
     /* wind field optional */
@@ -3204,11 +3168,11 @@ function ensureFieldPanes() {
   }
 }
 
-function markDivIcon(mark, zoomUi = zoomUiScale()) {
+function markDivIcon(mark) {
   const meta = kindMeta(mark.kind);
   const prod = String(mark.productId || "").replace(/[^a-z0-9:-]/gi, "");
   const text = markBadge(mark);
-  const scale = clampPinScale(mark.iconScale) * zoomUi;
+  const scale = clampPinScale(mark.iconScale);
   const w = Math.round(52 * scale);
   const h = Math.round(22 * scale);
   const fs = Math.max(9, Math.round(11 * scale));
@@ -3220,8 +3184,8 @@ function markDivIcon(mark, zoomUi = zoomUiScale()) {
   });
 }
 
-function donePinIcon(scaleRaw = 1, zoomUi = zoomUiScale()) {
-  const scale = clampPinScale(scaleRaw) * zoomUi;
+function donePinIcon(scaleRaw = 1) {
+  const scale = clampPinScale(scaleRaw);
   const w = Math.round(25 * scale);
   const h = Math.round(41 * scale);
   return window.L.divIcon({
@@ -3239,9 +3203,8 @@ const livePinMarkers = { marks: new Map(), done: new Map() };
 export function updatePinScaleLive(kind, id, item) {
   const ref = kind === "done" ? livePinMarkers.done.get(String(id)) : livePinMarkers.marks.get(String(id));
   if (!ref) return false;
-  const ui = zoomUiScale();
-  if (kind === "done") ref.setIcon(donePinIcon(item?.iconScale, ui));
-  else ref.setIcon(markDivIcon(item, ui));
+  if (kind === "done") ref.setIcon(donePinIcon(item?.iconScale));
+  else ref.setIcon(markDivIcon(item));
   return true;
 }
 
@@ -3451,7 +3414,6 @@ export function setFieldOverlay({
       livePinMarkers.done.set(String(h.id), marker);
     }
   }
-  refreshZoomScaledUi(true);
 }
 
 function bindLongPress(onHold) {
@@ -3656,6 +3618,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     scrollWheelZoom: true,
     touchZoom: true,
     doubleClickZoom: false,
+    fadeAnimation: false,
+    zoomAnimationThreshold: 4,
     maxZoom: MAP_MAX_ZOOM,
     zoomSnap: 0.25,
     zoomDelta: 0.25,
@@ -3735,7 +3699,6 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   map.on("moveend zoomend", () => {
     mapBusy = Math.max(0, mapBusy - 1);
     if (mapBusy > 0) return;
-    refreshZoomScaledUi();
     if (activeWxProduct === "wind") refreshWindField();
     scheduleHouseNumbers();
   });
@@ -3796,20 +3759,14 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   shell.classList.toggle("expanded", on);
   document.body.classList.toggle("wx-map-expanded", on);
   if (view) view.style.overflowY = on ? "hidden" : "";
-  requestAnimationFrame(() => {
+  clearTimeout(setWxMapExpanded._sizeTimer);
+  setWxMapExpanded._sizeTimer = setTimeout(() => {
     try {
-      map?.invalidateSize?.();
+      map?.invalidateSize?.({ animate: false, pan: false });
     } catch {
       /* ignore */
     }
-  });
-  setTimeout(() => {
-    try {
-      map?.invalidateSize?.();
-    } catch {
-      /* ignore */
-    }
-  }, 320);
+  }, on ? 420 : 280);
   if (!on && scrollToSheet && sheet) {
     setTimeout(() => {
       try {
@@ -3821,10 +3778,11 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   }
 }
 
-export function bindWxMapScrollExpand(view, shell, sheet) {
+export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   if (!view || !shell || shell.dataset.scrollExpandBound) return;
   shell.dataset.scrollExpandBound = "1";
   const mapBar = shell.querySelector(".hs-map-bar");
+  const tabNav = tabs || document.getElementById("tabs");
   const isExpanded = () => shell.classList.contains("expanded");
   const blockMapChrome = (e) =>
     e.target.closest(".leaflet-control, .hs-composer, .hs-pin-scale-pop, .hs-layers, input, select, textarea");
@@ -3907,6 +3865,35 @@ export function bindWxMapScrollExpand(view, shell, sheet) {
         e.preventDefault();
         e.stopPropagation();
         tryCollapse();
+      },
+      { passive: false },
+    );
+  }
+  if (tabNav) {
+    let tabTouchY = 0;
+    let tabAccum = 0;
+    tabNav.addEventListener(
+      "touchstart",
+      (e) => {
+        if (!isExpanded() || e.touches.length !== 1) return;
+        tabTouchY = e.touches[0].clientY;
+        tabAccum = 0;
+      },
+      { passive: true },
+    );
+    tabNav.addEventListener(
+      "touchmove",
+      (e) => {
+        if (!isExpanded() || e.touches.length !== 1) return;
+        const y = e.touches[0].clientY;
+        const dy = y - tabTouchY;
+        tabTouchY = y;
+        tabAccum += dy;
+        if (tabAccum < -10) {
+          e.preventDefault();
+          tryCollapse();
+          tabAccum = 0;
+        }
       },
       { passive: false },
     );
