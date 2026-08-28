@@ -30,11 +30,7 @@ Paste a **Gemini / OpenAI / Anthropic / OpenRouter** key in Settings, leave **Cl
 
 ### Control Room (home PC GPU)
 
-On the same Wi‑Fi as your phone, run on your PC:
-
-```bash
-npm run control-room
-```
+On the same Wi‑Fi as your phone, **double-click `Control Room.bat`** in this folder (or run `npm run control-room`).
 
 Install [Ollama](https://ollama.com) and pull a model (`ollama pull llama3.2`; for Lens vision also `ollama pull llava`). The server prints a LAN URL like `http://192.168.x.x:7420` — phone **Settings → Connect**, or let auto-scan find it.
 
