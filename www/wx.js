@@ -710,7 +710,7 @@ function parseSwdiShape(shape) {
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
   const today = new Date();
   const days = Math.min(Math.max(daysBack, 7), 730);
-  const km = Math.min(Math.max(radiusKm, 3), 50);
+  const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
   const bbox = bboxForKm(lat, lon, km);
   const startLimit = new Date(today);
   startLimit.setDate(startLimit.getDate() - days);
@@ -916,7 +916,7 @@ function parseIemLsrCsv(body, lat, lon, km) {
 }
 
 async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
-  const km = Math.min(Math.max(radiusKm, 5), 80);
+  const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
   const days = Math.min(Math.max(Number(daysBack) || 365, 7), 730);
   const end = new Date();
   const start = new Date();
@@ -1151,7 +1151,7 @@ function enrichStormDates(storms, hail, wind) {
 async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 30) {
   const today = new Date();
   const days = Math.min(Math.max(daysBack, 7), 90);
-  const km = Math.min(Math.max(radiusKm, 3), 50);
+  const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
   const stamps = [];
   for (let d = 0; d < days; d++) {
     const day = new Date(today);
@@ -1266,6 +1266,9 @@ export function refreshMapSize() {
   setTimeout(run, 500);
 }
 const MAP_MAX_ZOOM = 22;
+const MAP_MIN_ZOOM = 3;
+/** Max hail fetch radius when zoomed out to regional / multi-state view. */
+const MAP_HAIL_MAX_KM = 450;
 const HOUSE_NUM_ZOOM = 16;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
@@ -1294,6 +1297,13 @@ export function hailDotZoomScale(z) {
 function hailZoneStrokeStyle(isConfirm, sz, z) {
   const zoom = Number.isFinite(z) ? z : map?.getZoom?.() || 14;
   const size = Number(sz) || 0;
+  if (zoom < 9) {
+    return {
+      weight: isConfirm ? 1.35 : 1,
+      opacity: isConfirm ? 0.84 : 0.52,
+      dashArray: null,
+    };
+  }
   if (zoom < 11) {
     return {
       weight: isConfirm ? 1.15 : 0.85,
@@ -1332,7 +1342,7 @@ function trackHailStroke(layer, meta) {
 function applyHailStrokeZoomStyles(force = false) {
   if (!hailStrokeLayers.length) return;
   const z = map?.getZoom?.();
-  const bucket = !Number.isFinite(z) ? 14 : z < 11 ? 0 : z < 13 ? 1 : z < 14 ? 2 : 3;
+  const bucket = !Number.isFinite(z) ? 14 : z < 9 ? -1 : z < 11 ? 0 : z < 13 ? 1 : z < 14 ? 2 : 3;
   if (!force && applyHailStrokeZoomStyles._bucket === bucket) return;
   applyHailStrokeZoomStyles._bucket = bucket;
   for (const entry of hailStrokeLayers) {
@@ -1402,6 +1412,8 @@ function hailZoneOpacityBoost(base) {
   let boost = Math.min(0.16, Math.max(0, (z - 15) * 0.02));
   if (sat) boost += 0.14;
   if (z < 13) boost += 0.1; // weather-pattern fills need body when zoomed out
+  if (z < 9) boost += 0.14;
+  if (z < 7) boost += 0.1;
   return Math.min(sat ? 0.58 : 0.5, base + boost);
 }
 
@@ -1658,7 +1670,8 @@ function hailScopeRadarScrubberInnerHtml() {
   </div>`;
 }
 
-export function hailScopeRadarBarHtml() {
+export function hailScopeRadarBarHtml(settings) {
+  if (settings) hailScopeRadarOn = settings.showRadar !== false;
   if (!hailScopeRadarActive()) return "";
   const f = hailScopeRadarFilters;
   const radar = hailScopeRadarScrubberInnerHtml();
@@ -2814,7 +2827,17 @@ export function mapViewHailQuery() {
   for (const p of corners) {
     radiusKm = Math.max(radiusKm, haversineKm(lat, lon, p.lat, p.lng));
   }
-  return { lat, lon, radiusKm: Math.min(50, Math.max(5, radiusKm * 1.08)), bounds: b };
+  return { lat, lon, radiusKm: Math.max(5, radiusKm * 1.08), bounds: b };
+}
+
+/** Hail fetch radius from current map frame — grows when zoomed out for regional storm view. */
+export function mapViewFetchKm() {
+  const q = mapViewHailQuery();
+  if (!q) return filterKm();
+  const z = map?.getZoom?.() ?? 14;
+  const cap =
+    z <= 4 ? MAP_HAIL_MAX_KM : z <= 5 ? 380 : z <= 6 ? 280 : z <= 7 ? 200 : z <= 8 ? 150 : z <= 9 ? 110 : z <= 10 ? 75 : 50;
+  return Math.min(cap, Math.max(8, Math.ceil(q.radiusKm)));
 }
 
 export function hailInMapView(rows) {
@@ -2853,7 +2876,7 @@ export function clearWxPin() {
 export async function viewportDossier(settings, filters = wxFilters) {
   const q = mapViewHailQuery();
   if (!q) return null;
-  const km = Math.min(50, Math.max(filterKm(filters), q.radiusKm));
+  const km = Math.max(filterKm(filters), mapViewFetchKm());
   const f = { ...filters, km };
   // Hail-only for map overview — skip Zillow/assessor/Open-Meteo archive.
   let data = await localResearch(q.lat, q.lon, "Map view", {
@@ -2983,7 +3006,7 @@ async function refreshHailMapFill() {
   if (!q) return;
   const gen = ++hailMapFillGen;
   const days = Number(wxFilters.days) || 730;
-  const km = Math.min(50, Math.max(8, q.radiusKm));
+  const km = mapViewFetchKm();
   try {
     const [spc, swdi, lsr] = await Promise.all([
       fetchSpcReports(q.lat, q.lon, km, Math.min(days, 90)),
@@ -3516,10 +3539,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const hailSvg = window.L.svg({ pane: "hailVectors", padding: 0.6 });
 
   const day = activeDays.size ? activeDays : null;
+  const zDraw = map?.getZoom?.() ?? 14;
+  const zoneLimit = day
+    ? Math.min(220, Math.max(80, activeDays.size * 40) + (zDraw < 9 ? 100 : zDraw < 11 ? 50 : 0))
+    : 36;
   const zones = collapsed
     .filter((h) => !day || day.has(h.date))
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
-    .slice(0, day ? Math.min(120, Math.max(80, day.size * 40)) : 36);
+    .slice(0, zoneLimit);
 
   const fitPts = [];
   for (const h of zones) {
@@ -4804,6 +4831,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     fadeAnimation: false,
     zoomAnimationThreshold: 4,
     maxZoom: MAP_MAX_ZOOM,
+    minZoom: MAP_MIN_ZOOM,
     zoomSnap: 0.25,
     zoomDelta: 0.25,
     inertia: true,

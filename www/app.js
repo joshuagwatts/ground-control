@@ -61,7 +61,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.97";
+} from "./wx.js?v=0.2.98";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1547,14 +1547,14 @@ function paintRadarToggle() {
 function paintHailScopeRadarBar() {
   const shell = $("#hs-map-shell");
   if (!shell) return;
+  syncHailScopeRadar(db.settings);
   let bar = $("#hs-radar-bar");
   const on = db.settings.showRadar !== false;
   if (!on) {
     bar?.remove();
-    syncHailScopeRadar(db.settings);
     return;
   }
-  const html = hailScopeRadarBarHtml();
+  const html = hailScopeRadarBarHtml(db.settings);
   if (!html) {
     bar?.remove();
     return;
@@ -1566,7 +1566,6 @@ function paintHailScopeRadarBar() {
     else shell.insertAdjacentHTML("beforeend", html);
   }
   bindHailScopeRadar(shell);
-  syncHailScopeRadar(db.settings);
 }
 
 function paintLayerToggles() {
