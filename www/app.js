@@ -37,6 +37,8 @@ import {
   baseLayerButtons,
   bindWxMapScrollExpand,
   bindSelectPinDblTap,
+  bindStormSheetOpen,
+  wxPinSelected,
   clearWxPin,
   clearSelectedStormDate,
   applyDonePinScaleLive,
@@ -55,7 +57,7 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.68";
+} from "./wx.js?v=0.2.69";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1766,6 +1768,12 @@ async function renderWx() {
     wxState.viewport = false;
     bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
     bindSelectPinDblTap(onHailViewport);
+    bindStormSheetOpen(() => {
+      // No house pin: load storms for the visible map (no radius) when sheet opens
+      if (wxPinSelected()) return;
+      if (wxState.viewport && wxState.data) return;
+      void onHailViewport();
+    });
     paintLayerToggles();
     setMyLocationVisible(db.settings.showMyLocation !== false);
     paintFieldMap();
@@ -1852,7 +1860,11 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
         const nextAddr = partial.address || "";
         if (!prefAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
         wxState.data = partial;
-        patchHailScopePartial($("#hs-sheet"), partial, esc);
+        if ((partial.hail || []).length) {
+          syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: false });
+        } else {
+          patchHailScopePartial($("#hs-sheet"), partial, esc);
+        }
       },
     });
     if (gen !== hailTapGen || !isHailTab()) return;
@@ -1864,7 +1876,8 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     wxState.address = data.address || "";
     wxState.data = data;
     syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: false });
-    if (!(data.hail || []).length) {
+    const fetchedDays = Number(data._meta?.fetchedDays) || 0;
+    if (!(data.hail || []).length && fetchedDays < 730) {
       if (sheet) {
         const loading = sheet.querySelector(".hs-empty");
         if (loading) loading.textContent = "Searching a longer hail window…";
