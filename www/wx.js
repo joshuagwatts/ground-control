@@ -4347,7 +4347,7 @@ function bindAddressSwipeToStormSheet(el) {
     if (hailBottomTier !== "address") return;
     if (e.touches && e.touches.length !== 1) return;
     if (e.target.closest("a, button, input, select, textarea")) return;
-    if (!e.target.closest(".hs-pin, .hs-place, .hs-goto, #hs-search")) return;
+    // Whole peek band — works with or without a selected house / .hs-pin
     stopCoast();
     unlockHailTierGesture();
     const p = pt(e);
@@ -4480,6 +4480,14 @@ export function revealHailAddressPeek() {
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
   hailBottomTier = "address";
   syncHailBottomChrome();
+  // No house yet: show a Map view peek so the second swipe has chrome to pull
+  if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
+    const sheet = document.getElementById("hs-sheet");
+    if (sheet && !sheet.querySelector(".hs-pin")) {
+      sheet.innerHTML =
+        '<p class="hs-pin"><strong>Map view</strong>Swipe up for storm dates in this area</p><p class="hs-empty">Storm dates load on the next swipe.</p>';
+    }
+  }
   if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
@@ -4610,14 +4618,21 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     return false;
   };
-  /** Tabs / chrome: fullscreen → address. Address→sheet from peek is feed-scroll. */
+  /** Tabs / chrome: fullscreen → address; address → open sheet (peek band also feed-scrolls). */
   const tryBottomSwipeUp = () => {
     if (hailTierGestureLocked) return false;
     if (hailBottomTier === "sheet" && !isExpanded()) return false;
-    // Peek band owns the second swipe (finger-scroll) — don't snap-open here
-    if (hailBottomTier === "address") return false;
     lockHailTierGesture();
-    advanceHailBottomReveal();
+    if (hailBottomTier === "address") {
+      // Second swipe from tabs: open + soft feed nudge (peek drag uses 1:1 scroll)
+      revealHailStormSheet({ interactive: true, scroll: false });
+      scheduleSheetScroll(() => {
+        const v = document.getElementById("view");
+        if (v) v.scrollBy({ top: Math.min(200, Math.round(v.clientHeight * 0.32)), behavior: "smooth" });
+      });
+    } else {
+      advanceHailBottomReveal();
+    }
     clearTimeout(tryBottomSwipeUp._unlock);
     tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 220);
     return true;
@@ -4713,8 +4728,8 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       "touchmove",
       (e) => {
         if (e.touches.length !== 1) return;
-        // Swipe up from tabs: fullscreen → address only (second step is peek feed-scroll)
-        if (!(isExpanded() || hailBottomTier === "hidden")) return;
+        // Swipe up from tabs: fullscreen → address → storm dates
+        if (!(isExpanded() || hailBottomTier === "address" || hailBottomTier === "hidden")) return;
         const y = e.touches[0].clientY;
         const dy = y - tabTouchY;
         tabTouchY = y;
