@@ -1716,7 +1716,7 @@ body.wx-map-expanded .hs-sheet {
   width: min(92px, 28vw); margin: 0; accent-color: var(--trim);
 }
 .hs-map-shell.expanded .hs-map-bar {
-  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  bottom: max(4px, env(safe-area-inset-bottom, 0px));
 }
 .hs-map-shell #wx-map, .hs-map-shell #hs-map {
   position: absolute;
