@@ -9,6 +9,8 @@ import {
   listingForPin,
   parseStreetAddress,
   formatZillowUrl,
+  resolveZillowUrl,
+  isUsableZillowUrl,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
@@ -156,6 +158,10 @@ function zillowUrl(address) {
   return formatZillowUrl(address);
 }
 
+function pickZillowUrl(data = {}) {
+  return resolveZillowUrl(data.address || "", data.zillow_url || "");
+}
+
 function bindPlaceLinks(root) {
   if (!root) return;
   root.querySelectorAll("a.hs-zillow, a.hs-assessor").forEach((a) => {
@@ -186,12 +192,13 @@ function ownerFields(people = {}, assessor = null) {
     assessor_url: (assessor && assessor.url) || "",
     facebook_url: people.facebook || "",
     instagram_url: people.instagram || "",
+    zillow_url: people.zillow_url || "",
   };
 }
 
 function placeContactHtml(data, esc) {
   const addr = data.address || "";
-  const zurl = zillowUrl(addr) || data.zillow_url || "";
+  const zurl = pickZillowUrl(data);
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
@@ -1905,7 +1912,7 @@ function normalizeDossier(raw) {
   if (!raw || raw.ok === false) return null;
   const d = raw.dossier && typeof raw.dossier === "object" ? { ...raw.dossier, ...raw } : { ...raw };
   if (!d.address && !d.storms && !d.hail && !d.zillow_url) return null;
-  if (!d.zillow_url && d.address) d.zillow_url = zillowUrl(d.address);
+  if (d.address) d.zillow_url = pickZillowUrl(d);
   d.storms = d.storms || d.recent_storms || [];
   d.hail = d.hail || [];
   d.wind = d.wind || [];
@@ -2032,7 +2039,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     hail,
     wind,
     news: newsHits,
-    zillow_url: zillowUrl(addr),
+    zillow_url: pickZillowUrl({ address: addr }),
     ...ownerFields(people, assessor),
     _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
@@ -2049,7 +2056,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     address: addr,
     lat,
     lon,
-    zillow_url: zillowUrl(addr),
+    zillow_url: pickZillowUrl({ address: addr }),
     storms: [],
     hail: [],
     wind: [],
@@ -2159,7 +2166,7 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false, 
     address: addr,
     lat,
     lon,
-    zillow_url: zillowUrl(addr),
+    zillow_url: pickZillowUrl({ address: addr }),
     storms: [],
     hail: [],
     news: [],

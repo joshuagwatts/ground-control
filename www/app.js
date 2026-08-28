@@ -60,7 +60,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.53";
+} from "./wx.js?v=0.2.54";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -69,6 +69,7 @@ import { newJob, upsertJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale } from "./marks.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse } from "./done.js";
+import { parseStreetAddress } from "./contacts.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -1826,7 +1827,8 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
       address: prefAddr || wxState.address || "",
       onPartial: (partial) => {
         if (gen !== hailTapGen || !isHailTab()) return;
-        wxState.address = partial.address || "";
+        const nextAddr = partial.address || "";
+        if (!prefAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
         wxState.data = partial;
         patchHailScopePartial($("#hs-sheet"), partial, esc);
       },

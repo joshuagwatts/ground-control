@@ -42,19 +42,7 @@ export function decodeEntities(s) {
 export function formatZillowUrl(address) {
   const p = parseStreetAddress(address);
   const coordOnly = /^-?\d+\.\d+\s*,\s*-?\d+\.\d+$/.test(String(address || "").trim());
-  if (coordOnly) return "";
-  if (!p.house) {
-    const q = String(address || "").trim();
-    if (!q) return "";
-    const slug = q
-      .replace(/,/g, " ")
-      .replace(/\./g, "")
-      .replace(/\s+/g, "-")
-      .replace(/[^A-Za-z0-9-]/g, "")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    return slug ? `https://www.zillow.com/homes/${slug}_rb/` : "";
-  }
+  if (coordOnly || !p.house) return "";
   const streetSlug = String(p.street || "")
     .replace(/\./g, "")
     .replace(/\s+/g, "-")
@@ -65,6 +53,22 @@ export function formatZillowUrl(address) {
   const state = p.state ? String(p.state).toUpperCase() : "";
   const slug = [p.house, streetSlug, citySlug, state, p.zip].filter(Boolean).join("-").replace(/-+/g, "-");
   return slug ? `https://www.zillow.com/homes/${slug}_rb/` : "";
+}
+
+/** True when the URL targets a specific property, not the Zillow home page. */
+export function isUsableZillowUrl(url) {
+  const u = String(url || "").trim();
+  if (!u || /^https?:\/\/(www\.)?zillow\.com\/?$/i.test(u)) return false;
+  if (/zillow\.com\/homedetails\//i.test(u)) return true;
+  return /zillow\.com\/homes\/\d+[A-Za-z]?-/i.test(u);
+}
+
+/** Prefer a scraped homedetails link; otherwise build from a street address. */
+export function resolveZillowUrl(address, existing = "") {
+  const ex = String(existing || "").trim();
+  if (isUsableZillowUrl(ex)) return ex;
+  const built = formatZillowUrl(address);
+  return isUsableZillowUrl(built) ? built : "";
 }
 
 async function zillowListingContacts(address, parts) {
@@ -84,7 +88,9 @@ async function zillowListingContacts(address, parts) {
     const detail = await fetchHtml(detailUrl, 14000);
     if (detail?.html) html = detail.html;
   }
-  return extractContactsFromHtml(html.slice(0, 220000), parts, { requireAddress: false });
+  const contacts = extractContactsFromHtml(html.slice(0, 220000), parts, { requireAddress: false });
+  const zillow_url = detailUrl.includes("homedetails") ? detailUrl : "";
+  return contacts ? { ...contacts, zillow_url } : zillow_url ? { zillow_url } : null;
 }
 
 export function parseStreetAddress(address) {
@@ -381,7 +387,7 @@ export function extractContactsFromHtml(html, parts = {}, opts = {}) {
 }
 
 export function mergeContacts(...parts) {
-  const hit = { name: "", phone: "", email: "", website: "", facebook: "", instagram: "" };
+  const hit = { name: "", phone: "", email: "", website: "", facebook: "", instagram: "", zillow_url: "" };
   for (const p of parts) {
     if (!p) continue;
     if (!hit.name && (p.name || p.owner_name)) hit.name = String(p.name || p.owner_name).trim();
@@ -396,6 +402,8 @@ export function mergeContacts(...parts) {
     if (!hit.website && p.website) hit.website = String(p.website).trim();
     if (!hit.facebook) hit.facebook = publicFacebookUrl(p.facebook || p.facebook_url || "");
     if (!hit.instagram) hit.instagram = publicInstagramUrl(p.instagram || p.instagram_url || "");
+    const z = String(p.zillow_url || "").trim();
+    if (z && isUsableZillowUrl(z)) hit.zillow_url = z;
   }
   return hit;
 }
@@ -544,6 +552,7 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     owner_email: "",
     facebook_url: "",
     instagram_url: "",
+    zillow_url: "",
   };
   if (!parts.house) return blank;
   let hit = listingForPin(seed, address);
@@ -552,9 +561,8 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     nominatimSearchContacts(address, parts).catch(() => null),
   ]);
   hit = mergeContacts(hit, osm, nom);
-  if (!hit.phone || !hit.email) {
-    hit = mergeContacts(hit, await zillowListingContacts(address, parts).catch(() => null));
-  }
+  const zillowHit = await zillowListingContacts(address, parts).catch(() => null);
+  if (zillowHit) hit = mergeContacts(hit, zillowHit);
   const site = osm?.website || nom?.website || hit.website;
   if (site && (!hit.phone || !hit.email || !hit.facebook)) {
     hit = mergeContacts(hit, await contactsFromWebsite(site, parts));
@@ -569,5 +577,6 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}) {
     owner_email: hit.email || "",
     facebook_url: hit.facebook || "",
     instagram_url: hit.instagram || "",
+    zillow_url: hit.zillow_url || "",
   };
 }

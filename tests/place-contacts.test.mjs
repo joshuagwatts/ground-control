@@ -13,6 +13,8 @@ import {
   sameHouse,
   listingForPin,
   formatZillowUrl,
+  resolveZillowUrl,
+  isUsableZillowUrl,
 } from "../www/contacts.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
@@ -32,6 +34,25 @@ assert(z1 === "https://www.zillow.com/homes/400-S-Bryant-Ave-Edmond-OK-73034_rb/
 const z2 = formatZillowUrl("2521 Tredington Way, Edmond, Oklahoma, 73034");
 assert(z2.includes("2521-Tredington") && z2.endsWith("_rb/"), `zillow tredington, got ${z2}`);
 assert(formatZillowUrl("35.6521, -97.4783") === "", "coords only, no zillow");
+assert(formatZillowUrl("Edmond, Oklahoma, 73034") === "", "city only, no zillow");
+assert(formatZillowUrl("Tredington Way, Edmond, Oklahoma, 73034") === "", "street only, no zillow");
+assert(
+  isUsableZillowUrl("https://www.zillow.com/homedetails/400-S-Bryant-Ave-Edmond-OK-73034/123_zpid/"),
+  "homedetails ok",
+);
+assert(!isUsableZillowUrl("https://www.zillow.com/"), "bare zillow blocked");
+assert(
+  resolveZillowUrl("400 S Bryant Ave, Edmond, OK 73034", "https://www.zillow.com/") ===
+    "https://www.zillow.com/homes/400-S-Bryant-Ave-Edmond-OK-73034_rb/",
+  "resolve from address when cached url junk",
+);
+assert(
+  resolveZillowUrl(
+    "400 S Bryant Ave, Edmond, OK 73034",
+    "https://www.zillow.com/homedetails/400-s-bryant-edmond-ok-73034/999_zpid/",
+  ).includes("/homedetails/"),
+  "resolve keeps homedetails",
+);
 
 assert(isJunkPhone("(405) 555-1212"), "555 is junk");
 assert(phoneDigits("918-582-0001") === "+19185820001", "real phone");
