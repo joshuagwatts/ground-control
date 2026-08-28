@@ -1573,11 +1573,12 @@ body.hs-tab #status, body.wx-tab #status { display: none; }
 .hs-wrap { min-height: 100%; padding-bottom: calc(var(--tab-h) + var(--safe-bottom)); }
 .hs-map-shell {
   position: relative;
-  height: min(64vh, 560px);
-  min-height: 280px;
+  height: clamp(240px, 46dvh, 480px);
+  min-height: 240px;
   border-bottom: 1px solid var(--line);
   background: #000;
   transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow: hidden;
 }
 .hs-map-shell.expanded {
   position: fixed;
@@ -1602,10 +1603,18 @@ body.wx-map-expanded .hs-sheet { display: none; }
 }
 .hs-map-shell.expanded .hs-map-hint { color: var(--trim); border-color: var(--trim); }
 .hs-map-shell #wx-map, .hs-map-shell #hs-map {
-  width: 100%; height: 100%;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+}
+.hs-map-shell .leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
 }
 .hs-goto {
   padding: 0.75rem 1rem 0.15rem;

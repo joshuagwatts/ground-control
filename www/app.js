@@ -42,10 +42,13 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
-  mapContainer,
+  mapIsLive,
+  refreshMapSize,
+  defaultMapCenter,
+  quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0232";
+} from "./wx.js?v=0233";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
@@ -1458,22 +1461,91 @@ function onMapHold(lat, lon) {
   openMarkComposer({ lat, lon });
 }
 
+let wxRenderGen = 0;
+
+function wireHsShell(cfg) {
+  const styles = $("#hs-styles");
+  if (styles && cfg) {
+    styles.innerHTML = baseLayerButtons(cfg, esc);
+    styles.onclick = (e) => {
+      const b = e.target.closest("button[data-layer]");
+      if (!b) return;
+      setMapLayer(b.dataset.layer);
+      styles.querySelectorAll("button[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
+    };
+  }
+  const searchForm = $("#hs-search");
+  if (searchForm) {
+    searchForm.onsubmit = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const q = ($("#hs-addr-q")?.value || "").trim();
+      if (!q) return;
+      setStatus("Finding place…");
+      try {
+        const hits = await geocodeAddress(q);
+        const hit = hits[0];
+        if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
+        flyToPin(hit.lat, hit.lon, 20);
+        await onHailTap(hit.lat, hit.lon);
+      } catch (err) {
+        setStatus(String(err.message || err).slice(0, 48));
+      }
+    };
+    searchForm.addEventListener("click", (e) => e.stopPropagation());
+    searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
+    searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+  }
+  for (const id of ["hs-layers", "hs-composer"]) {
+    const el = $(`#${id}`);
+    if (!el) continue;
+    el.addEventListener("click", (e) => e.stopPropagation());
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+  }
+}
+
+async function finishWxBoot(gen) {
+  try {
+    const center = await resolveMapCenter(db.settings);
+    if (gen !== wxRenderGen || !isHailTab() || !mapIsLive()) return;
+    persist();
+    const cfg = await loadMapConfig(db.settings);
+    if (gen !== wxRenderGen || !isHailTab() || !mapIsLive()) return;
+    cfg.center = { ...cfg.center, ...center };
+    wireHsShell(cfg);
+    refreshMapSize();
+    if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+      flyToPin(center.lat, center.lon, undefined, { stay: true });
+      await onHailTap(center.lat, center.lon);
+    }
+  } catch (e) {
+    if (isHailTab()) setStatus(String(e.message || e).slice(0, 48));
+  }
+}
+
 async function renderWx() {
   document.body.classList.remove("comm");
   setHailScopeMode(true);
   document.body.classList.add("hs-tab", "wx-tab");
-  const keepMap = mapContainer() && mapContainer() === document.getElementById("wx-map");
-  if (keepMap) {
+
+  if (mapIsLive()) {
+    refreshMapSize();
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
     setStatus("");
     return;
   }
+
   leaveWx();
   setHailScopeMode(true);
   document.body.classList.add("hs-tab", "wx-tab");
   setStatus("");
+
+  wxRenderGen += 1;
+  const gen = wxRenderGen;
+
   $("#view").innerHTML = `
     <div class="hs-wrap">
       <div class="hs-map-shell" id="hs-map-shell">
@@ -1491,65 +1563,18 @@ async function renderWx() {
       </div>
       <div class="hs-field" id="hs-field"></div>
     </div>`;
+
   try {
-    const center = await resolveMapCenter(db.settings);
-    if (!isHailTab()) return;
-    persist();
-    const cfg = await loadMapConfig(db.settings);
-    if (!isHailTab()) return;
-    cfg.center = { ...cfg.center, ...center };
-    const styles = $("#hs-styles");
-    if (styles) {
-      styles.innerHTML = baseLayerButtons(cfg, esc);
-      styles.onclick = (e) => {
-        const b = e.target.closest("button[data-layer]");
-        if (!b) return;
-        setMapLayer(b.dataset.layer);
-        styles.querySelectorAll("button[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
-      };
-    }
+    const center = defaultMapCenter(db.settings);
+    const cfg = quickMapConfig(db.settings);
+    wireHsShell(cfg);
     mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat" });
     bindWxMapExpand($("#hs-map-shell"));
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
-    const searchForm = $("#hs-search");
-    if (searchForm) {
-      searchForm.onsubmit = async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const q = ($("#hs-addr-q")?.value || "").trim();
-        if (!q) return;
-        setStatus("Finding place…");
-        try {
-          const hits = await geocodeAddress(q);
-          const hit = hits[0];
-          if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
-          flyToPin(hit.lat, hit.lon, 20);
-          await onHailTap(hit.lat, hit.lon);
-        } catch (err) {
-          setStatus(String(err.message || err).slice(0, 48));
-        }
-      };
-      searchForm.addEventListener("click", (e) => e.stopPropagation());
-      searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
-      searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
-    }
-    const layers = $("#hs-layers");
-    if (layers) {
-      layers.addEventListener("click", (e) => e.stopPropagation());
-      layers.addEventListener("mousedown", (e) => e.stopPropagation());
-      layers.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
-    }
-    const composer = $("#hs-composer");
-    if (composer) {
-      composer.addEventListener("click", (e) => e.stopPropagation());
-      composer.addEventListener("mousedown", (e) => e.stopPropagation());
-      composer.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
-    }
-    if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
-      await onHailTap(center.lat, center.lon);
-    }
+    refreshMapSize();
+    void finishWxBoot(gen);
   } catch (e) {
     if (!isHailTab()) return;
     $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
@@ -1853,6 +1878,19 @@ function boot() {
   });
   render();
   setStatus("");
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && isHailTab()) refreshMapSize();
+  });
+  window.addEventListener("resize", () => {
+    if (isHailTab()) refreshMapSize();
+  });
+  void import("@capacitor/app")
+    .then(({ App }) => {
+      App.addListener("appStateChange", ({ isActive }) => {
+        if (isActive && isHailTab()) refreshMapSize();
+      });
+    })
+    .catch(() => {});
 }
 
 void matchCatalog;

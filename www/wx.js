@@ -929,6 +929,53 @@ export function mapContainer() {
     return null;
   }
 }
+
+export function mapIsLive() {
+  if (!map) return false;
+  try {
+    const c = map.getContainer();
+    const el = document.getElementById("wx-map");
+    return Boolean(c && el && document.body.contains(el) && (c === el || el.contains(c)));
+  } catch {
+    return false;
+  }
+}
+
+export function defaultMapCenter(settings) {
+  const lat = Number(settings?.lat);
+  const lon = Number(settings?.lon);
+  if (Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0)) {
+    return { lat, lon };
+  }
+  return { lat: 35.4676, lon: -97.5164 };
+}
+
+export function quickMapConfig(settings) {
+  return applyBaseLayers({
+    center: defaultMapCenter(settings),
+    layers: [
+      ...BASE_LAYERS,
+      { id: "hail", label: "Hail", kind: "wx", synthetic: true },
+      { id: "wind", label: "Wind", kind: "wx", synthetic: true },
+    ],
+  });
+}
+
+/** Leaflet often mounts at 0×0 on phone WebViews until layout settles. */
+export function refreshMapSize() {
+  if (!map) return;
+  const run = () => {
+    try {
+      map.invalidateSize({ animate: false, pan: false });
+    } catch {
+      /* ignore */
+    }
+  };
+  run();
+  requestAnimationFrame(run);
+  setTimeout(run, 150);
+  setTimeout(run, 500);
+}
 const MAP_MAX_ZOOM = 22;
 const HOUSE_NUM_ZOOM = 16;
 const HOUSE_FOOTPRINT_MAX = 2000;
@@ -3550,7 +3597,13 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     inertiaDeceleration: 2800,
     inertiaMaxSpeed: 1600,
   }).setView([c.lat, c.lon], zoom);
-  if (container?.style) container.style.background = "#000";
+  if (container?.style) {
+    container.style.background = "#000";
+    container.style.position = "absolute";
+    container.style.inset = "0";
+    container.style.width = "100%";
+    container.style.height = "100%";
+  }
   map._pinchInertiaOff = bindPinchZoomInertia(map);
   if (!isPhoneUi()) {
     window.L.control.zoom({ position: "bottomleft" }).addTo(map);
@@ -3624,13 +3677,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   scheduleHouseNumbers();
   if (onHold) bindLongPress(onHold);
   setFieldOverlay(fieldOverlay);
-  setTimeout(() => {
-    try {
-      map?.invalidateSize?.();
-    } catch {
-      /* ignore */
-    }
-  }, 80);
+  refreshMapSize();
   if (Number.isFinite(c.lat) && Number.isFinite(c.lon)) setWxPin(c.lat, c.lon);
   return map;
 }
