@@ -3174,7 +3174,7 @@ function donePinIcon(scaleRaw = 1) {
   const h = Math.round(41 * scale);
   return window.L.divIcon({
     className: "hs-done-pin",
-    html: `<svg viewBox="0 0 32 48" width="${w}" height="${h}" aria-hidden="true"><path fill="#ffcc00" fill-rule="evenodd" d="M16 0C7.16 0 0 7.16 0 16c0 11.2 16 32 16 32s16-20.8 16-32C32 7.16 24.84 0 16 0zm0 21.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11z"/></svg>`,
+    html: `<svg viewBox="0 0 32 48" style="width:${w}px;height:${h}px" width="${w}" height="${h}" aria-hidden="true"><path fill="#ffcc00" fill-rule="evenodd" d="M16 0C7.16 0 0 7.16 0 16c0 11.2 16 32 16 32s16-20.8 16-32C32 7.16 24.84 0 16 0zm0 21.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11z"/></svg>`,
     iconSize: [w, h],
     iconAnchor: [Math.round(w * 0.48), h],
   });
@@ -3216,7 +3216,7 @@ export function showPinScalePopover({ lat, lon, scale = 1, title = "Pin size", o
   pop.className = "hs-pin-scale-pop";
   const pct = Math.round(clampPinScale(scale) * 100);
   pop.innerHTML = `<strong>${String(title || "Pin size").replace(/[<>&]/g, "")}</strong>
-    <input type="range" min="50" max="250" step="5" value="${pct}" aria-label="Pin size" />
+    <input type="range" min="25" max="250" step="5" value="${pct}" aria-label="Pin size" />
     <span class="hs-pin-scale-val">${pct}%</span>
     <button type="button" class="hs-pin-scale-done">Done</button>`;
   shell.appendChild(pop);

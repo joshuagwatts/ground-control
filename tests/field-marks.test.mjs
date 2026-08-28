@@ -10,7 +10,7 @@ assert(kindMeta("atlas").short === "ATLAS", "atlas kind");
 assert(MARK_KINDS.some((k) => k.id === "zone"), "zone kind");
 assert(validMarkCoord(35.5, -97.5), "ok coord");
 assert(!validMarkCoord(0, 0), "zero coord");
-assert(clampPinScale(3) === 2.5 && clampPinScale(0.1) === 0.5, "pin scale clamp");
+assert(clampPinScale(3) === 2.5 && clampPinScale(0.1) === 0.25, "pin scale clamp");
 
 const pin = newMark({ lat: 35.5, lon: -97.5, kind: "atlas", label: "Atlas", note: "GlassMaster", address: "400 S Bryant, Edmond, OK" });
 assert(pin.kind === "atlas" && pin.label === "Atlas", "new mark");

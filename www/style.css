@@ -1897,8 +1897,6 @@ body.wx-map-expanded .hs-sheet { display: none; }
 }
 .hs-done-pin svg {
   display: block;
-  width: 25px;
-  height: 41px;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
   pointer-events: none;
 }

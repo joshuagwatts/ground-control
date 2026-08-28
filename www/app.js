@@ -1447,7 +1447,7 @@ function paintFieldSheet() {
         ? `<label class="hs-pin-size-row">
       <span class="hs-pin-size-label">Yellow pin size ?? ${pinScope}</span>
       <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">${pinPct}%</span>
-      <input type="range" id="hs-done-pin-scale" min="50" max="250" step="5" value="${pinPct}" aria-label="Yellow pin size" />
+      <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="${pinPct}" aria-label="Yellow pin size" />
     </label>`
         : ""
     }

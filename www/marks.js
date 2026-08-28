@@ -75,11 +75,11 @@ export function validMarkCoord(lat, lon) {
   return Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && !(la === 0 && lo === 0);
 }
 
-/** Map pin scale — 50%–250%, default 100%. */
+/** Map pin scale — 25%–250%, default 100%. */
 export function clampPinScale(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return 1;
-  return Math.min(2.5, Math.max(0.5, n));
+  return Math.min(2.5, Math.max(0.25, n));
 }
 
 export function normalizeMark(raw = {}) {
