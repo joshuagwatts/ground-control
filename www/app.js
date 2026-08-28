@@ -45,7 +45,7 @@ import {
   mapContainer,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0231";
+} from "./wx.js?v=0232";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
@@ -703,7 +703,6 @@ function editDamagePhoto(index, opts = {}) {
 }
 
 function renderLens() {
-  leaveWx();
   document.body.classList.remove("comm");
   const L = lensPhotos();
   const mode = lensMode();
@@ -1780,11 +1779,16 @@ function render() {
   document.body.classList.toggle("wx-tab", isHailTab());
   document.body.classList.toggle("hs-tab", isHailTab());
   $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab || (isHailTab() && b.dataset.tab === "hailscope" && tab === "wx")));
-  if (!isHailTab()) leaveWx();
-  if (tab === "lens") renderLens();
-  else if (isHailTab()) renderWx();
-  else if (tab === "jobs") renderJobs();
-  else if (tab === "keys") renderKeys();
+  if (tab === "lens") {
+    leaveWx();
+    renderLens();
+  } else if (isHailTab()) {
+    renderWx();
+  } else {
+    leaveWx();
+    if (tab === "jobs") renderJobs();
+    else if (tab === "keys") renderKeys();
+  }
   renderPrivacy();
   paintBrainStrip();
 }

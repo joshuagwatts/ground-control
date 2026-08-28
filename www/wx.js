@@ -918,6 +918,7 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
   return mergeHailRows(spc.hail, swdi);
 }
 
+let mapConfigCache = null;
 let mapBusy = 0;
 let lastHailDrawSig = "";
 
