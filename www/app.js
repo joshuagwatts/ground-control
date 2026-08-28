@@ -48,7 +48,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.41";
+} from "./wx.js?v=0.2.42";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1709,12 +1709,13 @@ async function renderWx() {
     <div class="hs-wrap">
       <div class="hs-map-shell" id="hs-map-shell">
         <div class="hs-layers" id="hs-layers"></div>
-        <div class="hs-styles" id="hs-styles"></div>
-        <span class="hs-map-hint">Scroll up for full screen · scroll down for storm dates</span>
-        <div class="hs-map-pin-size" id="hs-map-pin-size" hidden aria-label="Yellow pin size">
-          <span class="hs-map-pin-size-lab">Pins</span>
-          <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">100%</span>
-          <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="100" aria-label="Yellow pin size" />
+        <div class="hs-map-bar" id="hs-map-bar">
+          <div class="hs-map-pin-size" id="hs-map-pin-size" hidden aria-label="Yellow pin size">
+            <span class="hs-map-pin-size-lab">Pins</span>
+            <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">100%</span>
+            <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="100" aria-label="Yellow pin size" />
+          </div>
+          <div class="hs-styles" id="hs-styles"></div>
         </div>
         <div id="wx-map"></div>
         <div class="hs-composer" id="hs-composer" hidden></div>

@@ -3786,24 +3786,30 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
   map.setView([lat, lon], zoom, { animate: false });
 }
 
-/** Expand / collapse map — scroll up opens full screen; scroll down returns to storm dates. */
+/** Expand / collapse map — scroll up opens full screen; swipe down on map bar returns to storm dates. */
 export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const sheet = document.getElementById("hs-sheet");
   const view = document.getElementById("view");
   if (!shell) return;
+  if (on === shell.classList.contains("expanded")) return;
   shell.classList.toggle("expanded", on);
   document.body.classList.toggle("wx-map-expanded", on);
-  const hint = shell.querySelector(".wx-map-hint, .hs-map-hint");
-  if (hint) hint.textContent = on ? "Scroll down for storm dates" : "Scroll up for full screen · scroll down for storm dates";
   if (view) view.style.overflowY = on ? "hidden" : "";
+  requestAnimationFrame(() => {
+    try {
+      map?.invalidateSize?.();
+    } catch {
+      /* ignore */
+    }
+  });
   setTimeout(() => {
     try {
       map?.invalidateSize?.();
     } catch {
       /* ignore */
     }
-  }, 280);
+  }, 320);
   if (!on && scrollToSheet && sheet) {
     setTimeout(() => {
       try {
@@ -3811,60 +3817,100 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
       } catch {
         /* ignore */
       }
-    }, 120);
+    }, 180);
   }
 }
 
 export function bindWxMapScrollExpand(view, shell, sheet) {
   if (!view || !shell || shell.dataset.scrollExpandBound) return;
   shell.dataset.scrollExpandBound = "1";
+  const mapBar = shell.querySelector(".hs-map-bar");
   const isExpanded = () => shell.classList.contains("expanded");
-  const block = (e) => {
-    if (e.target.closest(".leaflet-control, .hs-map-pin-size, .hs-composer, .hs-pin-scale-pop, input, select, textarea, button, a")) return;
-    const expanded = isExpanded();
-    if (!expanded && view.scrollTop <= 10 && e.deltaY < 0) {
-      e.preventDefault();
-      setWxMapExpanded(true);
-      return;
-    }
-    if (expanded && e.deltaY > 0) {
-      e.preventDefault();
-      setWxMapExpanded(false, { scrollToSheet: true });
-    }
+  const blockMapChrome = (e) =>
+    e.target.closest(".leaflet-control, .hs-composer, .hs-pin-scale-pop, .hs-layers, input, select, textarea");
+  const collapseFromBar = (e) => {
+    if (!isExpanded() || !mapBar?.contains(e.target)) return false;
+    return true;
   };
-  view.addEventListener("wheel", block, { passive: false });
-  let touchY = 0;
-  let touchStartScroll = 0;
+  const tryExpand = () => {
+    if (!isExpanded() && view.scrollTop <= 8) {
+      setWxMapExpanded(true);
+      return true;
+    }
+    return false;
+  };
+  const tryCollapse = () => {
+    if (isExpanded()) {
+      setWxMapExpanded(false, { scrollToSheet: true });
+      return true;
+    }
+    return false;
+  };
   view.addEventListener(
-    "touchstart",
+    "wheel",
     (e) => {
-      if (e.touches.length !== 1) return;
-      touchY = e.touches[0].clientY;
-      touchStartScroll = view.scrollTop;
-    },
-    { passive: true },
-  );
-  view.addEventListener(
-    "touchmove",
-    (e) => {
-      if (e.touches.length !== 1) return;
-      if (e.target.closest(".leaflet-control, .hs-map-pin-size, .hs-composer, .hs-pin-scale-pop, input, select, textarea, button, a")) return;
-      const y = e.touches[0].clientY;
-      const dy = y - touchY;
-      touchY = y;
-      const expanded = isExpanded();
-      if (!expanded && touchStartScroll <= 10 && dy < -14) {
+      if (blockMapChrome(e)) return;
+      if (collapseFromBar(e) && e.deltaY > 0) {
         e.preventDefault();
-        setWxMapExpanded(true);
+        tryCollapse();
         return;
       }
-      if (expanded && dy > 14) {
+      if (!isExpanded() && view.scrollTop <= 8 && e.deltaY < 0) {
         e.preventDefault();
-        setWxMapExpanded(false, { scrollToSheet: true });
+        tryExpand();
+        return;
+      }
+      if (isExpanded() && e.deltaY > 0 && !e.target.closest("#wx-map, .leaflet-container")) {
+        e.preventDefault();
+        tryCollapse();
       }
     },
     { passive: false },
   );
+  let touchY = 0;
+  let touchStartScroll = 0;
+  let touchInBar = false;
+  let touchAccum = 0;
+  const onTouchStart = (e) => {
+    if (e.touches.length !== 1) return;
+    touchY = e.touches[0].clientY;
+    touchStartScroll = view.scrollTop;
+    touchInBar = Boolean(mapBar?.contains(e.target) && !e.target.closest('input[type="range"]'));
+    touchAccum = 0;
+  };
+  const onTouchMove = (e) => {
+    if (e.touches.length !== 1) return;
+    if (blockMapChrome(e)) return;
+    const y = e.touches[0].clientY;
+    const dy = y - touchY;
+    touchY = y;
+    touchAccum += dy;
+    if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
+      e.preventDefault();
+      tryExpand();
+      touchAccum = 0;
+      return;
+    }
+    if (isExpanded() && touchInBar && touchAccum > 10) {
+      e.preventDefault();
+      tryCollapse();
+      touchAccum = 0;
+    }
+  };
+  view.addEventListener("touchstart", onTouchStart, { passive: true });
+  view.addEventListener("touchmove", onTouchMove, { passive: false });
+  if (mapBar) {
+    mapBar.addEventListener(
+      "wheel",
+      (e) => {
+        if (!isExpanded() || e.deltaY <= 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        tryCollapse();
+      },
+      { passive: false },
+    );
+  }
 }
 
 /** @deprecated use bindWxMapScrollExpand */
