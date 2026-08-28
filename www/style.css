@@ -47,6 +47,7 @@ header.stat {
 }
 body.wx-map-expanded header.stat {
   background: rgba(11, 11, 13, 0.97);
+  backdrop-filter: none;
 }
 body.wx-map-expanded .mark,
 body.wx-map-expanded .app-ver {
@@ -236,8 +237,8 @@ nav.tabs {
     border-color var(--map-expand-ms) ease;
 }
 body.wx-map-expanded nav.tabs {
-  background: rgba(11, 11, 13, 0.58);
-  backdrop-filter: blur(12px);
+  background: rgba(11, 11, 13, 0.88);
+  backdrop-filter: none;
 }
 nav.tabs::-webkit-scrollbar { display: none; }
 nav.tabs button {

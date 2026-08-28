@@ -1068,14 +1068,14 @@ function hailZoneOpacityBoost(base) {
 }
 
 const HOUSE_NUM_MAX = 400;
-/** Keep tiles warm while panning/zooming — avoids blank flashes and reload stutter. */
+/** Base map tiles — lean buffer; no CSS filters on imagery. */
 const BASE_TILE_OPTS = {
   maxZoom: MAP_MAX_ZOOM,
   tileSize: 256,
   detectRetina: false,
-  updateWhenIdle: true,
-  updateWhenZooming: false,
-  keepBuffer: 6,
+  updateWhenIdle: false,
+  updateWhenZooming: true,
+  keepBuffer: 3,
 };
 const FEMA_STRUCTURES =
   "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0/query";
@@ -1385,7 +1385,7 @@ export function bindRadarScrubber(root = document) {
   }
 }
 
-const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&scale=2&x={x}&y={y}&z={z}";
+const GOOGLE_TILES = "https://mt{s}.google.com/vt/lyrs={lyrs}&hl=en&scale=1&x={x}&y={y}&z={z}";
 const GOOGLE_SUBDOMAINS = "0123";
 
 const BASE_LAYERS = [
