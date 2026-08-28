@@ -4060,6 +4060,18 @@ export function syncHailBottomChrome() {
   if (!panel) return;
   panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
   panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
+  syncAddrBand();
+}
+
+function syncAddrBand() {
+  const panel = document.getElementById("hs-bottom-panel");
+  const search = document.getElementById("hs-search");
+  if (!panel) return;
+  if (!document.body.classList.contains("wx-map-expanded") && panel.offsetHeight > 48) {
+    panel.dataset.addrBand = String(panel.offsetHeight);
+  }
+  const band = Number(panel.dataset.addrBand) || search?.offsetHeight || 132;
+  document.documentElement.style.setProperty("--hs-addr-band", `${Math.round(band)}px`);
 }
 
 function pulseBottomPanel() {
@@ -4144,7 +4156,10 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   };
   requestAnimationFrame(() => requestAnimationFrame(invalidate));
   clearTimeout(setWxMapExpanded._sizeTimer);
-  setWxMapExpanded._sizeTimer = setTimeout(invalidate, MAP_SHELL_MS + 48);
+  setWxMapExpanded._sizeTimer = setTimeout(() => {
+    invalidate();
+    syncAddrBand();
+  }, MAP_SHELL_MS + 48);
   if (!on && scrollToSheet) {
     setTimeout(() => {
       try {

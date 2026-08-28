@@ -1731,8 +1731,12 @@ body.wx-map-expanded .hs-sheet {
 .hs-map-pin-size input[type="range"] {
   width: min(92px, 28vw); margin: 0; accent-color: var(--trim);
 }
+/* Fullscreen: sit just above the address strip, same as address-peek mode */
 .hs-map-shell.expanded .hs-map-bar {
-  bottom: max(4px, env(safe-area-inset-bottom, 0px));
+  bottom: calc(12px + var(--hs-addr-band, 8.25rem));
+}
+.hs-map-shell.expanded .leaflet-bottom.leaflet-left {
+  bottom: calc(52px + var(--hs-addr-band, 8.25rem));
 }
 .hs-map-shell #wx-map, .hs-map-shell #hs-map {
   position: absolute;
