@@ -92,6 +92,7 @@ assert(bigOnly.some((h) => h.date === "2026-03-15"), "small+ filter keeps the 45
 assert(!bigOnly.some((h) => h.date === near.date), "small+ filter drops single-hit day");
 
 assert(dossierFetchKm({ km: 10 }) === PIN_FETCH_MIN_KM, "pin fetch should be at least PIN_FETCH_MIN_KM");
+assert(PIN_FETCH_MIN_KM >= 150, "pin fetch should reach regional storm footprints");
 const nearRow = { date: "2025-05-01", lat: 35.47, lon: -97.52, size_in: "1.00" };
 const farRow = { date: "2025-06-01", lat: 35.58, lon: -97.516, size_in: "1.25" };
 const pinData = { lat: 35.467, lon: -97.516, hail: [nearRow, farRow] };
