@@ -1524,13 +1524,16 @@ function renderPrecipStrip(hours, activeIdx, esc) {
 }
 
 /** HailTrace-style storm-date bars — tap a day to paint topo zones on the map. */
-export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate) {
+export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate, { viewport = false } = {}) {
   const rows = [...(hailDays || [])]
     .filter((h) => parseFloat(h.size_in) > 0)
     .sort((a, b) => String(a.date).localeCompare(String(b.date)))
     .slice(-24);
   if (!rows.length) {
-    return `<div class="wx-storm-graph empty"><p class="muted">No hail days within ${formatDistance(filterKm())} of this pin — widen NEAR / WINDOW or run DEEP RESEARCH.</p></div>`;
+    const hint = viewport
+      ? "No hail days in the current map view — pan/zoom or widen WINDOW."
+      : `No hail days within ${formatDistance(filterKm())} of this pin — widen NEAR / WINDOW or run DEEP RESEARCH.`;
+    return `<div class="wx-storm-graph empty"><p class="muted">${hint}</p></div>`;
   }
   const maxSz = Math.max(...rows.map((h) => parseFloat(h.size_in) || 0), 1);
   const maxHits = Math.max(...rows.map((h) => Number(h.hits) || 1), 1);
@@ -1563,8 +1566,8 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
   const selLabel = selectedDate || biggest.date;
   return `<div class="wx-storm-graph">
     <div class="wx-storm-graph-head">
-      <span>HAIL ZONES · THIS PIN</span>
-      <span class="wx-storm-graph-peak">${esc(selLabel)} · ${rows.length} day(s) · ${esc(formatDistance(filterKm()))}</span>
+      <span>HAIL ZONES · ${viewport ? "MAP VIEW" : "THIS PIN"}</span>
+      <span class="wx-storm-graph-peak">${esc(selLabel)} · ${rows.length} day(s) · ${viewport ? "visible area" : esc(formatDistance(filterKm()))}</span>
     </div>
     <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hail size by storm date near pin">${bars}</svg>
     <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · height = hail at this roof · width = signatures · label = nearest hit</div>
@@ -2171,12 +2174,123 @@ function pinFilterHailRows(rows, lat, lon, km = DEFAULT_FILTERS.km) {
     });
 }
 
+function mapViewBounds(pad = 0.03) {
+  try {
+    return map?.getBounds?.()?.pad?.(pad) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Center + search radius from the current map frame. */
+export function mapViewHailQuery() {
+  if (!map) return null;
+  const b = mapViewBounds(0.05);
+  if (!b) return null;
+  const c = b.getCenter();
+  const lat = c.lat;
+  const lon = c.lng;
+  const corners = [b.getNorthEast(), b.getNorthWest(), b.getSouthEast(), b.getSouthWest()];
+  let radiusKm = 5;
+  for (const p of corners) {
+    radiusKm = Math.max(radiusKm, haversineKm(lat, lon, p.lat, p.lng));
+  }
+  return { lat, lon, radiusKm: Math.min(50, Math.max(5, radiusKm * 1.08)), bounds: b };
+}
+
+export function hailInMapView(rows) {
+  const b = mapViewBounds(0.02);
+  if (!b) return rows || [];
+  return (rows || []).filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon) && b.contains([h.lat, h.lon]));
+}
+
+export function wxPinSelected() {
+  return Number.isFinite(pinLat) && Number.isFinite(pinLon);
+}
+
+export function clearWxPin() {
+  pinLat = null;
+  pinLon = null;
+  selectedStormDate = null;
+  if (pinRadiusLayer) {
+    try {
+      map.removeLayer(pinRadiusLayer);
+    } catch {
+      /* ignore */
+    }
+    pinRadiusLayer = null;
+  }
+  if (pin) {
+    try {
+      map.removeLayer(pin);
+    } catch {
+      /* ignore */
+    }
+    pin = null;
+  }
+}
+
+export async function viewportDossier(settings, filters = wxFilters) {
+  const q = mapViewHailQuery();
+  if (!q) return null;
+  const km = Math.min(50, Math.max(filterKm(filters), q.radiusKm));
+  const f = { ...filters, km };
+  let data = await localResearch(q.lat, q.lon, "Map view", { deep: true, filters: f, news: false });
+  data = normalizeDossier(data) || data;
+  data.address = "Map view";
+  data.viewport = true;
+  data.lat = q.lat;
+  data.lon = q.lon;
+  data.hail = hailInMapView(data.hail).map((h) => ({
+    ...h,
+    distance_km: Math.round(haversineKm(q.lat, q.lon, h.lat, h.lon) * 10) / 10,
+  }));
+  data.wind = hailInMapView(data.wind).map((w) => ({
+    ...w,
+    distance_km: Math.round(haversineKm(q.lat, q.lon, w.lat, w.lon) * 10) / 10,
+  }));
+  data._meta = { ...(data._meta || {}), viewport: true, fetchedKm: km, lat: q.lat, lon: q.lon };
+  return data;
+}
+
+let selectPinDblTapHandler = null;
+
+export function bindSelectPinDblTap(fn) {
+  selectPinDblTapHandler = fn;
+  if (pin) wireSelectPinDblTap(pin);
+}
+
+function wireSelectPinDblTap(marker) {
+  if (!marker || marker._gcDblBound) return;
+  marker._gcDblBound = true;
+  const fire = (e) => {
+    if (!selectPinDblTapHandler) return;
+    window.L.DomEvent.stop(e);
+    wxSuppressMapTap = true;
+    selectPinDblTapHandler();
+    setTimeout(() => {
+      wxSuppressMapTap = false;
+    }, 450);
+  };
+  marker.on("dblclick", fire);
+  let lastTap = 0;
+  marker.on("touchend", (e) => {
+    const now = Date.now();
+    if (now - lastTap < 350) {
+      fire(e);
+      lastTap = 0;
+    } else {
+      lastTap = now;
+    }
+  });
+}
+
 function hailNearPin(rows, day = null) {
-  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return rows || [];
+  let pool = rows || [];
+  if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return hailInMapView(pool);
   const km = filterKm();
-  return (rows || []).filter((h) => {
-    const d = String(h.date || "").slice(0, 10);
-    if (day && d !== day) return false;
+  return pool.filter((h) => {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
     const dist = Number.isFinite(h.distance_km) ? h.distance_km : haversineKm(pinLat, pinLon, h.lat, h.lon);
     return dist <= km;
@@ -2184,7 +2298,7 @@ function hailNearPin(rows, day = null) {
 }
 
 function windNearPin(rows, day = null) {
-  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return rows || [];
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return hailInMapView(rows || []).filter((w) => !day || String(w.date || "").slice(0, 10) === day);
   const km = filterKm();
   return (rows || []).filter((w) => {
     const d = String(w.date || "").slice(0, 10);
@@ -3325,6 +3439,7 @@ function placeSelectPin(latlng) {
       zIndexOffset: 900,
     }).addTo(map);
   }
+  wireSelectPinDblTap(pin);
 }
 
 export function setFieldOverlay({
@@ -3968,20 +4083,25 @@ export function filterHailRaw(data, filters = wxFilters) {
   const km = filterKm(filters);
   const hailMin = Number(filters.hailIn) || 0;
   const year = String(filters.year || "all");
-  const pinLat = Number(data.lat ?? data._meta?.lat);
-  const pinLon = Number(data.lon ?? data._meta?.lon);
+  const pinLatN = Number(data.lat ?? data._meta?.lat);
+  const pinLonN = Number(data.lon ?? data._meta?.lon);
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const viewBounds = viewport ? mapViewBounds(0.02) : null;
   return (data.hail || []).filter((h) => {
     if (year !== "all") {
       if (!h.date || !String(h.date).startsWith(year)) return false;
     } else if (h.date && h.date < since) {
       return false;
     }
-    let dist = h.distance_km;
-    if (Number.isFinite(pinLat) && Number.isFinite(pinLon) && Number.isFinite(h.lat) && Number.isFinite(h.lon)) {
-      dist = haversineKm(pinLat, pinLon, h.lat, h.lon);
-    }
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
-    if (dist != null && dist > km) return false;
+    if (viewBounds && !viewBounds.contains([h.lat, h.lon])) return false;
+    if (!viewport) {
+      let dist = h.distance_km;
+      if (Number.isFinite(pinLatN) && Number.isFinite(pinLonN)) {
+        dist = haversineKm(pinLatN, pinLonN, h.lat, h.lon);
+      }
+      if (dist != null && dist > km) return false;
+    }
     const sz = parseFloat(h.size_in);
     return Number.isNaN(sz) || sz >= hailMin;
   });
@@ -4364,7 +4484,8 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
 }
 
 function hailScopeHtml(data, days, esc) {
-  const addr = data.address || "Dropped pin";
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const addr = data.address || (viewport ? "Map view" : "Dropped pin");
   const years = [
     ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
   ].sort((a, b) => b.localeCompare(a));
@@ -4373,9 +4494,12 @@ function hailScopeHtml(data, days, esc) {
     <p class="hs-pin"><strong>${esc(addr)}</strong>${
       selectedStormDate
         ? `Showing zones for ${esc(prettyStormDate(selectedStormDate))}`
-        : "Tap a storm date to draw hail zones"
+        : viewport
+          ? "Storms in the visible map area — tap a date for zones"
+          : "Tap a storm date to draw hail zones"
     }</p>
-    ${placeContactHtml(data, esc)}
+    ${renderStormGraph(days, esc, selectedStormDate, { viewport })}
+    ${viewport ? "" : placeContactHtml(data, esc)}
     <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar hail <span class="hs-dot" style="background:#ffcc00"></span>Job done <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
@@ -4405,36 +4529,45 @@ function hailScopeHtml(data, days, esc) {
         <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>Largest hail</option>
       </select>
     </div>
-    <div class="hs-dates">${hailScopeDateRows(days, esc)}</div>`;
+    <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport })}</div>`;
 }
 
 function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
-  root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
-    row.onclick = () => {
-      const date = row.getAttribute("data-storm-date");
-      const hailRows = filterHailRaw(data, wxFilters);
-      selectStormDate(date, { fit: false, requireDate: true, hailRows });
-      const pin = root.querySelector(".hs-pin");
-      if (pin) {
-        const addr = data.address || "Dropped pin";
-        pin.innerHTML = `<strong>${esc(addr)}</strong>${
-          selectedStormDate
-            ? `Showing zones for ${esc(prettyStormDate(selectedStormDate))}`
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const pickDate = (date) => {
+    const hailRows = filterHailRaw(data, wxFilters);
+    selectStormDate(date, { fit: false, requireDate: true, hailRows });
+    const pinEl = root.querySelector(".hs-pin");
+    if (pinEl) {
+      const addr = data.address || (viewport ? "Map view" : "Dropped pin");
+      pinEl.innerHTML = `<strong>${esc(addr)}</strong>${
+        selectedStormDate
+          ? `Showing zones for ${esc(prettyStormDate(selectedStormDate))}`
+          : viewport
+            ? "Storms in the visible map area — tap a date for zones"
             : "Tap a storm date to draw hail zones"
-        }`;
-      }
-      const box = root.querySelector(".hs-dates");
-      if (box) {
-        box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc);
-        bindHailScopeDates(root, data, esc, { onRefetch });
-      }
-    };
+      }`;
+    }
+    const box = root.querySelector(".hs-dates");
+    if (box) {
+      box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport });
+      bindHailScopeDates(root, data, esc, { onRefetch });
+    }
+  };
+  root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
+    row.onclick = () => pickDate(row.getAttribute("data-storm-date"));
   });
+  bindStormGraph(root, pickDate);
 }
 
-function hailScopeDateRows(days, esc) {
+function hailScopeDateRows(days, esc, { viewport = false } = {}) {
   if (!days.length) {
-    return `<p class="hs-empty">${hailSearchQ ? "No storms match that search." : "No storms in this window. Widen the radius, drop the hail size, or tap another place."}</p>`;
+    const empty = viewport
+      ? "No storms in the current map view. Pan/zoom the map and double-tap the pin again, or widen filters."
+      : hailSearchQ
+        ? "No storms match that search."
+        : "No storms in this window. Widen the radius, drop the hail size, or tap another place.";
+    return `<p class="hs-empty">${empty}</p>`;
   }
   return days
     .slice(0, 80)
@@ -4444,9 +4577,11 @@ function hailScopeDateRows(days, esc) {
       const sev = (h.severity || hailSeverityLabel(h.size_in) || "").toLowerCase();
       const src = hailSourceLabel(h);
       const far = h.size_far && h.far_km != null ? ` · ${h.size_far}″ also ${formatDistance(h.far_km)} out` : "";
-      const meta = atRoof
-        ? `${sev} · ${src} · ${h.near_hits} at this roof · nearest ${formatDistance(h.distance_km)}${far}`
-        : `No hail signature at this roof · nearest ${formatDistance(h.distance_km)}${far || ` · ${h.size_in}″`}`;
+      const meta = viewport
+        ? `${sev} · ${src} · ${h.hits || 1} in view · nearest ${formatDistance(h.distance_km)}${far}`
+        : atRoof
+          ? `${sev} · ${src} · ${h.near_hits} at this roof · nearest ${formatDistance(h.distance_km)}${far}`
+          : `No hail signature at this roof · nearest ${formatDistance(h.distance_km)}${far || ` · ${h.size_in}″`}`;
       return `<button type="button" class="hs-date${on}${atRoof ? "" : " away"}" data-storm-date="${esc(h.date)}">
                 <span class="when">${esc(prettyStormDate(h.date))}</span>
                 <span class="size">${esc(h.size_in)}″</span>
@@ -4459,13 +4594,14 @@ function hailScopeDateRows(days, esc) {
 function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (!root) return;
   const meta = data._meta || {};
+  const viewport = Boolean(data.viewport || meta.viewport);
   const qEl = root.querySelector("#hs-q");
   if (qEl) {
     qEl.oninput = () => {
       hailSearchQ = String(qEl.value || "").trim().toLowerCase();
       const box = root.querySelector(".hs-dates");
       if (box) {
-        box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc);
+        box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport });
         bindHailScopeDates(root, data, esc, { onRefetch });
       }
     };
@@ -4477,11 +4613,13 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
     if (!el) return;
     el.onchange = async () => {
       wxFilters[key] = cast(el.value);
-      if (key === "km") drawPinRadius();
+      if (key === "km" && wxPinSelected()) drawPinRadius();
       const needRefetch =
         onRefetch &&
-        ((key === "days" && Number(wxFilters.days) > (meta.fetchedDays || 0)) ||
-          (key === "km" && Number(wxFilters.km) > (meta.fetchedKm || 0)));
+        (viewport
+          ? key === "days" || key === "km"
+          : (key === "days" && Number(wxFilters.days) > (meta.fetchedDays || 0)) ||
+            (key === "km" && Number(wxFilters.km) > (meta.fetchedKm || 0)));
       if (needRefetch) {
         try {
           const fresh = await onRefetch({ ...wxFilters });

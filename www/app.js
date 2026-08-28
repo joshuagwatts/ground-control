@@ -38,6 +38,9 @@ import {
   renderHailScopeSheet,
   baseLayerButtons,
   bindWxMapScrollExpand,
+  bindSelectPinDblTap,
+  clearWxPin,
+  viewportDossier,
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
@@ -48,7 +51,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.43";
+} from "./wx.js?v=0.2.44";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -64,7 +67,7 @@ setWxUnits(db.settings.units || "imperial");
 let tab = "hailscope";
 const keyCheckTimers = {};
 let pendingChatImages = [];
-let wxState = { lat: null, lon: null, address: "", data: null };
+let wxState = { lat: null, lon: null, address: "", data: null, viewport: false };
 let wxWatch = null;
 let chatBusy = false;
 let lensBusy = false;
@@ -1735,6 +1738,7 @@ async function renderWx() {
     wireHsShell(cfg);
     mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat" });
     bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
+    bindSelectPinDblTap(onHailViewport);
     paintLayerToggles();
     paintFieldMap();
     paintFieldSheet();
@@ -1746,10 +1750,49 @@ async function renderWx() {
   }
 }
 
+async function onHailViewport() {
+  const gen = ++hailTapGen;
+  clearWxPin();
+  wxState.lat = null;
+  wxState.lon = null;
+  wxState.address = "Map view";
+  wxState.viewport = true;
+  wxState.data = null;
+  const sheet = $("#hs-sheet");
+  if (sheet) {
+    sheet.innerHTML = '<p class="hs-pin"><strong>Map view</strong>Searching visible area…</p><p class="hs-empty">Loading storm history…</p>';
+  }
+  setStatus("Searching map view…");
+  const onRefetch = async (filters) => {
+    if (gen !== hailTapGen) return null;
+    const fresh = await viewportDossier(db.settings, filters);
+    if (gen !== hailTapGen) return null;
+    wxState.data = fresh;
+    return fresh;
+  };
+  try {
+    const data = await viewportDossier(db.settings, wxFilters);
+    if (gen !== hailTapGen || !isHailTab()) return;
+    if (!data) {
+      if (sheet) sheet.innerHTML = '<p class="hs-empty">Could not load storms for this map view.</p>';
+      setStatus("");
+      return;
+    }
+    wxState.data = data;
+    syncHailScopeView(sheet, data, esc, { onRefetch, fit: false });
+    setStatus("");
+  } catch (e) {
+    if (gen !== hailTapGen) return;
+    if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try again.</p>`;
+    setStatus("");
+  }
+}
+
 async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   const gen = ++hailTapGen;
   wxState.lat = lat;
   wxState.lon = lon;
+  wxState.viewport = false;
   if (prefAddr) wxState.address = prefAddr;
   setWxPin(lat, lon);
   const sheet = $("#hs-sheet");
