@@ -2792,9 +2792,9 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
   const filterDays = Number(filters.days) || 730;
   const archiveDays = Math.min(filterDays, 730);
-  const swdiDays = swdiDaysForRing(km, filterDays);
   const viewport = Boolean(filters.viewport);
   const km = viewport ? filterKm(filters) : dossierWideKm(filters);
+  const swdiDays = swdiDaysForRing(km, filterDays);
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const geo = await geoP;
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
