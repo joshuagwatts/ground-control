@@ -2016,15 +2016,6 @@ body.wx-map-expanded .hs-field {
   border: 1px solid #2f6f4e;
   background: rgba(47, 111, 78, 0.18);
 }
-.hs-ok-tip {
-  margin: -0.35rem 0 0.85rem;
-  padding: 0.55rem 0.7rem;
-  font-size: 12.5px; line-height: 1.45;
-  color: var(--text);
-  background: rgba(47, 111, 78, 0.12);
-  border-left: 3px solid #2f6f4e;
-  border-radius: 0 8px 8px 0;
-}
 .hs-fb { color: #d6e4ff !important; border-color: #3b5bdb !important; }
 .hs-ig { color: #ffd6e8 !important; border-color: #c2255c !important; }
 .hs-tel, .hs-sms { color: var(--text); }

@@ -195,14 +195,6 @@ function ownerFields(people = {}, assessor = null) {
   };
 }
 
-function oklahomaHomeTip(data) {
-  const addr = `${data.address || ""} ${data.owner_mail || ""}`;
-  if (!/\bOK\b|oklahoma/i.test(addr)) return "";
-  const hailN = (data.hail || []).length;
-  if (!hailN) return "";
-  return `<p class="hs-ok-tip">OK tip: After hail, photograph the roof and gutters soon, note the storm date, and ask your insurer about a separate hail deductible — common on Oklahoma policies.</p>`;
-}
-
 function placeContactHtml(data, esc) {
   const addr = data.address || "";
   const zurl = pickZillowUrl(data);
@@ -229,7 +221,7 @@ function placeContactHtml(data, esc) {
   }
   if (homestead) bits.push(`<span class="hs-homestead" title="Homestead exemption on file">Homestead</span>`);
   const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>${oklahomaHomeTip(data)}`;
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }
 
 async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
