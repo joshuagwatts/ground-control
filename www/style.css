@@ -1851,6 +1851,36 @@ body.wx-map-expanded .hs-sheet {
   background: #3b82f6;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4);
 }
+.hs-layers button.hs-dots-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.hs-layers button.hs-dots-toggle .hs-dot-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.hs-layers button.hs-dots-toggle .hs-dot-r,
+.hs-layers button.hs-dots-toggle .hs-dot-g {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.hs-layers button.hs-dots-toggle .hs-dot-r {
+  background: #ff2d2d;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+.hs-layers button.hs-dots-toggle .hs-dot-g {
+  background: #4caf2a;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+.hs-layers button.hs-dots-toggle:not(.on) .hs-dot-r,
+.hs-layers button.hs-dots-toggle:not(.on) .hs-dot-g {
+  opacity: 0.35;
+  filter: grayscale(0.55);
+}
 .hs-radar-top {
   position: absolute;
   z-index: 500;

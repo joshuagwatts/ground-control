@@ -61,7 +61,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.102";
+} from "./wx.js?v=0.2.103";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1205,6 +1205,7 @@ function paintFieldMap() {
     donePinScale: donePinScaleUi(),
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
+    showHailDots: db.settings.showHailDots !== false,
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onDone: (h) => {
@@ -1556,8 +1557,10 @@ function paintLayerToggles() {
   const doneOn = db.settings.showDone !== false;
   const marksOn = db.settings.showMarks !== false;
   const meOn = db.settings.showMyLocation !== false;
+  const dotsOn = db.settings.showHailDots !== false;
   el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
+    <button type="button" data-ov="dots" class="hs-dots-toggle ${dotsOn ? "on" : ""}" aria-label="Hail dots" title="Show spotter (red) and radar (green) dots"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-g"></i></span>Dots</button>
     <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
   el.onclick = (e) => {
@@ -1569,101 +1572,13 @@ function paintLayerToggles() {
       db.settings.showMyLocation = !(db.settings.showMyLocation !== false);
       setMyLocationVisible(db.settings.showMyLocation);
     }
+    if (b.dataset.ov === "dots") db.settings.showHailDots = !dotsOn;
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
     if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
     persist();
     paintLayerToggles();
     paintFieldMap();
   };
-}
-
-
-async function ensureDoneHousesPlaced() {
-  const text = (db.done?.text || "").trim();
-  const lines = parseDoneList(text);
-  if (!lines.length) {
-    paintFieldMap();
-    return;
-  }
-  const houses = doneHouses();
-  const placed = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
-  if (placed >= lines.length && houses.length >= lines.length) {
-    paintFieldMap();
-    return;
-  }
-  if (!doneBusy) await loadDoneAddresses();
-}
-
-async function loadDoneAddresses({ textId = "job-done-text" } = {}) {
-  if (doneBusy) return;
-  const text = document.querySelector("#" + textId)?.value ?? db.done?.text ?? "";
-  const parsed = parseDoneList(text);
-  if (!parsed.length) {
-    setStatus("Paste completed addresses first");
-    return;
-  }
-  const lines = parsed.slice(0, MAX_DONE);
-  if (!db.done) db.done = { text: "", houses: [], geo: {} };
-  db.done.text = text;
-  persist();
-  doneBusy = true;
-  paintFieldSheet();
-  const cityHint = db.settings.city || "Edmond, OK";
-  const geo = { ...(db.done.geo || {}) };
-  const houses = [];
-  let miss = 0;
-  try {
-    for (let i = 0; i < lines.length; i++) {
-      const addr = lines[i];
-      const q = withCity(addr, cityHint);
-      const cacheKey = q.toLowerCase();
-      setStatus(`Placing ${i + 1} of ${lines.length}…`);
-      let hit = geo[cacheKey];
-      if (!geoCacheOk(hit, q)) {
-        try {
-          const found = await geocodeAddress(q);
-          const top = found[0];
-          hit = {
-            lat: top.lat,
-            lon: top.lon,
-            address: top.address || addr,
-            v: 2,
-            houseOk: Boolean(top.houseOk),
-            source: top.source || "",
-          };
-          geo[cacheKey] = hit;
-        } catch {
-          hit = { lat: null, lon: null, address: addr, v: 2, houseOk: false };
-          miss += 1;
-        }
-        await new Promise((r) => setTimeout(r, 900));
-      }
-      houses.push(
-        normalizeDoneHouse(
-          {
-            id: `done-${i}`,
-            address: hit.address || addr,
-            lat: hit.lat,
-            lon: hit.lon,
-          },
-          `done-${i}`,
-        ),
-      );
-    }
-    db.done = { text, houses, geo };
-    persist();
-    paintFieldMap();
-    paintFieldSheet();
-    const n = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
-    const capped = parsed.length > MAX_DONE ? `  — first ${MAX_DONE}` : "";
-    setStatus(`${n} yellow marker${n === 1 ? "" : "s"}${miss ? `  — ${miss} not found` : ""}${capped}`);
-  } catch (e) {
-    setStatus(String(e.message || e).slice(0, 64));
-  } finally {
-    doneBusy = false;
-    paintFieldSheet();
-    if (tab === "jobs" && document.getElementById("job-done-text")) renderJobs();
-  }
 }
 
 function onMapHold(lat, lon) {
@@ -1788,8 +1703,7 @@ async function warmMapViewStorms(gen) {
     }
     const sheet0 = $("#hs-sheet");
     if (sheet0 && !sheet0.querySelector(".hs-date") && !sheet0.querySelector(".hs-pin-ready")) {
-      sheet0.innerHTML =
-        '<p class="hs-pin"><strong>Map view</strong>Loading storm dates…</p><p class="hs-empty">Fetching recent hail for this area…</p>';
+      sheet0.innerHTML = '<p class="hs-pin hs-pin-ready">Loading storm dates…</p>';
     }
     const data = await viewportDossier(db.settings);
     if (token !== warmStormToken || gen !== wxRenderGen || !isHailTab() || !data) return;
@@ -1924,7 +1838,7 @@ async function onHailViewport() {
   if (addrBoxVp && /^map\s*view$/i.test(String(addrBoxVp.value || "").trim())) addrBoxVp.value = "";
   const sheet = $("#hs-sheet");
   if (sheet) {
-    sheet.innerHTML = '<p class="hs-pin"><strong>Map view</strong>Searching visible area…</p><p class="hs-empty">Loading storm history…</p>';
+    sheet.innerHTML = '<p class="hs-pin hs-pin-ready">Searching visible area…</p><p class="hs-empty">Loading storm history…</p>';
   }
   setStatus("Searching map view…");
   const onRefetch = async (filters) => {

@@ -254,7 +254,7 @@ let housePaintSig = "";
 let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
-let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, onMark: null, onDone: null };
+let fieldOverlay = { marks: [], done: [], showMarks: true, showDone: true, showHailDots: true, onMark: null, onDone: null };
 const livePinMarkers = { marks: new Map(), done: new Map() };
 
 export function setHailScopeMode(on) {
@@ -3488,7 +3488,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const boundKey = b
     ? `${b.getSouth().toFixed(3)}|${b.getWest().toFixed(3)}|${b.getNorth().toFixed(3)}|${b.getEast().toFixed(3)}`
     : "";
-  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${boundKey}|${activeLayer}|${opts.fit ? 1 : 0}`;
+  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${boundKey}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -3638,9 +3638,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const zNow = map?.getZoom?.() || 14;
     // Selected storm days keep spot/radar detail at every zoom; otherwise ease dots in closer.
     const stormOn = hasSelectedStormDates();
-    const showRadarDots = stormOn || zNow >= 11;
-    const showSpotDots = stormOn || zNow >= 10;
-    const showRadarHalos = stormOn ? zNow >= 12 : zNow >= 15.5;
+    const dotsAllowed = fieldOverlay.showHailDots !== false;
+    const showRadarDots = dotsAllowed && (stormOn || zNow >= 11);
+    const showSpotDots = dotsAllowed && (stormOn || zNow >= 10);
+    const showRadarHalos = dotsAllowed && (stormOn ? zNow >= 12 : zNow >= 15.5);
     const radarCap = stormOn ? (zNow < 9 ? 320 : 260) : 180;
     const spotCap = stormOn ? (zNow < 9 ? 220 : 180) : 120;
     const toDraw = showRadarDots || showSpotDots
@@ -4538,11 +4539,17 @@ export function setFieldOverlay({
   donePinScale = 1,
   showMarks = true,
   showDone = true,
+  showHailDots = true,
   onMark,
   onDone,
   onMarkScale,
 } = {}) {
-  fieldOverlay = { marks, done, donePinScale, showMarks, showDone, onMark, onMarkScale };
+  const prevDots = fieldOverlay.showHailDots !== false;
+  fieldOverlay = { marks, done, donePinScale, showMarks, showDone, showHailDots, onMark, onMarkScale, onDone };
+  if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
+    lastHailDrawSig = "";
+    drawHailMarkers(lastHailRows, lastWindRows);
+  }
   if (!map || !window.L) return;
   ensureFieldPanes();
   if (!markLayer) markLayer = window.L.layerGroup().addTo(map);
@@ -5206,13 +5213,11 @@ export function revealHailAddressPeek() {
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
   hailBottomTier = "address";
   syncHailBottomChrome();
-  // No house yet: show a Map view peek so the second swipe has chrome to pull
+  // No house yet: quiet loading peek — no redundant "Map view" title
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     const sheet = document.getElementById("hs-sheet");
-    // Keep any warm-loaded list; only seed a loading peek when the sheet is empty.
     if (sheet && !sheet.querySelector(".hs-pin") && !sheet.querySelector(".hs-date")) {
-      sheet.innerHTML =
-        '<p class="hs-pin"><strong>Map view</strong></p><p class="hs-empty">Loading storm dates…</p>';
+      sheet.innerHTML = '<p class="hs-pin hs-pin-ready">Loading storm dates…</p>';
     }
   }
   if (wasExpanded) {
@@ -5946,22 +5951,29 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
   if (revealSheet) revealHailAddressPeek();
 }
 
+function hailScopePinHtml(data, esc) {
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const pinLine = selectedStormsPinText(esc);
+  if (viewport) {
+    const line =
+      pinLine ||
+      "Storms in the visible map area — tap dates to overlay (multi-check)";
+    return `<p class="hs-pin hs-pin-ready">${line}</p>`;
+  }
+  const addr = data.address || "Dropped pin";
+  return `<p class="hs-pin hs-pin-ready"><strong>${esc(addr)}</strong>${
+    pinLine || "Tap storm dates to overlay hail zones (multi-check)"
+  }</p>`;
+}
+
 function hailScopeHtml(data, days, esc) {
   const viewport = Boolean(data.viewport || data._meta?.viewport);
-  const addr = data.address || (viewport ? "Map view" : "Dropped pin");
   const years = [
     ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
   ].sort((a, b) => b.localeCompare(a));
   const q = hailSearchQ;
-  const pinLine = selectedStormsPinText(esc);
   return `
-    <p class="hs-pin hs-pin-ready"><strong>${esc(addr)}</strong>${
-      pinLine
-        ? pinLine
-        : viewport
-          ? "Storms in the visible map area — tap dates to overlay (multi-check)"
-          : "Tap storm dates to overlay hail zones (multi-check)"
-    }</p>
+    ${hailScopePinHtml(data, esc)}
     ${viewport ? "" : placeContactHtml(data, esc)}
     <p class="hs-legend"><span class="hs-legend-item"><span class="hs-dot hs-dot-spot"></span>Spotter</span><span class="hs-legend-item"><span class="hs-dot hs-dot-radar"></span>Radar</span><span class="hs-legend-item"><span class="hs-dot hs-dot-done"></span>Done</span><span class="hs-legend-item"><span class="hs-dot hs-dot-ping"></span>Ping</span></p>
     <div class="hs-filters">
@@ -6001,19 +6013,12 @@ function hailScopeHtml(data, days, esc) {
 
 function paintHailScopeDateSelection(root, data, esc) {
   if (!root) return;
-  const viewport = Boolean(data.viewport || data._meta?.viewport);
   const pinEl = root.querySelector(".hs-pin");
   if (pinEl) {
-    pinEl.classList.add("hs-pin-ready");
-    const addr = data.address || (viewport ? "Map view" : "Dropped pin");
-    const pinLine = selectedStormsPinText(esc);
-    pinEl.innerHTML = `<strong>${esc(addr)}</strong>${
-      pinLine
-        ? pinLine
-        : viewport
-          ? "Storms in the visible map area — tap dates to overlay (multi-check)"
-          : "Tap storm dates to overlay hail zones (multi-check)"
-    }`;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = hailScopePinHtml(data, esc);
+    const next = tmp.firstElementChild;
+    if (next) pinEl.replaceWith(next);
   }
   root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
     const on = isStormDateSelected(row.getAttribute("data-storm-date"));
