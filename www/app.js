@@ -42,7 +42,7 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
-} from "./wx.js";
+} from "./wx.js?v=0224";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict } from "./shingle.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";

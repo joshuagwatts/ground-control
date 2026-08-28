@@ -1750,6 +1750,8 @@ body.wx-map-expanded .hs-sheet { display: none; }
   border-radius: var(--radius);
 }
 .hs-date.on { border-color: var(--trim); background: #2a2308; }
+.hs-date.away { opacity: 0.78; }
+.hs-date.away .size { color: var(--muted); }
 .hs-date .when { font-weight: 650; }
 .hs-date .size { color: var(--trim); font-weight: 650; }
 .hs-date .meta { grid-column: 1 / -1; color: var(--muted); font-size: 13px; }

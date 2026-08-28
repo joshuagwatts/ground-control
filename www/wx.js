@@ -30,6 +30,10 @@ const WMO = {
 };
 
 export const DEFAULT_FILTERS = { km: 10, hailIn: 0.75, windMph: 38, days: 730, year: "all", sort: "date" };
+/** Hail that can count for this roof (~1 mi). Bigger reports farther out are context, not the claim size. */
+export const HOUSE_HAIL_KM = 1.6;
+/** Draw filled zones only this close to the pin. Dots still show the rest of the radius. */
+export const HOUSE_ZONE_KM = 2.5;
 let wxFilters = { ...DEFAULT_FILTERS };
 const RADIUS_KM = [5, 10, 16, 25, 40, 50];
 let wxUnits = "imperial";
@@ -371,7 +375,28 @@ function iemBboxQuery(lat, lon, radiusKm) {
 function isSpotterHail(p) {
   const src = String(p?.source || "");
   if (/swdi|radar/i.test(src)) return false;
-  return /spc|lsr|spot|iem/i.test(src);
+  return /spc|lsr|spot|iem/i.test(src) || src === "hail" || src === "noaa-spc";
+}
+
+function hitDistKm(p) {
+  const d = Number(p?.distance_km);
+  if (Number.isFinite(d) && d < 900) return d;
+  const pin = pinCoords();
+  if (pin && Number.isFinite(p?.lat) && Number.isFinite(p?.lon)) {
+    return haversineKm(pin.lat, pin.lon, p.lat, p.lon);
+  }
+  return 999;
+}
+
+function pinCoords() {
+  if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) return { lat: pinLat, lon: pinLon };
+  try {
+    const c = map?.getCenter?.();
+    if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) return { lat: c.lat, lon: c.lng };
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 function parseSwdiShape(shape) {
@@ -645,7 +670,7 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
-function mergeHailRows(...groups) {
+export function mergeHailRows(...groups) {
   const seen = new Set();
   const uniq = [];
   for (const h of groups.flat()) {
@@ -662,7 +687,7 @@ function mergeHailRows(...groups) {
   });
   const spots = uniq.filter(isSpotterHail);
   const radar = uniq.filter((h) => !isSpotterHail(h));
-  return [...spots, ...radar].slice(0, 400);
+  return [...spots.slice(0, 280), ...radar.slice(0, 420)];
 }
 
 /**
@@ -681,7 +706,7 @@ export function collapseHailByDate(rows) {
     const prev = byDate.get(day);
     const pt =
       Number.isFinite(h.lat) && Number.isFinite(h.lon)
-        ? { lat: h.lat, lon: h.lon, size_in: size, source: h.source || "hail", swdi_ring: h.swdi_ring || null }
+        ? { lat: h.lat, lon: h.lon, size_in: size, source: h.source || "hail", swdi_ring: h.swdi_ring || null, distance_km: distN }
         : null;
     if (!prev) {
       byDate.set(day, {
@@ -697,7 +722,7 @@ export function collapseHailByDate(rows) {
       continue;
     }
     prev.hits += 1;
-    if (pt) prev.zone_pts.push({ lat: pt.lat, lon: pt.lon, size_in: size, source: h.source || "hail" });
+    if (pt) prev.zone_pts.push(pt);
     if (h.source) prev.sources.add(h.source);
     const better =
       size > prev.max_size ||
@@ -723,21 +748,31 @@ export function collapseHailByDate(rows) {
   return [...byDate.values()].map((row) => {
     const srcs = [...(row.sources || [])];
     const hasRadar = srcs.some((s) => /radar|swdi/i.test(s));
-    const hasSpot = srcs.some((s) => /spc|spot/i.test(s) || s === "hail");
+    const hasSpot = srcs.some((s) => /spc|lsr|spot|iem/i.test(s) || s === "hail");
     let source = "hail";
     if (hasRadar && hasSpot) source = "mixed";
     else if (hasRadar) source = "noaa-swdi-radar";
     else if (hasSpot) source = "noaa-spc";
     const pts = row.zone_pts || [];
+    const near = pts.filter((p) => (Number(p.distance_km) || 999) <= HOUSE_HAIL_KM);
+    const maxNear = near.reduce((m, p) => Math.max(m, Number(p.size_in) || 0), 0);
+    const nearest = [...pts].sort((a, b) => (Number(a.distance_km) || 999) - (Number(b.distance_km) || 999))[0];
+    const size = maxNear > 0 ? maxNear : Number(nearest?.size_in) || Number(row.max_size) || 0;
+    const farHit = [...pts]
+      .filter((p) => (Number(p.size_in) || 0) > size + 0.04)
+      .sort((a, b) => (Number(b.size_in) || 0) - (Number(a.size_in) || 0))[0];
+    const use = near.length ? near : nearest ? [nearest] : pts;
     let zone_lat = row.lat;
     let zone_lon = row.lon;
-    let zone_r_km = Math.max(1.2, Math.min(8, (parseFloat(row.size_in) || 0.5) * 2.2));
-    if (pts.length) {
-      zone_lat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
-      zone_lon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
+    if (use.length) {
+      zone_lat = use.reduce((a, p) => a + p.lat, 0) / use.length;
+      zone_lon = use.reduce((a, p) => a + p.lon, 0) / use.length;
+    }
+    let zone_r_km = Math.max(0.6, Math.min(2.4, (size || 0.5) * 1.1));
+    if (near.length) {
       let maxSpread = 0;
-      for (const p of pts) maxSpread = Math.max(maxSpread, haversineKm(zone_lat, zone_lon, p.lat, p.lon));
-      zone_r_km = Math.max(zone_r_km, maxSpread + 0.6);
+      for (const p of near) maxSpread = Math.max(maxSpread, haversineKm(zone_lat, zone_lon, p.lat, p.lon));
+      zone_r_km = Math.max(zone_r_km, maxSpread + 0.35);
     }
     return {
       kind: "hail",
@@ -745,19 +780,22 @@ export function collapseHailByDate(rows) {
       time: row.time || "",
       lat: zone_lat,
       lon: zone_lon,
-      size_in: row.size_in,
+      size_in: size ? size.toFixed(2) : row.size_in,
+      size_far: farHit ? Number(farHit.size_in).toFixed(2) : "",
+      far_km: farHit ? Number(farHit.distance_km) : null,
+      near_hits: near.length,
       location: row.location || "Hail zone",
       county: row.county || "",
       state: row.state || "",
       comments: row.comments || `${row.hits} signature${row.hits === 1 ? "" : "s"}`,
       source,
-      distance_km: row.distance_km,
-      score: row.score || (parseFloat(row.size_in) >= 1 ? 5 : 3),
+      distance_km: Number.isFinite(Number(nearest?.distance_km)) ? Number(nearest.distance_km) : row.distance_km,
+      score: row.score || (size >= 1 ? 5 : 3),
       hits: row.hits,
       zone_pts: pts,
       zone_r_km: Math.round(zone_r_km * 10) / 10,
-      severity: hailSeverityLabel(row.size_in),
-      stars: hailStars(row.size_in),
+      severity: hailSeverityLabel(size || row.size_in),
+      stars: hailStars(size || row.size_in),
     };
   });
 }
@@ -1439,7 +1477,7 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
       <span class="wx-storm-graph-peak">${esc(selLabel)} · ${rows.length} day(s) · ${esc(formatDistance(filterKm()))}</span>
     </div>
     <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hail size by storm date near pin">${bars}</svg>
-    <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · height = max inches · width = signatures · label = distance from pin</div>
+    <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · height = hail at this roof · width = signatures · label = nearest hit</div>
   </div>`;
 }
 
@@ -1461,11 +1499,13 @@ export function bindStormGraph(root, onPick) {
   });
 }
 
-export function selectStormDate(date, { fit = false, requireDate } = {}) {
+export function selectStormDate(date, { fit = false, requireDate, hailRows, windRows } = {}) {
   selectedStormDate = date ? String(date).slice(0, 10) : null;
   const needDate = requireDate === true || (requireDate !== false && hailScopeMode);
-  if (lastHailRows.length || lastWindRows.length) {
-    drawHailMarkers(lastHailRows, lastWindRows, { fit, requireDate: needDate });
+  const hail = hailRows || lastHailRows;
+  const wind = windRows || lastWindRows;
+  if (hail.length || wind.length) {
+    drawHailMarkers(hail, wind, { fit, requireDate: needDate });
   }
   if (selectedStormDate && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
@@ -2149,7 +2189,7 @@ function padPolygon(ring, padM) {
   });
 }
 
-function clusterPoints(pts, splitKm = 5) {
+function clusterPoints(pts, splitKm = 1.5) {
   const clusters = [];
   for (const p of pts || []) {
     if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
@@ -2173,7 +2213,7 @@ function hailFootprintM(sizeIn, source) {
   const sz = parseFloat(sizeIn);
   const s = Number.isNaN(sz) ? 0.75 : sz;
   const spot = /spc|lsr|spot|iem/i.test(String(source || ""));
-  return Math.max(350, Math.min(8000, (spot ? 700 : 1100) + s * (spot ? 600 : 900)));
+  return Math.max(220, Math.min(1800, (spot ? 280 : 420) + s * (spot ? 280 : 380)));
 }
 
 function buildDetailedZoneRings(zone, rawPts) {
@@ -2196,9 +2236,13 @@ function buildDetailedZoneRings(zone, rawPts) {
   const rings = [];
   for (const p of merged) {
     if (p.swdi_ring && p.swdi_ring.length >= 3) {
+      const ring = p.swdi_ring;
+      const cLat = ring.reduce((a, c) => a + c[0], 0) / ring.length;
+      const cLon = ring.reduce((a, c) => a + c[1], 0) / ring.length;
+      if (hitDistKm({ ...p, lat: cLat, lon: cLon }) > HOUSE_ZONE_KM) continue;
       const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0;
       rings.push({
-        ring: padPolygon(p.swdi_ring, Math.max(120, maxSz * 80)),
+        ring: padPolygon(ring, Math.max(80, maxSz * 50)),
         maxSize: maxSz,
         hits: 1,
         confirmed: false,
@@ -2213,7 +2257,7 @@ function buildDetailedZoneRings(zone, rawPts) {
     size_in: p.size_in || zone.size_in,
     source: p.source || zone.source,
   }));
-  const clusters = clusterPoints(clusterInput, 5);
+  const clusters = clusterPoints(clusterInput, 1.5);
   for (const cluster of clusters) {
     const samples = [];
     let confirmed = false;
@@ -2226,7 +2270,7 @@ function buildDetailedZoneRings(zone, rawPts) {
     if (!hull) continue;
     const maxSz = Math.max(...cluster.map((p) => parseFloat(p.size_in) || 0));
     rings.push({
-      ring: padPolygon(hull, Math.max(180, maxSz * 100)),
+      ring: padPolygon(hull, Math.max(80, maxSz * 55)),
       maxSize: maxSz,
       hits: cluster.length,
       confirmed,
@@ -2244,7 +2288,7 @@ function topoZoneRing(zone, rawPts) {
   const lat = zone.lat;
   const lon = zone.lon;
   const sz = parseFloat(zone.size_in);
-  const baseM = Math.max(900, Math.min(11000, (zone.zone_r_km || 2) * 1000));
+  const baseM = Math.max(400, Math.min(2400, (zone.zone_r_km || 1) * 1000));
   const dayPts = (rawPts || []).filter((p) => String(p.date || "").slice(0, 10) === zone.date);
   const hull = convexHullLatLon(dayPts);
   if (hull) return padPolygon(hull, Math.max(400, baseM * 0.15));
@@ -2262,7 +2306,9 @@ function hailPopupHtml(h, day) {
         : h.source === "iem-lsr"
           ? "LSR"
           : "spotter";
-  return `<b>${stars} ${sev}</b><br>${h.date || day || ""}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> (${src})<br>${h.hits || 1} signature${(h.hits || 1) === 1 ? "" : "s"} · zone ~${h.zone_r_km != null ? formatDistance(h.zone_r_km) : "?"}<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}${h.distance_km != null ? `<br>${formatDistance(h.distance_km)} from pin` : ""}`;
+  return `<b>${stars} ${sev}</b><br>${h.date || day || ""}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> (${src})${
+    h.near_hits > 0 ? `<br>${h.near_hits} signature${h.near_hits === 1 ? "" : "s"} at this roof` : "<br>No hail signature at this roof"
+  }${h.size_far ? `<br>${h.size_far}" also ${formatDistance(h.far_km)} out` : ""}<br>${h.hits || 1} hit${(h.hits || 1) === 1 ? "" : "s"} in radius · zone ~${h.zone_r_km != null ? formatDistance(h.zone_r_km) : "?"}<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}${h.distance_km != null ? `<br>nearest ${formatDistance(h.distance_km)} from pin` : ""}`;
 }
 
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
@@ -2286,10 +2332,11 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   }
   hailLayer = window.L.layerGroup();
   windLayer = window.L.layerGroup();
-  if (!map.getPane("hailSpotters")) {
-    map.createPane("hailSpotters");
-    map.getPane("hailSpotters").style.zIndex = 650;
+  if (!map.getPane("hailVectors")) {
+    map.createPane("hailVectors");
+    map.getPane("hailVectors").style.zIndex = 650;
   }
+  const hailSvg = window.L.svg({ pane: "hailVectors", padding: 0.6 });
 
   const day = selectedStormDate;
   const nearHail = hailNearPin(hailRows || [], null);
@@ -2315,7 +2362,31 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
     const dayHits = hailNearPin(hailRows || [], h.date);
-    const subRings = buildDetailedZoneRings(h, dayHits.length ? dayHits : nearHail);
+    const atRoof = dayHits.filter((p) => hitDistKm(p) <= HOUSE_HAIL_KM);
+    const pin = pinCoords();
+    const subRings = [];
+    const roofHit = (h.near_hits || 0) > 0 || atRoof.length > 0;
+    if (roofHit && pin) {
+      const sz = atRoof.reduce((m, p) => Math.max(m, parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0);
+      const col = hailZoneColor(sz);
+      window.L.circle([pin.lat, pin.lon], {
+        radius: Math.max(50, Math.min(140, 48 + sz * 42)),
+        color: "#ffcc00",
+        fillColor: col.fill,
+        fillOpacity: sz >= 1 ? 0.42 : 0.34,
+        weight: 3,
+        opacity: 1,
+        pane: "hailVectors",
+        renderer: hailSvg,
+        className: "wx-hail-pin-zone",
+      })
+        .bindPopup(hailPopupHtml({ ...h, size_in: String(sz || h.size_in) }, activeDay))
+        .addTo(hailLayer);
+    }
+    const onBlock = dayHits.filter((p) => hitDistKm(p) <= 0.5);
+    if (onBlock.length) {
+      for (const sub of buildDetailedZoneRings(h, onBlock)) subRings.push(sub);
+    }
     for (const sub of subRings) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
@@ -2328,6 +2399,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         weight: isConfirm ? (sz >= 2 ? 2.6 : 2) : sz >= 2 ? 2 : 1.2,
         opacity: 0.92,
         dashArray: isConfirm ? null : sz >= 1 ? "4 4" : "6 5",
+        pane: "hailVectors",
+        renderer: hailSvg,
         className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
       })
         .bindPopup(
@@ -2348,24 +2421,41 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           weight: 1.4,
           opacity: 0.9,
           dashArray: "3 4",
+          pane: "hailVectors",
+          renderer: hailSvg,
           className: "wx-hail-topo-core",
         }).addTo(hailLayer);
       }
     }
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
-    const toDraw = [...radar.slice(0, 24), ...spots.slice(0, 48)];
+    const toDraw = [...radar.slice(0, 180), ...spots.slice(0, 120)];
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
-      window.L.circleMarker([p.lat, p.lon], {
-        radius: isSpot ? 8 : 4,
-        color: isSpot ? "#ffffff" : "#7dff5a",
-        fillColor: isSpot ? "#ff2d2d" : "#3f8f32",
-        fillOpacity: isSpot ? 0.95 : 0.85,
-        weight: isSpot ? 2 : 1.2,
-        pane: isSpot ? "hailSpotters" : "overlayPane",
+      const mark = window.L.circleMarker([p.lat, p.lon], {
+        radius: isSpot ? 8 : 6,
+        color: isSpot ? "#ffffff" : "#b8ff6a",
+        fillColor: isSpot ? "#ff2d2d" : "#4caf2a",
+        fillOpacity: isSpot ? 0.95 : 0.92,
+        weight: isSpot ? 2 : 1.6,
+        pane: "hailVectors",
+        renderer: hailSvg,
         className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
-      })
+      });
+      if (!isSpot) {
+        window.L.circle([p.lat, p.lon], {
+          radius: 55,
+          color: "#7dff5a",
+          fillColor: "#3f8f32",
+          fillOpacity: 0.35,
+          weight: 1,
+          pane: "hailVectors",
+          renderer: hailSvg,
+          className: "wx-hail-radar-pt",
+          interactive: false,
+        }).addTo(hailLayer);
+      }
+      mark
         .bindPopup(
           `<b>${isSpot ? "SPOTTER" : "RADAR"}</b> · ${p.date}${p.time ? ` ${p.time}` : ""}<br><b>${p.size_in}"</b> · ${p.location || ""}${p.distance_km != null ? `<br>${formatDistance(p.distance_km)} from pin` : ""}`,
         )
@@ -3406,15 +3496,15 @@ export function filterDossier(data, filters = wxFilters) {
   let hailRaw = filterHailRaw(data, filters);
   // One extremeness tag per date (HailTrace-style).
   let hail = collapseHailByDate(hailRaw);
-  if (sort === "size") {
-    hail = [...hail].sort(
-      (a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0) || String(b.date).localeCompare(String(a.date)),
-    );
-  } else {
-    hail = [...hail].sort(
-      (a, b) => String(b.date).localeCompare(String(a.date)) || (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0),
-    );
-  }
+  hail = [...hail].sort((a, b) => {
+    const aNear = (a.near_hits || 0) > 0 ? 0 : 1;
+    const bNear = (b.near_hits || 0) > 0 ? 0 : 1;
+    if (aNear !== bNear) return aNear - bNear;
+    if (sort === "size") {
+      return (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0) || String(b.date).localeCompare(String(a.date));
+    }
+    return String(b.date).localeCompare(String(a.date)) || (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
+  });
   const windRaw = (data.wind || []).filter((w) => {
     if (year !== "all") {
       if (!w.date || !String(w.date).startsWith(year)) return false;
@@ -3536,7 +3626,7 @@ function roofDossierHtml(data, esc, onResearch) {
           </select></label>
         </div>
         <h4>HAIL TRACE · ${hail.length} DAYS${selectedStormDate ? ` · MAP ${esc(selectedStormDate)}` : ""}</h4>
-        <div class="wx-hail-legend muted">Tap date → map zones · red dot = spotter · green = radar sig · ☆→★★★★★</div>
+        <div class="wx-hail-legend muted">Tap date → map zones · red = spotter · green = radar · size = this roof, not the farthest cell</div>
         <div class="wx-hail">${
           hail.length
             ? hail
@@ -3702,6 +3792,8 @@ function hailDayMatchesQuery(h, q) {
     h.date,
     prettyStormDate(h.date),
     h.size_in,
+    h.size_far,
+    h.near_hits,
     h.severity || hailSeverityLabel(h.size_in),
     hailSourceLabel(h),
     h.location,
@@ -3732,7 +3824,7 @@ function hailScopeHtml(data, days, esc) {
         : "Tap a storm date to draw hail zones"
     }</p>
     ${placeContactHtml(data, esc)}
-    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar only <span class="hs-dot" style="background:#ffcc00"></span>Job done <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
+    <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar hail <span class="hs-dot" style="background:#ffcc00"></span>Job done <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
     <div class="hs-filters">
       <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
       <select id="hs-f-km" aria-label="Radius">
@@ -3768,8 +3860,9 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
   root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
     row.onclick = () => {
       const date = row.getAttribute("data-storm-date");
-      if (selectedStormDate === date) selectStormDate(null, { fit: false, requireDate: true });
-      else selectStormDate(date, { fit: false, requireDate: true });
+      const hailRows = filterHailRaw(data, wxFilters);
+      if (selectedStormDate === date) selectStormDate(null, { fit: false, requireDate: true, hailRows });
+      else selectStormDate(date, { fit: false, requireDate: true, hailRows });
       const pin = root.querySelector(".hs-pin");
       if (pin) {
         const addr = data.address || "Dropped pin";
@@ -3796,12 +3889,17 @@ function hailScopeDateRows(days, esc) {
     .slice(0, 80)
     .map((h) => {
       const on = selectedStormDate === h.date ? " on" : "";
+      const atRoof = (h.near_hits || 0) > 0;
       const sev = (h.severity || hailSeverityLabel(h.size_in) || "").toLowerCase();
       const src = hailSourceLabel(h);
-      return `<button type="button" class="hs-date${on}" data-storm-date="${esc(h.date)}">
+      const far = h.size_far && h.far_km != null ? ` · ${h.size_far}″ also ${formatDistance(h.far_km)} out` : "";
+      const meta = atRoof
+        ? `${sev} · ${src} · ${h.near_hits} at this roof · nearest ${formatDistance(h.distance_km)}${far}`
+        : `No hail signature at this roof · nearest ${formatDistance(h.distance_km)}${far || ` · ${h.size_in}″`}`;
+      return `<button type="button" class="hs-date${on}${atRoof ? "" : " away"}" data-storm-date="${esc(h.date)}">
                 <span class="when">${esc(prettyStormDate(h.date))}</span>
                 <span class="size">${esc(h.size_in)}″</span>
-                <span class="meta">${esc(sev)} · ${esc(src)} · ${esc(String(h.hits || 1))} hit${(h.hits || 1) === 1 ? "" : "s"} · ${esc(formatDistance(h.distance_km))}</span>
+                <span class="meta">${esc(meta)}</span>
               </button>`;
     })
     .join("");
