@@ -245,6 +245,9 @@ async function reverseNominatim(lat, lon) {
       ok: true,
       address: line,
       city: city || line.split(",")[0],
+      state,
+      zip,
+      hasHouse: Boolean(a.house_number && a.road),
       lat,
       lon,
       source: "nominatim",
@@ -261,8 +264,57 @@ async function reverseNominatim(lat, lon) {
   }
 }
 
+/** ArcGIS World reverse geocode — free, and returns rooftop house numbers where OSM has none. */
+async function reverseArcgis(lat, lon) {
+  try {
+    const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?location=${lon}%2C${lat}&distance=80&featureTypes=PointAddress&outSR=4326&f=json`;
+    const { body } = await httpGet(url, 9000);
+    const a = JSON.parse(body || "{}").address || {};
+    const line = String(a.Address || "").trim() || String(a.Match_addr || "").split(",")[0].trim();
+    if (!/^\d+[A-Za-z]?\s+\S/.test(line)) return { ok: false };
+    const city = String(a.City || "").trim();
+    const state = String(a.RegionAbbr || a.Region || "").trim();
+    const zip = String(a.Postal || "").trim();
+    const address = [line, city, state, zip].filter(Boolean).join(", ");
+    return { ok: true, address, city, state, zip, hasHouse: true, lat, lon, source: "arcgis" };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** Snap a tap to the nearest on-screen OSM house-number point (the yellow numbers). */
+function nearestHouseAddress(lat, lon) {
+  if (!map) return null;
+  let best = null;
+  let bestM = 46;
+  for (const n of houseCache.nums || []) {
+    if (!n.street) continue;
+    let m;
+    try {
+      m = map.distance([lat, lon], [n.lat, n.lon]);
+    } catch {
+      continue;
+    }
+    if (Number.isFinite(m) && m < bestM) {
+      bestM = m;
+      best = n;
+    }
+  }
+  return best;
+}
+
 export async function reverseGeocode(lat, lon) {
-  const nom = await reverseNominatim(lat, lon);
+  const [nom, arc] = await Promise.all([reverseNominatim(lat, lon), reverseArcgis(lat, lon)]);
+  if (nom.ok && nom.hasHouse) return nom;
+  const snap = nearestHouseAddress(lat, lon);
+  if (snap) {
+    const city = snap.city || nom.city || arc.city || "";
+    const state = nom.state || arc.state || "";
+    const zip = snap.zip || nom.zip || arc.zip || "";
+    const address = [`${snap.num} ${snap.street}`, city, state, zip].filter(Boolean).join(", ");
+    return { ok: true, address, city, lat, lon, hasHouse: true, source: "osm-house" };
+  }
+  if (arc.ok) return arc;
   if (nom.ok) return nom;
   try {
     const { body } = await httpGet(
@@ -2040,8 +2092,8 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     hail,
     wind,
     news: newsHits,
-    zillow_url: pickZillowUrl({ address: addr }),
     ...ownerFields(people, assessor),
+    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url }),
     _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays, filterDays), fetchedKm: km, deep: Boolean(deep), lat, lon },
   };
 }
@@ -3346,7 +3398,14 @@ async function fetchOsmHouseData(south, west, north, east) {
     const key = `${num}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    nums.push({ num, lat, lon });
+    nums.push({
+      num,
+      lat,
+      lon,
+      street: String(el.tags?.["addr:street"] || "").trim(),
+      city: String(el.tags?.["addr:city"] || "").trim(),
+      zip: String(el.tags?.["addr:postcode"] || "").trim(),
+    });
   }
   return { rings, nums };
 }
