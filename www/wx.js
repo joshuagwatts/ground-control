@@ -1416,6 +1416,7 @@ const BASE_LAYERS = [
     subdomains: GOOGLE_SUBDOMAINS,
     maxNativeZoom: 21,
     attribution: "© Google",
+    className: "hs-sat-tiles",
   },
 ];
 
@@ -2078,13 +2079,18 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   const people = mergeContacts(people0, contacts);
-  return {
+  const enriched = {
     ...partial,
+    ...ownerFields(people, assessor),
+    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url }),
+  };
+  if (onPartial) onPartial(enriched);
+  return {
+    ...enriched,
     weather: wxNow,
     hail,
     wind,
     storms: enrichStormDates([], hail, wind),
-    ...ownerFields(people, assessor),
     _meta: { fetchedDays: Math.max(60, lsrDays), fetchedKm: km, deep: false },
   };
 }
@@ -4735,6 +4741,8 @@ export function clearSelectedStormDate() {
 export function patchHailScopePartial(root, partial, esc) {
   if (!root) return;
   const addr = partial.address || "Dropped pin";
+  const box = document.getElementById("hs-addr-q");
+  if (box && addr && parseStreetAddress(addr).house) box.value = addr;
   let pin = root.querySelector(".hs-pin");
   if (!pin) {
     root.innerHTML = `<p class="hs-pin"><strong>${esc(addr)}</strong>Finding storms…</p>${placeContactHtml(partial, esc)}<p class="hs-empty">Loading storm history…</p>`;

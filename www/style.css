@@ -1652,7 +1652,7 @@ body.wx-map-expanded .hs-sheet {
   pointer-events: none;
   overflow: hidden;
 }
-.hs-bottom-panel:not(.hs-sheet-open) .hs-sheet {
+.hs-bottom-panel:not(.hs-sheet-open):not(.hs-addr-open) .hs-sheet {
   max-height: 0 !important;
   opacity: 0 !important;
   overflow: hidden;
@@ -1660,6 +1660,22 @@ body.wx-map-expanded .hs-sheet {
   padding-bottom: 0 !important;
   margin: 0 !important;
   pointer-events: none !important;
+}
+/* Address peek: pin + Zillow/contacts visible; storm list stays tucked away */
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-sheet {
+  max-height: none !important;
+  opacity: 1 !important;
+  overflow: visible !important;
+  padding-top: 0.45rem !important;
+  padding-bottom: 0.35rem !important;
+  margin: 0 !important;
+  pointer-events: auto !important;
+}
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-legend,
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-filters,
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-dates,
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-empty {
+  display: none !important;
 }
 .hs-bottom-panel {
   transition:
@@ -2032,6 +2048,9 @@ body.wx-map-expanded .hs-sheet {
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
+}
+.leaflet-layer.hs-sat-tiles {
+  filter: contrast(1.08) saturate(1.07) brightness(1.02);
 }
 .hs-night-tiles {
   filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.35) contrast(0.95);

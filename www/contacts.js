@@ -60,6 +60,7 @@ export function isUsableZillowUrl(url) {
   const u = String(url || "").trim();
   if (!u || /^https?:\/\/(www\.)?zillow\.com\/?$/i.test(u)) return false;
   if (/zillow\.com\/homedetails\//i.test(u)) return true;
+  if (/zillow\.com\/homes\/[^/?#]+_rb\/?$/i.test(u)) return true;
   return /zillow\.com\/homes\/\d+[A-Za-z]?-/i.test(u);
 }
 
@@ -68,7 +69,7 @@ export function resolveZillowUrl(address, existing = "") {
   const ex = String(existing || "").trim();
   if (isUsableZillowUrl(ex)) return ex;
   const built = formatZillowUrl(address);
-  return isUsableZillowUrl(built) ? built : "";
+  return built || "";
 }
 
 async function zillowListingContacts(address, parts) {

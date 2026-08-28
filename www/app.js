@@ -1840,6 +1840,8 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   if (sheet) {
     sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
   }
+  const addrBox = $("#hs-addr-q");
+  if (addrBox && addr0 && addr0 !== "Dropped pin") addrBox.value = addr0;
   revealHailAddressPeek();
   setStatus("Finding storms…");
   const onRefetch = async (filters) => {
