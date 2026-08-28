@@ -4293,188 +4293,123 @@ function unlockHailTierGesture() {
   hailTierGestureLocked = false;
 }
 
-/** Capture pull-up on the address peek — sheet scrub follows the finger (not a timed animation). */
+/**
+ * Second swipe from the address peek: open storm dates, then scroll the view
+ * 1:1 with the finger — Instagram-feed style (no scrub / settle animation).
+ */
 function bindAddressSwipeToStormSheet(el) {
   if (!el || el.dataset.addrSwipeBound) return;
   el.dataset.addrSwipeBound = "1";
-  const SCRUB_PX = 150;
   let active = false;
+  let dragging = false;
   let startX = 0;
   let startY = 0;
+  let startScroll = 0;
   let lastY = 0;
   let lastT = 0;
-  let velY = 0; // px/ms, up positive
-  let scrub = 0;
-  let moved = false;
-  let settling = false;
+  let vel = 0; // scroll px/ms (finger up → positive)
+  let coastId = 0;
 
-  const field = () => document.getElementById("hs-field");
+  const viewEl = () => document.getElementById("view");
+  const pt = (e) => (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
 
-  const setScrub = (t) => {
-    scrub = Math.max(0, Math.min(1, t));
-    el.style.setProperty("--hs-sheet-scrub", String(scrub));
-    el.classList.add("hs-sheet-scrubbing");
-    const f = field();
-    if (f) {
-      f.style.setProperty("--hs-sheet-scrub", String(scrub));
-      f.classList.add("hs-field-scrubbing");
-    }
-    // Keep scroll where the gesture left it — don't yank the view up to the sheet top
+  const stopCoast = () => {
+    if (coastId) cancelAnimationFrame(coastId);
+    coastId = 0;
   };
 
-  const clearScrubStyles = () => {
-    el.classList.remove("hs-sheet-scrubbing");
-    el.style.removeProperty("--hs-sheet-scrub");
-    const f = field();
-    if (f) {
-      f.classList.remove("hs-field-scrubbing");
-      f.style.removeProperty("--hs-sheet-scrub");
+  const coastScroll = () => {
+    const view = viewEl();
+    if (!view || Math.abs(vel) < 0.05) {
+      vel = 0;
+      coastId = 0;
+      return;
     }
+    view.scrollTop += vel * 16;
+    vel *= 0.92;
+    coastId = requestAnimationFrame(coastScroll);
   };
 
-  const finishOpen = () => {
-    clearScrubStyles();
-    addressSwipeOpeningSheet = false;
-    settling = false;
-    // Commit sheet tier in place — no snap-scroll to the top of the panel
+  const openFeed = () => {
+    if (hailBottomTier === "sheet") return;
+    addressSwipeOpeningSheet = true;
+    lockHailTierGesture();
     revealHailStormSheet({ interactive: true, scroll: false });
   };
 
-  const finishClosed = () => {
-    clearScrubStyles();
-    addressSwipeOpeningSheet = false;
-    settling = false;
-    scrub = 0;
+  const syncScroll = (clientY) => {
+    const view = viewEl();
+    if (!view) return;
+    view.scrollTop = Math.max(0, startScroll + (startY - clientY));
   };
-
-  /** Ease-out settle from current scrub — modern sheet pace, still continuous with the gesture. */
-  const settle = (open) => {
-    settling = true;
-    const target = open ? 1 : 0;
-    const from = scrub;
-    const remaining = Math.abs(target - from);
-    // ~520ms full travel open, a bit quicker when already mostly open / closing
-    const baseMs = open ? 520 : 360;
-    const duration = Math.max(open ? 380 : 260, baseMs * (0.45 + remaining * 0.55));
-    // Nudge start with a little of the release velocity so it doesn't feel glued
-    const flick = Math.max(-0.12, Math.min(0.18, (velY / SCRUB_PX) * 40));
-    const t0 = performance.now();
-    const easeOutCubic = (p) => 1 - (1 - p) ** 3;
-    const tick = (now) => {
-      if (!settling) return;
-      const p = Math.min(1, (now - t0) / duration);
-      // Ease the scrub; early frames lean slightly with release flick, then pure ease-out
-      const eased = easeOutCubic(p);
-      const flickFade = (1 - p) * (1 - p);
-      let t = from + (target - from) * eased + flick * 0.08 * flickFade;
-      if (target > from) t = Math.min(target, Math.max(from, t));
-      else t = Math.max(target, Math.min(from, t));
-      setScrub(t);
-      if (p < 1) {
-        requestAnimationFrame(tick);
-        return;
-      }
-      setScrub(target);
-      if (open) finishOpen();
-      else finishClosed();
-    };
-    requestAnimationFrame(tick);
-  };
-
-  const pt = (e) => (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
 
   const onDown = (e) => {
-    if (settling || hailBottomTier !== "address") return;
+    if (hailBottomTier !== "address") return;
     if (e.touches && e.touches.length !== 1) return;
     if (e.target.closest("a, button, input, select, textarea")) return;
-    // Prefer starting from the address line / peek chrome
     if (!e.target.closest(".hs-pin, .hs-place, .hs-goto, #hs-search")) return;
+    stopCoast();
     unlockHailTierGesture();
     const p = pt(e);
+    const view = viewEl();
     active = true;
-    moved = false;
+    dragging = false;
     startX = p.clientX;
     startY = p.clientY;
+    startScroll = view?.scrollTop || 0;
     lastY = startY;
     lastT = performance.now();
-    velY = 0;
-    scrub = 0;
+    vel = 0;
   };
 
   const onMove = (e) => {
-    if (!active || settling || hailBottomTier !== "address") return;
+    // Keep tracking after sheet opens mid-gesture
+    if (!active) return;
+    if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return;
     const p = pt(e);
     const dx = p.clientX - startX;
     const dy = startY - p.clientY; // up positive
-    if (!moved) {
-      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
-      if (Math.abs(dx) > Math.abs(dy) && dy < 10) {
+    if (!dragging) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      if (Math.abs(dx) > Math.abs(dy) && dy < 8) {
         active = false;
-        clearScrubStyles();
         return;
       }
-      moved = true;
-      addressSwipeOpeningSheet = true;
-      lockHailTierGesture();
+      if (dy < 4) return; // need a clear upward pull
+      dragging = true;
+      openFeed();
     }
     if (e.cancelable) e.preventDefault();
     e.stopPropagation();
     const now = performance.now();
     const dt = Math.max(1, now - lastT);
-    velY = (lastY - p.clientY) / dt;
+    vel = (lastY - p.clientY) / dt;
     lastY = p.clientY;
     lastT = now;
-    setScrub(dy / SCRUB_PX);
+    syncScroll(p.clientY);
   };
 
-  const onUp = (e) => {
+  const endGesture = () => {
     if (!active) return;
     active = false;
-    if (settling || hailBottomTier !== "address") {
-      unlockHailTierGesture();
-      return;
-    }
-    // Tap on address words with almost no drag → gentle open settle (not a snap)
-    if (!moved) {
-      const p = pt(e);
-      const dy = startY - (p?.clientY ?? startY);
-      if (Math.abs(dy) < 6) {
-        moved = true;
-        addressSwipeOpeningSheet = true;
-        scrub = 0.04;
-        setScrub(scrub);
-        velY = 0.22;
-      }
-    }
-    if (!moved) {
-      unlockHailTierGesture();
-      return;
-    }
-    const open = scrub >= 0.28 || velY > 0.28;
-    settle(open);
-    unlockHailTierGesture();
-  };
-
-  const onCancel = () => {
-    active = false;
-    if (settling) return;
-    if (moved) settle(scrub >= 0.45);
-    else clearScrubStyles();
     addressSwipeOpeningSheet = false;
     unlockHailTierGesture();
+    if (!dragging) return;
+    dragging = false;
+    if (vel > 0.15) coastScroll();
   };
 
   el.addEventListener("touchstart", onDown, { capture: true, passive: true });
   el.addEventListener("touchmove", onMove, { capture: true, passive: false });
-  el.addEventListener("touchend", onUp, { capture: true, passive: true });
-  el.addEventListener("touchcancel", onCancel, { capture: true, passive: true });
+  el.addEventListener("touchend", endGesture, { capture: true, passive: true });
+  el.addEventListener("touchcancel", endGesture, { capture: true, passive: true });
   el.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "touch") return;
     onDown(e);
     if (!active) return;
     const move = (ev) => onMove(ev);
-    const up = (ev) => {
-      onUp(ev);
+    const up = () => {
+      endGesture();
       window.removeEventListener("pointermove", move, true);
       window.removeEventListener("pointerup", up, true);
       window.removeEventListener("pointercancel", up, true);
@@ -4647,9 +4582,8 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   shell.dataset.scrollExpandBound = "1";
   if (sheet && !sheet.dataset.pinTapBound) {
     sheet.dataset.pinTapBound = "1";
-    // Address line opens via interactive scrub (bindAddressSwipeToStormSheet) — no timed click animation
   }
-  // Swipe up only on the peaking address band (map stays fully draggable)
+  // Address peek → storm sheet is feed-scroll (bindAddressSwipeToStormSheet)
   bindAddressSwipeToStormSheet(document.getElementById("hs-bottom-panel"));
   const mapBar = shell.querySelector(".hs-map-bar");
   const tabNav = tabs || document.getElementById("tabs");
@@ -4676,10 +4610,12 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     }
     return false;
   };
-  /** Bottom double-swipe: 1) address  2) storm dates + jobs. One step per quick swipe. */
+  /** Tabs / chrome: fullscreen → address. Address→sheet from peek is feed-scroll. */
   const tryBottomSwipeUp = () => {
     if (hailTierGestureLocked) return false;
     if (hailBottomTier === "sheet" && !isExpanded()) return false;
+    // Peek band owns the second swipe (finger-scroll) — don't snap-open here
+    if (hailBottomTier === "address") return false;
     lockHailTierGesture();
     advanceHailBottomReveal();
     clearTimeout(tryBottomSwipeUp._unlock);
@@ -4695,9 +4631,11 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         tryCollapse();
         return;
       }
+      // Address peek: wheel up opens dates + scrolls like a feed
       if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0 && onPeekBand(e.target)) {
         e.preventDefault();
-        tryBottomSwipeUp();
+        revealHailStormSheet({ interactive: true, scroll: false });
+        view.scrollTop += Math.min(140, Math.max(28, -e.deltaY));
         return;
       }
       if (!isExpanded() && view.scrollTop <= 8 && e.deltaY < 0) {
@@ -4715,7 +4653,6 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   let touchY = 0;
   let touchStartScroll = 0;
   let touchInBar = false;
-  let touchOnPeek = false;
   let touchAccum = 0;
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) return;
@@ -4723,7 +4660,6 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     touchY = e.touches[0].clientY;
     touchStartScroll = view.scrollTop;
     touchInBar = Boolean(mapBar?.contains(e.target) && !e.target.closest('input[type="range"]'));
-    touchOnPeek = onPeekBand(e.target);
     touchAccum = 0;
   };
   const onTouchMove = (e) => {
@@ -4733,12 +4669,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     const dy = y - touchY;
     touchY = y;
     touchAccum += dy;
-    if (!isExpanded() && hailBottomTier === "address" && touchOnPeek && touchAccum < -8) {
-      e.preventDefault();
-      tryBottomSwipeUp();
-      touchAccum = 0;
-      return;
-    }
+    // Peek → sheet is handled by bindAddressSwipeToStormSheet (feed scroll)
     if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
       e.preventDefault();
       tryExpand();
@@ -4782,8 +4713,8 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       "touchmove",
       (e) => {
         if (e.touches.length !== 1) return;
-        // Swipe up from tabs: fullscreen → address → storm dates
-        if (!(isExpanded() || hailBottomTier === "address" || hailBottomTier === "hidden")) return;
+        // Swipe up from tabs: fullscreen → address only (second step is peek feed-scroll)
+        if (!(isExpanded() || hailBottomTier === "hidden")) return;
         const y = e.touches[0].clientY;
         const dy = y - tabTouchY;
         tabTouchY = y;
