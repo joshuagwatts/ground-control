@@ -38,6 +38,7 @@ import {
   bindWxMapScrollExpand,
   bindSelectPinDblTap,
   bindStormSheetOpen,
+  bindMapViewStormMove,
   wxPinSelected,
   clearWxPin,
   clearSelectedStormDate,
@@ -49,6 +50,7 @@ import {
   setWxMapExpanded,
   setMyLocationVisible,
   viewportDossier,
+  mapViewFetchKm,
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
@@ -62,7 +64,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.115";
+} from "./wx.js?v=0.2.116";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1660,11 +1662,11 @@ async function finishWxBoot(gen) {
 let warmStormToken = 0;
 let warmStormTimer = 0;
 
-function scheduleWarmMapViewStorms(gen, { afterMs = 0 } = {}) {
+function scheduleWarmMapViewStorms(gen, { afterMs = 0, force = false, revealSheet = true } = {}) {
   if (warmStormTimer) clearTimeout(warmStormTimer);
   const kick = () => {
     warmStormTimer = 0;
-    const run = () => void warmMapViewStorms(gen);
+    const run = () => void warmMapViewStorms(gen, { force, revealSheet });
     if (typeof requestIdleCallback === "function") {
       requestIdleCallback(run, { timeout: 900 });
     } else {
@@ -1675,7 +1677,7 @@ function scheduleWarmMapViewStorms(gen, { afterMs = 0 } = {}) {
   else kick();
 }
 
-async function warmMapViewStorms(gen) {
+async function warmMapViewStorms(gen, { force = false, revealSheet = true } = {}) {
   try {
     if (wxPinSelected()) return;
     if (gen !== wxRenderGen || !isHailTab()) return;
@@ -1693,12 +1695,15 @@ async function warmMapViewStorms(gen) {
       // Idle paint so map pans/zooms stay responsive while the list fills in.
       const go = () => {
         if (token !== warmStormToken || gen !== wxRenderGen || wxPinSelected()) return;
-        syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet: true });
+        syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet });
       };
       if (typeof requestIdleCallback === "function") requestIdleCallback(go, { timeout: 400 });
       else setTimeout(go, 0);
     };
-    if (wxState.viewport && wxState.data?.hail?.length) {
+    const needKm = typeof mapViewFetchKm === "function" ? mapViewFetchKm() : 0;
+    const haveKm = Number(wxState.data?._meta?.fetchedKm) || 0;
+    // Reuse cached list only when it already covers this map frame (or wider).
+    if (!force && wxState.viewport && wxState.data?.hail?.length && haveKm >= needKm * 0.88) {
       paintWarm(wxState.data);
       return;
     }
@@ -1805,6 +1810,10 @@ async function renderWx() {
             },
             revealSheet: false,
           });
+    bindMapViewStormMove(() => {
+      if (wxPinSelected()) return;
+      scheduleWarmMapViewStorms(wxRenderGen, { afterMs: 0, force: false, revealSheet: false });
+    });
         }
         return;
       }

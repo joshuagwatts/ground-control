@@ -3113,14 +3113,29 @@ export function mapViewHailQuery() {
   return { lat, lon, radiusKm: Math.max(5, radiusKm * 1.08), bounds: b };
 }
 
-/** Hail fetch radius from current map frame — grows when zoomed out for regional storm view. */
+/** Hail fetch radius from current map frame — grows when zoomed out for statewide storm view. */
 export function mapViewFetchKm() {
   const q = mapViewHailQuery();
   if (!q) return filterKm();
   const z = map?.getZoom?.() ?? 14;
+  // Oklahoma ~400km across — keep caps high enough that a state frame actually fills.
   const cap =
-    z <= 4 ? MAP_HAIL_MAX_KM : z <= 5 ? 380 : z <= 6 ? 280 : z <= 7 ? 200 : z <= 8 ? 150 : z <= 9 ? 110 : z <= 10 ? 75 : 50;
-  return Math.min(cap, Math.max(8, Math.ceil(q.radiusKm)));
+    z <= 5
+      ? MAP_HAIL_MAX_KM
+      : z <= 6
+        ? 420
+        : z <= 7
+          ? 340
+          : z <= 8
+            ? 260
+            : z <= 9
+              ? 180
+              : z <= 10
+                ? 120
+                : z <= 11
+                  ? 80
+                  : 55;
+  return Math.min(cap, Math.max(12, Math.ceil(q.radiusKm * 1.06)));
 }
 
 export function hailInMapView(rows) {
@@ -3182,7 +3197,15 @@ export async function viewportDossier(settings, filters = wxFilters) {
     ...w,
     distance_km: Math.round(haversineKm(q.lat, q.lon, w.lat, w.lon) * 10) / 10,
   }));
-  data._meta = { ...(data._meta || {}), viewport: true, fetchedKm: km, lat: q.lat, lon: q.lon, listLocked: true };
+  data._meta = {
+    ...(data._meta || {}),
+    viewport: true,
+    fetchedKm: km,
+    lat: q.lat,
+    lon: q.lon,
+    // Allow geographic re-fetch as the map pans/zooms; days filter still refetches via onRefetch.
+    listLocked: false,
+  };
   return data;
 }
 
@@ -5696,7 +5719,11 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     // Widen storm footprint as the map covers more ground (merge into cache — no screen-space rebuild).
     if (hasSelectedStormDates()) {
       const z = map?.getZoom?.() ?? 14;
-      scheduleHailMapFill(z < 10 ? 450 : 900);
+      scheduleHailMapFill(z < 10 ? 350 : 700);
+    } else if (!wxPinSelected()) {
+      // No pin: keep storm-date search matched to the visible frame (OK / statewide).
+      const z = map?.getZoom?.() ?? 14;
+      scheduleMapViewStormMove(z < 9 ? 550 : 900);
     }
     ensureHailPanes();
   });
@@ -5984,6 +6011,27 @@ export function bindStormSheetOpen(fn) {
   stormSheetOpenHook = typeof fn === "function" ? fn : null;
 }
 
+/** Optional hook when the map view moves and no house pin is set (refresh statewide dates). */
+let mapViewStormMoveHook = null;
+let mapViewStormMoveTimer = 0;
+export function bindMapViewStormMove(fn) {
+  mapViewStormMoveHook = typeof fn === "function" ? fn : null;
+}
+
+function scheduleMapViewStormMove(ms = 700) {
+  if (wxPinSelected() || !hailScopeMode) return;
+  if (mapViewStormMoveTimer) clearTimeout(mapViewStormMoveTimer);
+  mapViewStormMoveTimer = setTimeout(() => {
+    mapViewStormMoveTimer = 0;
+    if (wxPinSelected() || !hailScopeMode) return;
+    try {
+      mapViewStormMoveHook?.();
+    } catch {
+      /* ignore */
+    }
+  }, ms);
+}
+
 /** Slide open storm dates + completed jobs list. */
 export function revealHailStormSheet({ interactive = false, scroll = true } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
@@ -6077,9 +6125,13 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   const tabNav = tabs || document.getElementById("tabs");
   const isExpanded = () => shell.classList.contains("expanded");
   const onPeekBand = (t) => Boolean(t?.closest?.("#hs-bottom-panel"));
-  /** Address search strip — swipe down here enters fullscreen (not map pan). */
+  /** Address search strip / pin header — swipe down here enters fullscreen (not map pan). */
   const onAddressBar = (t) =>
-    Boolean(t?.closest?.("#hs-search, #hs-goto, .hs-goto, .hs-pin, .hs-place"));
+    Boolean(
+      t?.closest?.(
+        "#hs-search, #hs-goto, .hs-goto, .hs-pin, .hs-place, .hs-pin-ready, #hs-bottom-panel > form",
+      ),
+    );
   const blockMapChrome = (e) =>
     e.target.closest(".leaflet-control, .hs-composer, .hs-pin-scale-pop, .hs-layers, input, select, textarea");
   const collapseFromBar = (e) => {
@@ -6088,6 +6140,11 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   };
   const tryExpandFromAddressBar = () => {
     if (isExpanded()) return false;
+    // Recover if tier got stuck hidden while the shell is collapsed.
+    if (hailBottomTier === "hidden") {
+      hailBottomTier = "address";
+      syncHailBottomChrome();
+    }
     if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return false;
     setWxMapExpanded(true);
     return true;
@@ -6168,14 +6225,21 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     const dy = y - touchY;
     touchY = y;
     touchAccum += dy;
-    // Peek band owns upward swipes (address → storm feed) — don't fullscreen over it
+    // Peek band owns upward swipes (address → storm feed) — don't fullscreen over date scroll.
     if (onPeekBand(e.target) && (hailBottomTier === "address" || hailBottomTier === "sheet")) {
-      // Except: deliberate swipe-down on the address strip → fullscreen
-      if (touchOnAddr && touchAccum > 14) {
+      // Deliberate swipe-down on the address / pin strip → fullscreen
+      if (touchOnAddr && touchAccum > 10) {
         e.preventDefault();
         tryExpandFromAddressBar();
         touchAccum = 0;
       }
+      return;
+    }
+    // Map bar (Street / Night / Sat): swipe down enters fullscreen when collapsed
+    if (!isExpanded() && touchInBar && touchAccum > 12) {
+      e.preventDefault();
+      tryExpandFromAddressBar();
+      touchAccum = 0;
       return;
     }
     if (isExpanded() && touchInBar && touchAccum > 10) {
@@ -6186,14 +6250,52 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   };
   view.addEventListener("touchstart", onTouchStart, { passive: true });
   view.addEventListener("touchmove", onTouchMove, { passive: false });
+  // Direct address-strip swipe-down → fullscreen (more reliable than view bubble alone).
+  const peek = document.getElementById("hs-bottom-panel");
+  if (peek && !peek.dataset.fsSwipeBound) {
+    peek.dataset.fsSwipeBound = "1";
+    let fy = 0;
+    let fAccum = 0;
+    let fOnAddr = false;
+    peek.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length !== 1) return;
+        fy = e.touches[0].clientY;
+        fAccum = 0;
+        fOnAddr = onAddressBar(e.target);
+      },
+      { passive: true },
+    );
+    peek.addEventListener(
+      "touchmove",
+      (e) => {
+        if (!fOnAddr || e.touches.length !== 1 || isExpanded()) return;
+        if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return;
+        // Don't steal vertical scrolls inside the dates list
+        if (e.target.closest?.(".hs-dates, .hs-filters, #hs-q")) return;
+        const y = e.touches[0].clientY;
+        fAccum += y - fy;
+        fy = y;
+        if (fAccum > 10) {
+          if (e.cancelable) e.preventDefault();
+          tryExpandFromAddressBar();
+          fAccum = 0;
+          fOnAddr = false;
+        }
+      },
+      { passive: false },
+    );
+  }
   if (mapBar) {
     mapBar.addEventListener(
       "wheel",
       (e) => {
-        if (!isExpanded() || e.deltaY <= 0) return;
+        if (e.deltaY <= 0) return;
         e.preventDefault();
         e.stopPropagation();
-        tryCollapse();
+        if (isExpanded()) tryCollapse();
+        else tryExpandFromAddressBar();
       },
       { passive: false },
     );
