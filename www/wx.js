@@ -4181,6 +4181,45 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   return hail.filter((h) => hailDayMatchesQuery(h, q));
 }
 
+function ensureHailStormDate(data) {
+  const days = hailScopeDays(data);
+  if (!days.length) {
+    selectedStormDate = null;
+    return;
+  }
+  if (selectedStormDate && days.some((h) => h.date === selectedStormDate)) return;
+  const atRoof = days.filter((h) => (h.near_hits || 0) > 0);
+  selectedStormDate = (atRoof[0] || days[0])?.date || null;
+}
+
+/** Update address/contacts while storm list still loading — avoids wiping the sheet. */
+export function patchHailScopePartial(root, partial, esc) {
+  if (!root) return;
+  const addr = partial.address || "Dropped pin";
+  let pin = root.querySelector(".hs-pin");
+  if (!pin) {
+    root.innerHTML = `<p class="hs-pin"><strong>${esc(addr)}</strong>Finding storms…</p>${placeContactHtml(partial, esc)}<p class="hs-empty">Loading storm history…</p>`;
+    bindPlaceLinks(root);
+    return;
+  }
+  pin.innerHTML = `<strong>${esc(addr)}</strong>Finding storms…`;
+  const place = root.querySelector(".hs-place");
+  if (place) place.outerHTML = placeContactHtml(partial, esc);
+  else {
+    pin.insertAdjacentHTML("afterend", placeContactHtml(partial, esc));
+    bindPlaceLinks(root);
+  }
+}
+
+/** One coordinated map + sheet refresh after dossier data arrives. */
+export function syncHailScopeView(root, data, esc, { onRefetch, fit = false } = {}) {
+  if (!root || !data) return;
+  ensureHailStormDate(data);
+  const hailRows = filterHailRaw(data, wxFilters);
+  drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
+  renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
+}
+
 function hailScopeHtml(data, days, esc) {
   const addr = data.address || "Dropped pin";
   const years = [
@@ -4304,15 +4343,15 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
         try {
           const fresh = await onRefetch({ ...wxFilters });
           if (fresh) {
-            renderHailScopeSheet(root, fresh, esc, { onRefetch });
-            drawHailMarkers(filterHailRaw(fresh, wxFilters), [], { requireDate: true });
+            syncHailScopeView(root, fresh, esc, { onRefetch });
             return;
           }
         } catch {
           /* fall through */
         }
       }
-      renderHailScopeSheet(root, data, esc, { onRefetch });
+      ensureHailStormDate(data);
+      renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
       drawHailMarkers(filterHailRaw(data, wxFilters), [], { requireDate: true });
     };
   };
@@ -4323,15 +4362,15 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   bind("#hs-f-sort", "sort", String);
 }
 
-export function renderHailScopeSheet(root, data, esc, { onRefetch } = {}) {
+export function renderHailScopeSheet(root, data, esc, { onRefetch, drawMap = true } = {}) {
   if (!root) return;
   const days = hailScopeDays(data);
   if (selectedStormDate && !days.some((h) => h.date === selectedStormDate)) {
     selectedStormDate = null;
-    drawHailMarkers(filterHailRaw(data, wxFilters), [], { requireDate: true });
   }
   root.innerHTML = hailScopeHtml(data, days, esc);
   bindHailScopeSheet(root, data, esc, { onRefetch });
+  if (drawMap) drawHailMarkers(filterHailRaw(data, wxFilters), [], { requireDate: true });
 }
 
 export function baseLayerButtons(config, esc) {

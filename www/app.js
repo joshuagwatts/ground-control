@@ -48,7 +48,7 @@ import {
   hidePinScalePopover,
   showPinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0235";
+} from "./wx.js?v=0238";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, visionProvidersReady, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -156,7 +156,7 @@ function setChatAgent(id, silent = false) {
   paintBrainStrip();
   if (!silent) {
     const meta = AGENT_META[next] || { label: agentLabel(next) };
-    setStatus(`AGENT ?????? ${meta.label}`);
+    setStatus(`AGENT · ${meta.label}`);
   }
 }
 
@@ -264,7 +264,7 @@ function paintKeyRows() {
     const tag = row.querySelector(".key-tag");
     if (tag) {
       const hint = keyHint(db.settings, p);
-      tag.textContent = hint ? `${info.tag} ?????? ${hint}` : info.tag;
+      tag.textContent = hint ? `${info.tag} · ${hint}` : info.tag;
     }
   }
 }
@@ -330,7 +330,7 @@ function formatMdBlocks(text) {
       out.push(`<h${h[1].length} class="chat-h">${formatInlineMd(h[2])}</h${h[1].length}>`);
       continue;
     }
-    const ul = line.match(/^\s*[-*??????]\s+(.+)$/);
+    const ul = line.match(/^\s*[-*…]\s+(.+)$/);
     if (ul) {
       if (!list || list.tag !== "ul") {
         flushList();
@@ -398,7 +398,7 @@ function addLog(role, text, opts = {}) {
         : opts.agent && opts.agent !== "pip" && opts.agent !== "gc" && opts.agent !== "auto"
           ? agentLabel(opts.brain || opts.provider || opts.agent)
           : opts.brain
-            ? `GC ?????? ${String(opts.brain).toUpperCase()}`
+            ? `GC  · ${String(opts.brain).toUpperCase()}`
             : "GC";
   const pill = routePillHtml(route);
   const meta = opts.tokens ? `<div class="chat-meta">~${opts.tokens} TOK</div>` : "";
@@ -412,7 +412,7 @@ function compareOverview(compare) {
   const rows = Array.isArray(compare) ? compare : [];
   const ok = rows.filter((c) => c && c.ok && c.text);
   const bad = rows.filter((c) => c && !c.ok && !c.pending);
-  const lines = [`${ok.length} answered ?????? ${bad.length} failed ?????? ${rows.length} keyed`];
+  const lines = [`${ok.length} answered · ${bad.length} failed · ${rows.length} keyed`];
   for (const c of ok) {
     const name = String(c.label || c.provider || "?").toUpperCase();
     const t = String(c.text).trim().split(/(?<=[.!?])\s+/)[0] || "";
@@ -427,7 +427,7 @@ function buildCompareTabs(rows) {
   const pendingRows = rows.filter((r) => r.pending);
   const overview = { provider: "overview", label: "OVERVIEW", text: compareOverview(rows), ok: true, overview: true };
   const tabs = [overview, ...okRows];
-  for (const p of pendingRows) tabs.push({ ...p, text: "Waiting??????", ok: false, pending: true });
+  for (const p of pendingRows) tabs.push({ ...p, text: "Waiting…", ok: false, pending: true });
   if (badRows.length) {
     tabs.push({
       provider: "errors",
@@ -453,7 +453,7 @@ function paintCompareBubble(div, state) {
     })
     .join("");
   let body = formatChatBody(row.text || row.error || "no reply");
-  if (row.pending) body = `<p class="muted">Waiting for ${esc(String(row.label || "").toUpperCase())}??????</p>`;
+  if (row.pending) body = `<p class="muted">Waiting for ${esc(String(row.label || "").toUpperCase())}…</p>`;
   const meta = row.overview ? `${okRows.length}/${rows.length} answered` : row.errors ? `${badRows.length} failed` : String(row.model || "");
   div.innerHTML = `<div class="who-row"><span class="who">COMPARE</span>${routePillHtml("leaked")}</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${esc(meta)}</div>`;
   div.querySelectorAll(".compare-tab").forEach((b) => {
@@ -501,7 +501,7 @@ function paintChatAttach() {
   root.innerHTML = `<div class="chat-attach-row">${pendingChatImages
     .map(
       (u, i) =>
-        `<span class="chat-attach-item"><img src="${u}" alt=""><button type="button" class="chat-attach-x" data-i="${i}" aria-label="remove">?????</button></span>`,
+        `<span class="chat-attach-item"><img src="${u}" alt=""><button type="button" class="chat-attach-x" data-i="${i}" aria-label="remove">×</button></span>`,
     )
     .join("")}<button type="button" id="chat-attach-clear">CLEAR</button></div>`;
   root.querySelectorAll(".chat-attach-x").forEach((b) => {
@@ -568,7 +568,7 @@ async function sendChat() {
     if (!hasPhoto) {
       const relay = parseAgentRelay(text);
       if (relay && relay.to) {
-        setStatus("RELAY??????");
+        setStatus("RELAY…");
         const out = await agentRelayComplete(db.settings, {
           fromId: relay.from || (chatAgent() !== "pip" && chatAgent() !== "auto" && chatAgent() !== "compare" ? chatAgent() : null),
           toId: relay.to,
@@ -579,7 +579,7 @@ async function sendChat() {
         db.chat.push({ role: "pip", content: out.text, brain: out.provider, leaked: true });
         persist();
         addLog("pip", out.text, { brain: out.provider, leaked: true, tokens: out.tokens, agent: out.speaker || relay.to });
-        setStatus(`RELAY ?????? ${agentLabel(relay.to)}`);
+        setStatus(`RELAY … ${agentLabel(relay.to)}`);
         return;
       }
     }
@@ -688,12 +688,12 @@ async function shareShinglePack({ auto = false } = {}) {
   }
   const rows = L.photos.filter((p) => p.mode !== "damage");
   const text = buildSharePrompt(rows);
-  if (!auto) setStatus("Opening share??????");
+  if (!auto) setStatus("Opening share…");
   try {
     const hit = await shareToChatGpt({ text, photos: rows });
     setStatus(
       hit.ok
-        ? `Share ?????? ${hit.count} photo${hit.count === 1 ? "" : "s"} ?????? pick ChatGPT`
+        ? `Share · ${hit.count} photo${hit.count === 1 ? "" : "s"} … pick ChatGPT`
         : "Share failed",
     );
   } catch (e) {
@@ -730,7 +730,7 @@ function editDamagePhoto(index, opts = {}) {
       L.photos[index] = { ...photo, url, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() };
       persist();
       renderLens();
-      setStatus(marks.length ? `Marked ?????? ${marks.length}` : "Saved frame");
+      setStatus(marks.length ? `Marked · ${marks.length}` : "Saved frame");
     },
     onCancel: () => setStatus("Skipped marks"),
   });
@@ -769,8 +769,8 @@ function renderLens() {
           <strong>Shingle identifier</strong>
           <span>${
             isPhoneApp()
-              ? "App walks you through 4 required angles, then opens share ?????? pick ChatGPT. Wrapper or back stamp optional for date."
-              : "Snap photos ?????? Lens classifies angles and identifies automatically. 95% locks the product; wrapper or back stamp hits 100% on date."
+              ? "App walks you through 4 required angles, then opens share — pick ChatGPT. Wrapper or back stamp optional for date."
+              : "Snap photos — Lens classifies angles and identifies automatically. 95% locks the product; wrapper or back stamp hits 100% on date."
           }</span>
         </button>
         <button type="button" class="lens-pick-card" id="pick-damage">
@@ -787,13 +787,13 @@ function renderLens() {
   const statusCls = status === "KNOW" || status === "ID" ? "know" : status === "NARROWED" ? "narrow" : "need";
   const needHint =
     mode === "shingle" && v?.needed?.[0] && Number(v?.pct) < 85
-      ? `${shotSpec(v.needed[0].id).label} would help ?????? or keep snapping, Lens will sort it.`
+      ? `${shotSpec(v.needed[0].id).label} would help — or keep snapping, Lens will sort it.`
       : "";
   const guideShot = next || shotSpec(pendingShot);
   const guideHtml = phoneShingle
     ? `<div class="lens-progress">${SHINGLE_CORE.map((id) => `<i class="${have.has(id) ? "have" : id === guideShot.id ? "now" : ""}" title="${esc(shotSpec(id).label)}"></i>`).join("")}</div>
        <div class="lens-shot-card">
-         <div class="lens-shot-kicker">${coreDone ? "Core set complete ?????? optional extras" : `Required ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
+         <div class="lens-shot-kicker">${coreDone ? "Core set complete · optional extras" : `Required ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
          <h3>${esc(guideShot.label)}</h3>
          <p>${esc(guideShot.how)}</p>
          <p class="muted">${esc(guideShot.why)}</p>
@@ -804,16 +804,16 @@ function renderLens() {
       ? formatChatBody(
           marksN
             ? `${marksN} mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit.`
-            : "Snap the damaged area. Circles and arrows come next ?????? we'll dial this in later.",
+            : "Snap the damaged area. Circles and arrows come next — we'll dial this in later.",
         )
       : phoneShingle
         ? formatChatBody(
             coreDone
-              ? "Core shots ready. Share opens with all photos + a shingle ID prompt ?????? pick ChatGPT."
+              ? "Core shots ready. Share opens with all photos + a shingle ID prompt — pick ChatGPT."
               : `Snap each required angle above. ${SHINGLE_CORE.length - coreHave} more before ChatGPT share unlocks.`,
           )
         : lensBusy
-          ? formatChatBody("Reading photos??????")
+          ? formatChatBody("Reading photos…")
           : last
             ? formatChatBody(formatVerdict(last))
             : formatChatBody(
@@ -829,18 +829,18 @@ function renderLens() {
         : 0;
   const leader =
     (status === "KNOW" && k.manufacturer
-      ? `${k.manufacturer} ${k.product}${k.color ? ` ?????? ${k.color}` : ""}`
+      ? `${k.manufacturer} ${k.product}${k.color ? `  · ${k.color}` : ""}`
       : "") ||
-    (n.manufacturer ? `${n.manufacturer}${n.product ? ` ${n.product}` : ""}${n.color ? ` ?????? ${n.color}` : ""}` : "");
+    (n.manufacturer ? `${n.manufacturer}${n.product ? ` ${n.product}` : ""}${n.color ? `  · ${n.color}` : ""}` : "");
   const meterHint = phoneShingle
     ? coreDone
       ? "Tap ChatGPT to share photos + prompt."
-      : `${guideShot.label} ?????? ${guideShot.how}`
+      : `${guideShot.label}  — ${guideShot.how}`
     : pct >= 100
       ? "Locked. Date stamp read."
       : pct >= 95
         ? "Product locked. Back stamp or wrapper for 100% date."
-        : needHint || (L.photos.length ? "Keep snapping ?????? Lens re-runs after each photo." : "Snap the roof to start.");
+        : needHint || (L.photos.length ? "Keep snapping — Lens re-runs after each photo." : "Snap the roof to start.");
   const meterHtml =
     mode === "shingle" && !phoneShingle
       ? `<div class="lens-meter${pct >= 95 ? " lock" : pct >= 70 ? " hot" : ""}">
@@ -881,26 +881,26 @@ function renderLens() {
       <div class="lens-strip" id="lens-strip">${L.photos
         .map(
           (p, i) =>
-            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em data-retag="${i}" title="Tap to override shot tag">${esc(p.shot === "damage" ? "Damage" : p.shot ? shotSpec(p.shot).label || p.shot : "??????")}${p.marks?.length ? ` ?????? ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">?????</button></span>`,
+            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em data-retag="${i}" title="Tap to override shot tag">${esc(p.shot === "damage" ? "Damage" : p.shot ? shotSpec(p.shot).label || p.shot : "…")}${p.marks?.length ? `  · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">…</button></span>`,
         )
         .join("")}</div>
       <div class="lens-status ${statusCls}">${esc(
         phoneShingle
-          ? `${coreHave}/${SHINGLE_CORE.length} core ?????? ${coreDone ? "ready to share" : guideShot.label}`
+          ? `${coreHave}/${SHINGLE_CORE.length} core  · ${coreDone ? "ready to share" : guideShot.label}`
           : mode === "damage"
-            ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? ` ?????? ${marksN} marks` : ""}`
-            : `${pct}% ?????? ${leader || (L.photos.length ? (lensBusy ? "reading??????" : status.replace("_", " ")) : "waiting for photos")}`,
+            ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? `  · ${marksN} marks` : ""}`
+            : `${pct}%  · ${leader || (L.photos.length ? (lensBusy ? "reading…" : status.replace("_", " ")) : "waiting for photos")}`,
       )}</div>
       <div class="lens-card" id="lens-card">${cardHtml}</div>
       ${
         mode === "shingle" && status === "KNOW" && k.discontinued
-          ? `<div class="lens-disc">Discontinued ?????? ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? ` ?????? current: ${esc(k.replacedBy)}` : ""}</div>`
+          ? `<div class="lens-disc">Discontinued · ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? `  · current: ${esc(k.replacedBy)}` : ""}</div>`
           : ""
       }
       ${
         mode === "shingle" && n.candidates?.length && status !== "KNOW"
           ? `<div class="lens-cands"><h3>Also in the running</h3>${n.candidates
-              .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? " ?????? discontinued" : ""}</p>`)
+              .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? "  · discontinued" : ""}</p>`)
               .join("")}</div>`
           : ""
       }
@@ -939,7 +939,7 @@ function renderLens() {
       L.last = null;
       persist();
       renderLens();
-      setStatus(`Retagged ?????? ${shotSpec(p.shot).label}`);
+      setStatus(`Retagged · ${shotSpec(p.shot).label}`);
       if (!isPhoneApp()) scheduleLensRun(800, { force: true });
     };
   });
@@ -1045,7 +1045,7 @@ async function runLens({ force = false } = {}) {
   const sig = lensPhotoSig(L);
   if (!force && sig === lastLensSig && L.last) return;
   lensBusy = true;
-  setStatus("Reading shots??????");
+  setStatus("Reading shots…");
   try {
     if (mode === "damage") {
       editDamagePhoto(L.photos.length - 1, { autoScan: true });
@@ -1058,7 +1058,7 @@ async function runLens({ force = false } = {}) {
       L.field = { id: (idLine && idLine[1].trim()) || "subject", text: hit.text, provider: hit.provider };
       persist();
       renderLens();
-      setStatus(`LENS ?????? ${String(hit.provider || "ID").toUpperCase()}`);
+      setStatus(`LENS · ${String(hit.provider || "ID").toUpperCase()}`);
       lastLensSig = sig;
       return;
     }
@@ -1074,10 +1074,10 @@ async function runLens({ force = false } = {}) {
     renderLens();
     setStatus(
       hit.verdict?.pct >= 100
-        ? "LENS ?????? 100%"
+        ? "LENS · 100%"
         : hit.verdict?.pct >= 95
-          ? "LENS ?????? 95%"
-          : `LENS ?????? ${Number(hit.verdict?.pct) || 0}%`,
+          ? "LENS · 95%"
+          : `LENS · ${Number(hit.verdict?.pct) || 0}%`,
     );
   } catch (e) {
     setStatus(String(e.message || e).slice(0, 70).toUpperCase());
@@ -1281,9 +1281,9 @@ function fillComposer() {
       </header>
       <div class="hs-kinds">${composerKindButtons(d.kind)}</div>
       ${ping ? `<div class="hs-prods">${composerProductButtons(d)}</div>` : ""}
-      <label>${ping ? "Product" : "Label"}<input id="hs-comp-label" maxlength="80" value="${esc(d.label || prod?.label || meta.label)}" placeholder="GAF Timberline HD, Belmont, GlassMaster??????" /></label>
-      <label>Address<input id="hs-comp-addr" value="${esc(d.address || "")}" placeholder="Looking up address??????" /></label>
-      <label>Comment<textarea id="hs-comp-note" rows="3" maxlength="800" placeholder="We finished this neighborhood. Discontinued Atlas 3-tab??????">${esc(d.note || "")}</textarea></label>
+      <label>${ping ? "Product" : "Label"}<input id="hs-comp-label" maxlength="80" value="${esc(d.label || prod?.label || meta.label)}" placeholder="GAF Timberline HD, Belmont, GlassMaster…" /></label>
+      <label>Address<input id="hs-comp-addr" value="${esc(d.address || "")}" placeholder="Looking up address…" /></label>
+      <label>Comment<textarea id="hs-comp-note" rows="3" maxlength="800" placeholder="We finished this neighborhood. Discontinued Atlas 3-tab…">${esc(d.note || "")}</textarea></label>
       ${
         zone
           ? `<label>Zone size <span id="hs-comp-rad-lab">${Math.round(Number(d.radiusM) || 160)} m</span>
@@ -1435,17 +1435,17 @@ function paintFieldSheet() {
       <strong>Completed jobs</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "Paste the houses you already built"}</span>
     </div>
-    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to select it ?? use the slider below or hold a pin on the map. Lines without a city use Settings city.</p>
+    <p class="muted">One address per line. Load them to drop a yellow pin on each finished house. Tap a pin to select it — use the slider below or hold a pin on the map. Lines without a city use Settings city.</p>
     <textarea id="hs-done-text" rows="5" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="hs-mark-tools">
-      <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing???" : "Load on map"}</button>
+      <button type="button" class="primary" id="hs-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load on map"}</button>
       <button type="button" id="hs-done-clear"${houses.length ? "" : " disabled"}>Clear</button>
       ${selHouse ? `<button type="button" id="hs-done-all-pins">All pins</button>` : ""}
     </div>
     ${
       placed.length
         ? `<label class="hs-pin-size-row">
-      <span class="hs-pin-size-label">Yellow pin size ?? ${pinScope}</span>
+      <span class="hs-pin-size-label">Yellow pin size — ${pinScope}</span>
       <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">${pinPct}%</span>
       <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="${pinPct}" aria-label="Yellow pin size" />
     </label>`
@@ -1453,7 +1453,7 @@ function paintFieldSheet() {
     }
     <div class="hs-field-head">
       <strong>Field marks</strong>
-      <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"} ?? hold any pin to resize</span>
+      <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"} — hold any pin to resize</span>
     </div>
     <div class="hs-mark-tools">
       <select id="hs-mark-filter" aria-label="Filter marks">
@@ -1595,7 +1595,7 @@ async function loadDoneAddresses() {
       const addr = lines[i];
       const q = withCity(addr, cityHint);
       const cacheKey = q.toLowerCase();
-      setStatus(`Placing ${i + 1} of ${lines.length}??????`);
+      setStatus(`Placing ${i + 1} of ${lines.length}…`);
       let hit = geo[cacheKey];
       if (!geoCacheOk(hit, q)) {
         try {
@@ -1634,8 +1634,8 @@ async function loadDoneAddresses() {
     paintFieldMap();
     paintFieldSheet();
     const n = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
-    const capped = parsed.length > MAX_DONE ? ` ?????? first ${MAX_DONE}` : "";
-    setStatus(`${n} yellow marker${n === 1 ? "" : "s"}${miss ? ` ?????? ${miss} not found` : ""}${capped}`);
+    const capped = parsed.length > MAX_DONE ? `  — first ${MAX_DONE}` : "";
+    setStatus(`${n} yellow marker${n === 1 ? "" : "s"}${miss ? `  — ${miss} not found` : ""}${capped}`);
   } catch (e) {
     setStatus(String(e.message || e).slice(0, 64));
   } finally {
@@ -1649,6 +1649,7 @@ function onMapHold(lat, lon) {
 }
 
 let wxRenderGen = 0;
+let hailTapGen = 0;
 
 function wireHsShell(cfg) {
   const styles = $("#hs-styles");
@@ -1668,7 +1669,7 @@ function wireHsShell(cfg) {
       e.stopPropagation();
       const q = ($("#hs-addr-q")?.value || "").trim();
       if (!q) return;
-      setStatus("Finding place??????");
+      setStatus("Finding place…");
       try {
         const hits = await geocodeAddress(q);
         const hit = hits[0];
@@ -1738,7 +1739,7 @@ async function renderWx() {
       <div class="hs-map-shell" id="hs-map-shell">
         <div class="hs-layers" id="hs-layers"></div>
         <div class="hs-styles" id="hs-styles"></div>
-        <span class="hs-map-hint">Hold to drop a pin ?????? double-tap to expand</span>
+        <span class="hs-map-hint">Hold to drop a pin — double-tap to expand</span>
         <div id="wx-map"></div>
         <div class="hs-composer" id="hs-composer" hidden></div>
       </div>
@@ -1769,16 +1770,21 @@ async function renderWx() {
 }
 
 async function onHailTap(lat, lon, { address: prefAddr } = {}) {
+  const gen = ++hailTapGen;
   wxState.lat = lat;
   wxState.lon = lon;
   if (prefAddr) wxState.address = prefAddr;
   setWxPin(lat, lon);
-  selectStormDate(null, { fit: false, requireDate: true });
   const sheet = $("#hs-sheet");
-  if (sheet) sheet.innerHTML = `<p class="hs-empty">Finding storms??????</p>`;
-  setStatus("Finding storms??????");
+  const addr0 = prefAddr || wxState.address || "Dropped pin";
+  if (sheet) {
+    sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
+  }
+  setStatus("Finding storms…");
   const onRefetch = async (filters) => {
+    if (gen !== hailTapGen) return null;
     const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
+    if (gen !== hailTapGen) return null;
     wxState.data = fresh;
     return fresh;
   };
@@ -1786,30 +1792,29 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     const data = await pinDossier(db.settings, lat, lon, {
       address: prefAddr || wxState.address || "",
       onPartial: (partial) => {
-        if (!isHailTab()) return;
+        if (gen !== hailTapGen || !isHailTab()) return;
         wxState.address = partial.address || "";
         wxState.data = partial;
-        renderHailScopeSheet($("#hs-sheet"), partial, esc, { onRefetch });
+        patchHailScopePartial($("#hs-sheet"), partial, esc);
       },
     });
-    if (!isHailTab()) return;
+    if (gen !== hailTapGen || !isHailTab()) return;
     wxState.address = data.address || "";
     wxState.data = data;
-    drawHailMarkers(filterHailRaw(data), [], { requireDate: true });
-    renderHailScopeSheet($("#hs-sheet"), data, esc, { onRefetch });
+    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch });
     if (sheet && !(data.hail || []).length) {
       const loading = sheet.querySelector(".hs-empty");
-      if (loading) loading.textContent = "Searching a longer hail window??????";
+      if (loading) loading.textContent = "Searching a longer hail window…";
     }
     const full = await onRefetch({ ...data._meta, days: 730 });
-    if (!isHailTab()) return;
+    if (gen !== hailTapGen || !isHailTab()) return;
     if (full) {
       wxState.data = full;
-      drawHailMarkers(filterHailRaw(full), [], { requireDate: true });
-      renderHailScopeSheet($("#hs-sheet"), full, esc, { onRefetch });
+      syncHailScopeView($("#hs-sheet"), full, esc, { onRefetch });
     }
     setStatus("");
   } catch (e) {
+    if (gen !== hailTapGen) return;
     if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try another pin.</p>`;
     setStatus("");
   }
@@ -1838,7 +1843,7 @@ function renderJobs() {
                 `<article class="job-card" data-id="${esc(j.id)}"><strong>${esc(j.address || "Unpinned")}</strong><p class="muted">${esc(jobSummary(j))}</p><p class="muted">${esc(String(j.created || "").slice(0, 10))}</p></article>`,
             )
             .join("")
-        : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail ?????? then save to a job.</p>`
+        : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
     <h3>Completed jobs</h3>
     <p class="muted">${placed.length ? `${placed.length} yellow markers on HailScope. Paste more addresses there to add houses.` : "Paste finished house addresses on HailScope to plot yellow markers."}</p>
@@ -1876,9 +1881,9 @@ function renderKeys() {
     const has = Boolean(normalizeApiKey(s[p.field]));
     const get = p.keyUrl ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Get key</a>` : "";
     return `<div class="key-row ${esc(info.state)}">
-      <div class="key-meta"><span class="key-name">${esc(p.label)}</span><span class="key-tag">${esc(info.tag)}${hint ? ` ?????? ${esc(hint)}` : ""}</span></div>
-      <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` ?????? <button type="button" class="key-clear" data-field="${esc(p.field)}">Clear</button>` : ""}</p>
-      <input id="set-${esc(p.field)}" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(has ? "Paste to replace" : "Paste key ?????? saves as you type")}" data-field="${esc(p.field)}" />
+      <div class="key-meta"><span class="key-name">${esc(p.label)}</span><span class="key-tag">${esc(info.tag)}${hint ? `  · ${esc(hint)}` : ""}</span></div>
+      <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` … <button type="button" class="key-clear" data-field="${esc(p.field)}">Clear</button>` : ""}</p>
+      <input id="set-${esc(p.field)}" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(has ? "Paste to replace" : "Paste key — saves as you type")}" data-field="${esc(p.field)}" />
     </div>`;
   }).join("");
   const phone = isPhoneApp();
@@ -1892,15 +1897,15 @@ function renderKeys() {
     <div class="field"><span>City</span><input id="set-city" value="${esc(s.city || "")}" placeholder="Edmond, OK" /></div>
     <div class="field"><span>Units</span>
       <select id="set-units">
-        <option value="imperial"${(s.units || "imperial") === "imperial" ? " selected" : ""}>Imperial ?????? miles</option>
-        <option value="metric"${s.units === "metric" ? " selected" : ""}>Metric ?????? kilometers</option>
+        <option value="imperial"${(s.units || "imperial") === "imperial" ? " selected" : ""}>Imperial — miles</option>
+        <option value="metric"${s.units === "metric" ? " selected" : ""}>Metric — kilometers</option>
       </select>
     </div>
     ${roomBlock}
-    <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} ?????? ${esc(diag.platform)}</p>
+    <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
     <p class="muted">${phone ? "Chat keys optional on phone." : keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "Paste keys for web Lens or chat."}</p>
     <h3>API keys</h3>
-    <p class="muted">${phone ? "Optional ?????? for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
+    <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
     <h3>Discontinued lookup</h3>
@@ -1941,7 +1946,7 @@ function renderKeys() {
     b.onclick = () => clearProviderKey(b.dataset.field);
   });
   $("#keys-test").onclick = async () => {
-    setStatus("Checking keys??????");
+    setStatus("Checking keys…");
     try {
       await validateKeyed(db.settings);
       db.settings.brain_health = providerHealth();
@@ -1979,7 +1984,7 @@ function boot() {
     db.settings.privacy_mode = secure ? "leaky" : "secure";
     persist();
     renderPrivacy();
-    setStatus(privacyOn(db.settings) ? "On-device ?????? Lens blocked" : "Cloud ?????? Lens on");
+    setStatus(privacyOn(db.settings) ? "On-device — Lens blocked" : "Cloud — Lens on");
   };
   const commTog = $("#comm-tog");
   if (commTog) {
