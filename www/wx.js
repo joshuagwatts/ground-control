@@ -4512,7 +4512,6 @@ function hailScopeHtml(data, days, esc) {
           ? "Storms in the visible map area — tap a date for zones"
           : "Tap a storm date to draw hail zones"
     }</p>
-    ${renderStormGraph(days, esc, selectedStormDate, { viewport })}
     ${viewport ? "" : placeContactHtml(data, esc)}
     <p class="hs-legend"><span class="hs-dot hs-dot-spot"></span>Spotter report <span class="hs-dot hs-dot-radar"></span>Radar hail <span class="hs-dot" style="background:#ffcc00"></span>Job done <span class="hs-dot" style="background:#fb923c"></span>Product ping</p>
     <div class="hs-filters">
@@ -4571,7 +4570,6 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
   root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
     row.onclick = () => pickDate(row.getAttribute("data-storm-date"));
   });
-  bindStormGraph(root, pickDate);
 }
 
 function hailScopeDateRows(days, esc, { viewport = false } = {}) {
