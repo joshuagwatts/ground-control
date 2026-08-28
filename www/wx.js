@@ -4158,7 +4158,7 @@ export function revealHailStormSheet() {
   });
 }
 
-/** First step: address peek. Second step: back to fullscreen map. */
+/** First step: address peek. Second step: storm dates. Pan the map to go fullscreen. */
 export function advanceHailBottomReveal() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (shell?.classList.contains("expanded") || hailBottomTier === "hidden") {
@@ -4166,8 +4166,8 @@ export function advanceHailBottomReveal() {
     return "address";
   }
   if (hailBottomTier === "address") {
-    setWxMapExpanded(true);
-    return "hidden";
+    revealHailStormSheet();
+    return "sheet";
   }
   return hailBottomTier;
 }
@@ -4249,7 +4249,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       return true;
     }
     if (hailBottomTier === "address") {
-      setWxMapExpanded(true);
+      revealHailStormSheet();
       return true;
     }
     return false;
@@ -4263,14 +4263,14 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         tryCollapse();
         return;
       }
+      if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0) {
+        e.preventDefault();
+        revealHailStormSheet();
+        return;
+      }
       if (!isExpanded() && view.scrollTop <= 8 && e.deltaY < 0) {
         e.preventDefault();
         tryExpand();
-        return;
-      }
-      if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0) {
-        e.preventDefault();
-        setWxMapExpanded(true);
         return;
       }
       if (isExpanded() && e.deltaY > 0 && !e.target.closest("#wx-map, .leaflet-container")) {
@@ -4298,15 +4298,15 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     const dy = y - touchY;
     touchY = y;
     touchAccum += dy;
-    if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
+    if (!isExpanded() && hailBottomTier === "address" && touchAccum < -12) {
       e.preventDefault();
-      tryExpand();
+      revealHailStormSheet();
       touchAccum = 0;
       return;
     }
-    if (!isExpanded() && hailBottomTier === "address" && touchAccum < -12) {
+    if (!isExpanded() && touchStartScroll <= 8 && touchAccum < -10) {
       e.preventDefault();
-      setWxMapExpanded(true);
+      tryExpand();
       touchAccum = 0;
       return;
     }
