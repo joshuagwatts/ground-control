@@ -57,8 +57,8 @@ export const PIN_FETCH_MIN_KM = PIN_FETCH_FAST_KM;
 export const HOUSE_HAIL_KM = 1.6;
 /** Draw filled zones only this close to the pin. Dots still show the rest of the radius. */
 export const HOUSE_ZONE_KM = 2.5;
-/** Cap stacked storm overlays so draw stays responsive. */
-export const MAX_STORM_DATES = 8;
+/** Cap is soft guidance only — user can overlay as many storm dates as they want. */
+export const MAX_STORM_DATES = 500;
 const HAIL_IN_CHOICES = [0, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6];
 const STORM_SIZE_CHOICES = [
   { value: "any", label: "Any size" },
@@ -173,13 +173,7 @@ function pruneStormDateSelection(validDates) {
 function setStormDateSelection(dates, { replace = true } = {}) {
   const next = (Array.isArray(dates) ? dates : [dates]).map(stormDateKey).filter(Boolean);
   if (replace) selectedStormDates.clear();
-  for (const d of next) {
-    if (selectedStormDates.size >= MAX_STORM_DATES && !selectedStormDates.has(d)) {
-      const oldest = [...selectedStormDates].sort()[0];
-      if (oldest) selectedStormDates.delete(oldest);
-    }
-    selectedStormDates.add(d);
-  }
+  for (const d of next) selectedStormDates.add(d);
 }
 
 function toggleStormDateSelection(date) {
@@ -188,10 +182,6 @@ function toggleStormDateSelection(date) {
   if (selectedStormDates.has(k)) {
     selectedStormDates.delete(k);
     return;
-  }
-  if (selectedStormDates.size >= MAX_STORM_DATES) {
-    const oldest = [...selectedStormDates].sort()[0];
-    if (oldest) selectedStormDates.delete(oldest);
   }
   selectedStormDates.add(k);
 }
@@ -1481,11 +1471,13 @@ function refreshZoomScaledUi(force = false) {
   }
 }
 
-function hailZoneOpacityBoost(base) {
-  // Solid nested bands — translucent stacking was the muddy overlap look.
-  void base;
-  const sat = activeLayer === "sat";
-  return sat ? 0.9 : 0.86;
+/** Single fill opacity for every hail band — cutout holes prevent stacking mud. */
+const HAIL_BAND_FILL = 0.78;
+const HAIL_BAND_FILL_SAT = 0.84;
+
+function hailZoneOpacityBoost(_base) {
+  void _base;
+  return activeLayer === "sat" ? HAIL_BAND_FILL_SAT : HAIL_BAND_FILL;
 }
 
 /** Pane stays fully opaque; nested solid fills overwrite (HailTrace cut-out). */
@@ -3652,23 +3644,9 @@ function buildHailSwathRings(rawPts, zone = {}) {
   const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   const z = map?.getZoom?.() ?? 14;
   const wide = z < 11;
-  // Prefer SWDI polygons as seeds when zoomed in; when zoomed out fold them into the mesh
-  // so they don't paint as a field of disconnected bubbles.
+  // Never paint raw SWDI polygons as separate bubbles — fold them into the mesh so
+  // nested bands + cutouts stay clean (no double-fill / fake subtraction).
   const swdiRings = [];
-  if (!wide) {
-    for (const p of pts) {
-      if (p.swdi_ring && p.swdi_ring.length >= 3) {
-        const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-        swdiRings.push({
-          ring: padPolygon(p.swdi_ring, Math.max(160, maxSz * 90)),
-          maxSize: maxSz,
-          hits: 1,
-          confirmed: true,
-          source: "radar-poly",
-        });
-      }
-    }
-  }
 
   if (pts.length < 2 && !swdiRings.length) {
     if (pts.length === 1) {
@@ -3713,22 +3691,19 @@ function buildHailSwathRings(rawPts, zone = {}) {
     maxY = Math.max(maxY, y + rKm);
     return { x, y, rKm, size: sz, spot: isSpotterHail(p) };
   });
-  // Zoomed-out: also seed kernels from SWDI polygon centroids so radar polygons
-  // participate in the continuous swath instead of floating as separate bubbles.
-  if (wide) {
-    for (const p of pts) {
-      if (!p.swdi_ring || p.swdi_ring.length < 3) continue;
-      const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-      const cLat = p.swdi_ring.reduce((a, c) => a + c[0], 0) / p.swdi_ring.length;
-      const cLon = p.swdi_ring.reduce((a, c) => a + c[1], 0) / p.swdi_ring.length;
-      const rKm = hailFootprintM(sz, "noaa-swdi-radar", z) / 1000;
-      const { x, y } = toXY(cLat, cLon);
-      minX = Math.min(minX, x - rKm);
-      maxX = Math.max(maxX, x + rKm);
-      minY = Math.min(minY, y - rKm);
-      maxY = Math.max(maxY, y + rKm);
-      kernels.push({ x, y, rKm, size: Math.max(sz, 0.85), spot: false });
-    }
+  // Always seed kernels from SWDI polygon centroids so radar footprints join the swath.
+  for (const p of pts) {
+    if (!p.swdi_ring || p.swdi_ring.length < 3) continue;
+    const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+    const cLat = p.swdi_ring.reduce((a, c) => a + c[0], 0) / p.swdi_ring.length;
+    const cLon = p.swdi_ring.reduce((a, c) => a + c[1], 0) / p.swdi_ring.length;
+    const rKm = hailFootprintM(sz, "noaa-swdi-radar", z) / 1000;
+    const { x, y } = toXY(cLat, cLon);
+    minX = Math.min(minX, x - rKm);
+    maxX = Math.max(maxX, x + rKm);
+    minY = Math.min(minY, y - rKm);
+    maxY = Math.max(maxY, y + rKm);
+    kernels.push({ x, y, rKm, size: Math.max(sz, 0.85), spot: false });
   }
   const pad = wide ? 2.4 : 1.2;
   minX -= pad;
@@ -3867,6 +3842,86 @@ function topoZoneRing(zone, rawPts) {
   return ringPolygon(lat, lon, baseM, sz >= 1.5 ? 8 : 6);
 }
 
+function ensureClosedRing(ring) {
+  if (!ring || ring.length < 3) return ring;
+  const a = ring[0];
+  const b = ring[ring.length - 1];
+  if (a && b && a[0] === b[0] && a[1] === b[1]) return ring;
+  return ring.concat([ring[0]]);
+}
+
+function reverseRing(ring) {
+  return ensureClosedRing(ring || []).slice().reverse();
+}
+
+function ringCentroidLatLon(ring) {
+  if (!ring?.length) return null;
+  let lat = 0;
+  let lon = 0;
+  let n = 0;
+  const lim = ring.length - (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? 1 : 0);
+  for (let i = 0; i < lim; i++) {
+    const p = ring[i];
+    if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+    lat += p[0];
+    lon += p[1];
+    n++;
+  }
+  return n ? { lat: lat / n, lon: lon / n } : null;
+}
+
+/** Ray-cast point-in-polygon for [lat, lon] rings. */
+function pointInLatLonRing(lat, lon, ring) {
+  if (!ring || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0];
+    const xi = ring[i][1];
+    const yj = ring[j][0];
+    const xj = ring[j][1];
+    const denom = yj - yi || 1e-12;
+    const intersect = (yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / denom + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Nest weaker→stronger isosurfaces into annulus bands (outer ring with holes).
+ * Prevents opacity stacking: each band paints once; stronger cores sit in the cutouts.
+ */
+function nestHailBandPolys(subs) {
+  const bands = (subs || [])
+    .filter((s) => Array.isArray(s?.ring) && s.ring.length >= 3)
+    .map((s) => ({ ...s, ring: ensureClosedRing(s.ring) }))
+    .sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
+
+  return bands.map((band, i) => {
+    const holes = [];
+    for (let j = i + 1; j < bands.length; j++) {
+      const stronger = bands[j];
+      const c = ringCentroidLatLon(stronger.ring);
+      if (!c || !pointInLatLonRing(c.lat, c.lon, band.ring)) continue;
+      // Only cut with immediate children — skip rings already nested inside a mid band.
+      let nestedDeeper = false;
+      for (let k = i + 1; k < j; k++) {
+        const mid = bands[k];
+        const mc = ringCentroidLatLon(mid.ring);
+        if (
+          mc &&
+          pointInLatLonRing(c.lat, c.lon, mid.ring) &&
+          pointInLatLonRing(mc.lat, mc.lon, band.ring)
+        ) {
+          nestedDeeper = true;
+          break;
+        }
+      }
+      if (!nestedDeeper) holes.push(reverseRing(stronger.ring));
+    }
+    return { ...band, holes };
+  });
+}
+
 function hailZonePopupHtml(h, sub) {
   const sz = sub.maxSize || parseFloat(h.size_in) || 0;
   const srcKey =
@@ -3970,7 +4025,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const day = activeDays.size ? activeDays : null;
   // Zoomed-out overlays keep the same zone budget as close-in (detail over culling).
   const zoneLimit = day
-    ? Math.min(400, Math.max(160, activeDays.size * 70) + (zDraw < 9 ? 120 : 0))
+    ? Math.min(800, Math.max(200, activeDays.size * 80) + (zDraw < 9 ? 160 : 0))
     : 36;
   const zones = collapsed
     .filter((h) => !day || day.has(h.date))
@@ -4018,20 +4073,24 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         source: dayHits.some((p) => !isSpotterHail(p)) ? "spot+radar" : "spotter",
       });
     }
-    // Outer / weaker first, then cores on top — solid fills overwrite (no opacity mud).
+    // Outer / weaker first — nest stronger rings as holes (true bands, no opacity stack).
     subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
     const sat = activeLayer === "sat";
-    for (const sub of subRings) {
+    const bands = nestHailBandPolys(subRings);
+    const fillOp = hailZoneOpacityBoost(1);
+    for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
       const isRadarZone = /radar|mesh|swdi/i.test(String(sub.source || ""));
       const isConfirm = Boolean(sub.confirmed) || sub.source === "spot+radar" || isRadarZone;
       fitPts.push(...sub.ring);
       const stroke = hailZoneStrokeStyle(isConfirm, sz, undefined, { radar: isRadarZone });
-      const poly = window.L.polygon(sub.ring, {
+      const holes = sub.holes || [];
+      const latlngs = holes.length ? [sub.ring, ...holes] : sub.ring;
+      const poly = window.L.polygon(latlngs, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: hailZoneOpacityBoost(1),
+        fillOpacity: fillOp,
         weight: Math.max(1.2, stroke.weight + (wideView ? 0.6 : sat && zDraw < 13 ? 0.45 : 0)),
         opacity: 1,
         dashArray: wideView ? null : stroke.dashArray,
@@ -4046,27 +4105,6 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
             : "wx-hail-topo",
       }).addTo(hailLayer);
       trackHailStroke(bindHailZoneTap(poly, h, sub), { confirmed: isConfirm, size: sz, kind: "zone" });
-      // Inner cores only when zoomed in — they read as bubble clutter far out.
-      if (sz >= 1 && isConfirm && !wideView) {
-        const cLat = sub.ring.reduce((a, c) => a + c[0], 0) / sub.ring.length;
-        const cLon = sub.ring.reduce((a, c) => a + c[1], 0) / sub.ring.length;
-        const coreR = Math.max(320, hailFootprintM(sz, isRadarZone ? "noaa-swdi-radar" : "noaa-spc", zDraw) * 0.45);
-        const coreStroke = hailCoreStrokeStyle();
-        const core = window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
-          color: col.core,
-          fillColor: col.core,
-          fillOpacity: hailZoneOpacityBoost(1),
-          weight: coreStroke.weight + 0.25,
-          opacity: 1,
-          dashArray: null,
-          pane: "hailFills",
-          renderer: hailFillSvg,
-          interactive: true,
-          bubblingMouseEvents: false,
-          className: "wx-hail-topo-core",
-        }).addTo(hailLayer);
-        trackHailStroke(bindHailZoneTap(core, h, { ...sub, maxSize: sz }), { confirmed: true, size: sz, kind: "core" });
-      }
     }
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
@@ -6205,88 +6243,48 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     { passive: false },
   );
   let touchY = 0;
-  let touchStartScroll = 0;
   let touchInBar = false;
   let touchOnAddr = false;
   let touchAccum = 0;
+  let touchGestureDone = false;
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) return;
     unlockHailTierGesture();
     touchY = e.touches[0].clientY;
-    touchStartScroll = view.scrollTop;
     touchInBar = Boolean(mapBar?.contains(e.target) && !e.target.closest('input[type="range"]'));
     touchOnAddr = onAddressBar(e.target);
     touchAccum = 0;
+    touchGestureDone = false;
   };
   const onTouchMove = (e) => {
-    if (e.touches.length !== 1) return;
+    if (touchGestureDone || e.touches.length !== 1) return;
     if (blockMapChrome(e)) return;
     const y = e.touches[0].clientY;
     const dy = y - touchY;
     touchY = y;
     touchAccum += dy;
-    // Peek band owns upward swipes (address → storm feed) — don't fullscreen over date scroll.
-    if (onPeekBand(e.target) && (hailBottomTier === "address" || hailBottomTier === "sheet")) {
-      // Deliberate swipe-down on the address / pin strip → fullscreen
-      if (touchOnAddr && touchAccum > 10) {
-        e.preventDefault();
-        tryExpandFromAddressBar();
-        touchAccum = 0;
-      }
-      return;
-    }
-    // Map bar (Street / Night / Sat): swipe down enters fullscreen when collapsed
-    if (!isExpanded() && touchInBar && touchAccum > 12) {
+    // Fullscreen: one clean swipe-down from address/pin strip OR map bar (not date list).
+    const wantExpand =
+      !isExpanded() &&
+      touchAccum > 36 &&
+      ((touchOnAddr && onPeekBand(e.target) && !e.target.closest?.(".hs-dates, .hs-filters, #hs-q")) ||
+        touchInBar);
+    if (wantExpand) {
       e.preventDefault();
+      touchGestureDone = true;
       tryExpandFromAddressBar();
       touchAccum = 0;
       return;
     }
-    if (isExpanded() && touchInBar && touchAccum > 10) {
+    if (isExpanded() && touchInBar && touchAccum > 28) {
       e.preventDefault();
+      touchGestureDone = true;
       tryCollapse();
       touchAccum = 0;
     }
   };
   view.addEventListener("touchstart", onTouchStart, { passive: true });
   view.addEventListener("touchmove", onTouchMove, { passive: false });
-  // Direct address-strip swipe-down → fullscreen (more reliable than view bubble alone).
-  const peek = document.getElementById("hs-bottom-panel");
-  if (peek && !peek.dataset.fsSwipeBound) {
-    peek.dataset.fsSwipeBound = "1";
-    let fy = 0;
-    let fAccum = 0;
-    let fOnAddr = false;
-    peek.addEventListener(
-      "touchstart",
-      (e) => {
-        if (e.touches.length !== 1) return;
-        fy = e.touches[0].clientY;
-        fAccum = 0;
-        fOnAddr = onAddressBar(e.target);
-      },
-      { passive: true },
-    );
-    peek.addEventListener(
-      "touchmove",
-      (e) => {
-        if (!fOnAddr || e.touches.length !== 1 || isExpanded()) return;
-        if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return;
-        // Don't steal vertical scrolls inside the dates list
-        if (e.target.closest?.(".hs-dates, .hs-filters, #hs-q")) return;
-        const y = e.touches[0].clientY;
-        fAccum += y - fy;
-        fy = y;
-        if (fAccum > 10) {
-          if (e.cancelable) e.preventDefault();
-          tryExpandFromAddressBar();
-          fAccum = 0;
-          fOnAddr = false;
-        }
-      },
-      { passive: false },
-    );
-  }
   if (mapBar) {
     mapBar.addEventListener(
       "wheel",
