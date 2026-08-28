@@ -4262,7 +4262,6 @@ function bindAddressSwipeToStormSheet(el) {
   let active = false;
   let startX = 0;
   let startY = 0;
-  let startScroll = 0;
   let lastY = 0;
   let lastT = 0;
   let velY = 0; // px/ms, up positive
@@ -4270,7 +4269,6 @@ function bindAddressSwipeToStormSheet(el) {
   let moved = false;
   let settling = false;
 
-  const view = () => document.getElementById("view");
   const field = () => document.getElementById("hs-field");
 
   const setScrub = (t) => {
@@ -4282,11 +4280,7 @@ function bindAddressSwipeToStormSheet(el) {
       f.style.setProperty("--hs-sheet-scrub", String(scrub));
       f.classList.add("hs-field-scrubbing");
     }
-    const v = view();
-    if (v) {
-      const targetTop = Math.max(0, el.offsetTop - 6);
-      v.scrollTop = startScroll + (targetTop - startScroll) * scrub;
-    }
+    // Keep scroll where the gesture left it — don't yank the view up to the sheet top
   };
 
   const clearScrubStyles = () => {
@@ -4303,7 +4297,8 @@ function bindAddressSwipeToStormSheet(el) {
     clearScrubStyles();
     addressSwipeOpeningSheet = false;
     settling = false;
-    revealHailStormSheet({ interactive: true });
+    // Commit sheet tier in place — no snap-scroll to the top of the panel
+    revealHailStormSheet({ interactive: true, scroll: false });
   };
 
   const finishClosed = () => {
@@ -4365,7 +4360,6 @@ function bindAddressSwipeToStormSheet(el) {
     lastT = performance.now();
     velY = 0;
     scrub = 0;
-    startScroll = view()?.scrollTop || 0;
   };
 
   const onMove = (e) => {
@@ -4526,7 +4520,7 @@ export function bindStormSheetOpen(fn) {
 }
 
 /** Slide open storm dates + completed jobs list. */
-export function revealHailStormSheet({ interactive = false } = {}) {
+export function revealHailStormSheet({ interactive = false, scroll = true } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const fromAddress = hailBottomTier === "address";
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
@@ -4539,14 +4533,16 @@ export function revealHailStormSheet({ interactive = false } = {}) {
   if (!interactive) {
     pulseBottomPanel({ light: fromAddress && !wasExpanded });
   }
-  if (interactive) {
-    try {
-      scrollViewToStormSheet(false);
-    } catch {
-      /* ignore */
+  if (scroll) {
+    if (interactive) {
+      try {
+        scrollViewToStormSheet(false);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      scheduleSheetScroll(scrollViewToStormSheet, { waitForMap: wasExpanded });
     }
-  } else {
-    scheduleSheetScroll(scrollViewToStormSheet, { waitForMap: wasExpanded });
   }
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     try {
@@ -5201,7 +5197,7 @@ export function patchHailScopePartial(root, partial, esc) {
   if (!root) return;
   const addr = partial.address || "Dropped pin";
   const box = document.getElementById("hs-addr-q");
-  if (box && addr && parseStreetAddress(addr).house) box.value = addr;
+  if (box && addr && parseStreetAddress(addr).house && !/^map\s*view$/i.test(addr)) box.value = addr;
   let pin = root.querySelector(".hs-pin");
   if (!pin) {
     root.innerHTML = `<p class="hs-pin"><strong>${esc(addr)}</strong>Finding storms…</p>${placeContactHtml(partial, esc)}<p class="hs-empty">Loading storm history…</p>`;

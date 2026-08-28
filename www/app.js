@@ -57,7 +57,7 @@ import {
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
-} from "./wx.js?v=0.2.75";
+} from "./wx.js?v=0.2.76";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1717,9 +1717,11 @@ async function warmMapViewStorms(gen) {
     clearSelectedStormDate();
     wxState.lat = null;
     wxState.lon = null;
-    wxState.address = "Map view";
+    wxState.address = "";
     wxState.viewport = true;
     wxState.data = data;
+    const addrBoxWarm = $("#hs-addr-q");
+    if (addrBoxWarm && /^map\s*view$/i.test(String(addrBoxWarm.value || "").trim())) addrBoxWarm.value = "";
     const sheet = $("#hs-sheet");
     if (!sheet) return;
     const onRefetch = async (filters) => {
@@ -1826,9 +1828,11 @@ async function onHailViewport() {
   clearWxPin();
   wxState.lat = null;
   wxState.lon = null;
-  wxState.address = "Map view";
+  wxState.address = "";
   wxState.viewport = true;
   wxState.data = null;
+  const addrBoxVp = $("#hs-addr-q");
+  if (addrBoxVp && /^map\s*view$/i.test(String(addrBoxVp.value || "").trim())) addrBoxVp.value = "";
   const sheet = $("#hs-sheet");
   if (sheet) {
     sheet.innerHTML = '<p class="hs-pin"><strong>Map view</strong>Searching visible area…</p><p class="hs-empty">Loading storm history…</p>';
@@ -1866,6 +1870,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   wxState.lon = lon;
   wxState.viewport = false;
   if (prefAddr) wxState.address = prefAddr;
+  else if (/^map\s*view$/i.test(String(wxState.address || "").trim())) wxState.address = "";
   setWxPin(lat, lon);
   const sheet = $("#hs-sheet");
   const addr0 = prefAddr || wxState.address || "Dropped pin";
@@ -1873,7 +1878,11 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
   }
   const addrBox = $("#hs-addr-q");
-  if (addrBox && addr0 && addr0 !== "Dropped pin") addrBox.value = addr0;
+  // Never stuff viewport labels into the search box
+  if (addrBox) {
+    if (addr0 && addr0 !== "Dropped pin" && !/^map\s*view$/i.test(addr0)) addrBox.value = addr0;
+    else if (/^map\s*view$/i.test(String(addrBox.value || "").trim())) addrBox.value = "";
+  }
   revealHailAddressPeek();
   setStatus("Finding storms…");
   const onRefetch = async (filters) => {
