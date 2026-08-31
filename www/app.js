@@ -67,7 +67,7 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   startPhoneFlagScan,
-} from "./wx.js?v=0.2.163";
+} from "./wx.js?v=0.2.164";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";

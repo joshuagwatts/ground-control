@@ -5,7 +5,7 @@ const UA =
 
 /** CapacitorHttp — core plugin (Bridge always registers it). Prefer request() then get/post. */
 function nativeHttp() {
-  const cap = window.Capacitor;
+  const cap = typeof window !== "undefined" ? window.Capacitor : null;
   const plugins = cap && (cap.Plugins || cap.plugins);
   return (plugins && plugins.CapacitorHttp) || null;
 }
@@ -15,7 +15,7 @@ export function hasNativeHttp() {
 }
 
 export function httpDiag() {
-  const cap = window.Capacitor;
+  const cap = typeof window !== "undefined" ? window.Capacitor : null;
   const http = nativeHttp();
   return {
     platform: cap?.getPlatform?.() || (cap ? "native?" : "web"),
@@ -269,11 +269,40 @@ function needsBrowserCorsProxy(url) {
   }
 }
 
-async function httpGetViaCorsProxy(url, timeoutMs) {
-  const proxies = [
-    `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+function corsProxyCandidates(url) {
+  const enc = encodeURIComponent(url);
+  const local = [];
+  try {
+    if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+      local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
+    }
+  } catch {
+    /* ignore */
+  }
+  return [
+    ...local,
+    `https://api.allorigins.win/raw?url=${enc}`,
+    `https://api.allorigins.win/get?url=${enc}`,
+    `https://corsproxy.io/?url=${enc}`,
   ];
+}
+
+function unwrapProxyBody(body) {
+  const raw = String(body || "");
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{") && /"contents"\s*:/.test(trimmed.slice(0, 80))) {
+    try {
+      const j = JSON.parse(trimmed);
+      if (typeof j.contents === "string" && j.contents) return j.contents;
+    } catch {
+      /* keep raw */
+    }
+  }
+  return raw;
+}
+
+async function httpGetViaCorsProxy(url, timeoutMs) {
+  const proxies = corsProxyCandidates(url);
   let last = "cors proxy failed";
   for (const proxy of proxies) {
     const ctrl = new AbortController();
@@ -284,7 +313,12 @@ async function httpGetViaCorsProxy(url, timeoutMs) {
         last = `fetch ${res.status}`;
         continue;
       }
-      return { url, status: res.status, body: await res.text() };
+      const body = unwrapProxyBody(await res.text());
+      if (body.length < 200) {
+        last = "proxy empty";
+        continue;
+      }
+      return { url, status: res.status, body };
     } catch (e) {
       last = String(e?.message || e || "proxy failed");
     } finally {

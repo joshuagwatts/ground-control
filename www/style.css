@@ -2651,6 +2651,42 @@ body.wx-map-expanded .hs-field {
   color: var(--muted);
   flex-shrink: 0;
 }
+.hs-flag-dock-kind,
+.hs-flag-dock-hide {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.4rem;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+.hs-flag-dock-kind.on {
+  color: #1dff6e;
+  border-color: rgba(29, 255, 110, 0.4);
+  background: rgba(29, 255, 110, 0.08);
+}
+.hs-flag-dock-kind[data-flag-act="biz"].on {
+  color: #7ec8ff;
+  border-color: rgba(42, 129, 203, 0.45);
+  background: rgba(42, 129, 203, 0.12);
+}
+.hs-flag-dock-hide {
+  color: var(--text);
+}
+.hs-house-pop-actions .hs-flag-hide {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
 .hs-phone-flag-ico.copied svg path[fill="#1dff6e"],
 .hs-phone-flag-ico.copied svg path[fill="#3d9eff"] {
   fill: #b8ffd0;
