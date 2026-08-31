@@ -355,7 +355,7 @@ export async function overpassJson(query, timeoutMs = 18000) {
   throw new Error(last);
 }
 
-function clampOsmMapBbox(south, west, north, east, max = 0.08) {
+function clampOsmMapBbox(south, west, north, east, max = 0.04) {
   let s = Number(south);
   let n = Number(north);
   let w = Number(west);
@@ -397,7 +397,7 @@ export function parseOsmXmlNodes(xml) {
 /** Viewport dump from api.openstreetmap.org — works when Overpass mirrors are down. */
 export async function osmMapJson(south, west, north, east, timeoutMs = 22000) {
   let last = "osm map failed";
-  for (const max of [0.08, 0.04, 0.02]) {
+  for (const max of [0.04, 0.025, 0.015]) {
     const b = clampOsmMapBbox(south, west, north, east, max);
     const url = `https://api.openstreetmap.org/api/0.6/map?bbox=${b.west},${b.south},${b.east},${b.north}`;
     try {
