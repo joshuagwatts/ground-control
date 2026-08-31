@@ -7906,8 +7906,8 @@ async function snapToHouse(hit, query) {
 }
 
 /** Forward geocode an address/place for WX search. Prefers the house, not the street centroid. */
-export async function geocodeAddress(query) {
-  const ranked = await geocodeCandidates(query);
+export async function geocodeAddress(query, opts = {}) {
+  const ranked = await geocodeCandidates(query, opts);
   const top = await snapToHouse(ranked[0], query);
   return [top, ...ranked.slice(1)];
 }

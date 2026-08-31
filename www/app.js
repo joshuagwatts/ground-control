@@ -67,7 +67,7 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   startPhoneFlagScan,
-} from "./wx.js?v=0.2.151";
+} from "./wx.js?v=0.2.152";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1657,7 +1657,7 @@ async function loadDoneAddresses({ textId = "job-done-text" } = {}) {
       let hit = geo[cacheKey];
       if (!geoCacheOk(hit, q)) {
         try {
-          const found = await geocodeAddress(q);
+          const found = await geocodeAddress(q, { city: db.settings.city || "" });
           const top = found[0];
           hit = {
             lat: top.lat,
@@ -1811,7 +1811,7 @@ function wireHsShell(cfg) {
       if (!q) return;
       setStatus("Finding place…");
       try {
-        const hits = await geocodeAddress(q);
+        const hits = await geocodeAddress(q, { city: db.settings.city || "" });
         const hit = hits[0];
         if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
         flyToPin(hit.lat, hit.lon, 20);
@@ -2005,7 +2005,7 @@ async function renderWx() {
       </div>
       <div class="hs-bottom-panel" id="hs-bottom-panel">
         <form class="hs-goto" id="hs-search" autocomplete="off">
-          <input type="search" id="hs-addr-q" placeholder="Go to an address" enterkeyhint="search" />
+          <input type="search" id="hs-addr-q" placeholder="Address in Oklahoma" enterkeyhint="search" />
         </form>
         <div class="hs-sheet" id="hs-sheet">
           <p class="hs-empty">Loading storm dates for this area…</p>

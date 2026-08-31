@@ -1,8 +1,16 @@
-import { pickGeocodeHits, scoreGeocodeHit, geoCacheOk } from "../www/geocode.js";
+import { pickGeocodeHits, scoreGeocodeHit, geoCacheOk, biasAddressQuery, queryAllowsOutOfState, inOklahoma } from "../www/geocode.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
+
+assert(biasAddressQuery("400 S Bryant, Edmond") === "400 S Bryant, Edmond, OK", "append OK");
+assert(biasAddressQuery("400 S Bryant Ave, Edmond, OK 73034").includes("OK"), "keep OK");
+assert(biasAddressQuery("100 Main St, Dallas, TX").includes("TX"), "keep TX");
+assert(!queryAllowsOutOfState("400 S Bryant, Edmond"), "edmond stays OK-scoped");
+assert(queryAllowsOutOfState("100 Main, Dallas, TX"), "TX allowed");
+assert(inOklahoma({ lat: 35.65, lon: -97.48, address: "Edmond, OK" }), "edmond in OK");
+assert(!inOklahoma({ lat: 32.78, lon: -96.8, address: "Dallas, TX" }), "dallas out");
 
 const q = "400 S Bryant, Edmond, OK";
 const streetCentroid = {
@@ -63,11 +71,21 @@ const blvd = {
   street: "S BLVD",
   source: "census",
 };
-const ranked = pickGeocodeHits([streetCentroid, cityBlob, wrongHouse, north, south, censusHouse, blvd], q);
+const dallas = {
+  lat: 32.78,
+  lon: -96.8,
+  address: "400 S Bryant, Dallas, TX",
+  house: "400",
+  street: "S Bryant",
+  source: "arcgis",
+  addrType: "PointAddress",
+};
+const ranked = pickGeocodeHits([streetCentroid, cityBlob, wrongHouse, north, south, censusHouse, blvd, dallas], q);
+assert(ranked.every((h) => inOklahoma(h)), "OK query drops Dallas");
 assert(ranked[0].source === "arcgis", `south Bryant PointAddress should win, got ${ranked[0].source} ${ranked[0].address} score=${ranked[0].score}`);
 assert(scoreGeocodeHit(south, q) > scoreGeocodeHit(north, q), "400 S Bryant must beat 400 N Bryant");
-assert(scoreGeocodeHit(north, q) < 70, "north Bryant must not lock south Bryant");
-assert(scoreGeocodeHit(blvd, q) < 70, "wrong street (BLVD) must not look house-ok");
+assert(scoreGeocodeHit(north, q) < 125, "north Bryant must not lock south Bryant");
+assert(scoreGeocodeHit(blvd, q) < 125, "wrong street (BLVD) must not look house-ok");
 
 assert(!geoCacheOk({ lat: 35.65, lon: -97.47, address: q }, q), "old cache without v=2 is stale");
 assert(!geoCacheOk({ lat: 35.65, lon: -97.47, v: 2, houseOk: false }, q), "street centroid cache is not ok");

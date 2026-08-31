@@ -1,8 +1,18 @@
-/** House-level forward geocode. Street centroids and city centroids are last-resort. */
+/** House-level forward geocode. Street centroids and city centroids are last-resort.
+ * Almost always scoped to Oklahoma unless the query names another state. */
 import { httpGet } from "./net.js";
-import { parseStreetAddress } from "./contacts.js";
+import { parseStreetAddress, stateAbbr } from "./contacts.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
+
+/** WGS84 extent for Oklahoma (includes panhandle). */
+export const OKLAHOMA_EXTENT = { west: -103.05, south: 33.55, east: -94.35, north: 37.05 };
+
+const US_STATE_WORD =
+  /\b(alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|north\s+carolina|north\s+dakota|ohio|oregon|pennsylvania|rhode\s+island|south\s+carolina|south\s+dakota|tennessee|texas|utah|vermont|virginia|washington|west\s+virginia|wisconsin|wyoming)\b/i;
+
+const US_STATE_ABBR =
+  /\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b/;
 
 async function getJson(url, timeoutMs, headers) {
   try {
@@ -51,6 +61,56 @@ function geoStreetKey(street) {
     .join(" ");
 }
 
+/** True when the user explicitly asked for a non-Oklahoma state. */
+export function queryAllowsOutOfState(query) {
+  const q = String(query || "");
+  const parsed = parseStreetAddress(q);
+  const st = stateAbbr(parsed.state || "");
+  if (st && st !== "ok") return true;
+  if (/\bOK\b|Oklahoma/i.test(q)) return false;
+  if (US_STATE_WORD.test(q)) {
+    const m = q.match(US_STATE_WORD);
+    if (m && !/^oklahoma$/i.test(m[0])) return true;
+  }
+  const abbr = q.match(US_STATE_ABBR);
+  if (abbr && abbr[1].toUpperCase() !== "OK") return true;
+  return false;
+}
+
+export function inOklahoma(hit) {
+  const lat = Number(hit?.lat);
+  const lon = Number(hit?.lon);
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    const e = OKLAHOMA_EXTENT;
+    if (lat >= e.south && lat <= e.north && lon >= e.west && lon <= e.east) return true;
+  }
+  const addr = String(hit?.address || "");
+  if (/\bOK\b|, Oklahoma\b| Oklahoma,/i.test(addr)) return true;
+  const st = stateAbbr(parseStreetAddress(addr).state || "");
+  return st === "ok";
+}
+
+/**
+ * Append Oklahoma when the query has no state — Ground Control is OK-first.
+ * Honors an explicit other state (e.g. "Dallas, TX").
+ */
+export function biasAddressQuery(query, { city = "" } = {}) {
+  const raw = String(query || "").trim();
+  if (!raw) return raw;
+  if (queryAllowsOutOfState(raw)) return raw;
+  if (/\bOK\b|Oklahoma/i.test(raw)) return raw;
+  const parsed = parseStreetAddress(raw);
+  const cityHint = String(parsed.city || city || "").trim();
+  if (parsed.house && parsed.street) {
+    const bits = [`${parsed.house} ${parsed.street}`.trim(), cityHint || null, "OK", parsed.zip || null].filter(Boolean);
+    return bits.join(", ");
+  }
+  if (cityHint && !new RegExp(cityHint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(raw)) {
+    return `${raw}, ${cityHint}, OK`;
+  }
+  return `${raw}, OK`;
+}
+
 export function scoreGeocodeHit(hit, query) {
   const want = parseStreetAddress(query);
   const got = parseStreetAddress(hit.address || "");
@@ -77,12 +137,19 @@ export function scoreGeocodeHit(hit, query) {
   else if (hit.source === "census") score += 8;
   else if (hit.source === "nominatim") score += 4;
   else if (hit.source === "open-meteo") score -= 35;
+  // Strong OK preference unless the user named another state.
+  if (!queryAllowsOutOfState(query)) {
+    if (inOklahoma(hit)) score += 55;
+    else score -= 120;
+  }
   return score;
 }
 
 export function pickGeocodeHits(hits, query) {
+  const allowOut = queryAllowsOutOfState(query);
   return (hits || [])
     .filter((h) => Number.isFinite(Number(h.lat)) && Number.isFinite(Number(h.lon)))
+    .filter((h) => allowOut || inOklahoma(h))
     .map((h) => ({ ...h, score: scoreGeocodeHit(h, query) }))
     .sort((a, b) => b.score - a.score);
 }
@@ -96,10 +163,15 @@ export function geoCacheOk(hit, query) {
 }
 
 async function arcgisWorld(q) {
-  const url =
+  const e = OKLAHOMA_EXTENT;
+  const okOnly = !queryAllowsOutOfState(q);
+  let url =
     `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json` +
-    `&outFields=Match_addr,Addr_type,StName,AddNum,StAddr,City,RegionAbbr,Postal&maxLocations=5` +
-    `&SingleLine=${encodeURIComponent(q)}`;
+    `&outFields=Match_addr,Addr_type,StName,AddNum,StAddr,City,RegionAbbr,Postal&maxLocations=8` +
+    `&sourceCountry=USA&SingleLine=${encodeURIComponent(q)}`;
+  if (okOnly) {
+    url += `&searchExtent=${e.west},${e.south},${e.east},${e.north}`;
+  }
   const data = await getJson(url, 10000);
   return (data.candidates || [])
     .map((c) => {
@@ -150,8 +222,20 @@ async function censusOneline(q) {
     .filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon));
 }
 
-async function nominatimSearch(params) {
-  const q = new URLSearchParams({ format: "json", addressdetails: "1", limit: "5", countrycodes: "us", ...params });
+async function nominatimSearch(params, { boundOk = true } = {}) {
+  const e = OKLAHOMA_EXTENT;
+  const base = {
+    format: "json",
+    addressdetails: "1",
+    limit: "6",
+    countrycodes: "us",
+    ...params,
+  };
+  if (boundOk && !queryAllowsOutOfState(String(params.q || params.street || ""))) {
+    base.viewbox = `${e.west},${e.north},${e.east},${e.south}`;
+    base.bounded = "1";
+  }
+  const q = new URLSearchParams(base);
   const data = await getJson(`https://nominatim.openstreetmap.org/search?${q}`, 9000, NOM_UA);
   const rows = Array.isArray(data) ? data : [];
   return rows.map((h) => {
@@ -171,23 +255,24 @@ async function nominatimSearch(params) {
 }
 
 async function nominatimStructured(parsed, fallbackQ) {
+  const okOnly = !queryAllowsOutOfState(fallbackQ);
   if (parsed.house && parsed.street) {
     const params = {
       street: `${parsed.house} ${parsed.street}`.trim(),
       city: parsed.city || "",
-      state: parsed.state || "",
+      state: parsed.state || (okOnly ? "Oklahoma" : ""),
       postalcode: parsed.zip || "",
     };
     if (!params.city && !params.state) params.q = fallbackQ;
-    const hits = await nominatimSearch(params.q ? { q: params.q } : params);
+    const hits = await nominatimSearch(params.q ? { q: params.q } : params, { boundOk: okOnly });
     if (hits.length) return hits;
   }
-  return nominatimSearch({ q: fallbackQ });
+  return nominatimSearch({ q: fallbackQ }, { boundOk: okOnly });
 }
 
 async function fromMeteo(q) {
   const data = await getJson(
-    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=en&format=json`,
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=8&language=en&format=json&countryCode=US`,
     9000,
   );
   return (data.results || []).map((h) => ({
@@ -202,11 +287,12 @@ async function fromMeteo(q) {
 }
 
 /** Ranked house-level candidates. Caller may snap the winner onto a rooftop. */
-export async function geocodeCandidates(query) {
-  const q = String(query || "").trim();
-  if (q.length < 3) throw new Error("type a longer address");
+export async function geocodeCandidates(query, { city = "" } = {}) {
+  const raw = String(query || "").trim();
+  if (raw.length < 3) throw new Error("type a longer address");
+  const q = biasAddressQuery(raw, { city });
   const parsed = parseStreetAddress(q);
-  const looksStreet = Boolean(parsed.house) || /,/.test(q);
+  const looksStreet = Boolean(parsed.house) || /,/.test(q) || /^\d/.test(q);
   const hits = [];
   if (looksStreet) {
     try {
@@ -239,13 +325,20 @@ export async function geocodeCandidates(query) {
     }
     if (!hits.length) {
       try {
-        hits.push(...(await nominatimSearch({ q })));
+        hits.push(...(await nominatimSearch({ q }, { boundOk: !queryAllowsOutOfState(q) })));
       } catch {
         /* empty */
       }
     }
   }
-  const ranked = pickGeocodeHits(hits, q);
+  let ranked = pickGeocodeHits(hits, q);
+  // If OK filter wiped everything (rare), retry without hard filter but keep score bias.
+  if (!ranked.length && hits.length && !queryAllowsOutOfState(q)) {
+    ranked = (hits || [])
+      .filter((h) => Number.isFinite(Number(h.lat)) && Number.isFinite(Number(h.lon)))
+      .map((h) => ({ ...h, score: scoreGeocodeHit(h, q) }))
+      .sort((a, b) => b.score - a.score);
+  }
   if (!ranked.length) throw new Error("address not found");
   return ranked;
 }
