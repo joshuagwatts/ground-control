@@ -117,11 +117,20 @@ function extractZillowEmbeddedPhones(html) {
   return out;
 }
 
+/** Only skip empty / hard HTTP walls — native fetches get real listing HTML; ignore captcha-word false positives. */
+function isEmptyOrHardBlock(html) {
+  const h = String(html || "");
+  if (h.length < 400) return true;
+  const head = h.slice(0, 2500);
+  if (/<title[^>]*>\s*(access denied|attention required|just a moment)\s*</i.test(head) && h.length < 8000) return true;
+  return false;
+}
+
 async function zillowListingContacts(address, parts) {
   const url = formatZillowUrl(address);
   if (!url || !parts?.house) return null;
   const page = await fetchHtml(url, 14000);
-  if (!page?.html || /captcha|access denied|cf-challenge/i.test(page.html)) return null;
+  if (!page?.html || isEmptyOrHardBlock(page.html)) return null;
   let html = page.html;
   let detailUrl = page.url || url;
   const rel =
@@ -155,7 +164,7 @@ async function zillowRentContacts(address, parts) {
   const url = formatZillowRentUrl(address);
   if (!url || !parts?.house) return null;
   const page = await fetchHtml(url, 14000);
-  if (!page?.html || /captcha|access denied|cf-challenge/i.test(page.html)) return null;
+  if (!page?.html || isEmptyOrHardBlock(page.html)) return null;
   let html = page.html;
   let detailUrl = page.url || url;
   // Prefer a specific rental homedetails / apartment card when the search page lists one.
@@ -207,10 +216,11 @@ async function oklahomaPhoneBookContacts(address, parts) {
   const urls = [
     `https://www.411.com/address/${slug.street}/${slug.cityState}${slug.zip ? `/${slug.zip}` : ""}`,
     `https://www.whitepages.com/address/${slug.street}/${slug.cityState}${slug.zip ? `/${slug.zip}` : ""}`,
+    `https://www.anywho.com/people/${slug.street}/${slug.cityState}${slug.zip ? `/${slug.zip}` : ""}`,
   ];
   for (const url of urls) {
     const page = await fetchHtml(url, 12000);
-    if (!page?.html || /captcha|access denied|cf-challenge|are you a robot/i.test(page.html)) continue;
+    if (!page?.html || isEmptyOrHardBlock(page.html)) continue;
     // Must mention this house number so we don't take a random neighbor listing.
     const contacts = extractContactsFromHtml(page.html.slice(0, 200000), parts, { requireAddress: true });
     if (contacts?.phone && !isJunkPhone(contacts.phone)) {
@@ -339,7 +349,7 @@ async function assessorPublicText(url) {
   if (!/oklahomacounty\.org|clevelandcounty|tulsacounty|assessor|incog|county\.|ok\.us/i.test(u)) return "";
   if (SKIP_HOST.test(u)) return "";
   const page = await fetchHtml(u, 10000);
-  if (!page?.html || /captcha|access denied/i.test(page.html)) return "";
+  if (!page?.html || isEmptyOrHardBlock(page.html)) return "";
   return publicTextFromHtml(page.html);
 }
 
@@ -601,7 +611,7 @@ function pageMentionsAddress(html, parts) {
 }
 
 function scoredFromText(html, parts, opts = {}) {
-  if (/captcha|are you a robot|access denied|cf-challenge/i.test(html || "")) return null;
+  // Do not bail on captcha/cf strings — listing pages often mention them in JS and still carry phones.
   if (opts.requireAddress !== false && !pageMentionsAddress(html, parts)) return null;
   const ld = jsonLdContacts(html);
   const meta = itempropContacts(html);

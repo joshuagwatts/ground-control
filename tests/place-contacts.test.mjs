@@ -95,6 +95,14 @@ const rentHtml = `
 const rentHit = extractContactsFromHtml(rentHtml, { house: "400", street: "Bryant" }, { requireAddress: false });
 assert(rentHit && /348/.test(rentHit.phone || ""), `rent-style phone, got ${JSON.stringify(rentHit)}`);
 
+const captchaNoise = `
+  <script>window.cfChallenge = "captcha"; /* are you a robot */</script>
+  <p>400 S Bryant Ave, Edmond OK</p>
+  <a href="tel:4053489911">(405) 348-9911</a>
+`;
+const despiteCaptcha = extractContactsFromHtml(captchaNoise, { house: "400", street: "Bryant" });
+assert(despiteCaptcha && /348/.test(despiteCaptcha.phone || ""), "parse phones even when page mentions captcha");
+
 const phones = extractPhones("Call (918) 582-0001 or 405-555-0100");
 assert(phones.includes("+19185820001"), "extract 918");
 assert(!phones.some((p) => p.includes("555")), "skip 555");
