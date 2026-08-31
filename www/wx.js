@@ -3721,8 +3721,9 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
 
 /**
  * Build hail-swath polygons from point/radar hits.
- * Clusters first so a statewide day doesn't force a coarse grid that turns
- * neighborhood hail into axis-aligned boxes (the "voxel rectangles" bug).
+ * Never paint raw SWDI polygons — those are radar grid rectangles and look like
+ * boxes even after Chaikin. Fold every hit into a blurred mesh (0.2.121 look).
+ * Cluster statewide days so one coarse grid can't voxelize a city cell.
  */
 function buildHailSwathRings(rawPts, zone = {}) {
   const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
@@ -3730,25 +3731,38 @@ function buildHailSwathRings(rawPts, zone = {}) {
   if (pts.length === 1) {
     const p = pts[0];
     const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-    // Prefer a real SWDI footprint when we have one — never a grid box.
-    if (p.swdi_ring?.length >= 4 && !isAxisBoxRing(p.swdi_ring)) {
-      return softBandsFromRing(p.swdi_ring, sz, p);
-    }
     return softCircleBands(p.lat, p.lon, sz, p);
   }
 
-  // ~30 km clusters: each local storm cell gets its own fine mesh.
-  const clusters = clusterPoints(pts, 30);
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  for (const p of pts) {
+    minLat = Math.min(minLat, p.lat);
+    maxLat = Math.max(maxLat, p.lat);
+    minLon = Math.min(minLon, p.lon);
+    maxLon = Math.max(maxLon, p.lon);
+  }
+  const spanKm = Math.max(
+    haversineKm(minLat, minLon, maxLat, maxLon),
+    haversineKm(minLat, maxLon, maxLat, minLon),
+    1,
+  );
+  // Local / metro corridor → one continuous mesh (screenshot look).
+  // Do NOT use point-count alone — a sparse statewide day is still huge in span.
+  if (spanKm <= 95) {
+    return buildHailSwathRingsCluster(pts, zone);
+  }
+
+  // Statewide: ~55 km clusters keep each storm cell on a fine mesh.
+  const clusters = clusterPoints(pts, 55);
   const out = [];
   for (const cluster of clusters) {
     if (cluster.length === 1) {
       const p = cluster[0];
       const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-      if (p.swdi_ring?.length >= 4 && !isAxisBoxRing(p.swdi_ring)) {
-        out.push(...softBandsFromRing(p.swdi_ring, sz, p));
-      } else {
-        out.push(...softCircleBands(p.lat, p.lon, sz, p));
-      }
+      out.push(...softCircleBands(p.lat, p.lon, sz, p));
       continue;
     }
     out.push(...buildHailSwathRingsCluster(cluster, zone));
@@ -3764,19 +3778,37 @@ function isAxisBoxRing(ring) {
     ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
       ? ring.slice(0, -1)
       : ring.slice();
-  if (pts.length < 4 || pts.length > 12) return false;
+  if (pts.length < 4) return false;
   let axis = 0;
   let n = 0;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  let area2 = 0;
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i];
     const b = pts[(i + 1) % pts.length];
+    minLat = Math.min(minLat, a[0]);
+    maxLat = Math.max(maxLat, a[0]);
+    minLon = Math.min(minLon, a[1]);
+    maxLon = Math.max(maxLon, a[1]);
+    area2 += a[1] * b[0] - b[1] * a[0];
     const dLat = Math.abs(a[0] - b[0]);
     const dLon = Math.abs(a[1] - b[1]);
     if (dLat < 1e-12 && dLon < 1e-12) continue;
     n++;
+    // Densified edges are still axis-aligned even with many vertices.
     if (dLat < 1e-5 || dLon < 1e-5) axis++;
   }
-  return n >= 4 && axis / n >= 0.7;
+  if (n < 4) return false;
+  const axisFrac = axis / n;
+  const bbox = Math.max(1e-18, (maxLat - minLat) * (maxLon - minLon));
+  const fill = Math.abs(area2) / 2 / bbox;
+  // Classic 4–12 corner boxes, or densified rectangles that fill their AABB.
+  if (axisFrac >= 0.7) return true;
+  if (fill >= 0.78 && axisFrac >= 0.5) return true;
+  return false;
 }
 
 function softCircleBands(lat, lon, sizeIn, p) {
@@ -3788,7 +3820,7 @@ function softCircleBands(lat, lon, sizeIn, p) {
     // Outer soft fringe for weaker thresholds.
     const scale = thr <= 0.5 ? 1.55 : thr <= 0.75 ? 1.2 : thr <= 1 ? 0.95 : thr <= 1.5 ? 0.72 : 0.5;
     bands.push({
-      ring: chaikinSmoothRing(ringPolygon(lat, lon, baseM * scale, 28), 2),
+      ring: relaxRing(chaikinSmoothRing(ringPolygon(lat, lon, baseM * scale, 36), 3), 2),
       maxSize: thr,
       hits: 1,
       confirmed: isSpotterHail(p) || thr >= 0.75,
@@ -3799,41 +3831,13 @@ function softCircleBands(lat, lon, sizeIn, p) {
     ? bands
     : [
         {
-          ring: ringPolygon(lat, lon, baseM, 24),
+          ring: chaikinSmoothRing(ringPolygon(lat, lon, baseM, 32), 2),
           maxSize: sz,
           hits: 1,
           confirmed: isSpotterHail(p),
           source: isSpotterHail(p) ? "spotter" : "radar-merge",
         },
       ];
-}
-
-function softBandsFromRing(ring, sizeIn, p) {
-  const sz = parseFloat(sizeIn) || 0.75;
-  const base = ensureClosedRing(ring);
-  const bands = [];
-  for (const thr of HAIL_SWATH_THRESHOLDS) {
-    if (sz + 0.01 < thr) continue;
-    const padM = thr <= 0.5 ? 420 : thr <= 0.75 ? 180 : thr <= 1 ? 40 : -120;
-    let r = chaikinSmoothRing(base, 4);
-    if (padM) r = padPolygon(r, padM);
-    // Guard: pad/simplify must never collapse back into a box.
-    if (isAxisBoxRing(r)) {
-      const c = ringCentroidLatLon(base);
-      if (c) {
-        bands.push(...softCircleBands(c.lat, c.lon, Math.max(sz, thr), p).filter((b) => b.maxSize === thr));
-        continue;
-      }
-    }
-    bands.push({
-      ring: relaxRing(r, 2),
-      maxSize: thr,
-      hits: 1,
-      confirmed: thr >= 0.75,
-      source: "mesh-swath",
-    });
-  }
-  return bands;
 }
 
 function buildHailSwathRingsCluster(pts, zone = {}) {
@@ -3869,14 +3873,11 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   });
   for (const p of pts) {
     if (!p.swdi_ring || p.swdi_ring.length < 3) continue;
-    // Skip rectangular SWDI boxes — they recreate the voxel look.
-    if (isAxisBoxRing(p.swdi_ring)) continue;
     const sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.85);
     const ring = p.swdi_ring;
     const cLat = ring.reduce((a, c) => a + c[0], 0) / ring.length;
     const cLon = ring.reduce((a, c) => a + c[1], 0) / ring.length;
     const coreR = hailFootprintM(sz, "noaa-swdi-radar") / 1000;
-    const edgeR = Math.max(0.22, coreR * 0.36);
     const pushK = (lat, lon, rKm) => {
       const { x, y } = toXY(lat, lon);
       minX = Math.min(minX, x - rKm);
@@ -3885,6 +3886,12 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
       maxY = Math.max(maxY, y + rKm);
       kernels.push({ x, y, rKm, size: sz, spot: false });
     };
+    // Radar grid rectangles: centroid kernel only — edge samples re-stamp the box.
+    if (isAxisBoxRing(ring)) {
+      pushK(cLat, cLon, coreR * 0.92);
+      continue;
+    }
+    const edgeR = Math.max(0.22, coreR * 0.36);
     pushK(cLat, cLon, coreR);
     const step = Math.max(1, Math.floor(ring.length / 24));
     for (let i = 0; i < ring.length - 1; i += step) {
@@ -3901,21 +3908,21 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
   // Cluster span is local — keep cells fine enough that a footprint isn't 2×2 boxes.
-  const maxCells = 160;
-  const cellKm = Math.max(0.12, Math.min(0.55, Math.ceil(span / maxCells / 0.05) * 0.05));
+  const maxCells = 192;
+  const cellKm = Math.max(0.1, Math.min(0.45, Math.ceil(span / maxCells / 0.05) * 0.05));
   minX = Math.floor(minX / cellKm) * cellKm;
   minY = Math.floor(minY / cellKm) * cellKm;
-  const w = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
-  const h = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxY - minY) / cellKm)));
+  const w = Math.min(maxCells + 2, Math.max(20, Math.ceil((maxX - minX) / cellKm)));
+  const h = Math.min(maxCells + 2, Math.max(20, Math.ceil((maxY - minY) / cellKm)));
   const field = new Float32Array(w * h);
 
   for (const k of kernels) {
-    const reach = k.rKm * 1.45;
+    const reach = k.rKm * 1.55;
     const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const sigma = Math.max(0.12, k.rKm * 0.75);
+    const sigma = Math.max(0.14, k.rKm * 0.82);
     const twoSig2 = 2 * sigma * sigma;
     const radarBoost = k.spot ? 1 : 1.55;
     for (let gy = gy0; gy <= gy1; gy++) {
@@ -3935,7 +3942,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
-  const softField = blurFloatField(field, w, h, 3);
+  const softField = blurFloatField(field, w, h, 4);
 
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     const binary = new Uint8Array(w * h);
@@ -3951,17 +3958,17 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      let smooth = relaxRing(chaikinSmoothRing(ring, 6), 3);
-      if (isAxisBoxRing(smooth)) {
+      let smooth = relaxRing(chaikinSmoothRing(ring, 7), 4);
+      if (isAxisBoxRing(smooth) || ringBoxiness(smooth) > 0.45) {
         const c = ringCentroidLatLon(smooth);
         if (!c) continue;
-        const rM = Math.max(500, Math.sqrt(ringAreaApproxM2(smooth) / Math.PI));
-        smooth = chaikinSmoothRing(ringPolygon(c.lat, c.lon, rM, 28), 2);
+        const rM = Math.max(650, Math.sqrt(ringAreaApproxM2(smooth) / Math.PI));
+        smooth = relaxRing(chaikinSmoothRing(ringPolygon(c.lat, c.lon, rM, 36), 3), 2);
       }
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
       out.push({
-        ring: padPolygon(smooth, 28),
+        ring: padPolygon(smooth, 36),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
@@ -3976,6 +3983,21 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   }
   out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
   return out;
+}
+
+/** Fraction of ring edges that run N/S or E/W — high means chunky / voxel look. */
+function ringBoxiness(ring) {
+  if (!ring || ring.length < 4) return 0;
+  let axis = 0;
+  let n = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const dLat = Math.abs(ring[i + 1][0] - ring[i][0]);
+    const dLon = Math.abs(ring[i + 1][1] - ring[i][1]);
+    if (dLat < 1e-12 && dLon < 1e-12) continue;
+    n++;
+    if (dLat < 1e-9 || dLon < 1e-9) axis++;
+  }
+  return n ? axis / n : 0;
 }
 
 function ringAreaApproxM2(ring) {
@@ -4269,9 +4291,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         color: col.stroke,
         fillColor: col.fill,
         fillOpacity: hailLayerFillOpacity(sz),
-        weight: 1.35,
-        opacity: 0.72,
+        weight: 1.2,
+        opacity: 0.7,
         stroke: true,
+        smoothFactor: 2.4,
         pane: "hailFills",
         renderer: hailFillSvg,
         interactive: true,

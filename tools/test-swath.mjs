@@ -47,8 +47,8 @@ const fns = [
   "hailFootprintM",
   "isAxisBoxRing",
   "softCircleBands",
-  "softBandsFromRing",
   "ringAreaApproxM2",
+  "ringBoxiness",
   "clusterPoints",
   "buildHailSwathRingsCluster",
   "buildHailSwathRings",
@@ -78,7 +78,7 @@ const stubs = {
 };
 const factory = new Function(
   ...Object.keys(stubs),
-  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing };`,
+  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness };`,
 );
 const g = factory(...Object.values(stubs));
 g.nestHailBandPolys = g.stackHailBandPolys;
@@ -218,11 +218,11 @@ for (let i = 0; i < 60; i++) {
     { lat: 35.467, lon: -97.516, size_in: 1.0, source: "noaa-swdi-radar", date: "2026-05-01" },
     { lat: 35.47, lon: -97.51, size_in: 0.85, source: "spotter", date: "2026-05-01" },
   ];
-  // Also mix in far statewide points that used to coarsen the whole mesh into boxes.
+  // Far statewide points (well outside the metro cluster) that used to coarsen one mesh into boxes.
   for (let i = 0; i < 20; i++) {
     sparse.push({
-      lat: 34.0 + i * 0.15,
-      lon: -99.0 + i * 0.12,
+      lat: 33.2 + i * 0.08,
+      lon: -101.2 + i * 0.06,
       size_in: 0.9,
       source: "noaa-swdi-radar",
       date: "2026-05-01",
@@ -236,7 +236,7 @@ for (let i = 0; i < 60; i++) {
     );
     const lat = c.lat / c.n;
     const lon = c.lon / c.n;
-    return Math.abs(lat - 35.47) < 0.2 && Math.abs(lon + 97.51) < 0.2;
+    return Math.abs(lat - 35.47) < 0.25 && Math.abs(lon + 97.51) < 0.25;
   });
   const boxed = okc.filter((r) => g.isAxisBoxRing(r.ring) || boxiness(r.ring) > 0.55);
   check(
@@ -245,6 +245,57 @@ for (let i = 0; i < 60; i++) {
     `okcRings=${okc.length} boxed=${boxed.length} maxBoxiness=${(
       Math.max(0, ...okc.map((r) => boxiness(r.ring))) * 100
     ).toFixed(0)}%`,
+  );
+}
+
+// Densified SWDI radar rectangles must not paint as rounded boxes (the chunky look).
+{
+  ZOOM = 13;
+  const box = [
+    [35.46, -97.52],
+    [35.46, -97.50],
+    [35.48, -97.50],
+    [35.48, -97.52],
+    [35.46, -97.52],
+  ];
+  // Densify each edge so the old ≤12-vertex detector would miss it.
+  const densified = [];
+  for (let i = 0; i < box.length - 1; i++) {
+    const a = box[i];
+    const b = box[i + 1];
+    for (let t = 0; t < 8; t++) {
+      const u = t / 8;
+      densified.push([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]);
+    }
+  }
+  densified.push(densified[0]);
+  check("densified SWDI rectangle detected", g.isAxisBoxRing(densified), `verts=${densified.length}`);
+  const rings = g.buildHailSwathRings(
+    [
+      {
+        lat: 35.47,
+        lon: -97.51,
+        size_in: 1.25,
+        source: "noaa-swdi-radar",
+        date: "2026-05-01",
+        swdi_ring: densified,
+      },
+      {
+        lat: 35.475,
+        lon: -97.505,
+        size_in: 0.9,
+        source: "spotter",
+        date: "2026-05-01",
+      },
+    ],
+    { size_in: 1.0, date: "2026-05-01" },
+  );
+  const maxBox = Math.max(0, ...rings.map((r) => boxiness(r.ring)));
+  const anyAxis = rings.some((r) => g.isAxisBoxRing(r.ring));
+  check(
+    "densified SWDI → smooth mesh not boxes",
+    rings.length >= 1 && !anyAxis && maxBox < 0.35,
+    `rings=${rings.length} maxBoxiness=${(maxBox * 100).toFixed(0)}%`,
   );
 }
 
