@@ -93,6 +93,92 @@ jobs:
           path: GroundControl.apk
           if-no-files-found: error
 
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run sync-version
+      - run: npx cap sync ios
+      - name: Build iOS (simulator)
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          APP=$(find build/Build/Products -name '*.app' -type d | head -n 1)
+          test -n "$APP"
+          mkdir -p ../../dist-ios
+          ditto "$APP" ../../dist-ios/GroundControl.app
+          cd ../../dist-ios && zip -r GroundControl-ios-simulator.zip GroundControl.app
+          echo "Built $APP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GroundControl-ios-simulator
+          path: dist-ios/GroundControl-ios-simulator.zip
+          if-no-files-found: error
+      - name: Build signed IPA when Apple secrets are present
+        id: ipa
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_BASE64: ${{ secrets.IOS_PROVISION_BASE64 }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          if [ -z "${IOS_CERTIFICATE_BASE64:-}" ] || [ -z "${IOS_PROVISION_BASE64:-}" ] || [ -z "${IOS_TEAM_ID:-}" ]; then
+            echo "No Apple signing secrets — simulator zip only. Add IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISION_BASE64, IOS_TEAM_ID for a device IPA."
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/ios_dist.p12"
+          PROF_PATH="$RUNNER_TEMP/gc.mobileprovision"
+          KEYCHAIN="$RUNNER_TEMP/ios-build.keychain-db"
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$IOS_PROVISION_BASE64" | base64 --decode > "$PROF_PATH"
+          security create-keychain -p "temp" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "temp" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "${IOS_CERTIFICATE_PASSWORD:-}" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed -e s/\"//g)
+          security set-key-partition-list -S apple-tool:,apple: -s -k "temp" "$KEYCHAIN"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROF_UUID=$(security cms -D -i "$PROF_PATH" | plutil -extract UUID raw -)
+          cp "$PROF_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PROF_UUID}.mobileprovision"
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/GroundControl.xcarchive \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            archive
+          xcodebuild -exportArchive \
+            -archivePath build/GroundControl.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist <(printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>method</key><string>ad-hoc</string><key>teamID</key><string>'"$IOS_TEAM_ID"'</string><key>compileBitcode</key><false/></dict></plist>')
+          cp build/export/*.ipa ../../GroundControl.ipa
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.ipa.outputs.built == 'true'
+        with:
+          name: GroundControl-ipa
+          path: GroundControl.ipa
+          if-no-files-found: error
+
   release:
     needs: [android]
     runs-on: ubuntu-latest

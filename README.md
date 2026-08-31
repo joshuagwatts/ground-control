@@ -34,8 +34,14 @@ Lens is not a guessing model with a roof prompt. A local gate throws out any pro
 
 ## Android APK
 
-**[Latest phone build](https://github.com/joshuagwatts/ground-control/releases/latest)** ? `GroundControl.apk`
+**[Latest phone build](https://github.com/joshuagwatts/ground-control/releases/latest)** — `GroundControl.apk`
 
 After the first signed install, **tap the APK to update**. Do not uninstall. Your keys stay on the phone.
 
 Every push to `main` (or **Ship**) builds a new APK with a higher version code, signed with the same key.
+
+## iOS
+
+The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator** zip on every push. A device IPA needs Apple signing secrets (`IOS_CERTIFICATE_BASE64`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISION_BASE64`, `IOS_TEAM_ID`) in the GitHub repo.
+
+Quick phone check of the web UI (same as the app shell): open Safari to your PC's LAN preview, e.g. `http://192.168.1.162:4173`, while `npm start` is running.

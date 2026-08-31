@@ -1,7 +1,7 @@
 {
   "name": "ground-control",
   "private": true,
-  "version": "0.2.125",
+  "version": "0.2.126",
   "description": "Ground Control — HailScope hail zoning, Lens (shingle / damage / field), Super Chat",
   "type": "module",
   "scripts": {
@@ -11,13 +11,16 @@
     "check": "node --check www/boot.js && node --check www/app.js && node --check www/wx.js && node --check www/desktop.js && node --check www/vision.js && node --check www/share.js && node --check www/geo.js && node --check www/geocode.js && node --check www/marks.js && node --check www/done.js && node --check www/acculynx.js && node --check www/contacts.js && node --check www/assessor.js && node --check www/catalog.js && node --check www/shingle.js && node --check www/damage.js && node --input-type=module -e \"import './www/catalog.js'; import './www/shingle.js'; import './www/damage.js'; import './www/contacts.js'; import './www/assessor.js'; import './www/geo.js'; import './www/geocode.js'; import './www/marks.js'; import './www/done.js'; import './www/acculynx.js'; import './www/desktop.js'; console.log('modules ok')\"",
     "sync": "cap sync",
     "sync:android": "cap sync android",
-    "open:android": "cap open android"
+    "sync:ios": "cap sync ios",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
     "@capacitor/app": "^8.1.1",
     "@capacitor/cli": "^8.5.0",
     "@capacitor/core": "^8.5.0",
-    "@capacitor/haptics": "^8.0.2"
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.5.0"
   }
 }
