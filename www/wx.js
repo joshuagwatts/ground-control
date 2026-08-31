@@ -44,7 +44,8 @@ export const DEFAULT_FILTERS = {
   windMph: 38,
   days: 730,
   year: "all",
-  sort: "date",
+  // Biggest storm first — map-view discovery should surface the worst day ASAP.
+  sort: "storm",
   stormSize: "any",
 };
 /** First paint radius — center-out so OKC lists land in ~1 request. */
@@ -3244,43 +3245,95 @@ export function clearWxPin() {
   syncHailBottomChrome();
 }
 
-export async function viewportDossier(settings, filters = wxFilters) {
+/**
+ * Map-view storm search — streams partials so the sheet can show the biggest
+ * few dates ASAP, then appends as SWDI/SPC/LSR keep landing.
+ */
+export async function viewportDossier(settings, filters = wxFilters, { onPartial } = {}) {
   const q = mapViewHailQuery();
   if (!q) return null;
   const km = Math.max(filterKm(filters), mapViewFetchKm());
-  const f = { ...filters, km };
-  // Hail-only for map overview — skip Zillow/assessor/Open-Meteo archive.
-  let data = await localResearch(q.lat, q.lon, "Map view", {
-    deep: true,
-    filters: f,
-    news: false,
-    place: false,
-    archive: false,
-  });
-  data = normalizeDossier(data) || data;
-  data.address = "Map view";
-  data.viewport = true;
-  data.lat = q.lat;
-  data.lon = q.lon;
-  data.hail = (data.hail || []).map((h) => ({
-    ...h,
-    distance_km: Math.round(haversineKm(q.lat, q.lon, h.lat, h.lon) * 10) / 10,
-  }));
-  data.wind = (data.wind || []).map((w) => ({
-    ...w,
-    distance_km: Math.round(haversineKm(q.lat, q.lon, w.lat, w.lon) * 10) / 10,
-  }));
-  data._meta = {
-    ...(data._meta || {}),
-    viewport: true,
-    fetchedKm: km,
-    lat: q.lat,
-    lon: q.lon,
-    // Allow geographic re-fetch as the map pans/zooms; days filter still refetches via onRefetch.
-    listLocked: false,
+  const days = Number(filters.days) || 730;
+  const spcDays = Math.min(days, 90);
+  const recentDays = Math.min(days, 120);
+
+  const distRows = (rows) =>
+    (rows || []).map((h) => ({
+      ...h,
+      distance_km: Math.round(haversineKm(q.lat, q.lon, h.lat, h.lon) * 10) / 10,
+    }));
+
+  const pack = (hail, wind, meta = {}) => {
+    let data = {
+      ok: true,
+      address: "Map view",
+      lat: q.lat,
+      lon: q.lon,
+      viewport: true,
+      storms: enrichStormDates([], hail, wind),
+      hail: distRows(hail),
+      wind: distRows(wind),
+      news: [],
+      weather: { ok: false },
+      _meta: {
+        viewport: true,
+        fetchedKm: km,
+        fetchedDays: days,
+        lat: q.lat,
+        lon: q.lon,
+        listLocked: false,
+        ...meta,
+      },
+    };
+    data = normalizeDossier(data) || data;
+    data.address = "Map view";
+    data.viewport = true;
+    return data;
   };
+
+  const push = (hail, wind, meta) => {
+    const data = pack(hail, wind, meta);
+    if (onPartial) onPartial(data);
+    return data;
+  };
+
+  let accHail = [];
+  let accWind = [];
+
+  // Spotter first — usually fastest CORS path.
+  const lsr = await fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []);
+  accHail = mergeHailRows([], [], lsr);
+  push(accHail, accWind, { loading: true, partial: "lsr" });
+
+  const spc = await fetchSpcReports(q.lat, q.lon, km, spcDays);
+  accHail = mergeHailRows(spc.hail || [], [], lsr);
+  accWind = spc.wind || [];
+  push(accHail, accWind, { loading: true, partial: "spc" });
+
+  // Recent SWDI window streams first so biggest recent storms appear early.
+  const swdiRecent = await fetchSwdiHail(q.lat, q.lon, km, recentDays, {
+    onProgress: (batch) => {
+      accHail = mergeHailRows(spc.hail || [], batch, lsr);
+      push(accHail, accWind, { loading: true, partial: "swdi" });
+    },
+  });
+  accHail = mergeHailRows(spc.hail || [], swdiRecent || [], lsr);
+  const needDeep = days > recentDays + 7;
+  push(accHail, accWind, { loading: needDeep, partial: "swdi-recent" });
+
+  if (needDeep) {
+    const swdiDeep = await fetchSwdiHail(q.lat, q.lon, km, days, {
+      onProgress: (batch) => {
+        accHail = mergeHailRows(spc.hail || [], batch, lsr);
+        push(accHail, accWind, { loading: true, partial: "swdi-deep" });
+      },
+    });
+    accHail = mergeHailRows(spc.hail || [], swdiDeep || [], lsr);
+  }
+
+  const final = push(accHail, accWind, { loading: false, partial: "done" });
   lastMapViewStormFetch = { lat: q.lat, lon: q.lon, km };
-  return data;
+  return final;
 }
 
 let selectPinClearHandler = null;
@@ -3519,7 +3572,8 @@ function hailFootprintM(sizeIn, source) {
 const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.5, 2.0, 2.5];
 /** Gap-closing distance per threshold — km, NOT cells, so shape ≠ f(resolution).
  *  Fringe bands close farther so green radar dots along a track merge into one corridor. */
-const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 14 : thr <= 0.75 ? 10 : thr <= 1 ? 8 : thr <= 1.5 ? 5.5 : 3.5);
+/** Fringe closes wide (corridor); cores close tight so multiple same-level lobes survive. */
+const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 12 : thr <= 0.75 ? 7.5 : thr <= 1 ? 4.2 : thr <= 1.5 ? 2.0 : 1.2);
 
 function blurFloatField(field, w, h, passes = 2) {
   let src = field;
@@ -4082,7 +4136,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     }
     if (!any) continue;
     const closed = closeBinaryKm(binary, w, h, cellKm, HAIL_CLOSE_KM(thr));
-    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
+    const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 18);
     for (const rawRing of rings) {
       if (!rawRing || rawRing.length < 4) continue;
       // Keep the walked contour — never collapse to a circle (that killed unique shapes).
@@ -4163,17 +4217,25 @@ function ensureRadarInsideBands(bands, pts) {
   const misses = radar.filter((p) => !inOuter(p.lat, p.lon));
   if (!misses.length) return out;
 
-  // Remesh outer from radar hits — organic corridor, no hull / no pad→Chaikin explosion.
-  const env = softOrganicEnvelopeRing(
-    radar.map((p) => ({ lat: p.lat, lon: p.lon })),
-    3.2,
+  // Keep existing same-level lobes; only add envelopes for uncovered clusters
+  // (never collapse every outer into one hull — that erased multi-core zones).
+  const clusters = clusterPoints(
+    misses.map((p) => ({ lat: p.lat, lon: p.lon, size_in: p.size_in, source: p.source })),
+    22,
   );
-  if (env && env.length >= 4) {
-    out = out.filter((b) => Number(b.maxSize) > thr + 0.05);
+  for (const cluster of clusters) {
+    const env = softOrganicEnvelopeRing(
+      cluster.map((p) => ({ lat: p.lat, lon: p.lon })),
+      3.2,
+    );
+    if (!env || env.length < 4) continue;
+    // Skip if this envelope is redundant with an existing outer.
+    const c = ringCentroidLatLon(env);
+    if (c && inOuter(c.lat, c.lon)) continue;
     out.unshift({
       ring: env,
       maxSize: thr,
-      hits: radar.length,
+      hits: cluster.length,
       confirmed: true,
       source: "mesh-swath",
     });
@@ -7711,6 +7773,9 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
     // Keep selection; debounce zone rebuilds so SWDI batches don't thrash the map.
     if (hailGrew || fit) scheduleSelectedStormZoneRedraw(hailRows, []);
     softUpdateHailScopeSheet(root, data, esc, { onRefetch });
+  } else if (data._meta?.loading && root.querySelector(".hs-dates")) {
+    // Progressive map-view / pin loads — append dates without rebuilding chrome.
+    softUpdateHailScopeSheet(root, data, esc, { onRefetch });
   } else {
     if (hailGrew) lastHailDrawSig = "";
     drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
@@ -7727,9 +7792,10 @@ function hailScopePinHtml(data, esc) {
   const viewport = Boolean(data.viewport || data._meta?.viewport);
   const pinLine = selectedStormsPinText(esc);
   if (viewport) {
+    const loading = data._meta?.loading ? " · loading more…" : "";
     const line =
       pinLine ||
-      "Storms in the visible map area — tap dates to overlay (multi-check)";
+      `Storms in the visible map area — biggest first${loading}`;
     return `<p class="hs-pin hs-pin-ready">${line}</p>`;
   }
   const addr = data.address || "Dropped pin";

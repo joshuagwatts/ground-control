@@ -374,4 +374,23 @@ for (let i = 0; i < 60; i++) {
   check("organic envelope has no fake right angles", sharp <= 2, `sharp90≈${sharp}`);
 }
 
+// Two strong cores far apart → multiple same-level zones (reference screenshot look).
+{
+  ZOOM = 13;
+  const twin = [
+    { lat: 35.45, lon: -97.55, size_in: 1.75, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.46, lon: -97.54, size_in: 1.5, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.58, lon: -97.28, size_in: 1.8, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.59, lon: -97.27, size_in: 1.6, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.52, lon: -97.42, size_in: 0.85, source: "spotter", date: "2026-05-01" },
+  ];
+  const rings = g.buildHailSwathRings(twin, { size_in: 1.0, date: "2026-05-01" });
+  const core = rings.filter((r) => Number(r.maxSize) >= 1.5 - 0.01);
+  check(
+    "multiple same-level core zones",
+    core.length >= 2,
+    `coreBands@≥1.5=${core.length} total=${rings.length}`,
+  );
+}
+
 process.exit(fail ? 1 : 0);

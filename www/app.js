@@ -52,6 +52,7 @@ import {
   viewportDossier,
   mapViewFetchKm,
   mapViewStormsNeedRefresh,
+  hailScopeDays,
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
@@ -65,7 +66,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.135";
+} from "./wx.js?v=0.2.136";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1875,7 +1876,7 @@ async function warmMapViewStorms(gen, { force = false, revealSheet = true } = {}
     const needKm = typeof mapViewFetchKm === "function" ? mapViewFetchKm() : 0;
     const haveKm = Number(wxState.data?._meta?.fetchedKm) || 0;
     // Reuse cached list only when it already covers this map frame (or wider).
-    if (!force && wxState.viewport && wxState.data?.hail?.length && haveKm >= needKm * 0.88) {
+    if (!force && wxState.viewport && wxState.data?.hail?.length && haveKm >= needKm * 0.88 && !wxState.data?._meta?.loading) {
       paintWarm(wxState.data);
       return;
     }
@@ -1883,7 +1884,38 @@ async function warmMapViewStorms(gen, { force = false, revealSheet = true } = {}
     if (sheet0 && !sheet0.querySelector(".hs-date") && !sheet0.querySelector(".hs-pin-ready")) {
       sheet0.innerHTML = '<p class="hs-pin hs-pin-ready">Loading storm dates…</p>';
     }
-    const data = await viewportDossier(db.settings);
+    let paintedDays = 0;
+    let lastPaintAt = 0;
+    const data = await viewportDossier(db.settings, undefined, {
+      onPartial: (partial) => {
+        if (token !== warmStormToken || gen !== wxRenderGen || !isHailTab() || wxPinSelected()) return;
+        wxState.lat = null;
+        wxState.lon = null;
+        wxState.address = "";
+        wxState.viewport = true;
+        wxState.data = partial;
+        const sheet = $("#hs-sheet");
+        const days = hailScopeDays(partial);
+        const n = days.length;
+        if (!n) return;
+        const loading = Boolean(partial._meta?.loading);
+        const first = !(sheet && sheet.querySelector(".hs-date"));
+        const now = Date.now();
+        // First paint once we have ~3–5 biggest dates (or sooner if a phase finishes).
+        const readyFirst = n >= 3 || !loading || /spc|swdi-recent|done/.test(String(partial._meta?.partial || ""));
+        const grew = n > paintedDays;
+        const due = now - lastPaintAt > (first ? 0 : 320);
+        if (first && readyFirst) {
+          paintedDays = n;
+          lastPaintAt = now;
+          paintWarm(partial);
+        } else if (!first && ((grew && due) || !loading)) {
+          paintedDays = n;
+          lastPaintAt = now;
+          paintWarm(partial);
+        }
+      },
+    });
     if (token !== warmStormToken || gen !== wxRenderGen || !isHailTab() || !data) return;
     if (wxPinSelected()) return;
     // Keep any dates the user already checked while this fetch was in flight.
@@ -1982,6 +2014,11 @@ async function renderWx() {
             },
             revealSheet: false,
           });
+        }
+        return;
+      }
+      void onHailViewport();
+    });
     bindMapViewStormMove((force) => {
       if (wxPinSelected()) return;
       const refresh = Boolean(force) || mapViewStormsNeedRefresh(false);
@@ -1990,11 +2027,6 @@ async function renderWx() {
         force: refresh,
         revealSheet: false,
       });
-    });
-        }
-        return;
-      }
-      void onHailViewport();
     });
     paintLayerToggles();
     paintRadarToggle();
@@ -2040,7 +2072,29 @@ async function onHailViewport() {
     return fresh;
   };
   try {
-    const data = await viewportDossier(db.settings);
+    let paintedDays = 0;
+    let lastPaintAt = 0;
+    const data = await viewportDossier(db.settings, undefined, {
+      onPartial: (partial) => {
+        if (gen !== hailTapGen || !isHailTab()) return;
+        wxState.data = partial;
+        const days = hailScopeDays(partial);
+        const n = days.length;
+        if (!n || !sheet) return;
+        const loading = Boolean(partial._meta?.loading);
+        const first = !sheet.querySelector(".hs-date");
+        const now = Date.now();
+        const readyFirst = n >= 3 || !loading || /spc|swdi-recent|done/.test(String(partial._meta?.partial || ""));
+        const grew = n > paintedDays;
+        const due = now - lastPaintAt > (first ? 0 : 320);
+        if ((first && readyFirst) || (!first && ((grew && due) || !loading))) {
+          paintedDays = n;
+          lastPaintAt = now;
+          syncHailScopeView(sheet, partial, esc, { onRefetch, fit: false, revealSheet: true });
+          setStatus(loading ? `Loading storms… ${n} dates` : "");
+        }
+      },
+    });
     if (gen !== hailTapGen || !isHailTab()) return;
     if (!data) {
       if (sheet) sheet.innerHTML = '<p class="hs-empty">Could not load storms for this map view.</p>';
