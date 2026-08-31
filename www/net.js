@@ -274,6 +274,7 @@ function corsProxyCandidates(url) {
   const local = [];
   try {
     if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+      local.push(`http://127.0.0.1:4175/proxy?url=${enc}`);
       local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
     }
   } catch {
