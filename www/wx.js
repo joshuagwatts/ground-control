@@ -8206,16 +8206,10 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   return hail.filter((h) => hailDayMatchesQuery(h, q));
 }
 
-function syncHailStormDateSelection(data) {
-  // Checked storm dates stay on until the user toggles them off.
-  if (hasSelectedStormDates()) return;
-  // Map view: list biggest-first via sort — do not auto-check a day.
-  if (!wxPinSelected()) return;
-  // Address selected: auto-show the newest storm day with ≥1″ hail.
-  const days = hailScopeDays(data, { ...wxFilters, hailIn: Math.max(Number(wxFilters.hailIn) || 0, 1), sort: "date" });
-  const pick = days.find((h) => (parseFloat(h.size_in) || 0) >= 1) || days[0];
-  if (!pick?.date) return;
-  setStormDateSelection([pick.date], { replace: true });
+function syncHailStormDateSelection(_data) {
+  // Never auto-check a storm date — pin mode only switches the filter (newest ≥1″).
+  // Map view keeps biggest-storm sort. User taps dates to overlay zones.
+  void _data;
 }
 
 export function clearSelectedStormDate() {
@@ -8346,7 +8340,7 @@ function hailScopePinHtml(data, esc) {
   }
   const addr = data.address || "Dropped pin";
   const loading = data._meta?.loading ? " · loading radar…" : "";
-  const hint = pinLine || `Newest ≥1″ storm auto-selected · tap dates to multi-check${loading}`;
+  const hint = pinLine || `Filter: newest ≥1″ · tap a date to overlay${loading}`;
   return `<p class="hs-pin hs-pin-ready"><strong class="hs-addr-copy" role="button" tabindex="0" title="Tap to copy address" data-copy="${esc(addr)}">${esc(addr)}</strong>${hint}</p>`;
 }
 
