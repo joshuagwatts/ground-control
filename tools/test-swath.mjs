@@ -374,6 +374,31 @@ for (let i = 0; i < 60; i++) {
   check("organic envelope has no fake right angles", sharp <= 2, `sharp90≈${sharp}`);
 }
 
+// Isolated green (and UNK-size SWDI) must still get an outer zone — never dropped.
+{
+  ZOOM = 13;
+  const lonely = [
+    { lat: 35.6, lon: -97.2, size_in: "UNK", source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.2, lon: -97.9, size_in: 0.5, source: "spotter", date: "2026-05-01" },
+    { lat: 35.21, lon: -97.88, size_in: 1.0, source: "noaa-swdi-radar", date: "2026-05-01" },
+  ];
+  const rings = g.buildHailSwathRings(lonely, { size_in: 1.0, date: "2026-05-01" });
+  const outerThr = rings.reduce((m, r) => Math.min(m, Number(r.maxSize) || 9), 9);
+  const greens = lonely.filter((p) => !/spotter|lsr/i.test(String(p.source || "")));
+  let missed = 0;
+  for (const p of greens) {
+    const ok = rings.some(
+      (r) => Number(r.maxSize) <= outerThr + 0.05 && g.pointInLatLonRing(p.lat, p.lon, r.ring),
+    );
+    if (!ok) missed++;
+  }
+  check(
+    "isolated + UNK green radar inside a zone",
+    rings.length >= 1 && missed === 0,
+    `rings=${rings.length} missed=${missed}/${greens.length}`,
+  );
+}
+
 // Two strong cores far apart → multiple same-level zones (reference screenshot look).
 {
   ZOOM = 13;

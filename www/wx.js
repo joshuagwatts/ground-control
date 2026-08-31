@@ -4058,10 +4058,11 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   let maxX = -Infinity;
   let maxY = -Infinity;
   const kernels = pts.map((p) => {
-    const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+    const raw = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
     const spot = isSpotterHail(p);
-    // Radar drives corridor length; keep cross-track tighter so shapes stay unique.
-    const rKm = (hailFootprintM(sz, p.source) / 1000) * (spot ? 0.95 : 1.15);
+    // Radar greens always count — never treat UNK/tiny SWDI as invisible.
+    const sz = spot ? raw : Math.max(raw, 0.85);
+    const rKm = (hailFootprintM(sz, p.source) / 1000) * (spot ? 0.9 : 1.28);
     const { x, y } = toXY(p.lat, p.lon);
     minX = Math.min(minX, x - rKm * 1.6);
     maxX = Math.max(maxX, x + rKm * 1.6);
@@ -4122,7 +4123,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const radarBoost = k.spot ? 1 : 1.85;
+    const radarBoost = k.spot ? 1 : 2.35;
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
         const cx = minX + (gx + 0.5) * cellKm;
@@ -4215,9 +4216,8 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
 }
 
 /**
- * Guarantee every green radar hit sits inside the outer band.
- * Expand existing organic contours (pad / remesh) — never a convex hull
- * (those create fake right-angle corners like the Yukon corner screenshot).
+ * Guarantee every green radar hit sits inside an outer band.
+ * Prefer adding/growing organic lobes over merging everything into one hull.
  */
 function ensureRadarInsideBands(bands, pts) {
   const radar = (pts || []).filter(
@@ -4235,31 +4235,57 @@ function ensureRadarInsideBands(bands, pts) {
   const inOuter = (lat, lon) =>
     out.some((b) => Number(b.maxSize) <= thr + 0.05 && pointInLatLonRing(lat, lon, b.ring));
 
-  const misses = radar.filter((p) => !inOuter(p.lat, p.lon));
-  if (!misses.length) return out;
-
-  // Keep existing same-level lobes; only add envelopes for uncovered clusters
-  // (never collapse every outer into one hull — that erased multi-core zones).
-  const clusters = clusterPoints(
-    misses.map((p) => ({ lat: p.lat, lon: p.lon, size_in: p.size_in, source: p.source })),
-    22,
-  );
-  for (const cluster of clusters) {
-    const env = softOrganicEnvelopeRing(
-      cluster.map((p) => ({ lat: p.lat, lon: p.lon })),
-      3.2,
+  let misses = radar.filter((p) => !inOuter(p.lat, p.lon));
+  for (let guard = 0; guard < 5 && misses.length; guard++) {
+    const clusters = clusterPoints(
+      misses.map((p) => ({ lat: p.lat, lon: p.lon, size_in: p.size_in, source: p.source })),
+      18,
     );
-    if (!env || env.length < 4) continue;
-    // Skip if this envelope is redundant with an existing outer.
-    const c = ringCentroidLatLon(env);
-    if (c && inOuter(c.lat, c.lon)) continue;
-    out.unshift({
-      ring: env,
-      maxSize: thr,
-      hits: cluster.length,
-      confirmed: true,
-      source: "mesh-swath",
-    });
+    for (const cluster of clusters) {
+      let env = softOrganicEnvelopeRing(
+        cluster.map((p) => ({ lat: p.lat, lon: p.lon })),
+        4.2,
+      );
+      if (!env || env.length < 4) {
+        // Single green (or envelope fail) → soft radar disk so the hit still counts.
+        for (const p of cluster) {
+          const sz = Math.max(parseFloat(p.size_in) || 0.85, 0.85);
+          const ring = relaxRing(
+            chaikinSmoothRing(ringPolygon(p.lat, p.lon, hailFootprintM(sz, "noaa-swdi-radar") * 1.15, 28), 2),
+            2,
+          );
+          out.unshift({
+            ring,
+            maxSize: thr,
+            hits: 1,
+            confirmed: true,
+            source: "mesh-swath",
+          });
+        }
+        continue;
+      }
+      // Grow until every green in this cluster is inside — centroid-in-outer is not enough.
+      let covered = cluster.every((p) => pointInLatLonRing(p.lat, p.lon, env));
+      if (!covered) {
+        for (let padM = 180; padM <= 2800 && !covered; padM += 180) {
+          const next = slimRingVerts(padPolygon(env, padM), 140);
+          if (cluster.every((p) => pointInLatLonRing(p.lat, p.lon, next))) {
+            env = relaxRing(chaikinSmoothRing(next, 2), 2);
+            covered = true;
+          } else if (padM >= 2800) {
+            env = relaxRing(chaikinSmoothRing(next, 2), 2);
+          }
+        }
+      }
+      out.unshift({
+        ring: env,
+        maxSize: thr,
+        hits: cluster.length,
+        confirmed: true,
+        source: "mesh-swath",
+      });
+    }
+    misses = radar.filter((p) => !inOuter(p.lat, p.lon));
   }
   out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
   return out;
@@ -4268,7 +4294,13 @@ function ensureRadarInsideBands(bands, pts) {
 /** Soft distance-field envelope through points — rounded corridor, not a convex box. */
 function softOrganicEnvelopeRing(points, padKm = 3) {
   const pts = (points || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lon));
-  if (pts.length < 2) return null;
+  if (!pts.length) return null;
+  // Lone green radar still needs a zone — soft disk, not a dropped hit.
+  if (pts.length === 1) {
+    const p = pts[0];
+    const rM = Math.max(1100, (padKm + 0.8) * 1000);
+    return relaxRing(chaikinSmoothRing(ringPolygon(p.lat, p.lon, rM, 28), 2), 2);
+  }
   const oLat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
   const oLon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
   const cos = Math.cos((oLat * Math.PI) / 180);
