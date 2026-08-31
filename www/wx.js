@@ -241,6 +241,9 @@ let houseCache = { key: "", rings: [], nums: [] };
 let housePaintSig = "";
 /** Session map of house keys → owner phone (drives green house-number labels). */
 const housePhoneByKey = new Map();
+/** Session map of house keys → { phone, name, email } when public info exists. */
+const houseUsefulByKey = new Map();
+let houseEnrichTimer = 0;
 let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
@@ -414,7 +417,9 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
       };
     }
   }
-  if (fields.owner_phone) noteHouseOwnerPhone(lat, lon, addr, fields.owner_phone);
+  if (fields.owner_phone || fields.owner_name || fields.owner_email) {
+    noteHouseOwnerPhone(lat, lon, addr, fields.owner_phone, fields);
+  }
   return dossier;
 }
 
@@ -1333,7 +1338,7 @@ const MAP_MAX_ZOOM = 22;
 const MAP_MIN_ZOOM = 3;
 /** Max hail fetch radius when zoomed out to regional / multi-state view. */
 const MAP_HAIL_MAX_KM = 450;
-const HOUSE_NUM_ZOOM = 16;
+const HOUSE_NUM_ZOOM = 17;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -5592,10 +5597,12 @@ function ensureHousePane() {
   if (!map.getPane("houseNums")) {
     map.createPane("houseNums");
     const pane = map.getPane("houseNums");
-    pane.style.zIndex = 625;
+    // Above Google labels baked into tiles; below pins/popups.
+    pane.style.zIndex = 685;
     pane.style.pointerEvents = "none";
   }
-  if (!houseLayer) houseLayer = window.L.layerGroup().addTo(map);
+  if (!houseLayer) houseLayer = window.L.layerGroup();
+  if (!map.hasLayer(houseLayer)) houseLayer.addTo(map);
 }
 
 function escHouseNum(s) {
@@ -5729,14 +5736,51 @@ function housePhoneFor(n) {
   return (key && housePhoneByKey.get(key)) || "";
 }
 
-/** After a pin finds an owner phone, turn that house number green on the map. */
-function noteHouseOwnerPhone(lat, lon, addr, phone) {
+function houseHasUseful(n) {
+  if (!n) return false;
+  if (houseHasPhone(n)) return true;
+  if (String(n.owner_name || "").trim() || String(n.email || "").trim()) return true;
+  const key = housePhoneKey(n);
+  const u = key ? houseUsefulByKey.get(key) : null;
+  return Boolean(u && (u.phone || u.name || u.email));
+}
+
+function rememberHouseUseful(info, { phone = "", name = "", email = "" } = {}) {
+  const key = housePhoneKey(info);
+  if (!key) return;
+  const prev = houseUsefulByKey.get(key) || {};
+  const next = {
+    phone: phone || prev.phone || "",
+    name: name || prev.name || "",
+    email: email || prev.email || "",
+  };
+  if (!next.phone && !next.name && !next.email) return;
+  houseUsefulByKey.set(key, next);
+  if (next.phone) rememberHousePhone(info, next.phone);
+  if (Number.isFinite(info?.lat) && Number.isFinite(info?.lon)) {
+    houseUsefulByKey.set(housePhoneKey({ lat: info.lat, lon: info.lon }), next);
+  }
+}
+
+function houseUsefulTip(n) {
+  const key = housePhoneKey(n);
+  const u = key ? houseUsefulByKey.get(key) : null;
+  const phone = housePhoneFor(n) || n.phone || u?.phone || "";
+  const name = String(n.owner_name || u?.name || "").trim();
+  const email = String(n.email || u?.email || "").trim();
+  return [name, phone, email].filter(Boolean).join(" · ");
+}
+
+/** Pin / dossier found useful public owner info — paint that number green. */
+function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
   const parts = parseStreetAddress(addr || "");
-  const pretty = rememberHousePhone(
-    { num: parts.house, street: parts.street, lat, lon },
-    phone,
-  );
-  if (!pretty) return;
+  const info = { num: parts.house, street: parts.street, lat, lon };
+  rememberHouseUseful(info, {
+    phone: phone || "",
+    name: extra.owner_name || extra.name || "",
+    email: extra.owner_email || extra.email || "",
+  });
+  const pretty = phone ? rememberHousePhone(info, phone) : housePhoneFor(info);
   let changed = false;
   for (const n of houseCache.nums || []) {
     const sameNum =
@@ -5749,34 +5793,49 @@ function noteHouseOwnerPhone(lat, lon, addr, phone) {
       Number.isFinite(n.lat) &&
       Number.isFinite(n.lon) &&
       haversineKm(lat, lon, n.lat, n.lon) <= 0.05;
-    if ((sameNum && sameStreet) || near) {
-      if (n.phone !== pretty) {
-        n.phone = pretty;
-        changed = true;
-      }
+    if (!(sameNum && sameStreet) && !near) continue;
+    if (pretty && n.phone !== pretty) {
+      n.phone = pretty;
+      changed = true;
     }
+    if (extra.owner_name && n.owner_name !== extra.owner_name) {
+      n.owner_name = extra.owner_name;
+      changed = true;
+    }
+    if (extra.owner_email && n.email !== extra.owner_email) {
+      n.email = extra.owner_email;
+      changed = true;
+    }
+    if (!houseHasUseful(n) && (pretty || extra.owner_name || extra.owner_email)) changed = true;
   }
-  if (changed) {
+  if (changed || pretty || extra.owner_name || extra.owner_email) {
     housePaintSig = "";
     paintHouseLayer([], houseCache.nums);
   }
 }
 
-function paintHouseLayer(rings, nums, style) {
-  const list = nums || [];
-  const phoneBits = list.map((n) => (houseHasPhone(n) ? "1" : "0")).join("");
-  const sig = `${houseCache.key}|${list.length}|${phoneBits}`;
+/**
+ * Only draw house numbers with useful public contact info (green).
+ * Google hybrid tiles already bake white address labels into imagery — we overlay
+ * green text on top when phone / owner / email is known.
+ */
+function paintHouseLayer(_rings, nums) {
+  ensureHousePane();
+  const list = (nums || []).filter((n) => houseHasUseful(n));
+  const phoneBits = list
+    .map((n) => `${n.num}|${housePhoneFor(n)}|${n.owner_name || ""}|${n.email || ""}`)
+    .join(";");
+  const sig = `${houseCache.key}|useful:${list.length}|${phoneBits}`;
   if (sig === housePaintSig && houseLayer?.getLayers?.().length) return;
   housePaintSig = sig;
   houseLayer.clearLayers();
   for (const n of list) {
-    const hasPhone = houseHasPhone(n);
-    const phone = hasPhone ? housePhoneFor(n) : "";
+    const tip = houseUsefulTip(n).replace(/"/g, "");
     const icon = window.L.divIcon({
-      className: `hs-housenum${hasPhone ? " hs-housenum-phone" : ""}`,
-      html: `<span class="${hasPhone ? "has-phone" : ""}"${phone ? ` title="Owner phone ${phone.replace(/"/g, "")}"` : ""}>${n.num}</span>`,
-      iconSize: [44, 16],
-      iconAnchor: [22, 8],
+      className: "hs-housenum hs-housenum-phone",
+      html: `<span class="has-phone"${tip ? ` title="${tip}"` : ""}>${n.num}</span>`,
+      iconSize: [48, 18],
+      iconAnchor: [24, 9],
     });
     window.L.marker([n.lat, n.lon], {
       icon,
@@ -5784,6 +5843,48 @@ function paintHouseLayer(rings, nums, style) {
       interactive: false,
       keyboard: false,
     }).addTo(houseLayer);
+  }
+}
+
+/** Public listing + assessor scan for visible houses (capped) — greens numbers as hits land. */
+async function enrichVisibleHouseInfo(nums, gen) {
+  if (!map || !nums?.length) return;
+  const z = map.getZoom?.() ?? 0;
+  if (z < 17) return;
+  const c = map.getCenter?.();
+  if (!c) return;
+  const queue = nums
+    .filter((n) => n?.num && n.street && !houseHasUseful(n))
+    .map((n) => ({
+      n,
+      d: (n.lat - c.lat) * (n.lat - c.lat) + (n.lon - c.lng) * (n.lon - c.lng),
+    }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 10)
+    .map((x) => x.n);
+  for (const n of queue) {
+    if (gen !== houseGen || !map) return;
+    const addr = [n.num, n.street, n.city, n.zip].filter(Boolean).join(n.city ? ", " : " ");
+    try {
+      const [assessor, contacts] = await Promise.all([
+        lookupAssessorParcel(n.lat, n.lon, addr).catch(() => null),
+        lookupPlaceContacts(n.lat, n.lon, addr, {}, null).catch(() => ({})),
+      ]);
+      const phone = contacts?.owner_phone || "";
+      const name = assessor?.name || contacts?.owner_name || "";
+      const email = contacts?.owner_email || "";
+      if (phone || name || email) {
+        n.phone = phone || n.phone || "";
+        n.owner_name = name || n.owner_name || "";
+        n.email = email || n.email || "";
+        rememberHouseUseful(n, { phone, name, email });
+        housePaintSig = "";
+        paintHouseLayer([], houseCache.nums);
+      }
+    } catch {
+      /* keep scanning */
+    }
+    await new Promise((r) => setTimeout(r, 420));
   }
 }
 
@@ -5930,7 +6031,8 @@ async function refreshHouseNumbers() {
   ensureHousePane();
   const z = map.getZoom();
   const b = map.getBounds();
-  if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.035 || b.getEast() - b.getWest() > 0.05) {
+  // Match the zoom where Google hybrid paints white house numbers on rooftops.
+  if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.05 || b.getEast() - b.getWest() > 0.07) {
     houseLayer.clearLayers();
     houseCache = { key: "", rings: [], nums: [] };
     housePaintSig = "";
@@ -5939,6 +6041,11 @@ async function refreshHouseNumbers() {
   const key = houseBoundsKey(b, z);
   if (houseCache.key === key && houseCache.nums.length) {
     paintHouseLayer([], houseCache.nums);
+    if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
+    houseEnrichTimer = setTimeout(() => {
+      houseEnrichTimer = 0;
+      void enrichVisibleHouseInfo(houseCache.nums, houseGen);
+    }, 200);
     return;
   }
   const padB = b.pad(0.18);
@@ -5950,12 +6057,22 @@ async function refreshHouseNumbers() {
   const osm = await fetchOsmHouseData(south, west, north, east).catch(() => ({ rings: [], nums: [] }));
   if (gen !== houseGen || !map) return;
   const nums = (osm.nums || []).map((n) => {
-    if (n.phone) return n;
-    const cached = housePhoneFor(n);
-    return cached ? { ...n, phone: cached } : n;
+    const cachedPhone = housePhoneFor(n);
+    const u = houseUsefulByKey.get(housePhoneKey(n));
+    return {
+      ...n,
+      phone: n.phone || cachedPhone || "",
+      owner_name: n.owner_name || u?.name || "",
+      email: n.email || u?.email || "",
+    };
   });
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
+  if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
+  houseEnrichTimer = setTimeout(() => {
+    houseEnrichTimer = 0;
+    void enrichVisibleHouseInfo(nums, gen);
+  }, 250);
 }
 
 function stopFieldOverlay() {
