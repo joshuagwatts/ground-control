@@ -6704,10 +6704,10 @@ async function refreshHouseNumbers() {
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
+  const mapDump = await osmMapJson(south, west, north, east, 22000).catch(() => null);
   const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
   const osmNums = numsFromOsmElements(mapDump?.elements);
-  if (gen !== houseGen || !map) return;
+  if (!map || !phoneFlagsEnabled()) return;
   const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
