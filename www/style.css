@@ -2547,8 +2547,12 @@ body.wx-map-expanded .hs-field {
   user-select: none;
   touch-action: manipulation;
 }
-.hs-phone-flag-ico.copied svg path[fill="#1dff6e"] {
+.hs-phone-flag-ico.copied svg path[fill="#1dff6e"],
+.hs-phone-flag-ico.copied svg path[fill="#3d9eff"] {
   fill: #b8ffd0;
+}
+.hs-phone-flag-ico.biz.copied svg path[fill="#3d9eff"] {
+  fill: #a8d4ff;
 }
 .hs-phone-flag-ico.copy-fail {
   filter: drop-shadow(0 0 3px rgba(255, 80, 80, 0.9));
@@ -2562,6 +2566,9 @@ body.wx-map-expanded .hs-field {
 .hs-house-pop-num {
   color: #1dff6e;
   font-size: 15px;
+}
+.hs-house-pop.biz .hs-house-pop-num {
+  color: #3d9eff;
 }
 .hs-house-pop-who {
   font-size: 12px;
@@ -2589,6 +2596,10 @@ body.wx-map-expanded .hs-field {
   color: #1dff6e !important;
   border-color: rgba(29, 255, 110, 0.35);
 }
+.hs-house-pop.biz .hs-house-pop-actions .hs-tel {
+  color: #3d9eff !important;
+  border-color: rgba(61, 158, 255, 0.4);
+}
 .hs-house-pop-actions .hs-sms {
   color: var(--text) !important;
 }
@@ -2596,6 +2607,48 @@ body.wx-map-expanded .hs-field {
   font-size: 10px;
   color: var(--muted, #9a9a9e);
   letter-spacing: 0.04em;
+}
+
+/* Desktop web: mouse + page scroll — no swipe peek / pull-to-fullscreen. */
+body.gc-desktop.wx-tab #view,
+body.gc-desktop.hs-tab #view {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: auto;
+}
+body.gc-desktop .hs-map-shell {
+  height: min(52vh, 560px);
+  min-height: 380px;
+  max-height: 640px;
+}
+body.gc-desktop .hs-map-shell.expanded {
+  position: relative;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  height: min(70vh, 720px);
+  max-height: 720px;
+  z-index: auto;
+}
+body.gc-desktop.wx-map-expanded #view {
+  overflow-y: auto;
+}
+body.gc-desktop.wx-map-expanded .hs-bottom-panel {
+  opacity: 1;
+  transform: none;
+  max-height: none;
+  margin: 0;
+  padding-top: 0.55rem;
+  padding-bottom: 0.75rem;
+  pointer-events: auto;
+  overflow: visible;
+}
+body.gc-desktop .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
+  display: none !important;
+  content: none !important;
+}
+body.gc-desktop .hs-map-shell .leaflet-control-zoom {
+  display: block !important;
 }
 .hs-locate-ctl a {
   display: flex !important;

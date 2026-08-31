@@ -67,7 +67,7 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   startPhoneFlagScan,
-} from "./wx.js?v=0.2.154";
+} from "./wx.js?v=0.2.155";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -78,6 +78,10 @@ import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, 
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
 import { CACHE_BUST } from "./version.js";
+import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
+
+applyFormFactorClass();
+bindFormFactorResize();
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -1892,12 +1896,17 @@ async function warmMapViewStorms(gen, { force = false, revealSheet = true } = {}
     const paintWarm = (data) => {
       const sheet = $("#hs-sheet");
       if (!sheet || gen !== wxRenderGen || !isHailTab() || wxPinSelected()) return;
-      // Idle paint so map pans/zooms stay responsive while the list fills in.
+      // First paint ASAP on iPhone; later updates can wait for idle.
       const go = () => {
         if (token !== warmStormToken || gen !== wxRenderGen || wxPinSelected()) return;
         syncHailScopeView(sheet, data, esc, { onRefetch, revealSheet });
       };
-      if (typeof requestIdleCallback === "function") requestIdleCallback(go, { timeout: 400 });
+      const first = !(sheet.querySelector(".hs-date"));
+      if (first) {
+        go();
+        return;
+      }
+      if (typeof requestIdleCallback === "function") requestIdleCallback(go, { timeout: 180 });
       else setTimeout(go, 0);
     };
     const needKm = typeof mapViewFetchKm === "function" ? mapViewFetchKm() : 0;
@@ -1928,10 +1937,10 @@ async function warmMapViewStorms(gen, { force = false, revealSheet = true } = {}
         const loading = Boolean(partial._meta?.loading);
         const first = !(sheet && sheet.querySelector(".hs-date"));
         const now = Date.now();
-        // First paint once we have ~3–5 biggest dates (or sooner if a phase finishes).
-        const readyFirst = n >= 3 || !loading || /spc|swdi-recent|done/.test(String(partial._meta?.partial || ""));
+        // First paint as soon as any date lands (iPhone Safari felt stuck waiting for SWDI).
+        const readyFirst = n >= 1 || !loading || /spc|swdi|done/.test(String(partial._meta?.partial || ""));
         const grew = n > paintedDays;
-        const due = now - lastPaintAt > (first ? 0 : 320);
+        const due = now - lastPaintAt > (first ? 0 : 280);
         if (first && readyFirst) {
           paintedDays = n;
           lastPaintAt = now;
@@ -2065,7 +2074,8 @@ async function renderWx() {
     syncHailBottomChrome();
     // Interactive UI by default — fullscreen only via address-bar swipe down
     setWxMapExpanded(false);
-    revealHailAddressPeek();
+    if (useDesktopChrome()) revealHailStormSheet({ interactive: true, scroll: false });
+    else revealHailAddressPeek();
     refreshMapSize();
     scheduleWarmMapViewStorms(gen, { afterMs: 60 });
     void finishWxBoot(gen);

@@ -14,10 +14,12 @@ import {
   resolveZillowUrl,
   isUsableZillowUrl,
   fillContactGapsWithChat,
+  isBusinessPhoneSource,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, clampPinScale } from "./marks.js";
+import { isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
 
 let map = null;
 let pin = null;
@@ -786,9 +788,22 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgres
   startLimit.setDate(startLimit.getDate() - days);
   const chunks = [];
   let cursor = new Date(today);
-  // Wider rings use fewer, longer chunks so SWDI doesn't stall the sheet.
-  const span = km >= 100 ? 45 : days > 365 ? 28 : days > 120 ? 18 : 13;
-  const maxChunks = Math.min(km >= 100 ? 18 : 28, Math.ceil(days / span) + 1);
+  // Mobile Safari / GitHub Pages: every chunk goes through a CORS proxy — fewer, wider chunks.
+  const slow = isSlowBrowserNet();
+  const span = slow
+    ? km >= 80
+      ? 75
+      : days > 180
+        ? 50
+        : 35
+    : km >= 100
+      ? 45
+      : days > 365
+        ? 28
+        : days > 120
+          ? 18
+          : 13;
+  const maxChunks = Math.min(slow ? (km >= 80 ? 8 : 10) : km >= 100 ? 18 : 28, Math.ceil(days / span) + 1);
   while (cursor > startLimit && chunks.length < maxChunks) {
     const chunkEnd = new Date(cursor);
     const chunkStart = new Date(cursor);
@@ -799,20 +814,21 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgres
     cursor.setDate(cursor.getDate() - 1);
   }
   const hits = new Map();
-  const batch = km >= 100 ? 3 : 4;
-  const timeout = km >= 100 ? 12000 : 14000;
+  const batch = slow ? 6 : km >= 100 ? 3 : 4;
+  const timeout = slow ? 8000 : km >= 100 ? 12000 : 14000;
+  const attempts = slow ? 1 : 2;
   for (let i = 0; i < chunks.length; i += batch) {
     const part = await Promise.all(
       chunks.slice(i, i + batch).map(async ({ start, end }) => {
         const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
         const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (let attempt = 0; attempt < attempts; attempt++) {
           try {
             const { body } = await httpGet(url, timeout);
             const data = JSON.parse(body || "{}");
             return data.result || [];
           } catch {
-            if (attempt) return [];
+            if (attempt >= attempts - 1) return [];
           }
         }
         return [];
@@ -3046,17 +3062,20 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   accHail = mergeHailRows([], [], lsrFast);
   pushPartial("lsr", { loading: true, fetchedKm: fastKm });
 
-  [wxNow, spcFast, placeHit] = await Promise.all([wxP, spcFastP, placeP]);
-  accHail = mergeHailRows(spcFast.hail || [], accHail, lsrFast);
-  accWind = spcFast.wind || [];
-  pushPartial("spc", { loading: true, fetchedKm: fastKm });
-
-  const swdiFast = await fetchSwdiHail(lat, lon, fastKm, swdiFastDays, {
+  // Start SWDI while SPC / place resolve — don't wait for contacts before radar dates.
+  const swdiFastP = fetchSwdiHail(lat, lon, fastKm, swdiFastDays, {
     onProgress: (swdiBatch) => {
       accHail = mergeHailRows(spcFast.hail || [], swdiBatch, lsrFast);
       pushPartial("swdi", { loading: true, fetchedKm: fastKm });
     },
   });
+
+  [wxNow, spcFast, placeHit] = await Promise.all([wxP, spcFastP, placeP]);
+  accHail = mergeHailRows(spcFast.hail || [], accHail, lsrFast);
+  accWind = spcFast.wind || [];
+  pushPartial("spc", { loading: true, fetchedKm: fastKm });
+
+  const swdiFast = await swdiFastP;
   accHail = mergeHailRows(spcFast.hail || [], swdiFast || [], lsrFast);
   pushPartial("swdi-fast", { loading: wideFetch, fetchedKm: fastKm });
 
@@ -3321,10 +3340,15 @@ export function clearWxPin() {
 export async function viewportDossier(settings, filters = wxFilters, { onPartial } = {}) {
   const q = mapViewHailQuery();
   if (!q) return null;
-  const km = Math.max(filterKm(filters), mapViewFetchKm());
+  const slow = isSlowBrowserNet();
+  const kmFull = Math.max(filterKm(filters), mapViewFetchKm());
+  // iPhone Safari/Pages: start with a tighter ring so dates appear before statewide SWDI.
+  const km = slow ? Math.min(kmFull, 110) : kmFull;
   const days = Number(filters.days) || 730;
   const spcDays = Math.min(days, 90);
-  const recentDays = Math.min(days, 120);
+  const recentDays = Math.min(days, slow ? 90 : 120);
+  const deepDays = slow ? Math.min(days, 365) : days;
+  const deepKm = slow ? Math.min(kmFull, 200) : kmFull;
 
   const distRows = (rows) =>
     (rows || []).map((h) => ({
@@ -3346,7 +3370,7 @@ export async function viewportDossier(settings, filters = wxFilters, { onPartial
       weather: { ok: false },
       _meta: {
         viewport: true,
-        fetchedKm: km,
+        fetchedKm: Math.max(km, Number(meta.fetchedKm) || km),
         fetchedDays: days,
         lat: q.lat,
         lon: q.lon,
@@ -3368,40 +3392,45 @@ export async function viewportDossier(settings, filters = wxFilters, { onPartial
 
   let accHail = [];
   let accWind = [];
+  let lsr = [];
+  let spc = { hail: [], wind: [] };
 
-  // Spotter first — usually fastest CORS path.
-  const lsr = await fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []);
-  accHail = mergeHailRows([], [], lsr);
-  push(accHail, accWind, { loading: true, partial: "lsr" });
-
-  const spc = await fetchSpcReports(q.lat, q.lon, km, spcDays);
-  accHail = mergeHailRows(spc.hail || [], [], lsr);
-  accWind = spc.wind || [];
-  push(accHail, accWind, { loading: true, partial: "spc" });
-
-  // Recent SWDI window streams first so biggest recent storms appear early.
-  const swdiRecent = await fetchSwdiHail(q.lat, q.lon, km, recentDays, {
+  // Kick all three at once — sequential waits made iPhone web feel stuck on "Loading…".
+  const lsrP = fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []);
+  const spcP = fetchSpcReports(q.lat, q.lon, km, spcDays);
+  const swdiP = fetchSwdiHail(q.lat, q.lon, km, recentDays, {
     onProgress: (batch) => {
       accHail = mergeHailRows(spc.hail || [], batch, lsr);
-      push(accHail, accWind, { loading: true, partial: "swdi" });
+      push(accHail, accWind, { loading: true, partial: "swdi", fetchedKm: km });
     },
   });
+
+  lsr = await lsrP;
+  accHail = mergeHailRows([], [], lsr);
+  push(accHail, accWind, { loading: true, partial: "lsr", fetchedKm: km });
+
+  spc = await spcP;
+  accHail = mergeHailRows(spc.hail || [], [], lsr);
+  accWind = spc.wind || [];
+  push(accHail, accWind, { loading: true, partial: "spc", fetchedKm: km });
+
+  const swdiRecent = await swdiP;
   accHail = mergeHailRows(spc.hail || [], swdiRecent || [], lsr);
-  const needDeep = days > recentDays + 7;
-  push(accHail, accWind, { loading: needDeep, partial: "swdi-recent" });
+  const needDeep = deepDays > recentDays + 7 || deepKm > km + 8;
+  push(accHail, accWind, { loading: needDeep, partial: "swdi-recent", fetchedKm: km });
 
   if (needDeep) {
-    const swdiDeep = await fetchSwdiHail(q.lat, q.lon, km, days, {
+    const swdiDeep = await fetchSwdiHail(q.lat, q.lon, deepKm, deepDays, {
       onProgress: (batch) => {
         accHail = mergeHailRows(spc.hail || [], batch, lsr);
-        push(accHail, accWind, { loading: true, partial: "swdi-deep" });
+        push(accHail, accWind, { loading: true, partial: "swdi-deep", fetchedKm: deepKm });
       },
     });
     accHail = mergeHailRows(spc.hail || [], swdiDeep || [], lsr);
   }
 
-  const final = push(accHail, accWind, { loading: false, partial: "done" });
-  lastMapViewStormFetch = { lat: q.lat, lon: q.lon, km };
+  const final = push(accHail, accWind, { loading: false, partial: "done", fetchedKm: deepKm });
+  lastMapViewStormFetch = { lat: q.lat, lon: q.lon, km: deepKm };
   return final;
 }
 
@@ -5561,12 +5590,8 @@ function panToMe() {
 }
 
 function isPhoneUi() {
-  try {
-    if (window.Capacitor?.getPlatform?.() === "android" || window.Capacitor?.getPlatform?.() === "ios") return true;
-  } catch {
-    /* web */
-  }
-  return window.matchMedia?.("(pointer: coarse)").matches === true;
+  // Tablets keep the phone chrome; only true desktop gets mouse/scroll UI.
+  return usePhoneChrome();
 }
 
 function addLocateControl() {
@@ -5798,14 +5823,19 @@ function houseHasUseful(n) {
   return Boolean(u && (u.phone || u.name || u.email));
 }
 
-function rememberHouseUseful(info, { phone = "", name = "", email = "" } = {}) {
+function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "" } = {}) {
   const key = housePhoneKey(info);
   if (!key) return;
   const prev = houseUsefulByKey.get(key) || {};
+  const nextKind =
+    kind === "business" || prev.kind === "business" || isBusinessPhoneSource(kind)
+      ? "business"
+      : kind || prev.kind || "";
   const next = {
     phone: phone || prev.phone || "",
     name: name || prev.name || "",
     email: email || prev.email || "",
+    kind: nextKind === "business" ? "business" : nextKind || "home",
   };
   if (!next.phone && !next.name && !next.email) return;
   houseUsefulByKey.set(key, next);
@@ -5815,13 +5845,22 @@ function rememberHouseUseful(info, { phone = "", name = "", email = "" } = {}) {
   }
 }
 
+function housePhoneKind(n) {
+  const key = housePhoneKey(n);
+  const u = key ? houseUsefulByKey.get(key) : null;
+  if (u?.kind === "business" || n?.phone_kind === "business") return "business";
+  if (isBusinessPhoneSource(n?.source || u?.source)) return "business";
+  return "home";
+}
+
 function houseUsefulTip(n) {
   const key = housePhoneKey(n);
   const u = key ? houseUsefulByKey.get(key) : null;
   const phone = housePhoneFor(n) || n.phone || u?.phone || "";
   const name = String(n.owner_name || u?.name || "").trim();
   const email = String(n.email || u?.email || "").trim();
-  return [name, phone, email].filter(Boolean).join(" · ");
+  const biz = housePhoneKind(n) === "business" ? "Business" : "";
+  return [biz, name, phone, email].filter(Boolean).join(" · ");
 }
 
 /** Pin / dossier found useful public owner info — paint that number green. */
@@ -5894,11 +5933,13 @@ function phoneFlagsEnabled() {
   return fieldOverlay.showPhoneFlags === true;
 }
 
-function phoneFlagIcon(tip = "") {
+function phoneFlagIcon(tip = "", kind = "home") {
   const title = tip ? ` title="${tip}"` : "";
+  const fill = kind === "business" ? "#3d9eff" : "#1dff6e";
+  const cls = kind === "business" ? "has-phone biz" : "has-phone";
   return window.L.divIcon({
     className: "hs-phone-flag",
-    html: `<span class="hs-phone-flag-ico has-phone"${title} aria-hidden="true"><svg viewBox="0 0 20 28" width="18" height="26" focusable="false"><path fill="#0b0b0d" d="M3.2 1.2h2.2v25.5H3.2z"/><path fill="#1dff6e" d="M5.4 2.2h12.2l-3.4 4.6 3.4 4.6H5.4z"/><circle cx="4.3" cy="26.2" r="1.6" fill="#1dff6e"/></svg></span>`,
+    html: `<span class="hs-phone-flag-ico ${cls}"${title} aria-hidden="true"><svg viewBox="0 0 20 28" width="18" height="26" focusable="false"><path fill="#0b0b0d" d="M3.2 1.2h2.2v25.5H3.2z"/><path fill="${fill}" d="M5.4 2.2h12.2l-3.4 4.6 3.4 4.6H5.4z"/><circle cx="4.3" cy="26.2" r="1.6" fill="${fill}"/></svg></span>`,
     iconSize: [20, 28],
     iconAnchor: [4, 26],
   });
@@ -5912,15 +5953,16 @@ function paintHouseLayer(_rings, nums) {
     return;
   }
   const list = (nums || []).filter((n) => houseHasPhone(n));
-  const phoneBits = list.map((n) => `${n.num}|${housePhoneFor(n)}`).join(";");
+  const phoneBits = list.map((n) => `${n.num}|${housePhoneFor(n)}|${housePhoneKind(n)}`).join(";");
   const sig = `${houseCache.key}|flags:${list.length}|${phoneBits}`;
   if (sig === housePaintSig && houseLayer?.getLayers?.().length) return;
   housePaintSig = sig;
   houseLayer.clearLayers();
   for (const n of list) {
     const tip = houseUsefulTip(n).replace(/"/g, "");
+    const kind = housePhoneKind(n);
     const marker = window.L.marker([n.lat, n.lon], {
-      icon: phoneFlagIcon(tip),
+      icon: phoneFlagIcon(tip, kind),
       pane: "houseNums",
       interactive: true,
       keyboard: true,
@@ -5944,17 +5986,18 @@ function housePhonePopupHtml(n) {
   const e164 = phoneDigits(pretty);
   const name = String(n.owner_name || houseUsefulByKey.get(housePhoneKey(n))?.name || "").trim();
   const street = [n.num, n.street].filter(Boolean).join(" ");
+  const biz = housePhoneKind(n) === "business";
   if (!e164) {
     return `<div class="hs-house-pop"><strong>${escHousePop(street || n.num)}</strong><span class="hs-place-miss">No phone yet</span></div>`;
   }
-  return `<div class="hs-house-pop">
+  return `<div class="hs-house-pop${biz ? " biz" : ""}">
     <strong class="hs-house-pop-num">${escHousePop(street || n.num)}</strong>
-    ${name ? `<span class="hs-house-pop-who">${escHousePop(name)}</span>` : ""}
+    ${name ? `<span class="hs-house-pop-who">${escHousePop(name)}${biz ? " · Business" : ""}</span>` : biz ? `<span class="hs-house-pop-who">Business</span>` : ""}
     <div class="hs-house-pop-actions">
       <a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(pretty)}</a>
       <a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>
     </div>
-    <span class="hs-house-pop-hint">Hold flag to copy</span>
+    <span class="hs-house-pop-hint">${useDesktopChrome() ? "Right-click or long-press to copy" : "Hold flag to copy"}</span>
   </div>`;
 }
 
@@ -6136,11 +6179,13 @@ async function enrichVisibleHouseInfo(nums, gen) {
       const phone = contacts?.owner_phone || "";
       const name = assessor?.name || contacts?.owner_name || "";
       const email = contacts?.owner_email || "";
+      const kind = contacts?.phone_kind || (isBusinessPhoneSource(contacts?.source) ? "business" : "home");
       if (phone || name || email) {
         n.phone = phone || n.phone || "";
         n.owner_name = name || n.owner_name || "";
         n.email = email || n.email || "";
-        rememberHouseUseful(n, { phone, name, email });
+        n.phone_kind = kind;
+        rememberHouseUseful(n, { phone, name, email, kind });
         housePaintSig = "";
         paintHouseLayer([], houseCache.nums);
         const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
@@ -7200,6 +7245,11 @@ function unlockHailTierGesture() {
  */
 function bindAddressSwipeToStormSheet(el) {
   if (!el || el.dataset.addrSwipeBound) return;
+  // Desktop: mouse + page scroll — no Instagram-style swipe chrome.
+  if (useDesktopChrome()) {
+    el.dataset.addrSwipeBound = "desktop";
+    return;
+  }
   el.dataset.addrSwipeBound = "1";
   let active = false;
   let dragging = false; // upward feed
@@ -7435,6 +7485,10 @@ function scrollViewToStormSheet(smooth = true) {
 export function syncHailBottomChrome() {
   const panel = document.getElementById("hs-bottom-panel");
   const field = document.getElementById("hs-field");
+  // Desktop web: always show the storm list under the map (no swipe tiers).
+  if (useDesktopChrome() && hailBottomTier !== "hidden") {
+    hailBottomTier = "sheet";
+  }
   if (panel) {
     panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
     panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
@@ -7638,6 +7692,13 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
 export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   if (!view || !shell || shell.dataset.scrollExpandBound) return;
   shell.dataset.scrollExpandBound = "1";
+  if (useDesktopChrome()) {
+    // Desktop: fixed map + scrollable sheet — no pull-to-fullscreen / tab swipes.
+    hailBottomTier = "sheet";
+    syncHailBottomChrome();
+    setWxMapExpanded(false, { scrollToSheet: false });
+    return;
+  }
   // Address peek → storm sheet is feed-scroll (bindAddressSwipeToStormSheet)
   bindAddressSwipeToStormSheet(document.getElementById("hs-bottom-panel"));
   const mapBar = shell.querySelector(".hs-map-bar");

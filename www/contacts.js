@@ -877,13 +877,16 @@ export function extractContactsFromHtml(html, parts = {}, opts = {}) {
 }
 
 export function mergeContacts(...parts) {
-  const hit = { name: "", phone: "", email: "", website: "", facebook: "", instagram: "", zillow_url: "" };
+  const hit = { name: "", phone: "", email: "", website: "", facebook: "", instagram: "", zillow_url: "", source: "" };
   for (const p of parts) {
     if (!p) continue;
     if (!hit.name && (p.name || p.owner_name)) hit.name = String(p.name || p.owner_name).trim();
     if (!hit.phone && (p.phone || p.owner_phone)) {
       const formatted = formatPhone(p.phone || p.owner_phone);
-      if (formatted && !isJunkPhone(formatted)) hit.phone = formatted;
+      if (formatted && !isJunkPhone(formatted)) {
+        hit.phone = formatted;
+        hit.source = String(p.source || "").trim();
+      }
     }
     if (!hit.email && (p.email || p.owner_email)) {
       const e = String(p.email || p.owner_email).trim().toLowerCase();
@@ -896,6 +899,11 @@ export function mergeContacts(...parts) {
     if (z && isUsableZillowUrl(z)) hit.zillow_url = z;
   }
   return hit;
+}
+
+/** Chamber / YP / apartments (and similar) → blue business flags. */
+export function isBusinessPhoneSource(source) {
+  return /chamber|yellowpages|apartments|realtor|yp\b|business|member/i.test(String(source || ""));
 }
 
 async function fetchHtml(url, ms = 9000) {
@@ -1060,11 +1068,14 @@ export async function lookupFlagPhone(lat, lon, address = "") {
     const osm = await overpassContacts(lat, lon, parts).catch(() => null);
     if (osm) hit = mergeContacts(hit, osm);
   }
+  const phoneKind = isBusinessPhoneSource(hit.source) ? "business" : hit.phone ? "home" : "";
   return {
     owner_name: hit.name || "",
     owner_phone: hit.phone || "",
     owner_email: hit.email || "",
     zillow_url: hit.zillow_url || "",
+    source: hit.source || "",
+    phone_kind: phoneKind,
   };
 }
 
