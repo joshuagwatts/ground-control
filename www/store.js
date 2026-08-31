@@ -19,7 +19,7 @@ function blank() {
       showMyLocation: true,
       showHailDots: true,
       showRadar: false,
-      showPhoneFlags: true,
+      showPhoneFlags: false,
       done_pin_scale: 1,
       humor: 40,
       honesty: 98,

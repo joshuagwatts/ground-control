@@ -46,10 +46,14 @@ export const DEFAULT_FILTERS = {
   windMph: 38,
   days: 730,
   year: "all",
-  // Biggest storm first — map-view discovery should surface the worst day ASAP.
+  // Map view (no address): biggest storm first.
   sort: "storm",
   stormSize: "any",
 };
+/** Pin / address selected — newest day with ≥1″ hail. */
+export const PIN_AUTO_FILTERS = { hailIn: 1, sort: "date" };
+/** No address — keep discovery aimed at the biggest storm. */
+export const MAP_AUTO_FILTERS = { hailIn: 0.75, sort: "storm" };
 /** First paint radius — center-out so OKC lists land in ~1 request. */
 export const PIN_FETCH_FAST_KM = 40;
 /** Background widen after first paint (regional storm footprint). */
@@ -253,7 +257,7 @@ let fieldOverlay = {
   showMarks: true,
   showDone: true,
   showHailDots: true,
-  showPhoneFlags: true,
+  showPhoneFlags: false,
   onMark: null,
   onDone: null,
 };
@@ -3288,6 +3292,7 @@ export function clearWxPin() {
   pinLat = null;
   pinLon = null;
   clearStormDateSelection();
+  applyContextStormFilters("map");
   lastHailDrawSig = "";
   clearPinRadius();
   if (pin) {
@@ -3476,11 +3481,19 @@ function windNearPin(rows, day = null) {
 export function setWxPin(lat, lon) {
   pinLat = Number(lat);
   pinLon = Number(lon);
+  applyContextStormFilters("pin");
   placeSelectPin([lat, lon]);
   clearPinRadius();
   if (lastHailRows.length || lastWindRows.length) {
     drawHailMarkers(lastHailRows, lastWindRows);
   }
+}
+
+/** Switch automatic hail filters for pin vs map-view (user can still change them after). */
+export function applyContextStormFilters(mode) {
+  const next = mode === "pin" ? PIN_AUTO_FILTERS : MAP_AUTO_FILTERS;
+  wxFilters.hailIn = next.hailIn;
+  wxFilters.sort = next.sort;
 }
 
 /** Search-radius circle removed — hail fills the map when a storm date is selected. */
@@ -5851,7 +5864,7 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
  * Only drawn when the Flags layer is on and a public phone is known.
  */
 function phoneFlagsEnabled() {
-  return fieldOverlay.showPhoneFlags !== false;
+  return fieldOverlay.showPhoneFlags === true;
 }
 
 function phoneFlagIcon(tip = "") {
@@ -6526,13 +6539,14 @@ export function setFieldOverlay({
   showMarks = true,
   showDone = true,
   showHailDots = true,
-  showPhoneFlags = true,
+  showPhoneFlags = false,
   onMark,
   onDone,
   onMarkScale,
 } = {}) {
   const prevDots = fieldOverlay.showHailDots !== false;
-  const prevFlags = fieldOverlay.showPhoneFlags !== false;
+  const prevFlags = fieldOverlay.showPhoneFlags === true;
+  const nextFlags = showPhoneFlags === true;
   fieldOverlay = {
     marks,
     done,
@@ -6540,7 +6554,7 @@ export function setFieldOverlay({
     showMarks,
     showDone,
     showHailDots,
-    showPhoneFlags,
+    showPhoneFlags: nextFlags,
     onMark,
     onMarkScale,
     onDone,
@@ -6549,10 +6563,20 @@ export function setFieldOverlay({
     lastHailDrawSig = "";
     drawHailMarkers(lastHailRows, lastWindRows);
   }
-  if (prevFlags !== (showPhoneFlags !== false)) {
+  if (prevFlags !== nextFlags) {
     housePaintSig = "";
-    if (showPhoneFlags !== false) scheduleHouseNumbers();
-    else houseLayer?.clearLayers?.();
+    if (nextFlags) {
+      // Start detecting as soon as Flags is turned on — don't wait on hold/debounce.
+      houseHoldUntil = 0;
+      houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
+      if (houseTimer) {
+        clearTimeout(houseTimer);
+        houseTimer = 0;
+      }
+      void refreshHouseNumbers();
+    } else {
+      houseLayer?.clearLayers?.();
+    }
   }
   if (!map || !window.L) return;
   ensureFieldPanes();
@@ -8183,11 +8207,15 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
 }
 
 function syncHailStormDateSelection(data) {
-  // Checked storm dates stay on until the user toggles them off — never auto-clear
-  // while radar/spotter batches are still landing.
+  // Checked storm dates stay on until the user toggles them off.
   if (hasSelectedStormDates()) return;
-  const days = hailScopeDays(data);
-  if (!days.length) return;
+  // Map view: list biggest-first via sort — do not auto-check a day.
+  if (!wxPinSelected()) return;
+  // Address selected: auto-show the newest storm day with ≥1″ hail.
+  const days = hailScopeDays(data, { ...wxFilters, hailIn: Math.max(Number(wxFilters.hailIn) || 0, 1), sort: "date" });
+  const pick = days.find((h) => (parseFloat(h.size_in) || 0) >= 1) || days[0];
+  if (!pick?.date) return;
+  setStormDateSelection([pick.date], { replace: true });
 }
 
 export function clearSelectedStormDate() {
@@ -8279,17 +8307,24 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
   const hailGrew = hailRows.length !== lastSyncHailN || radarN !== lastSyncRadarN;
   lastSyncHailN = hailRows.length;
   lastSyncRadarN = radarN;
+  const filterSig = `${wxFilters.hailIn}|${wxFilters.sort}|${wxFilters.km}|${wxFilters.days}|${wxFilters.year}`;
 
   if (locked) {
     // Keep selection; debounce zone rebuilds so SWDI batches don't thrash the map.
     if (hailGrew || fit) scheduleSelectedStormZoneRedraw(hailRows, []);
-    softUpdateHailScopeSheet(root, data, esc, { onRefetch });
+    if (root.dataset.hsFilterSig !== filterSig || !root.querySelector(".hs-dates")) {
+      root.dataset.hsFilterSig = filterSig;
+      renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
+    } else {
+      softUpdateHailScopeSheet(root, data, esc, { onRefetch });
+    }
   } else if (data._meta?.loading && root.querySelector(".hs-dates")) {
     // Progressive map-view / pin loads — append dates without rebuilding chrome.
     softUpdateHailScopeSheet(root, data, esc, { onRefetch });
   } else {
     if (hailGrew) lastHailDrawSig = "";
     drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
+    root.dataset.hsFilterSig = filterSig;
     renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   }
   if (revealSheet) revealHailStormSheet({ interactive: true, scroll: false });
@@ -8311,9 +8346,8 @@ function hailScopePinHtml(data, esc) {
   }
   const addr = data.address || "Dropped pin";
   const loading = data._meta?.loading ? " · loading radar…" : "";
-  return `<p class="hs-pin hs-pin-ready"><strong class="hs-addr-copy" role="button" tabindex="0" title="Tap to copy address" data-copy="${esc(addr)}">${esc(addr)}</strong>${
-    pinLine || `Tap storm dates to overlay hail zones (multi-check)${loading}`
-  }</p>`;
+  const hint = pinLine || `Newest ≥1″ storm auto-selected · tap dates to multi-check${loading}`;
+  return `<p class="hs-pin hs-pin-ready"><strong class="hs-addr-copy" role="button" tabindex="0" title="Tap to copy address" data-copy="${esc(addr)}">${esc(addr)}</strong>${hint}</p>`;
 }
 
 function hailScopeHtml(data, days, esc) {

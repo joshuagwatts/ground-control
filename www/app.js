@@ -66,7 +66,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.148";
+} from "./wx.js?v=0.2.149";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1212,7 +1212,7 @@ function paintFieldMap() {
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
     showHailDots: db.settings.showHailDots !== false,
-    showPhoneFlags: db.settings.showPhoneFlags !== false,
+    showPhoneFlags: db.settings.showPhoneFlags === true,
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onDone: (h) => {
@@ -1568,7 +1568,7 @@ function paintLayerToggles() {
   const marksOn = db.settings.showMarks !== false;
   const meOn = db.settings.showMyLocation !== false;
   const dotsOn = db.settings.showHailDots !== false;
-  const flagsOn = db.settings.showPhoneFlags !== false;
+  const flagsOn = db.settings.showPhoneFlags === true;
   el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="dots" class="hs-dots-toggle ${dotsOn ? "on" : ""}" aria-label="Hail dots" title="Show spotter (red) and radar (green) dots"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-g"></i></span>Dots</button>
