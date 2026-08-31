@@ -3449,7 +3449,7 @@ function hailFootprintM(sizeIn, source) {
 const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.5, 2.0, 2.5];
 /** Gap-closing distance per threshold — km, NOT cells, so shape ≠ f(resolution).
  *  Fringe bands close farther so green radar dots along a track merge into one corridor. */
-const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 16 : thr <= 0.75 ? 12 : thr <= 1 ? 9 : thr <= 1.5 ? 6 : 4);
+const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 14 : thr <= 0.75 ? 10 : thr <= 1 ? 8 : thr <= 1.5 ? 5.5 : 3.5);
 
 function blurFloatField(field, w, h, passes = 2) {
   let src = field;
@@ -3722,17 +3722,17 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
 
 /**
  * Build hail-swath polygons from point/radar hits.
- * Never paint raw SWDI polygons — those are radar grid rectangles and look like
- * boxes even after Chaikin. Fold every hit into a blurred mesh (0.2.121 look).
- * Cluster statewide days so one coarse grid can't voxelize a city cell.
+ * Target look: elongated organic corridors (0.2.121 screenshot) — nested unique
+ * contours — NEVER a pile of soft circles or rounded SWDI boxes.
  */
 function buildHailSwathRings(rawPts, zone = {}) {
   const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   if (!pts.length) return [];
+  // One isolated hit is the only case where a soft disk is honest.
   if (pts.length === 1) {
     const p = pts[0];
     const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-    return ensureRadarInsideBands(softCircleBands(p.lat, p.lon, sz, p), pts);
+    return softCircleBands(p.lat, p.lon, sz, p);
   }
 
   let minLat = Infinity;
@@ -3750,14 +3750,14 @@ function buildHailSwathRings(rawPts, zone = {}) {
     haversineKm(minLat, maxLon, maxLat, minLon),
     1,
   );
-  // Local / metro corridor → one continuous mesh (screenshot look).
-  // Do NOT use point-count alone — a sparse statewide day is still huge in span.
-  if (spanKm <= 95) {
+  // Metro / regional corridor → one continuous anisotropic mesh.
+  if (spanKm <= 140) {
     return buildHailSwathRingsCluster(pts, zone);
   }
 
-  // Statewide: ~55 km clusters keep each storm cell on a fine mesh.
-  const clusters = clusterPoints(pts, 55);
+  // Statewide: keep cells on a fine mesh; never soft-circle a lone radar in a storm day
+  // when neighbors exist within ~70 km — fold them into the same corridor.
+  const clusters = clusterPoints(pts, 70);
   const out = [];
   for (const cluster of clusters) {
     if (cluster.length === 1) {
@@ -3799,17 +3799,35 @@ function isAxisBoxRing(ring) {
     const dLon = Math.abs(a[1] - b[1]);
     if (dLat < 1e-12 && dLon < 1e-12) continue;
     n++;
-    // Densified edges are still axis-aligned even with many vertices.
     if (dLat < 1e-5 || dLon < 1e-5) axis++;
   }
   if (n < 4) return false;
   const axisFrac = axis / n;
   const bbox = Math.max(1e-18, (maxLat - minLat) * (maxLon - minLon));
   const fill = Math.abs(area2) / 2 / bbox;
-  // Classic 4–12 corner boxes, or densified rectangles that fill their AABB.
-  if (axisFrac >= 0.7) return true;
-  if (fill >= 0.78 && axisFrac >= 0.5) return true;
+  // True SWDI rectangles: few verts + orthogonal edges, or densified box filling its AABB.
+  // Do NOT flag long Chaikin-smoothed corridors just because some edges are near-cardinal.
+  if (pts.length <= 8 && axisFrac >= 0.75) return true;
+  if (pts.length <= 48 && fill >= 0.85 && axisFrac >= 0.62) return true;
   return false;
+}
+
+/** Coefficient of variation of radius — low means a near-circle (bad for swaths). */
+function ringRadiusCv(ring) {
+  const c = ringCentroidLatLon(ring);
+  if (!c || !ring || ring.length < 5) return 0;
+  const dists = [];
+  for (const p of ring) {
+    if (!p) continue;
+    const d = haversineKm(c.lat, c.lon, p[0], p[1]);
+    if (d > 1e-6) dists.push(d);
+  }
+  if (dists.length < 4) return 0;
+  const mean = dists.reduce((a, b) => a + b, 0) / dists.length;
+  if (!(mean > 0)) return 0;
+  let v = 0;
+  for (const d of dists) v += (d - mean) * (d - mean);
+  return Math.sqrt(v / dists.length) / mean;
 }
 
 function softCircleBands(lat, lon, sizeIn, p) {
@@ -3818,8 +3836,7 @@ function softCircleBands(lat, lon, sizeIn, p) {
   const bands = [];
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     if (sz + 0.01 < thr) continue;
-    // Outer soft fringe for weaker thresholds.
-    const scale = thr <= 0.5 ? 1.55 : thr <= 0.75 ? 1.2 : thr <= 1 ? 0.95 : thr <= 1.5 ? 0.72 : 0.5;
+    const scale = thr <= 0.5 ? 1.45 : thr <= 0.75 ? 1.15 : thr <= 1 ? 0.92 : thr <= 1.5 ? 0.7 : 0.48;
     bands.push({
       ring: relaxRing(chaikinSmoothRing(ringPolygon(lat, lon, baseM * scale, 36), 3), 2),
       maxSize: thr,
@@ -3841,11 +3858,29 @@ function softCircleBands(lat, lon, sizeIn, p) {
       ];
 }
 
+/** Principal storm axis in local km space — elongates kernels into corridors. */
+function stormAxisFromPts(pts, toXY) {
+  if (!pts || pts.length < 2) return { ax: 1, ay: 0 };
+  const xy = pts.map((p) => toXY(p.lat, p.lon));
+  const mx = xy.reduce((a, p) => a + p.x, 0) / xy.length;
+  const my = xy.reduce((a, p) => a + p.y, 0) / xy.length;
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  for (const p of xy) {
+    const dx = p.x - mx;
+    const dy = p.y - my;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+  }
+  const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy || 1e-9);
+  return { ax: Math.cos(ang), ay: Math.sin(ang) };
+}
+
 function buildHailSwathRingsCluster(pts, zone = {}) {
   const swdiRings = [];
 
-  // Snap the local projection origin to a fixed lattice so the grid is anchored
-  // to geography — pan/zoom re-meshes land on the same cells (no shape jitter).
   const oLat = Math.round((pts.reduce((a, p) => a + p.lat, 0) / pts.length) * 4) / 4;
   const oLon = Math.round((pts.reduce((a, p) => a + p.lon, 0) / pts.length) * 4) / 4;
   const cos = Math.cos((oLat * Math.PI) / 180);
@@ -3857,6 +3892,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     oLat + yKm / 111.32,
     oLon + xKm / (111.32 * Math.max(0.2, cos)),
   ];
+  const { ax, ay } = stormAxisFromPts(pts, toXY);
 
   let minX = Infinity;
   let minY = Infinity;
@@ -3865,13 +3901,13 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const kernels = pts.map((p) => {
     const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
     const spot = isSpotterHail(p);
-    // Radar (green) drives the corridor — larger footprint than spotters.
-    const rKm = (hailFootprintM(sz, p.source) / 1000) * (spot ? 1 : 1.4);
+    // Radar drives corridor length; keep cross-track tighter so shapes stay unique.
+    const rKm = (hailFootprintM(sz, p.source) / 1000) * (spot ? 0.95 : 1.15);
     const { x, y } = toXY(p.lat, p.lon);
-    minX = Math.min(minX, x - rKm);
-    maxX = Math.max(maxX, x + rKm);
-    minY = Math.min(minY, y - rKm);
-    maxY = Math.max(maxY, y + rKm);
+    minX = Math.min(minX, x - rKm * 1.6);
+    maxX = Math.max(maxX, x + rKm * 1.6);
+    minY = Math.min(minY, y - rKm * 1.6);
+    maxY = Math.max(maxY, y + rKm * 1.6);
     return { x, y, rKm, size: sz, spot };
   });
   for (const p of pts) {
@@ -3883,58 +3919,61 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     const coreR = hailFootprintM(sz, "noaa-swdi-radar") / 1000;
     const pushK = (lat, lon, rKm) => {
       const { x, y } = toXY(lat, lon);
-      minX = Math.min(minX, x - rKm);
-      maxX = Math.max(maxX, x + rKm);
-      minY = Math.min(minY, y - rKm);
-      maxY = Math.max(maxY, y + rKm);
+      minX = Math.min(minX, x - rKm * 1.4);
+      maxX = Math.max(maxX, x + rKm * 1.4);
+      minY = Math.min(minY, y - rKm * 1.4);
+      maxY = Math.max(maxY, y + rKm * 1.4);
       kernels.push({ x, y, rKm, size: sz, spot: false });
     };
-    // Radar grid rectangles: centroid kernel only — edge samples re-stamp the box.
+    // Boxes → centroid only (no rectangular stamp). Organic SWDI → edge samples.
     if (isAxisBoxRing(ring)) {
-      pushK(cLat, cLon, coreR * 0.92);
+      pushK(cLat, cLon, coreR * 0.85);
       continue;
     }
-    const edgeR = Math.max(0.22, coreR * 0.36);
+    const edgeR = Math.max(0.2, coreR * 0.32);
     pushK(cLat, cLon, coreR);
-    const step = Math.max(1, Math.floor(ring.length / 24));
+    const step = Math.max(1, Math.floor(ring.length / 28));
     for (let i = 0; i < ring.length - 1; i += step) {
       const pt = ring[i];
       if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
       pushK(pt[0], pt[1], edgeR);
     }
   }
-  const pad = 2.0;
+  const pad = 2.4;
   minX -= pad;
   minY -= pad;
   maxX += pad;
   maxY += pad;
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
-  // Cluster span is local — keep cells fine enough that a footprint isn't 2×2 boxes.
-  const maxCells = 192;
-  const cellKm = Math.max(0.1, Math.min(0.45, Math.ceil(span / maxCells / 0.05) * 0.05));
+  const maxCells = 208;
+  const cellKm = Math.max(0.1, Math.min(0.4, Math.ceil(span / maxCells / 0.05) * 0.05));
   minX = Math.floor(minX / cellKm) * cellKm;
   minY = Math.floor(minY / cellKm) * cellKm;
-  const w = Math.min(maxCells + 2, Math.max(20, Math.ceil((maxX - minX) / cellKm)));
-  const h = Math.min(maxCells + 2, Math.max(20, Math.ceil((maxY - minY) / cellKm)));
+  const w = Math.min(maxCells + 2, Math.max(24, Math.ceil((maxX - minX) / cellKm)));
+  const h = Math.min(maxCells + 2, Math.max(24, Math.ceil((maxY - minY) / cellKm)));
   const field = new Float32Array(w * h);
 
   for (const k of kernels) {
-    const reach = k.rKm * (k.spot ? 1.4 : 1.85);
+    const alongSig = Math.max(0.18, k.rKm * (k.spot ? 0.85 : 1.45));
+    const acrossSig = Math.max(0.12, k.rKm * (k.spot ? 0.55 : 0.38));
+    const reach = Math.max(alongSig, acrossSig) * 2.6;
     const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const sigma = Math.max(0.14, k.rKm * (k.spot ? 0.72 : 0.98));
-    const twoSig2 = 2 * sigma * sigma;
-    const radarBoost = k.spot ? 1 : 2.35;
+    const radarBoost = k.spot ? 1 : 2.1;
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
         const cx = minX + (gx + 0.5) * cellKm;
         const cy = minY + (gy + 0.5) * cellKm;
-        const d2 = (cx - k.x) * (cx - k.x) + (cy - k.y) * (cy - k.y);
-        if (d2 > reach * reach) continue;
-        const contrib = k.size * radarBoost * Math.exp(-d2 / twoSig2);
+        const dx = cx - k.x;
+        const dy = cy - k.y;
+        const along = dx * ax + dy * ay;
+        const across = -dx * ay + dy * ax;
+        const d2 = (along * along) / (alongSig * alongSig) + (across * across) / (acrossSig * acrossSig);
+        if (d2 > 6.25) continue;
+        const contrib = k.size * radarBoost * Math.exp(-0.5 * d2);
         const i = gy * w + gx;
         if (contrib > field[i]) field[i] = contrib;
       }
@@ -3945,7 +3984,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
-  const softField = blurFloatField(field, w, h, 4);
+  const softField = blurFloatField(field, w, h, 3);
 
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     const binary = new Uint8Array(w * h);
@@ -3961,17 +4000,16 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      let smooth = relaxRing(chaikinSmoothRing(ring, 7), 4);
-      if (isAxisBoxRing(smooth) || ringBoxiness(smooth) > 0.45) {
-        const c = ringCentroidLatLon(smooth);
-        if (!c) continue;
-        const rM = Math.max(650, Math.sqrt(ringAreaApproxM2(smooth) / Math.PI));
-        smooth = relaxRing(chaikinSmoothRing(ringPolygon(c.lat, c.lon, rM, 36), 3), 2);
+      // Keep the walked contour — never collapse to a circle (that killed unique shapes).
+      let smooth = relaxRing(chaikinSmoothRing(ring, 6), 3);
+      if (isAxisBoxRing(smooth)) {
+        // Remesh boxy stairs with more smoothing only — still not a disk.
+        smooth = relaxRing(chaikinSmoothRing(ring, 8), 4);
       }
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
       out.push({
-        ring: padPolygon(smooth, 36),
+        ring: padPolygon(smooth, 48),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
@@ -3981,27 +4019,42 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   }
 
   if (!out.length) {
+    // Fallback: unique hull of hits (still not stacked identical circles).
+    const hull = convexHullLatLon(pts);
+    if (hull && hull.length >= 3) {
+      const base = ensureClosedRing(hull);
+      const sz = Math.max(...pts.map((p) => parseFloat(p.size_in) || 0), parseFloat(zone.size_in) || 0.75);
+      const bands = [];
+      for (const thr of HAIL_SWATH_THRESHOLDS) {
+        if (sz + 0.01 < thr) continue;
+        const padM = thr <= 0.5 ? 900 : thr <= 0.75 ? 550 : thr <= 1 ? 320 : thr <= 1.5 ? 160 : 60;
+        bands.push({
+          ring: relaxRing(chaikinSmoothRing(padPolygon(base, padM), 5), 3),
+          maxSize: thr,
+          hits: pts.length,
+          confirmed: spotConfirm || radarCount > 0,
+          source: radarCount ? "mesh-swath" : "spotter",
+        });
+      }
+      return ensureRadarInsideBands(bands, pts);
+    }
     const p = pts[0];
-    return ensureRadarInsideBands(
-      softCircleBands(p.lat, p.lon, parseFloat(zone.size_in) || parseFloat(p.size_in) || 0.75, p),
-      pts,
-    );
+    return softCircleBands(p.lat, p.lon, parseFloat(zone.size_in) || parseFloat(p.size_in) || 0.75, p);
   }
   out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
   return ensureRadarInsideBands(out, pts);
 }
 
 /**
- * Hard guarantee: every green radar hit for the day lies inside the outermost
- * zone band. Gaps between greens = likely hail corridor — pad or add a soft
- * bubble so dots never float outside the fill.
+ * Guarantee every green radar hit sits inside the outer band — by expanding /
+ * rebuilding a unique corridor hull, never by dropping soft-circle bubbles.
  */
 function ensureRadarInsideBands(bands, pts) {
   const radar = (pts || []).filter(
     (p) => p && !isSpotterHail(p) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon)),
   );
   if (!radar.length) return bands || [];
-  const out = (bands || [])
+  let out = (bands || [])
     .filter((b) => Array.isArray(b?.ring) && b.ring.length >= 3)
     .map((b) => ({ ...b, ring: ensureClosedRing(b.ring) }));
   let thr = 0.5;
@@ -4012,57 +4065,62 @@ function ensureRadarInsideBands(bands, pts) {
   const inOuter = (lat, lon) =>
     out.some((b) => Number(b.maxSize) <= thr + 0.05 && pointInLatLonRing(lat, lon, b.ring));
 
-  for (const p of radar) {
-    if (inOuter(p.lat, p.lon)) continue;
-    let best = -1;
-    let bestD = Infinity;
-    for (let i = 0; i < out.length; i++) {
-      if (Number(out[i].maxSize) > thr + 0.05) continue;
-      const c = ringCentroidLatLon(out[i].ring);
-      if (!c) continue;
-      const d = haversineKm(p.lat, p.lon, c.lat, c.lon);
-      if (d < bestD) {
-        bestD = d;
-        best = i;
-      }
+  const misses = radar.filter((p) => !inOuter(p.lat, p.lon));
+  if (!misses.length) return out;
+
+  // Seed a corridor hull from existing outer verts + every radar hit.
+  const seed = [];
+  for (const b of out) {
+    if (Number(b.maxSize) > thr + 0.05) continue;
+    const ring = b.ring;
+    const step = Math.max(1, Math.floor((ring.length - 1) / 48));
+    for (let i = 0; i < ring.length - 1; i += step) {
+      seed.push({ lat: ring[i][0], lon: ring[i][1] });
     }
-    if (best >= 0) {
-      let ring = out[best].ring;
-      let covered = false;
-      for (let padM = 350; padM <= 9000; padM += 350) {
-        ring = padPolygon(out[best].ring, padM);
-        if (pointInLatLonRing(p.lat, p.lon, ring)) {
-          out[best].ring = ring;
-          covered = true;
-          break;
+  }
+  for (const p of radar) seed.push({ lat: p.lat, lon: p.lon });
+  for (const p of pts || []) {
+    if (!Number.isFinite(p?.lat) || !Number.isFinite(p?.lon)) continue;
+    seed.push({ lat: p.lat, lon: p.lon });
+  }
+  const hull = convexHullLatLon(seed);
+  if (hull && hull.length >= 3) {
+    let ring = ensureClosedRing(hull);
+    ring = relaxRing(chaikinSmoothRing(padPolygon(ring, 700), 6), 3);
+    // Drop prior outer disks/blobs; keep stronger cores.
+    out = out.filter((b) => Number(b.maxSize) > thr + 0.05);
+    out.unshift({
+      ring,
+      maxSize: thr,
+      hits: radar.length,
+      confirmed: true,
+      source: "mesh-swath",
+    });
+  } else {
+    // Last resort: pad nearest outer ring until misses are inside.
+    for (const p of misses) {
+      let best = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < out.length; i++) {
+        if (Number(out[i].maxSize) > thr + 0.05) continue;
+        const c = ringCentroidLatLon(out[i].ring);
+        if (!c) continue;
+        const d = haversineKm(p.lat, p.lon, c.lat, c.lon);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
         }
       }
-      if (covered) continue;
-      out[best].ring = ring;
-      if (pointInLatLonRing(p.lat, p.lon, out[best].ring)) continue;
+      if (best < 0) continue;
+      for (let padM = 400; padM <= 10000; padM += 400) {
+        const next = padPolygon(out[best].ring, padM);
+        if (pointInLatLonRing(p.lat, p.lon, next)) {
+          out[best].ring = next;
+          break;
+        }
+        out[best].ring = next;
+      }
     }
-    const sz = parseFloat(p.size_in) || 0.75;
-    const rM = Math.max(hailFootprintM(sz, p.source || "noaa-swdi-radar") * 1.4, 1500);
-    out.push({
-      ring: relaxRing(chaikinSmoothRing(ringPolygon(p.lat, p.lon, rM, 36), 3), 2),
-      maxSize: thr,
-      hits: 1,
-      confirmed: true,
-      source: "radar-merge",
-    });
-  }
-
-  // Final pass — still outside after pad → dedicated bubble (never leave a green out).
-  for (const p of radar) {
-    if (inOuter(p.lat, p.lon)) continue;
-    const rM = Math.max(hailFootprintM(parseFloat(p.size_in) || 0.75, "noaa-swdi-radar") * 1.55, 1800);
-    out.push({
-      ring: relaxRing(chaikinSmoothRing(ringPolygon(p.lat, p.lon, rM, 36), 3), 2),
-      maxSize: thr,
-      hits: 1,
-      confirmed: true,
-      source: "radar-merge",
-    });
   }
   out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
   return out;

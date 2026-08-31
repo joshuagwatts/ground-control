@@ -49,6 +49,8 @@ const fns = [
   "softCircleBands",
   "ringAreaApproxM2",
   "ringBoxiness",
+  "ringRadiusCv",
+  "stormAxisFromPts",
   "clusterPoints",
   "buildHailSwathRingsCluster",
   "ensureRadarInsideBands",
@@ -79,7 +81,7 @@ const stubs = {
 };
 const factory = new Function(
   ...Object.keys(stubs),
-  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness, pointInLatLonRing };`,
+  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness, ringRadiusCv, pointInLatLonRing };`,
 );
 const g = factory(...Object.values(stubs));
 g.nestHailBandPolys = g.stackHailBandPolys;
@@ -324,6 +326,14 @@ for (let i = 0; i < 60; i++) {
     "all green radar dots inside outer zone",
     rings.length >= 1 && missed === 0,
     `rings=${rings.length} outer=${outerThr} missed=${missed}/${radar.length}`,
+  );
+  const outer = rings.filter((r) => Number(r.maxSize) <= outerThr + 0.05);
+  const maxCv = Math.max(0, ...outer.map((r) => g.ringRadiusCv(r.ring)));
+  // Elongated corridor: radius CV high enough that it is not a soft disk.
+  check(
+    "green corridor is unique not a circle",
+    maxCv >= 0.12,
+    `outerBands=${outer.length} maxRadiusCv=${maxCv.toFixed(3)}`,
   );
 }
 
