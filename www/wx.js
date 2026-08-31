@@ -1351,10 +1351,10 @@ const MAP_MAX_ZOOM = 22;
 const MAP_MIN_ZOOM = 3;
 /** Max hail fetch radius when zoomed out to regional / multi-state view. */
 const MAP_HAIL_MAX_KM = 450;
-const HOUSE_NUM_ZOOM = 15;
-/** Pad OSM/phone parse well past the viewport so flags are ready as you pan. */
-const HOUSE_FETCH_PAD = 0.9;
-const HOUSE_ENRICH_MAX = 22;
+const HOUSE_NUM_ZOOM = 14;
+/** Pad OSM/phone parse past the viewport so flags are ready as you pan. */
+const HOUSE_FETCH_PAD = 0.4;
+const HOUSE_ENRICH_MAX = 28;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -6120,16 +6120,27 @@ async function enrichVisibleHouseInfo(nums, gen) {
         rememberHouseUseful(n, { phone, name, email });
         housePaintSig = "";
         paintHouseLayer([], houseCache.nums);
+        const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
+        emitPhoneFlagsStatus(`${flags} phone flag${flags === 1 ? "" : "s"}`);
       }
     } catch {
       /* keep scanning */
     }
   };
-  for (let i = 0; i < queue.length; i += 2) {
+  emitPhoneFlagsStatus(`Scanning phones… 0/${queue.length}`);
+  for (let i = 0; i < queue.length; i += 3) {
     if (gen !== houseGen || !map || !phoneFlagsEnabled()) return;
-    await Promise.all([runOne(queue[i]), queue[i + 1] ? runOne(queue[i + 1]) : null]);
-    await new Promise((r) => setTimeout(r, 240));
+    await Promise.all([
+      runOne(queue[i]),
+      queue[i + 1] ? runOne(queue[i + 1]) : null,
+      queue[i + 2] ? runOne(queue[i + 2]) : null,
+    ]);
+    const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
+    emitPhoneFlagsStatus(`Scanning… ${Math.min(i + 3, queue.length)}/${queue.length} · ${flags} flags`);
+    await new Promise((r) => setTimeout(r, 120));
   }
+  const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
+  emitPhoneFlagsStatus(flags ? `${flags} phone flag${flags === 1 ? "" : "s"}` : "No public phones found yet");
 }
 
 async function arcgisGet(url, timeoutMs = 14000) {
@@ -6270,6 +6281,52 @@ async function fetchOsmHouseData(south, west, north, east) {
   return { rings, nums };
 }
 
+/** Address points only — skip building footprints so Overpass returns fast for Flags. */
+async function fetchOsmHouseNums(south, west, north, east) {
+  const q = `[out:json][timeout:22][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
+  const urls = [
+    `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
+    `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
+    `https://overpass.osm.ch/api/interpreter?data=${encodeURIComponent(q)}`,
+  ];
+  let data = null;
+  for (const url of urls) {
+    try {
+      const { body } = await httpGet(url, 18000);
+      data = JSON.parse(body || "{}");
+      if (data && Array.isArray(data.elements) && data.elements.length) break;
+    } catch {
+      /* try next Overpass host */
+    }
+  }
+  const nums = [];
+  const seen = new Set();
+  for (const el of data?.elements || []) {
+    const num = escHouseNum(el.tags?.["addr:housenumber"]);
+    if (!num || nums.length >= HOUSE_NUM_MAX) continue;
+    const lat = Number(el.lat ?? el.center?.lat);
+    const lon = Number(el.lon ?? el.center?.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const key = `${num}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const street = String(el.tags?.["addr:street"] || "").trim();
+    const phoneRaw = firstTagPhone(el.tags || {});
+    const phone = phoneRaw && !isJunkPhone(phoneRaw) ? formatPhone(phoneRaw) || phoneRaw : "";
+    if (phone) rememberHousePhone({ num, street, lat, lon }, phone);
+    nums.push({
+      num,
+      lat,
+      lon,
+      street,
+      city: String(el.tags?.["addr:city"] || "").trim(),
+      zip: String(el.tags?.["addr:postcode"] || "").trim(),
+      phone,
+    });
+  }
+  return nums;
+}
+
 async function refreshHouseNumbers() {
   if (!map || !window.L) return;
   ensureHousePane();
@@ -6280,10 +6337,19 @@ async function refreshHouseNumbers() {
   }
   const z = map.getZoom();
   const b = map.getBounds();
-  // Neighborhood zoom+ — flags don't need rooftop Google label zoom.
-  if (z < HOUSE_NUM_ZOOM || !b || b.getNorth() - b.getSouth() > 0.12 || b.getEast() - b.getWest() > 0.16) {
+  // Street / neighborhood zoom — Flags scan needs enough detail for house points.
+  if (z < HOUSE_NUM_ZOOM || !b) {
     houseLayer.clearLayers();
     housePaintSig = "";
+    emitPhoneFlagsStatus(z < HOUSE_NUM_ZOOM ? "Zoom in to load phone flags" : "");
+    return;
+  }
+  const latSpan = b.getNorth() - b.getSouth();
+  const lonSpan = b.getEast() - b.getWest();
+  if (latSpan > 0.22 || lonSpan > 0.28) {
+    houseLayer.clearLayers();
+    housePaintSig = "";
+    emitPhoneFlagsStatus("Zoom in to load phone flags");
     return;
   }
   const key = houseBoundsKey(b, z);
@@ -6293,26 +6359,57 @@ async function refreshHouseNumbers() {
     houseEnrichTimer = setTimeout(() => {
       houseEnrichTimer = 0;
       void enrichVisibleHouseInfo(houseCache.nums, houseGen);
-    }, 180);
+    }, 80);
     return;
   }
-  // Fetch well past the edges so phone flags are ready before the user pans.
+  emitPhoneFlagsStatus("Loading house points…");
   const padB = b.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
   const west = padB.getWest();
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  const osm = await fetchOsmHouseData(south, west, north, east).catch(() => ({ rings: [], nums: [] }));
+  const osmNums = await fetchOsmHouseNums(south, west, north, east).catch(() => []);
   if (gen !== houseGen || !map) return;
-  const nums = mergeHouseNums(houseCache.nums, osm.nums || []);
+  const nums = mergeHouseNums(houseCache.nums, osmNums);
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
+  const phones = nums.filter((n) => houseHasPhone(n)).length;
+  emitPhoneFlagsStatus(
+    nums.length
+      ? `Scanning phones… ${phones} flag${phones === 1 ? "" : "s"}`
+      : "No house numbers in view — zoom to a street",
+  );
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
   houseEnrichTimer = setTimeout(() => {
     houseEnrichTimer = 0;
     void enrichVisibleHouseInfo(nums, gen);
-  }, 200);
+  }, 60);
+}
+
+function emitPhoneFlagsStatus(msg) {
+  try {
+    window.dispatchEvent(new CustomEvent("hs-phone-flags", { detail: { msg: String(msg || "") } }));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Kick off Flags scan immediately (toggle / map settle). */
+export function startPhoneFlagScan() {
+  if (!phoneFlagsEnabled()) return;
+  houseHoldUntil = 0;
+  housePaintSig = "";
+  houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
+  if (houseTimer) {
+    clearTimeout(houseTimer);
+    houseTimer = 0;
+  }
+  if (houseEnrichTimer) {
+    clearTimeout(houseEnrichTimer);
+    houseEnrichTimer = 0;
+  }
+  void refreshHouseNumbers();
 }
 
 function stopFieldOverlay() {
@@ -6565,17 +6662,10 @@ export function setFieldOverlay({
   }
   if (prevFlags !== nextFlags) {
     housePaintSig = "";
-    if (nextFlags) {
-      // Start detecting as soon as Flags is turned on — don't wait on hold/debounce.
-      houseHoldUntil = 0;
-      houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
-      if (houseTimer) {
-        clearTimeout(houseTimer);
-        houseTimer = 0;
-      }
-      void refreshHouseNumbers();
-    } else {
+    if (nextFlags) startPhoneFlagScan();
+    else {
       houseLayer?.clearLayers?.();
+      emitPhoneFlagsStatus("");
     }
   }
   if (!map || !window.L) return;

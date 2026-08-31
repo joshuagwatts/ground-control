@@ -66,7 +66,8 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.150";
+  startPhoneFlagScan,
+} from "./wx.js?v=0.2.151";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1575,6 +1576,15 @@ function paintLayerToggles() {
     <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="Show green flags where a public phone was found"><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
     <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
+  if (!el._hsFlagsStatusBound) {
+    el._hsFlagsStatusBound = true;
+    window.addEventListener("hs-phone-flags", (ev) => {
+      const msg = String(ev.detail?.msg || "").trim();
+      const btn = el.querySelector('[data-ov="flags"]');
+      if (btn) btn.title = msg || "Show green flags where a public phone was found";
+      if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
+    });
+  }
   el.onclick = (e) => {
     const b = e.target.closest("button[data-ov]");
     if (!b) return;
@@ -1585,7 +1595,17 @@ function paintLayerToggles() {
       setMyLocationVisible(db.settings.showMyLocation);
     }
     if (b.dataset.ov === "dots") db.settings.showHailDots = !dotsOn;
-    if (b.dataset.ov === "flags") db.settings.showPhoneFlags = !flagsOn;
+    if (b.dataset.ov === "flags") {
+      db.settings.showPhoneFlags = !flagsOn;
+      persist();
+      paintLayerToggles();
+      paintFieldMap();
+      if (db.settings.showPhoneFlags === true) {
+        setStatus("Loading phone flags…");
+        startPhoneFlagScan();
+      } else setStatus("");
+      return;
+    }
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
     if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
     persist();

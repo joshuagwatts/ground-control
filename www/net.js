@@ -222,8 +222,7 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   } catch (e) {
     const msg = String(e?.message || e || "fetch failed");
     if (/abort/i.test(msg)) throw new Error("timeout");
-    if (/^fetch \d/.test(msg)) throw e;
-    // Browser CORS (GitHub Pages / Safari): retry NOAA & public weather hosts via a proxy.
+    // Browser CORS (GitHub Pages / Safari): retry via public CORS proxies.
     if (needsBrowserCorsProxy(target)) {
       try {
         return await httpGetViaCorsProxy(target, timeoutMs);
@@ -231,6 +230,7 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
         /* fall through */
       }
     }
+    if (/^fetch \d/.test(msg)) throw e;
     throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
   } finally {
     clearTimeout(t);
@@ -245,7 +245,17 @@ function needsBrowserCorsProxy(url) {
       h.endsWith("noaa.gov") ||
       h.endsWith("weather.gov") ||
       h.endsWith("mesonet.org") ||
-      h.endsWith("iowa.edu")
+      h.endsWith("iowa.edu") ||
+      h.includes("overpass") ||
+      h.endsWith("openstreetmap.org") ||
+      h.endsWith("zillow.com") ||
+      h.endsWith("411.com") ||
+      h.endsWith("whitepages.com") ||
+      h.endsWith("anywho.com") ||
+      h.endsWith("yellowpages.com") ||
+      h.includes("arcgis.com") ||
+      h.includes("oklahomacounty") ||
+      h.includes("assessor")
     );
   } catch {
     return false;
