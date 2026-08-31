@@ -21,6 +21,8 @@ function extractFn(name) {
 const names = [
   "chamferDistKm",
   "closeBinaryKm",
+  "blurFloatField",
+  "relaxRing",
   "walkBinaryExterior",
   "traceBinaryExteriorRings",
   "chaikinSmoothRing",

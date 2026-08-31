@@ -36,6 +36,8 @@ function extractConst(name) {
 const fns = [
   "chamferDistKm",
   "closeBinaryKm",
+  "blurFloatField",
+  "relaxRing",
   "walkBinaryExterior",
   "traceBinaryExteriorRings",
   "chaikinSmoothRing",

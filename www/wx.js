@@ -248,7 +248,7 @@ export function setHailScopeMode(on) {
 }
 /** HailScope live radar — separate from pip wx timeline filters. */
 let hailScopeRadarOn = true;
-export const hailScopeRadarFilters = { precip: true, wind: false };
+export const hailScopeRadarFilters = { precip: true, wind: true };
 
 function hailScopeRadarActive() {
   return hailScopeMode && hailScopeRadarOn !== false;
@@ -288,6 +288,7 @@ const windNoise = {
   lastTs: 0,
   bound: false,
   reseedTimer: 0,
+  fetchBounds: null, // { west, south, east, north } of last grid fetch
 };
 /** Map + timeline layer visibility. */
 export const wxTimelineFilters = { precip: true, hail: true, wind: true, temp: true };
@@ -1504,7 +1505,7 @@ const FEMA_STRUCTURES =
 const MS_BUILDINGS =
   "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/MSBFP2/FeatureServer/0/query";
 const RADAR_NATIVE_ZOOM = 7;
-const RADAR_TILE_SIZE = 512;
+const RADAR_TILE_SIZE = 256;
 
 function rainTileUrl(host, path, color = "2/1_1") {
   const base = String(host || "https://tilecache.rainviewer.com").replace(/\/+$/, "");
@@ -1735,7 +1736,8 @@ export function stopHourPlay() {
 
 function hailScopeLiveTimeline() {
   const f = hailScopeRadarFilters;
-  // Prefer RainViewer cadence when precip is on — denser than hourly wind.
+  // Shared past→present→future playhead: RainViewer steps when precip is on
+  // (includes nowcast future). Wind-only falls back to hourly Open-Meteo.
   if (f.precip && radarFrames.length >= 2) {
     return radarFrames.map((fr, i) => ({ time: fr.time, radarIdx: i }));
   }
@@ -1816,9 +1818,8 @@ function hailScopeLiveScrubberInnerHtml() {
   if (steps.length < 2) return "";
   const max = steps.length - 1;
   const idx = Math.max(0, Math.min(max, liveTlIdx));
-  const tag =
-    f.precip && f.wind ? "LIVE" : f.precip ? "LIVE PRECIP" : "LIVE WIND";
-  const tagCls = f.wind && !f.precip ? "wx-radar-tag hs-live-tag-wind" : "wx-radar-tag";
+  const tag = f.precip && f.wind ? "LIVE" : f.precip ? "LIVE PRECIP" : "LIVE WIND";
+  const tagCls = "wx-radar-tag";
   return `<div class="wx-radar-scrub-row">
     <button type="button" id="hs-live-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
     <span class="${tagCls}">${tag}</span>
@@ -3449,6 +3450,54 @@ const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.5, 2.0, 2.5];
 /** Gap-closing distance per threshold — km, NOT cells, so shape ≠ f(resolution). */
 const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 10 : thr <= 1 ? 7 : thr <= 1.5 ? 5 : 3.5);
 
+function blurFloatField(field, w, h, passes = 2) {
+  let src = field;
+  for (let p = 0; p < passes; p++) {
+    const out = new Float32Array(src.length);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let s = 0;
+        let n = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            const yy = y + dy;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            const wgt = dx && dy ? 1 : dx || dy ? 2 : 4;
+            s += src[yy * w + xx] * wgt;
+            n += wgt;
+          }
+        }
+        out[y * w + x] = s / Math.max(1, n);
+      }
+    }
+    src = out;
+  }
+  return src;
+}
+
+/** Neighbor average — kills remaining stair-steps after Chaikin. */
+function relaxRing(ring, iters = 2) {
+  if (!ring || ring.length < 5) return ring;
+  let pts = ring.slice();
+  const closed =
+    pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
+  if (!closed) pts = pts.concat([pts[0]]);
+  for (let n = 0; n < iters; n++) {
+    const next = [];
+    const lim = pts.length - 1;
+    for (let i = 0; i < lim; i++) {
+      const a = pts[(i - 1 + lim) % lim];
+      const b = pts[i];
+      const c = pts[(i + 1) % lim];
+      next.push([a[0] * 0.25 + b[0] * 0.5 + c[0] * 0.25, a[1] * 0.25 + b[1] * 0.5 + c[1] * 0.25]);
+    }
+    next.push(next[0]);
+    pts = next;
+  }
+  return pts;
+}
+
 function chaikinSmoothRing(ring, iters = 2) {
   if (!ring || ring.length < 4) return ring;
   let pts = ring.slice();
@@ -3794,12 +3843,13 @@ function buildHailSwathRings(rawPts, zone = {}) {
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
+  const softField = blurFloatField(field, w, h, 3);
 
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     const binary = new Uint8Array(w * h);
     let any = 0;
-    for (let i = 0; i < field.length; i++) {
-      if (field[i] >= thr) {
+    for (let i = 0; i < softField.length; i++) {
+      if (softField[i] >= thr) {
         binary[i] = 1;
         any = 1;
       }
@@ -3809,12 +3859,11 @@ function buildHailSwathRings(rawPts, zone = {}) {
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      const smooth = chaikinSmoothRing(ring, 6);
+      const smooth = relaxRing(chaikinSmoothRing(ring, 6), 3);
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
-      // Uniform pad (not thr-scaled) so nested cutouts stay inside parents.
       out.push({
-        ring: padPolygon(smooth, 36),
+        ring: padPolygon(smooth, 28),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
@@ -4391,9 +4440,34 @@ function onWindMapGeom() {
     windNoise.reseedTimer = 0;
     if (!windNoise.frame || !map) return;
     sizeWindNoiseCanvas();
-    seedWindNoiseParticles();
+    // Keep world-anchored particles; only refill if the view emptied them.
+    if (windNoise.particles.length < 40) seedWindNoiseParticles();
     drawWindNoiseField(performance.now());
-  }, 80);
+    // Refetch spatial grid when the map has moved off the last sample window.
+    if (hailScopeRadarFilters.wind || activeWxProduct === "wind") {
+      void ensureWindFrames({ force: windGridNeedsRefresh() });
+    }
+  }, 120);
+}
+
+function windGridNeedsRefresh() {
+  if (!map || !windNoise.fetchBounds) return true;
+  const b = map.getBounds?.();
+  if (!b) return true;
+  const fb = windNoise.fetchBounds;
+  const c = map.getCenter();
+  if (!c) return true;
+  // Refresh when center leaves the inner 50% of the fetched window.
+  const midLat = (fb.south + fb.north) / 2;
+  const midLon = (fb.west + fb.east) / 2;
+  const halfLat = (fb.north - fb.south) * 0.25;
+  const halfLon = (fb.east - fb.west) * 0.25;
+  return (
+    c.lat < midLat - halfLat ||
+    c.lat > midLat + halfLat ||
+    c.lng < midLon - halfLon ||
+    c.lng > midLon + halfLon
+  );
 }
 
 function ensureWindNoiseCanvas() {
@@ -4431,14 +4505,20 @@ function sizeWindNoiseCanvas() {
   windNoise.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+/** Seed particles as lat/lon so they stick to the map, not the screen. */
 function seedWindNoiseParticles() {
   if (!map) return;
+  const b = map.getBounds?.()?.pad?.(0.08);
   const size = map.getSize();
-  // Speckle density like precip noise — jittered cells, not a rigid arrow grid.
-  const target = Math.min(240, Math.max(70, Math.round((size.x * size.y) / 850)));
+  if (!b || !size) return;
+  const target = Math.min(260, Math.max(80, Math.round((size.x * size.y) / 800)));
   const aspect = size.x / Math.max(1, size.y);
   const cols = Math.max(5, Math.round(Math.sqrt(target * aspect)));
   const rows = Math.max(5, Math.round(target / cols));
+  const south = b.getSouth();
+  const north = b.getNorth();
+  const west = b.getWest();
+  const east = b.getEast();
   const particles = [];
   let id = 0;
   for (let r = 0; r < rows; r++) {
@@ -4446,11 +4526,11 @@ function seedWindNoiseParticles() {
       const jx = windHash01(id * 3.17 + 0.71);
       const jy = windHash01(id * 5.91 + 1.37);
       particles.push({
-        x: ((c + jx) / cols) * size.x,
-        y: ((r + jy) / rows) * size.y,
+        lat: south + ((r + jy) / rows) * (north - south),
+        lon: west + ((c + jx) / cols) * (east - west),
         phase: windHash01(id * 9.23),
         lenJ: 0.55 + windHash01(id * 2.41) * 0.9,
-        dirJ: (windHash01(id * 4.13) - 0.5) * 22,
+        dirJ: (windHash01(id * 4.13) - 0.5) * 18,
         alpha: 0.22 + windHash01(id * 6.61) * 0.58,
       });
       id += 1;
@@ -4459,29 +4539,76 @@ function seedWindNoiseParticles() {
   windNoise.particles = particles;
 }
 
+function sampleWindAt(frame, lat, lon) {
+  const g = frame?.grid;
+  if (!g || !g.cols || !g.rows) {
+    return {
+      speed: Number(frame?.speed) || 0,
+      dir: Number(frame?.dir) || 0,
+      gust: Number(frame?.gust) || Number(frame?.speed) || 0,
+    };
+  }
+  const fx = (lon - g.west) / g.dLon - 0.5;
+  const fy = (lat - g.south) / g.dLat - 0.5;
+  const x0 = Math.max(0, Math.min(g.cols - 1, Math.floor(fx)));
+  const y0 = Math.max(0, Math.min(g.rows - 1, Math.floor(fy)));
+  const x1 = Math.min(g.cols - 1, x0 + 1);
+  const y1 = Math.min(g.rows - 1, y0 + 1);
+  const tx = Math.max(0, Math.min(1, fx - x0));
+  const ty = Math.max(0, Math.min(1, fy - y0));
+  const idx = (x, y) => y * g.cols + x;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const s00 = g.speed[idx(x0, y0)];
+  const s10 = g.speed[idx(x1, y0)];
+  const s01 = g.speed[idx(x0, y1)];
+  const s11 = g.speed[idx(x1, y1)];
+  const speed = lerp(lerp(s00, s10, tx), lerp(s01, s11, tx), ty);
+  // Direction via unit-vector blend so 350°↔10° doesn't average to 180°.
+  const toUV = (deg) => {
+    const r = ((Number(deg) || 0) * Math.PI) / 180;
+    return { u: Math.sin(r), v: Math.cos(r) };
+  };
+  const d00 = toUV(g.dir[idx(x0, y0)]);
+  const d10 = toUV(g.dir[idx(x1, y0)]);
+  const d01 = toUV(g.dir[idx(x0, y1)]);
+  const d11 = toUV(g.dir[idx(x1, y1)]);
+  const u = lerp(lerp(d00.u, d10.u, tx), lerp(d01.u, d11.u, tx), ty);
+  const v = lerp(lerp(d00.v, d10.v, tx), lerp(d01.v, d11.v, tx), ty);
+  const dir = ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360;
+  const g00 = g.gust[idx(x0, y0)];
+  const g10 = g.gust[idx(x1, y0)];
+  const g01 = g.gust[idx(x0, y1)];
+  const g11 = g.gust[idx(x1, y1)];
+  const gust = lerp(lerp(g00, g10, tx), lerp(g01, g11, tx), ty);
+  return { speed, dir, gust };
+}
+
 function drawWindNoiseField(ts) {
   const ctx = windNoise.ctx;
   const frame = windNoise.frame;
   if (!ctx || !frame || !map) return;
   const size = map.getSize();
   ctx.clearRect(0, 0, size.x, size.y);
-  const spd = Number(frame.speed) || 0;
-  const gust = Number(frame.gust) || spd;
-  // Meteorological FROM → flow TO (0 = north).
-  const baseTo = (((Number(frame.dir) || 0) + 180) * Math.PI) / 180;
-  const baseLen = Math.max(5, Math.min(16, 4.5 + spd * 0.26));
-  const pulseBoost = 0.55 + Math.min(0.45, gust / 55);
 
   for (const p of windNoise.particles) {
+    const sample = sampleWindAt(frame, p.lat, p.lon);
+    const spd = sample.speed;
+    const gust = sample.gust;
+    // Meteorological FROM → flow TO (0 = north).
+    const baseTo = (((sample.dir || 0) + 180) * Math.PI) / 180;
     const ang = baseTo + (p.dirJ * Math.PI) / 180;
+    const baseLen = Math.max(5, Math.min(18, 4.5 + spd * 0.28));
+    const pulseBoost = 0.55 + Math.min(0.45, gust / 55);
     const breathe = 0.88 + 0.12 * Math.sin(ts / 1100 + p.phase * 6.283);
     const len = baseLen * p.lenJ * breathe;
+    const pt = map.latLngToContainerPoint([p.lat, p.lon]);
+    if (pt.x < -40 || pt.y < -40 || pt.x > size.x + 40 || pt.y > size.y + 40) continue;
     const sx = Math.sin(ang) * len;
     const sy = -Math.cos(ang) * len;
-    const x0 = p.x - sx * 0.4;
-    const y0 = p.y - sy * 0.4;
-    const x1 = p.x + sx * 0.6;
-    const y1 = p.y + sy * 0.6;
+    const x0 = pt.x - sx * 0.4;
+    const y0 = pt.y - sy * 0.4;
+    const x1 = pt.x + sx * 0.6;
+    const y1 = pt.y + sy * 0.6;
     ctx.globalAlpha = Math.min(0.92, p.alpha * pulseBoost);
     ctx.strokeStyle = WIND_FIELD_COLOR;
     ctx.fillStyle = WIND_FIELD_COLOR;
@@ -4491,7 +4618,6 @@ function drawWindNoiseField(ts) {
     ctx.moveTo(x0, y0);
     ctx.lineTo(x1, y1);
     ctx.stroke();
-    // Tiny tip — reads as motion flecks, not a heavy arrow grid.
     const tip = Math.max(2.2, len * 0.22);
     const ax = Math.sin(ang + 2.7) * tip;
     const ay = -Math.cos(ang + 2.7) * tip;
@@ -4519,21 +4645,24 @@ function startWindNoiseAnim() {
       return;
     }
     const frame = windNoise.frame;
-    const spd = Number(frame.speed) || 0;
-    const ang = (((Number(frame.dir) || 0) + 180) * Math.PI) / 180;
     const dt = windNoise.lastTs ? Math.min(48, ts - windNoise.lastTs) : 16;
     windNoise.lastTs = ts;
-    // Slow advection — suggests flow without thrashing markers.
-    const drift = (0.012 + spd * 0.00105) * dt;
-    const size = map.getSize();
-    const pad = 24;
+    const b = map.getBounds?.()?.pad?.(0.15);
     for (const p of windNoise.particles) {
-      p.x += Math.sin(ang) * drift;
-      p.y += -Math.cos(ang) * drift;
-      if (p.x < -pad) p.x += size.x + pad * 2;
-      else if (p.x > size.x + pad) p.x -= size.x + pad * 2;
-      if (p.y < -pad) p.y += size.y + pad * 2;
-      else if (p.y > size.y + pad) p.y -= size.y + pad * 2;
+      const sample = sampleWindAt(frame, p.lat, p.lon);
+      const ang = (((sample.dir || 0) + 180) * Math.PI) / 180;
+      // Visual scale: real wind is slow on a map — amplify so flow reads at radar pace.
+      const driftKm = (0.012 + (sample.speed || 0) * 0.0011) * dt * 0.045;
+      p.lat += (Math.cos(ang) * driftKm) / 111.32;
+      p.lon += (Math.sin(ang) * driftKm) / (111.32 * Math.max(0.2, Math.cos((p.lat * Math.PI) / 180)));
+      if (b) {
+        const h = b.getNorth() - b.getSouth();
+        const w = b.getEast() - b.getWest();
+        if (p.lat < b.getSouth()) p.lat += h;
+        else if (p.lat > b.getNorth()) p.lat -= h;
+        if (p.lon < b.getWest()) p.lon += w;
+        else if (p.lon > b.getEast()) p.lon -= w;
+      }
     }
     drawWindNoiseField(ts);
     windNoise.raf = requestAnimationFrame(loop);
@@ -4562,57 +4691,88 @@ function updateWindScrubLabel(frame) {
   label.textContent = `${Math.round(frame.speed || 0)} mph${when ? ` · ${when}` : ""}`;
 }
 
+/**
+ * Fetch a spatial wind grid over the visible map (Open-Meteo multi-point) so
+ * particles sample local direction/speed instead of one map-center value.
+ */
 async function ensureWindFrames({ force = false } = {}) {
   if (!map) return;
-  if (windFrames.length && !force) return;
+  if (windFrames.length && !force && !windGridNeedsRefresh()) return;
+  const b = map.getBounds?.()?.pad?.(0.35);
   const c = map.getCenter();
-  if (!c) return;
+  if (!b || !c) return;
   const gen = ++windFetchGen;
+  const west = b.getWest();
+  const east = b.getEast();
+  const south = b.getSouth();
+  const north = b.getNorth();
+  const cols = 5;
+  const rows = 5;
+  const dLon = (east - west) / cols;
+  const dLat = (north - south) / rows;
+  const lats = [];
+  const lons = [];
+  for (let r = 0; r < rows; r++) {
+    for (let cc = 0; cc < cols; cc++) {
+      lats.push(south + (r + 0.5) * dLat);
+      lons.push(west + (cc + 0.5) * dLon);
+    }
+  }
   try {
     const params = new URLSearchParams({
-      latitude: c.lat,
-      longitude: c.lng,
+      latitude: lats.map((v) => v.toFixed(4)).join(","),
+      longitude: lons.map((v) => v.toFixed(4)).join(","),
       hourly: "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
       past_days: "1",
       forecast_days: "1",
       wind_speed_unit: "mph",
       timezone: "auto",
     });
-    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 10000);
+    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 14000);
     if (gen !== windFetchGen) return;
-    const data = JSON.parse(body || "{}");
-    const h = data.hourly || {};
-    const times = h.time || [];
-    const speeds = h.wind_speed_10m || [];
-    const dirs = h.wind_direction_10m || [];
-    const gusts = h.wind_gusts_10m || [];
-    const frames = [];
+    let parsed = JSON.parse(body || "{}");
+    // Multi-location → array; single → object.
+    const places = Array.isArray(parsed) ? parsed : [parsed];
+    if (!places.length || !places[0]?.hourly?.time?.length) return;
+
+    const times = places[0].hourly.time || [];
     const now = Date.now() / 1000;
-    for (let i = 0; i < times.length; i++) {
-      const t = Date.parse(times[i]);
+    const frames = [];
+    for (let ti = 0; ti < times.length; ti++) {
+      const t = Date.parse(times[ti]);
       if (!Number.isFinite(t)) continue;
       const sec = t / 1000;
-      // Keep roughly last 12h through next 12h for a precip-like scrub window
       if (sec < now - 12 * 3600 || sec > now + 12 * 3600) continue;
+      const speed = new Float32Array(cols * rows);
+      const dir = new Float32Array(cols * rows);
+      const gust = new Float32Array(cols * rows);
+      for (let pi = 0; pi < places.length && pi < cols * rows; pi++) {
+        const h = places[pi]?.hourly || {};
+        speed[pi] = Number(h.wind_speed_10m?.[ti]) || 0;
+        dir[pi] = Number(h.wind_direction_10m?.[ti]) || 0;
+        gust[pi] = Number(h.wind_gusts_10m?.[ti]) || speed[pi];
+      }
+      // Center cell for the scrubber label.
+      const mid = Math.floor((rows * cols) / 2);
       frames.push({
         time: sec,
-        speed: Number(speeds[i]) || 0,
-        gust: Number(gusts[i]) || Number(speeds[i]) || 0,
-        dir: Number(dirs[i]) || 0,
+        speed: speed[mid] || speed[0] || 0,
+        dir: dir[mid] || dir[0] || 0,
+        gust: gust[mid] || gust[0] || 0,
+        grid: { west, south, dLon, dLat, cols, rows, speed, dir, gust },
       });
     }
     if (!frames.length) return;
+    const keepTime =
+      windFrames[windFrameIdx]?.time ||
+      radarFrames[radarFrameIdx]?.time ||
+      now;
     windFrames = frames;
-    let nearest = 0;
-    let best = Infinity;
-    for (let i = 0; i < frames.length; i++) {
-      const d = Math.abs(frames[i].time - now);
-      if (d < best) {
-        best = d;
-        nearest = i;
-      }
+    windNoise.fetchBounds = { west, south, east, north };
+    windFrameIdx = nearestFrameIdx(frames, keepTime);
+    if (hailScopeRadarFilters.wind || activeWxProduct === "wind") {
+      paintWindFieldFromFrame(windFrames[windFrameIdx]);
     }
-    windFrameIdx = nearest;
   } catch {
     /* wind timeline optional */
   }
