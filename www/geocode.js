@@ -162,15 +162,21 @@ export function geoCacheOk(hit, query) {
   return Boolean(hit.houseOk);
 }
 
-async function arcgisWorld(q) {
+async function arcgisWorld(q, { lat, lon } = {}) {
   const e = OKLAHOMA_EXTENT;
   const okOnly = !queryAllowsOutOfState(q);
   let url =
     `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json` +
     `&outFields=Match_addr,Addr_type,StName,AddNum,StAddr,City,RegionAbbr,Postal&maxLocations=8` +
-    `&sourceCountry=USA&SingleLine=${encodeURIComponent(q)}`;
+    `&sourceCountry=USA&category=Address&SingleLine=${encodeURIComponent(q)}`;
   if (okOnly) {
     url += `&searchExtent=${e.west},${e.south},${e.east},${e.north}`;
+  }
+  if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lon))) {
+    url += `&location=${Number(lon)},${Number(lat)}&distance=80000`;
+  } else if (okOnly) {
+    // Bias toward metro OKC when no map center is passed.
+    url += `&location=-97.5164,35.4676&distance=120000`;
   }
   const data = await getJson(url, 10000);
   return (data.candidates || [])
@@ -179,11 +185,19 @@ async function arcgisWorld(q) {
       const stAddr = String(a.StAddr || "").trim();
       const house = String(a.AddNum || "").trim();
       const street = stAddr.replace(/^\d+\s+/, "").trim() || String(a.StName || "").trim();
+      const region = String(a.RegionAbbr || "").trim();
+      const city = String(a.City || "").trim();
+      const postal = String(a.Postal || "").trim();
+      const match = a.Match_addr || c.address || q;
+      const address =
+        match.includes(",") || !city
+          ? match
+          : [match, city, region || "OK", postal].filter(Boolean).join(", ");
       return {
         lat: Number(c.location?.y),
         lon: Number(c.location?.x),
-        address: a.Match_addr || c.address || q,
-        city: String(a.City || "").trim(),
+        address,
+        city,
         house,
         street,
         addrType: String(a.Addr_type || ""),
@@ -287,16 +301,17 @@ async function fromMeteo(q) {
 }
 
 /** Ranked house-level candidates. Caller may snap the winner onto a rooftop. */
-export async function geocodeCandidates(query, { city = "" } = {}) {
+export async function geocodeCandidates(query, { city = "", lat, lon } = {}) {
   const raw = String(query || "").trim();
   if (raw.length < 3) throw new Error("type a longer address");
   const q = biasAddressQuery(raw, { city });
   const parsed = parseStreetAddress(q);
   const looksStreet = Boolean(parsed.house) || /,/.test(q) || /^\d/.test(q);
+  const loc = { lat: Number(lat), lon: Number(lon) };
   const hits = [];
   if (looksStreet) {
     try {
-      hits.push(...(await arcgisWorld(q)));
+      hits.push(...(await arcgisWorld(q, loc)));
     } catch {
       /* census next */
     }
@@ -323,6 +338,11 @@ export async function geocodeCandidates(query, { city = "" } = {}) {
     } catch {
       /* nominatim next */
     }
+    try {
+      hits.push(...(await arcgisWorld(q, loc)));
+    } catch {
+      /* ignore */
+    }
     if (!hits.length) {
       try {
         hits.push(...(await nominatimSearch({ q }, { boundOk: !queryAllowsOutOfState(q) })));
@@ -332,6 +352,16 @@ export async function geocodeCandidates(query, { city = "" } = {}) {
     }
   }
   let ranked = pickGeocodeHits(hits, q);
+  // Prefer hits closer to the map center when scores are close.
+  if (Number.isFinite(loc.lat) && Number.isFinite(loc.lon)) {
+    ranked = [...ranked].sort((a, b) => {
+      const ds = (b.score || 0) - (a.score || 0);
+      if (Math.abs(ds) >= 12) return ds;
+      const da = (a.lat - loc.lat) ** 2 + (a.lon - loc.lon) ** 2;
+      const db = (b.lat - loc.lat) ** 2 + (b.lon - loc.lon) ** 2;
+      return da - db || ds;
+    });
+  }
   // If OK filter wiped everything (rare), retry without hard filter but keep score bias.
   if (!ranked.length && hits.length && !queryAllowsOutOfState(q)) {
     ranked = (hits || [])

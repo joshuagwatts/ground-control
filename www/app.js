@@ -67,7 +67,7 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   startPhoneFlagScan,
-} from "./wx.js?v=0.2.152";
+} from "./wx.js?v=0.2.153";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1657,7 +1657,7 @@ async function loadDoneAddresses({ textId = "job-done-text" } = {}) {
       let hit = geo[cacheKey];
       if (!geoCacheOk(hit, q)) {
         try {
-          const found = await geocodeAddress(q, { city: db.settings.city || "" });
+          const found = await geocodeAddress(q, { city: db.settings.city || "Edmond" });
           const top = found[0];
           hit = {
             lat: top.lat,
@@ -1811,7 +1811,7 @@ function wireHsShell(cfg) {
       if (!q) return;
       setStatus("Finding place…");
       try {
-        const hits = await geocodeAddress(q, { city: db.settings.city || "" });
+        const hits = await geocodeAddress(q, { city: db.settings.city || "Edmond" });
         const hit = hits[0];
         if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
         flyToPin(hit.lat, hit.lon, 20);

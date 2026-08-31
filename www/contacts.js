@@ -804,6 +804,38 @@ async function contactsFromWebsite(url, parts) {
   return huntPages(paths, parts);
 }
 
+/** Fast phone hunt for Flags — OK directories + Zillow rent/sale, no full website crawl. */
+export async function lookupFlagPhone(lat, lon, address = "") {
+  const parts = parseStreetAddress(address);
+  const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "" };
+  if (!parts.house) return blank;
+  let hit = { name: "", phone: "", email: "", zillow_url: "" };
+  // Phone book first in OK — often the listing that has a landline.
+  if (isOklahomaAddress(address, parts)) {
+    const book = await oklahomaPhoneBookContacts(address, parts).catch(() => null);
+    if (book) hit = mergeContacts(hit, book);
+  }
+  if (!hit.phone) {
+    const rent = await zillowRentContacts(address, parts).catch(() => null);
+    if (rent) hit = mergeContacts(hit, rent);
+  }
+  if (!hit.phone) {
+    const sale = await zillowListingContacts(address, parts).catch(() => null);
+    if (sale) hit = mergeContacts(hit, sale);
+  }
+  // OSM tags at this rooftop when directories miss.
+  if (!hit.phone && Number.isFinite(lat) && Number.isFinite(lon)) {
+    const osm = await overpassContacts(lat, lon, parts).catch(() => null);
+    if (osm) hit = mergeContacts(hit, osm);
+  }
+  return {
+    owner_name: hit.name || "",
+    owner_phone: hit.phone || "",
+    owner_email: hit.email || "",
+    zillow_url: hit.zillow_url || "",
+  };
+}
+
 export async function lookupPlaceContacts(lat, lon, address = "", seed = {}, settings = null) {
   const parts = parseStreetAddress(address);
   const blank = {

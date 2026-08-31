@@ -3,6 +3,7 @@ import { httpGet, httpLanGet, httpLanPostJson, openUrl } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
 import {
   lookupPlaceContacts,
+  lookupFlagPhone,
   formatPhone,
   phoneDigits,
   isJunkPhone,
@@ -41,7 +42,7 @@ const WMO = {
 };
 
 export const DEFAULT_FILTERS = {
-  km: 10,
+  km: 16,
   hailIn: 0.75,
   windMph: 38,
   days: 730,
@@ -51,9 +52,9 @@ export const DEFAULT_FILTERS = {
   stormSize: "any",
 };
 /** Pin / address selected — newest day with ≥1″ hail. */
-export const PIN_AUTO_FILTERS = { hailIn: 1, sort: "date" };
+export const PIN_AUTO_FILTERS = { hailIn: 1, sort: "date", km: 16 };
 /** No address — keep discovery aimed at the biggest storm. */
-export const MAP_AUTO_FILTERS = { hailIn: 0.75, sort: "storm" };
+export const MAP_AUTO_FILTERS = { hailIn: 0.75, sort: "storm", km: 16 };
 /** First paint radius — center-out so OKC lists land in ~1 request. */
 export const PIN_FETCH_FAST_KM = 40;
 /** Background widen after first paint (regional storm footprint). */
@@ -1351,10 +1352,11 @@ const MAP_MAX_ZOOM = 22;
 const MAP_MIN_ZOOM = 3;
 /** Max hail fetch radius when zoomed out to regional / multi-state view. */
 const MAP_HAIL_MAX_KM = 450;
-const HOUSE_NUM_ZOOM = 14;
-/** Pad OSM/phone parse past the viewport so flags are ready as you pan. */
-const HOUSE_FETCH_PAD = 0.4;
-const HOUSE_ENRICH_MAX = 28;
+/** Search radius (km) around map center for Flags — works at any zoom. */
+const FLAG_SEARCH_KM_MIN = 2.2;
+const FLAG_SEARCH_KM_MAX = 10;
+const HOUSE_FETCH_PAD = 0.25;
+const HOUSE_ENRICH_MAX = 36;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -3494,6 +3496,7 @@ export function applyContextStormFilters(mode) {
   const next = mode === "pin" ? PIN_AUTO_FILTERS : MAP_AUTO_FILTERS;
   wxFilters.hailIn = next.hailIn;
   wxFilters.sort = next.sort;
+  if (Number(next.km) > 0) wxFilters.km = Math.max(10, Number(next.km));
 }
 
 /** Search-radius circle removed — hail fills the map when a storm date is selected. */
@@ -5697,9 +5700,33 @@ function isOutbuilding(v) {
 }
 
 function houseBoundsKey(b, z) {
-  const q = z >= 18 ? 0.0015 : z >= 16 ? 0.003 : 0.006;
+  const q = z >= 18 ? 0.0015 : z >= 16 ? 0.003 : z >= 12 ? 0.01 : 0.025;
   const r = (v) => Math.round(v / q);
   return `${z}|${r(b.getSouth())}|${r(b.getWest())}|${r(b.getNorth())}|${r(b.getEast())}`;
+}
+
+/** Km radius for Flags around map center — wider when zoomed out, always available. */
+function flagSearchKm() {
+  const z = map?.getZoom?.() ?? 14;
+  if (z >= 17) return FLAG_SEARCH_KM_MIN;
+  if (z >= 15) return 3.5;
+  if (z >= 13) return 5;
+  if (z >= 11) return 7;
+  return FLAG_SEARCH_KM_MAX;
+}
+
+/** Bounds for Flags OSM pull — center-based so any map zoom works. */
+function flagSearchBounds() {
+  if (!map) return null;
+  const c = map.getCenter?.();
+  if (!c) return null;
+  const km = flagSearchKm();
+  const dLat = km / 111.32;
+  const dLon = km / (111.32 * Math.max(0.2, Math.cos((c.lat * Math.PI) / 180)));
+  return window.L.latLngBounds(
+    [c.lat - dLat, c.lng - dLon],
+    [c.lat + dLat, c.lng + dLon],
+  );
 }
 
 function ringCentroid(ring) {
@@ -6007,17 +6034,16 @@ function bindHousePhoneMarker(marker, n) {
 /** Build a lookup address for an OSM house point (street often missing in OK). */
 async function addressForHouseNum(n) {
   if (!n?.num) return "";
+  const finish = (addr) => {
+    let a = String(addr || "").trim();
+    if (!a) return "";
+    if (!/,\s*[A-Z]{2}\b|Oklahoma/i.test(a)) a = `${a}, OK`;
+    return a;
+  };
   if (n.street) {
-    const cityBit = n.city ? `, ${n.city}` : "";
+    const cityBit = n.city ? `, ${n.city}` : ", Edmond";
     const zipBit = n.zip ? ` ${n.zip}` : "";
-    let addr = `${n.num} ${n.street}${cityBit}${zipBit}`.trim();
-    if (!/,\s*[A-Z]{2}\b|Oklahoma/i.test(addr)) {
-      const c = map?.getCenter?.();
-      const inOk =
-        !c || (c.lat > 33.5 && c.lat < 37.1 && c.lng > -103.1 && c.lng < -94.3);
-      if (inOk) addr = `${addr}, OK`;
-    }
-    return addr;
+    return finish(`${n.num} ${n.street}${cityBit}${zipBit}`);
   }
   try {
     const geo = await reverseGeocode(n.lat, n.lon);
@@ -6026,10 +6052,22 @@ async function addressForHouseNum(n) {
       if (parts.street) n.street = parts.street;
       if (parts.city && !n.city) n.city = parts.city;
       if (parts.zip && !n.zip) n.zip = parts.zip;
-      return geo.address;
+      return finish(geo.address);
     }
   } catch {
     /* fall through */
+  }
+  // Last resort — house # + reverse street from ArcGIS only.
+  try {
+    const arc = await reverseArcgis(n.lat, n.lon);
+    if (arc?.ok && arc.address && /^\d/.test(arc.address)) {
+      const parts = parseStreetAddress(arc.address);
+      if (parts.street) n.street = parts.street;
+      if (parts.city) n.city = parts.city;
+      return finish(arc.address);
+    }
+  } catch {
+    /* ignore */
   }
   return "";
 }
@@ -6071,33 +6109,18 @@ function mergeHouseNums(into, nums) {
   return out;
 }
 
-/** Public listing + assessor scan — viewport first, then beyond the map edges. */
+/** Public listing + assessor scan — center-first, any zoom. */
 async function enrichVisibleHouseInfo(nums, gen) {
   if (!phoneFlagsEnabled() || !map || !nums?.length) return;
-  const z = map.getZoom?.() ?? 0;
-  if (z < HOUSE_NUM_ZOOM) return;
   const c = map.getCenter?.();
-  const b = map.getBounds?.();
   if (!c) return;
-  const view = b
-    ? {
-        s: b.getSouth(),
-        w: b.getWest(),
-        n: b.getNorth(),
-        e: b.getEast(),
-      }
-    : null;
-  const inView = (n) =>
-    !view || (n.lat >= view.s && n.lat <= view.n && n.lon >= view.w && n.lon <= view.e);
-  // Prefer on-screen, then pad beyond — so phones are ready before you pan.
   const queue = nums
     .filter((n) => n?.num && !houseHasPhone(n))
     .map((n) => ({
       n,
-      d: (n.lat - c.lat) * (n.lat - c.lat) + (n.lon - c.lng) * (n.lon - c.lng),
-      v: inView(n) ? 0 : 1,
+      d: haversineKm(c.lat, c.lng, n.lat, n.lon),
     }))
-    .sort((a, b) => a.v - b.v || a.d - b.d)
+    .sort((a, b) => a.d - b.d)
     .slice(0, HOUSE_ENRICH_MAX)
     .map((x) => x.n);
   const runOne = async (n) => {
@@ -6107,7 +6130,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
     try {
       const [assessor, contacts] = await Promise.all([
         lookupAssessorParcel(n.lat, n.lon, addr).catch(() => null),
-        lookupPlaceContacts(n.lat, n.lon, addr, {}, null).catch(() => ({})),
+        lookupFlagPhone(n.lat, n.lon, addr).catch(() => ({})),
       ]);
       if (gen !== houseGen) return;
       const phone = contacts?.owner_phone || "";
@@ -6137,7 +6160,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
     ]);
     const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
     emitPhoneFlagsStatus(`Scanning… ${Math.min(i + 3, queue.length)}/${queue.length} · ${flags} flags`);
-    await new Promise((r) => setTimeout(r, 120));
+    await new Promise((r) => setTimeout(r, 100));
   }
   const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
   emitPhoneFlagsStatus(flags ? `${flags} phone flag${flags === 1 ? "" : "s"}` : "No public phones found yet");
@@ -6335,35 +6358,25 @@ async function refreshHouseNumbers() {
     housePaintSig = "off";
     return;
   }
-  const z = map.getZoom();
-  const b = map.getBounds();
-  // Street / neighborhood zoom — Flags scan needs enough detail for house points.
-  if (z < HOUSE_NUM_ZOOM || !b) {
+  const searchB = flagSearchBounds();
+  if (!searchB) {
     houseLayer.clearLayers();
     housePaintSig = "";
-    emitPhoneFlagsStatus(z < HOUSE_NUM_ZOOM ? "Zoom in to load phone flags" : "");
     return;
   }
-  const latSpan = b.getNorth() - b.getSouth();
-  const lonSpan = b.getEast() - b.getWest();
-  if (latSpan > 0.22 || lonSpan > 0.28) {
-    houseLayer.clearLayers();
-    housePaintSig = "";
-    emitPhoneFlagsStatus("Zoom in to load phone flags");
-    return;
-  }
-  const key = houseBoundsKey(b, z);
+  const z = map.getZoom?.() ?? 14;
+  const key = `flag|${houseBoundsKey(searchB, z)}|${flagSearchKm().toFixed(1)}`;
   if (houseCache.key === key && houseCache.nums.length) {
     paintHouseLayer([], houseCache.nums);
     if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
     houseEnrichTimer = setTimeout(() => {
       houseEnrichTimer = 0;
       void enrichVisibleHouseInfo(houseCache.nums, houseGen);
-    }, 80);
+    }, 60);
     return;
   }
-  emitPhoneFlagsStatus("Loading house points…");
-  const padB = b.pad(HOUSE_FETCH_PAD);
+  emitPhoneFlagsStatus(`Loading homes (~${flagSearchKm().toFixed(0)} km)…`);
+  const padB = searchB.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
   const west = padB.getWest();
   const north = padB.getNorth();
@@ -6377,14 +6390,14 @@ async function refreshHouseNumbers() {
   const phones = nums.filter((n) => houseHasPhone(n)).length;
   emitPhoneFlagsStatus(
     nums.length
-      ? `Scanning phones… ${phones} flag${phones === 1 ? "" : "s"}`
-      : "No house numbers in view — zoom to a street",
+      ? `Scanning phones… ${phones} flag${phones === 1 ? "" : "s"} · ${nums.length} homes`
+      : "No house numbers near map center",
   );
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
   houseEnrichTimer = setTimeout(() => {
     houseEnrichTimer = 0;
     void enrichVisibleHouseInfo(nums, gen);
-  }, 60);
+  }, 40);
 }
 
 function emitPhoneFlagsStatus(msg) {
@@ -7907,7 +7920,12 @@ async function snapToHouse(hit, query) {
 
 /** Forward geocode an address/place for WX search. Prefers the house, not the street centroid. */
 export async function geocodeAddress(query, opts = {}) {
-  const ranked = await geocodeCandidates(query, opts);
+  const c = map?.getCenter?.();
+  const ranked = await geocodeCandidates(query, {
+    city: opts.city || "",
+    lat: opts.lat ?? c?.lat,
+    lon: opts.lon ?? c?.lng,
+  });
   const top = await snapToHouse(ranked[0], query);
   return [top, ...ranked.slice(1)];
 }
