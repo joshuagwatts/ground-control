@@ -235,6 +235,9 @@ function selectedStormsPinText(esc) {
   return `Overlay ${list.length} storm days — tap to toggle`;
 }
 let hailSearchQ = "";
+/** Storm-date list page (20 per page so the field footer stays below). */
+export const STORM_LIST_PAGE_SIZE = 20;
+let hailStormPage = 0;
 let meMarker = null;
 let meRing = null;
 let meStop = null;
@@ -251,6 +254,9 @@ const housePhoneByKey = new Map();
 /** Session map of house keys → { phone, name, email } when public info exists. */
 const houseUsefulByKey = new Map();
 let houseEnrichTimer = 0;
+/** Session keys already scanned for Flags — skip so we don't re-hammer listings. */
+const houseEnrichTried = new Set();
+let flagDockIdx = 0;
 let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
@@ -301,6 +307,9 @@ let windPlaying = false;
 let windFetchGen = 0;
 /** Shared HailScope live playhead (precip + wind on one scrubber). */
 let liveTlIdx = 0;
+/** Live scrubber half-window in hours (±2 / ±6 / ±12 / ±24). Default 6. */
+export const LIVE_WINDOW_HOURS = [2, 6, 12, 24];
+let liveWindowHrs = 6;
 /** Amber wind noise field — distinct from precip greens/blues. */
 const WIND_FIELD_COLOR = "#ff9f1a";
 const windNoise = {
@@ -1371,8 +1380,10 @@ const MAP_HAIL_MAX_KM = 450;
 /** Search radius (km) around map center for Flags — works at any zoom. */
 const FLAG_SEARCH_KM_MIN = 2.2;
 const FLAG_SEARCH_KM_MAX = 10;
-const HOUSE_FETCH_PAD = 0.25;
-const HOUSE_ENRICH_MAX = 36;
+const HOUSE_FETCH_PAD = 0.2;
+/** Viewport lookups per settle — keep this small so Flags never stall the map. */
+const HOUSE_ENRICH_MAX = 10;
+const HOUSE_ENRICH_GAP_MS = 420;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -1818,28 +1829,29 @@ export function stopHourPlay() {
  * mirrors the past window with forward time slots (last tile held) so wind/play
  * still have a future half and Present stays centered.
  */
-function assembleRainViewerRadarFrames(pastIn, nowcastIn) {
+export function assembleRainViewerRadarFrames(pastIn, nowcastIn) {
   const pastAll = (pastIn || []).filter((f) => f && f.path);
   const nowAll = (nowcastIn || []).filter((f) => f && f.path);
   if (!pastAll.length && !nowAll.length) return { frames: [], presentIdx: 0 };
 
   const nowcast = nowAll.slice(0, 18);
+  // Keep the full RainViewer past (typically ~2h). Longer live windows use this
+  // tile set plus hourly wind — do not trim past down to the nowcast length.
+  const past = pastAll;
   if (nowcast.length) {
-    // Match past length to forecast so Present sits mid-track.
-    const past = pastAll.slice(-Math.max(nowcast.length, 1));
     return { frames: [...past, ...nowcast], presentIdx: Math.max(0, past.length - 1) };
   }
 
-  // No nowcast from API — keep ~1h past and synthesize a matching future half.
-  const past = pastAll.slice(-6);
+  // No nowcast from API — synthesize a future half so Present stays mid-track.
   if (!past.length) return { frames: [], presentIdx: 0 };
   const last = past[past.length - 1];
   const dt =
     past.length >= 2
       ? Math.max(300, Number(past[past.length - 1].time) - Number(past[past.length - 2].time) || 600)
       : 600;
+  const futureN = Math.max(6, Math.min(12, past.length));
   const future = [];
-  for (let i = 1; i <= past.length; i++) {
+  for (let i = 1; i <= futureN; i++) {
     future.push({
       time: Number(last.time) + dt * i,
       path: last.path,
@@ -1849,39 +1861,79 @@ function assembleRainViewerRadarFrames(pastIn, nowcastIn) {
   return { frames: [...past, ...future], presentIdx: Math.max(0, past.length - 1) };
 }
 
-function hailScopeLiveTimeWindow() {
-  const now = Date.now() / 1000;
-  // Symmetric window so Present sits mid-scrubber when radar isn't loaded yet.
-  if (radarFrames.length >= 2) {
-    return {
-      t0: Number(radarFrames[0].time) || now - 3600,
-      t1: Number(radarFrames[radarFrames.length - 1].time) || now + 3600,
-    };
+export function getLiveWindowHrs() {
+  return liveWindowHrs;
+}
+
+export function setLiveWindowHrs(h) {
+  const n = Number(h);
+  liveWindowHrs = LIVE_WINDOW_HOURS.includes(n) ? n : 6;
+  return liveWindowHrs;
+}
+
+export function liveWindowStepSec(hrs = liveWindowHrs) {
+  if (hrs <= 2) return 600;
+  if (hrs <= 6) return 900;
+  if (hrs <= 12) return 1200;
+  return 1800;
+}
+
+export function liveWindowBounds(nowSec, hrs = liveWindowHrs) {
+  const now = Number(nowSec);
+  const t = Number.isFinite(now) ? now : Date.now() / 1000;
+  const half = Math.max(1, Number(hrs) || 6) * 3600;
+  return { t0: t - half, t1: t + half };
+}
+
+export function buildLiveTimelineSteps({ t0, t1, dt, radar = [], wind = [] } = {}) {
+  const start = Number(t0);
+  const end = Number(t1);
+  const step = Math.max(60, Number(dt) || 600);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+  const steps = [];
+  for (let t = start; t <= end + 1; t += step) {
+    const row = { time: t };
+    if (radar.length) row.radarIdx = nearestFrameIdx(radar, t);
+    if (wind.length) row.windIdx = nearestFrameIdx(wind, t);
+    steps.push(row);
   }
-  return { t0: now - 3600, t1: now + 3600 };
+  return steps;
+}
+
+function hailScopeLiveTimeWindow() {
+  return liveWindowBounds(Date.now() / 1000, liveWindowHrs);
+}
+
+function livePlayTickMs() {
+  if (liveWindowHrs >= 24) return 140;
+  if (liveWindowHrs >= 12) return 180;
+  if (liveWindowHrs >= 6) return 220;
+  return 280;
 }
 
 function hailScopeLiveTimeline() {
   const f = hailScopeRadarFilters;
   if (!f.precip && !f.wind) return [];
-
-  // One shared clock: RainViewer frame times whenever available — even wind-only —
-  // so the Present tick sits in the same place on the scrubber.
-  if (radarFrames.length >= 2) {
-    return radarFrames.map((fr, i) => ({ time: fr.time, radarIdx: i }));
-  }
-
-  if (f.wind && windFrames.length >= 2) {
-    const { t0, t1 } = hailScopeLiveTimeWindow();
-    const steps = [];
-    const dt = 600;
-    for (let t = t0; t <= t1 + 1; t += dt) {
-      steps.push({ time: t, windIdx: nearestFrameIdx(windFrames, t) });
+  const { t0, t1 } = hailScopeLiveTimeWindow();
+  const radar = f.precip && radarFrames.length >= 2 ? radarFrames : [];
+  const wind = f.wind && windFrames.length ? windFrames : [];
+  // 2h precip-only: ride the native 10-min RainViewer frames.
+  if (f.precip && !f.wind && liveWindowHrs <= 2 && radar.length >= 2) {
+    const inWin = radar.filter((fr) => Number(fr.time) >= t0 - 1 && Number(fr.time) <= t1 + 1);
+    if (inWin.length >= 2) {
+      return inWin.map((fr) => ({ time: fr.time, radarIdx: nearestFrameIdx(radarFrames, fr.time) }));
     }
-    if (steps.length >= 2) return steps;
-    return windFrames.map((fr, i) => ({ time: fr.time, windIdx: i }));
   }
-
+  const steps = buildLiveTimelineSteps({
+    t0,
+    t1,
+    dt: liveWindowStepSec(liveWindowHrs),
+    radar,
+    wind,
+  });
+  if (steps.length >= 2) return steps;
+  if (radar.length >= 2) return radar.map((fr, i) => ({ time: fr.time, radarIdx: i }));
+  if (wind.length >= 2) return wind.map((fr, i) => ({ time: fr.time, windIdx: i }));
   return [];
 }
 
@@ -1981,10 +2033,16 @@ export function hailScopeRadarBarHtml(settings) {
   if (!hailScopeRadarActive()) return "";
   const f = hailScopeRadarFilters;
   const scrub = hailScopeLiveScrubberInnerHtml();
+  const win = LIVE_WINDOW_HOURS.map(
+    (h) =>
+      `<button type="button" data-hs-live-win="${h}" class="${liveWindowHrs === h ? "on" : ""}" title="±${h} hour window">${h}H</button>`,
+  ).join("");
   return `<div class="hs-radar-bar" id="hs-radar-bar">
     <div class="wx-tl-filters hs-radar-filters">
       <button type="button" data-hs-radar-fl="precip" class="${f.precip ? "on" : ""}">PRECIP</button>
       <button type="button" data-hs-radar-fl="wind" class="${f.wind ? "on" : ""}">WIND</button>
+      <span class="wx-split" aria-hidden="true"></span>
+      ${win}
     </div>
     ${scrub ? `<div class="wx-radar-scrub hs-live-scrub" id="hs-live-scrub">${scrub}</div>` : ""}
   </div>`;
@@ -2016,7 +2074,7 @@ function bindHailScopeLiveScrubber(root = document) {
         const next = (liveTlIdx + 1) % hailScopeLiveTimeline().length;
         await setHailScopeLiveFrame(next, { crossfade: true });
         if (!radarPlaying) return;
-        radarPlayRaf = window.setTimeout(tick, 280);
+        radarPlayRaf = window.setTimeout(tick, livePlayTickMs());
       };
       void tick();
     };
@@ -2025,6 +2083,25 @@ function bindHailScopeLiveScrubber(root = document) {
 
 export function bindHailScopeRadar(root = document) {
   bindHailScopeLiveScrubber(root);
+  root.querySelectorAll("[data-hs-live-win]").forEach((btn) => {
+    btn.onclick = async () => {
+      const hrs = Number(btn.dataset.hsLiveWin);
+      if (!LIVE_WINDOW_HOURS.includes(hrs)) return;
+      if (hrs === liveWindowHrs) return;
+      const keep =
+        hailScopeLiveTimeline()[Math.min(liveTlIdx, Math.max(0, hailScopeLiveTimeline().length - 1))]?.time ||
+        Date.now() / 1000;
+      setLiveWindowHrs(hrs);
+      if (hailScopeRadarFilters.wind) await ensureWindFrames({ force: true });
+      const steps = hailScopeLiveTimeline();
+      liveTlIdx = steps.length ? nearestFrameIdx(steps, keep) : 0;
+      const host = root.querySelector?.("#hs-radar-bar") || document.getElementById("hs-radar-bar");
+      if (host) {
+        host.outerHTML = hailScopeRadarBarHtml();
+        bindHailScopeRadar(root);
+      }
+    };
+  });
   root.querySelectorAll("[data-hs-radar-fl]").forEach((btn) => {
     btn.onclick = async () => {
       const k = btn.dataset.hsRadarFl;
@@ -5076,17 +5153,17 @@ function windGridNeedsRefresh() {
 
 function ensureWindNoiseCanvas() {
   if (!map) return null;
-  if (!map.getPane("windField")) {
-    map.createPane("windField");
-    const pane = map.getPane("windField");
-    pane.style.zIndex = 460;
-    pane.style.pointerEvents = "none";
-  }
+  const container = map.getContainer?.();
+  if (!container) return null;
+  // Sit on the map container — not a transforming Leaflet pane — so
+  // latLngToContainerPoint stays aligned while the map pans.
   if (!windNoise.canvas) {
     const canvas = document.createElement("canvas");
     canvas.className = "hs-wind-noise";
     canvas.setAttribute("aria-hidden", "true");
-    map.getPane("windField").appendChild(canvas);
+    const controls = container.querySelector(".leaflet-control-container");
+    if (controls) container.insertBefore(canvas, controls);
+    else container.appendChild(canvas);
     windNoise.canvas = canvas;
     windNoise.ctx = canvas.getContext("2d");
     if (!windNoise.bound) {
@@ -5367,7 +5444,8 @@ async function ensureWindFrames({ force = false } = {}) {
       const t = Date.parse(times[ti]);
       if (!Number.isFinite(t)) continue;
       const sec = t / 1000;
-      if (sec < now - 6 * 3600 || sec > now + 6 * 3600) continue;
+      const half = liveWindowHrs * 3600 + 1800;
+      if (sec < now - half || sec > now + half) continue;
       const speed = new Float32Array(cols * rows);
       const dir = new Float32Array(cols * rows);
       const gust = new Float32Array(cols * rows);
@@ -5933,16 +6011,91 @@ function phoneFlagsEnabled() {
   return fieldOverlay.showPhoneFlags === true;
 }
 
+function flagMarkerKind(n) {
+  if (housePhoneKind(n) === "business") return "business";
+  if (houseHasPhone(n)) return "home";
+  return "info";
+}
+
 function phoneFlagIcon(tip = "", kind = "home") {
   const title = tip ? ` title="${tip}"` : "";
-  const fill = kind === "business" ? "#3d9eff" : "#1dff6e";
-  const cls = kind === "business" ? "has-phone biz" : "has-phone";
+  if (kind === "business" || kind === "info") {
+    return window.L.divIcon({
+      className: "hs-phone-flag hs-flag-pin",
+      html: `<span class="hs-phone-flag-ico ${kind === "business" ? "biz" : "info"} has-phone"${title} aria-hidden="true"><svg viewBox="0 0 24 36" width="14" height="21" focusable="false"><path fill="#2A81CB" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/><circle cx="12" cy="12" r="5.2" fill="#fff"/></svg></span>`,
+      iconSize: [14, 21],
+      iconAnchor: [7, 21],
+    });
+  }
   return window.L.divIcon({
     className: "hs-phone-flag",
-    html: `<span class="hs-phone-flag-ico ${cls}"${title} aria-hidden="true"><svg viewBox="0 0 20 28" width="18" height="26" focusable="false"><path fill="#0b0b0d" d="M3.2 1.2h2.2v25.5H3.2z"/><path fill="${fill}" d="M5.4 2.2h12.2l-3.4 4.6 3.4 4.6H5.4z"/><circle cx="4.3" cy="26.2" r="1.6" fill="${fill}"/></svg></span>`,
-    iconSize: [20, 28],
-    iconAnchor: [4, 26],
+    html: `<span class="hs-phone-flag-ico has-phone"${title} aria-hidden="true"><svg viewBox="0 0 16 22" width="13" height="18" focusable="false"><path fill="#0b0b0d" d="M2.4 0.8h1.8v20.2H2.4z"/><path fill="#1dff6e" d="M4.2 1.6h9.6l-2.6 3.5 2.6 3.5H4.2z"/><circle cx="3.3" cy="20.6" r="1.3" fill="#1dff6e"/></svg></span>`,
+    iconSize: [13, 18],
+    iconAnchor: [3, 18],
   });
+}
+
+function readyFlagList(nums) {
+  const c = map?.getCenter?.();
+  const list = (nums || []).filter((n) => houseHasUseful(n) && Number.isFinite(n.lat) && Number.isFinite(n.lon));
+  if (!c || list.length <= 80) return list;
+  return list
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.lat - c.lat) * (a.lat - c.lat) + (a.lon - c.lng) * (a.lon - c.lng) -
+        ((b.lat - c.lat) * (b.lat - c.lat) + (b.lon - c.lng) * (b.lon - c.lng)),
+    )
+    .slice(0, 80);
+}
+
+function flyToFlag(n) {
+  if (!map || !n || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return;
+  const z = map.getZoom?.() || 0;
+  map.flyTo([n.lat, n.lon], Math.max(19, z), { duration: 0.45 });
+}
+
+function paintFlagDock() {
+  const shell = document.getElementById("hs-map-shell");
+  if (!shell) return;
+  let dock = document.getElementById("hs-flag-dock");
+  const ready = readyFlagList(houseCache.nums);
+  if (!phoneFlagsEnabled() || !ready.length) {
+    if (dock) dock.hidden = true;
+    return;
+  }
+  if (!dock) {
+    dock = document.createElement("div");
+    dock.id = "hs-flag-dock";
+    dock.className = "hs-flag-dock";
+    shell.appendChild(dock);
+    dock.addEventListener("click", (e) => {
+      const btn = e.target?.closest?.("[data-flag-act]");
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const list = readyFlagList(houseCache.nums);
+      if (!list.length) return;
+      const act = btn.getAttribute("data-flag-act");
+      if (act === "prev") flagDockIdx = (flagDockIdx - 1 + list.length) % list.length;
+      else if (act === "next") flagDockIdx = (flagDockIdx + 1) % list.length;
+      const n = list[Math.max(0, Math.min(list.length - 1, flagDockIdx))];
+      flyToFlag(n);
+      paintFlagDock();
+    });
+  }
+  flagDockIdx = ((flagDockIdx % ready.length) + ready.length) % ready.length;
+  const cur = ready[flagDockIdx];
+  const kind = flagMarkerKind(cur);
+  const label = [cur.num, cur.street].filter(Boolean).join(" ") || housePhoneFor(cur) || "Flag";
+  dock.hidden = false;
+  dock.innerHTML = `<button type="button" class="hs-flag-dock-nav" data-flag-act="prev" aria-label="Previous flag">‹</button>
+    <button type="button" class="hs-flag-dock-go" data-flag-act="go" title="Zoom to this flag">
+      <i class="hs-flag-dock-dot ${kind === "home" ? "home" : "biz"}" aria-hidden="true"></i>
+      <span>${escHousePop(label)}</span>
+    </button>
+    <button type="button" class="hs-flag-dock-nav" data-flag-act="next" aria-label="Next flag">›</button>
+    <span class="hs-flag-dock-n">${flagDockIdx + 1}/${ready.length}</span>`;
 }
 
 function paintHouseLayer(_rings, nums) {
@@ -5950,27 +6103,32 @@ function paintHouseLayer(_rings, nums) {
   if (!phoneFlagsEnabled()) {
     houseLayer?.clearLayers?.();
     housePaintSig = "off";
+    paintFlagDock();
     return;
   }
-  const list = (nums || []).filter((n) => houseHasPhone(n));
-  const phoneBits = list.map((n) => `${n.num}|${housePhoneFor(n)}|${housePhoneKind(n)}`).join(";");
+  const list = readyFlagList(nums);
+  const phoneBits = list.map((n) => `${n.num}|${housePhoneFor(n)}|${flagMarkerKind(n)}`).join(";");
   const sig = `${houseCache.key}|flags:${list.length}|${phoneBits}`;
-  if (sig === housePaintSig && houseLayer?.getLayers?.().length) return;
+  if (sig === housePaintSig && houseLayer?.getLayers?.().length) {
+    paintFlagDock();
+    return;
+  }
   housePaintSig = sig;
   houseLayer.clearLayers();
   for (const n of list) {
     const tip = houseUsefulTip(n).replace(/"/g, "");
-    const kind = housePhoneKind(n);
+    const kind = flagMarkerKind(n);
     const marker = window.L.marker([n.lat, n.lon], {
       icon: phoneFlagIcon(tip, kind),
       pane: "houseNums",
       interactive: true,
       keyboard: true,
       bubblingMouseEvents: false,
-      title: tip || `Phone · #${n.num}`,
+      title: tip || `Flag · #${n.num}`,
     }).addTo(houseLayer);
     bindHousePhoneMarker(marker, n);
   }
+  paintFlagDock();
 }
 
 function escHousePop(s) {
@@ -5988,7 +6146,11 @@ function housePhonePopupHtml(n) {
   const street = [n.num, n.street].filter(Boolean).join(" ");
   const biz = housePhoneKind(n) === "business";
   if (!e164) {
-    return `<div class="hs-house-pop"><strong>${escHousePop(street || n.num)}</strong><span class="hs-place-miss">No phone yet</span></div>`;
+    return `<div class="hs-house-pop${biz ? " biz" : ""}">
+      <strong class="hs-house-pop-num">${escHousePop(street || n.num)}</strong>
+      ${name ? `<span class="hs-house-pop-who">${escHousePop(name)}${biz ? " · Business" : ""}</span>` : ""}
+      <span class="hs-place-miss">No phone yet</span>
+    </div>`;
   }
   return `<div class="hs-house-pop${biz ? " biz" : ""}">
     <strong class="hs-house-pop-num">${escHousePop(street || n.num)}</strong>
@@ -6012,7 +6174,13 @@ function bindHousePhoneMarker(marker, n) {
     offset: [0, -6],
     autoPan: true,
   });
-  if (!e164) return;
+  const zoomTo = () => {
+    if ((map?.getZoom?.() || 0) < 18) flyToFlag(n);
+  };
+  if (!e164) {
+    marker.on("click", zoomTo);
+    return;
+  }
   let holdTimer = 0;
   let held = false;
   const clearHold = () => {
@@ -6060,17 +6228,20 @@ function bindHousePhoneMarker(marker, n) {
   marker.on("touchcancel", endHold);
   marker.on("dragstart", endHold);
   marker.on("click", (e) => {
-    if (!held) return;
-    held = false;
-    if (window.L?.DomEvent) {
-      window.L.DomEvent.stop(e);
-      if (e.originalEvent) window.L.DomEvent.stop(e.originalEvent);
+    if (held) {
+      held = false;
+      if (window.L?.DomEvent) {
+        window.L.DomEvent.stop(e);
+        if (e.originalEvent) window.L.DomEvent.stop(e.originalEvent);
+      }
+      try {
+        marker.closePopup();
+      } catch {
+        /* ignore */
+      }
+      return;
     }
-    try {
-      marker.closePopup();
-    } catch {
-      /* ignore */
-    }
+    zoomTo();
   });
 }
 
@@ -6152,13 +6323,17 @@ function mergeHouseNums(into, nums) {
   return out;
 }
 
-/** Public listing + assessor scan — center-first, any zoom. */
+/** Public listing + assessor scan — idle, one-at-a-time, never retries this session. */
 async function enrichVisibleHouseInfo(nums, gen) {
   if (!phoneFlagsEnabled() || !map || !nums?.length) return;
   const c = map.getCenter?.();
   if (!c) return;
   const queue = nums
-    .filter((n) => n?.num && !houseHasPhone(n))
+    .filter((n) => {
+      if (!n?.num || houseHasPhone(n)) return false;
+      const k = housePhoneKey(n) || `@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
+      return k && !houseEnrichTried.has(k);
+    })
     .map((n) => ({
       n,
       d: haversineKm(c.lat, c.lng, n.lat, n.lon),
@@ -6167,7 +6342,10 @@ async function enrichVisibleHouseInfo(nums, gen) {
     .slice(0, HOUSE_ENRICH_MAX)
     .map((x) => x.n);
   const runOne = async (n) => {
-    if (gen !== houseGen || !map || !phoneFlagsEnabled()) return;
+    if (gen !== houseGen || !map || !phoneFlagsEnabled() || mapBusy > 0) return;
+    const key = housePhoneKey(n) || `@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
+    if (!key || houseEnrichTried.has(key)) return;
+    houseEnrichTried.add(key);
     const addr = await addressForHouseNum(n);
     if (!addr || !parseStreetAddress(addr).house) return;
     try {
@@ -6188,27 +6366,29 @@ async function enrichVisibleHouseInfo(nums, gen) {
         rememberHouseUseful(n, { phone, name, email, kind });
         housePaintSig = "";
         paintHouseLayer([], houseCache.nums);
-        const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
-        emitPhoneFlagsStatus(`${flags} phone flag${flags === 1 ? "" : "s"}`);
+        const flags = readyFlagList(houseCache.nums).length;
+        emitPhoneFlagsStatus(`${flags} flag${flags === 1 ? "" : "s"} ready`);
       }
     } catch {
       /* keep scanning */
     }
   };
-  emitPhoneFlagsStatus(`Scanning phones… 0/${queue.length}`);
-  for (let i = 0; i < queue.length; i += 3) {
-    if (gen !== houseGen || !map || !phoneFlagsEnabled()) return;
-    await Promise.all([
-      runOne(queue[i]),
-      queue[i + 1] ? runOne(queue[i + 1]) : null,
-      queue[i + 2] ? runOne(queue[i + 2]) : null,
-    ]);
-    const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
-    emitPhoneFlagsStatus(`Scanning… ${Math.min(i + 3, queue.length)}/${queue.length} · ${flags} flags`);
-    await new Promise((r) => setTimeout(r, 100));
+  if (!queue.length) {
+    const flags = readyFlagList(houseCache.nums).length;
+    emitPhoneFlagsStatus(flags ? `${flags} flag${flags === 1 ? "" : "s"} ready` : "No public phones found yet");
+    return;
   }
-  const flags = (houseCache.nums || []).filter((x) => houseHasPhone(x)).length;
-  emitPhoneFlagsStatus(flags ? `${flags} phone flag${flags === 1 ? "" : "s"}` : "No public phones found yet");
+  emitPhoneFlagsStatus(`Loading flags… 0/${queue.length}`);
+  for (let i = 0; i < queue.length; i++) {
+    if (gen !== houseGen || !map || !phoneFlagsEnabled()) return;
+    if (mapBusy > 0) return;
+    await runOne(queue[i]);
+    const flags = readyFlagList(houseCache.nums).length;
+    emitPhoneFlagsStatus(`Loading flags… ${i + 1}/${queue.length} · ${flags} ready`);
+    await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
+  }
+  const flags = readyFlagList(houseCache.nums).length;
+  emitPhoneFlagsStatus(flags ? `${flags} flag${flags === 1 ? "" : "s"} ready` : "No public phones found yet");
 }
 
 async function arcgisGet(url, timeoutMs = 14000) {
@@ -6401,6 +6581,7 @@ async function refreshHouseNumbers() {
   if (!phoneFlagsEnabled()) {
     houseLayer?.clearLayers?.();
     housePaintSig = "off";
+    paintFlagDock();
     return;
   }
   const searchB = flagSearchBounds();
@@ -6724,6 +6905,7 @@ export function setFieldOverlay({
     else {
       houseLayer?.clearLayers?.();
       emitPhoneFlagsStatus("");
+      paintFlagDock();
     }
   }
   if (!map || !window.L) return;
@@ -8579,6 +8761,20 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
   if (box._hsDateBound) return;
   box._hsDateBound = true;
   box.addEventListener("click", (e) => {
+    const pageBtn = e.target?.closest?.("[data-hs-page]");
+    if (pageBtn && box.contains(pageBtn) && !pageBtn.disabled) {
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      const live = box._hsData || data;
+      const liveEsc = box._hsEsc || esc;
+      const dir = pageBtn.getAttribute("data-hs-page");
+      hailStormPage += dir === "next" ? 1 : -1;
+      box.innerHTML = hailScopeDateRows(hailScopeDays(live), liveEsc, {
+        viewport: Boolean(live.viewport || live._meta?.viewport),
+        data: live,
+      });
+      return;
+    }
     const row = e.target?.closest?.(".hs-date[data-storm-date]");
     if (!row || !box.contains(row)) return;
     e.preventDefault?.();
@@ -8601,6 +8797,15 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
   });
 }
 
+export function stormListPageSlice(days, page, pageSize = STORM_LIST_PAGE_SIZE) {
+  const list = Array.isArray(days) ? days : [];
+  const total = list.length;
+  const pages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const p = Math.max(0, Math.min(pages - 1, Number(page) || 0));
+  const start = p * pageSize;
+  return { page: p, pages, total, start, items: list.slice(start, start + pageSize) };
+}
+
 function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
   if (!days.length) {
     const cached = (data?.hail || []).length;
@@ -8619,8 +8824,9 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
         : "Adjust filters to see storm dates — try a longer window or lower hail size.";
     return `<p class="hs-empty">${empty}</p>`;
   }
-  return days
-    .slice(0, 80)
+  const slice = stormListPageSlice(days, hailStormPage);
+  hailStormPage = slice.page;
+  const rows = slice.items
     .map((h) => {
       const on = isStormDateSelected(h.date) ? " on" : "";
       const atRoof = (h.near_hits || 0) > 0;
@@ -8641,6 +8847,17 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
               </button>`;
     })
     .join("");
+  const pager =
+    slice.pages > 1
+      ? `<nav class="hs-dates-pager" aria-label="Storm date pages">
+          <button type="button" data-hs-page="prev"${slice.page <= 0 ? " disabled" : ""}>Prev</button>
+          <span class="hs-dates-pager-lab">Page ${slice.page + 1} of ${slice.pages} · ${slice.total} storms</span>
+          <button type="button" data-hs-page="next"${slice.page >= slice.pages - 1 ? " disabled" : ""}>Next</button>
+        </nav>`
+      : slice.total > STORM_LIST_PAGE_SIZE
+        ? `<p class="hs-dates-pager-lab muted">${slice.total} storms</p>`
+        : "";
+  return `${rows}${pager}`;
 }
 
 function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
@@ -8651,6 +8868,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (qEl) {
     qEl.oninput = () => {
       hailSearchQ = String(qEl.value || "").trim().toLowerCase();
+      hailStormPage = 0;
       const box = root.querySelector(".hs-dates");
       if (box) {
         box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
@@ -8664,6 +8882,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
     const el = root.querySelector(id);
     if (!el) return;
     el.onchange = async () => {
+      hailStormPage = 0;
       wxFilters[key] = cast(el.value);
       if (key === "km" && wxPinSelected()) drawPinRadius();
       const needRefetch =
