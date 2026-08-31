@@ -18,11 +18,13 @@ import {
   isOsmBusinessTags,
   lookupViewportRentFlags,
   isOklahomaLatLon,
+  loadPersistedRentFlags,
+  persistRentFlags,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, clampPinScale } from "./marks.js";
-import { isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
+import { flagNetProfile, isAndroid, isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
 
 let map = null;
 let pin = null;
@@ -252,6 +254,14 @@ let houseTimer = 0;
 let houseGen = 0;
 let houseCache = { key: "", rings: [], nums: [] };
 let housePaintSig = "";
+let persistHydrated = false;
+let lastRentSweepAt = 0;
+let flagPaintTimer = 0;
+let flagPaintQueued = false;
+let flagPaintImmediateDone = false;
+const BIZ_STORE_KEY = "hs-biz-flags-v1";
+const BIZ_STORE_MAX = 800;
+const RENT_SWEEP_COOL_MS = 25 * 60 * 1000;
 /** Session map of house keys → owner phone (drives green house-number labels). */
 const housePhoneByKey = new Map();
 /** Session map of house keys → { phone, name, email } when public info exists. */
@@ -1438,7 +1448,9 @@ const MAP_HAIL_MAX_KM = 450;
 const FLAG_SEARCH_KM_MIN = 2.2;
 const FLAG_SEARCH_KM_MAX = 10;
 /** Painted flag cap — rentals are never dropped to make room for businesses. */
-const FLAG_PAINT_MAX = 400;
+function flagPaintMax() {
+  return Number(flagNetProfile()?.paintMax) || (isAndroid() ? 220 : 400);
+}
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
 const HOUSE_ENRICH_MAX = 10;
@@ -6196,8 +6208,9 @@ function readyFlagList(nums) {
   const biz = list.filter((n) => housePhoneKind(n) !== "rental");
   rentals.sort((a, b) => flagDist2(a, c) - flagDist2(b, c));
   biz.sort((a, b) => flagDist2(a, c) - flagDist2(b, c));
-  const rentKeep = rentals.slice(0, FLAG_PAINT_MAX);
-  const room = Math.max(0, FLAG_PAINT_MAX - rentKeep.length);
+  const cap = flagPaintMax();
+  const rentKeep = rentals.slice(0, cap);
+  const room = Math.max(0, cap - rentKeep.length);
   return [...rentKeep, ...biz.slice(0, room)];
 }
 
@@ -6844,15 +6857,95 @@ function numsFromRentFlags(flags) {
   return out;
 }
 
+function loadPersistedBizFlags() {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const j = JSON.parse(localStorage.getItem(BIZ_STORE_KEY) || "null");
+    if (!j || !Array.isArray(j.flags)) return [];
+    return j.flags.filter((n) => n?.phone && Number.isFinite(Number(n.lat)) && Number.isFinite(Number(n.lon)));
+  } catch {
+    return [];
+  }
+}
+
+function persistBizFlags(nums) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const rows = (nums || [])
+      .filter((n) => n?.phone && (n.phone_kind === "business" || n.source === "osm-business"))
+      .map((n) => ({
+        num: n.num || n.owner_name || "",
+        street: n.street || "",
+        city: n.city || "",
+        zip: n.zip || "",
+        lat: n.lat,
+        lon: n.lon,
+        phone: n.phone,
+        owner_name: n.owner_name || "",
+        phone_kind: "business",
+        source: n.source || "osm-business",
+      }))
+      .slice(0, BIZ_STORE_MAX);
+    if (!rows.length) return;
+    localStorage.setItem(BIZ_STORE_KEY, JSON.stringify({ at: Date.now(), flags: rows }));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function hydratePersistedFlags() {
+  if (persistHydrated) return;
+  persistHydrated = true;
+  const rent = loadPersistedRentFlags();
+  const biz = loadPersistedBizFlags();
+  if (rent.length) {
+    houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(rent));
+  }
+  if (biz.length) {
+    for (const n of biz) {
+      rememberHouseUseful(n, { phone: n.phone, name: n.owner_name, kind: "business", source: n.source });
+    }
+    houseCache.nums = mergeHouseNums(houseCache.nums, biz);
+  }
+  if (!houseCache.nums.some((n) => houseHasFlag(n))) return;
+  scheduleFlagLayerPaint(true);
+}
+
+function scheduleFlagLayerPaint(immediate = false) {
+  const paint = () => {
+    flagPaintTimer = 0;
+    flagPaintQueued = false;
+    if (!phoneFlagsEnabled() || !map) return;
+    housePaintSig = "";
+    paintHouseLayer([], houseCache.nums);
+    emitPhoneFlagsStatus(flagStatusLine("Listings"));
+  };
+  if (immediate || !flagPaintImmediateDone) {
+    flagPaintImmediateDone = true;
+    if (flagPaintTimer) {
+      clearTimeout(flagPaintTimer);
+      flagPaintTimer = 0;
+    }
+    paint();
+    return;
+  }
+  if (flagPaintQueued) return;
+  flagPaintQueued = true;
+  const delay = isAndroid() ? 320 : 220;
+  flagPaintTimer = setTimeout(paint, delay);
+}
+
 function applyRentFlagBatch(flags, _gen) {
   if (!phoneFlagsEnabled() || !map || !flags?.length) return;
   houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(flags));
-  housePaintSig = "";
-  paintHouseLayer([], houseCache.nums);
-  emitPhoneFlagsStatus(flagStatusLine("Listings"));
+  persistRentFlags(flags);
+  scheduleFlagLayerPaint();
 }
 
 function kickRentFlags(lat, lon, place, gen) {
+  const now = Date.now();
+  if (lastRentSweepAt && now - lastRentSweepAt < RENT_SWEEP_COOL_MS) return;
+  lastRentSweepAt = now;
   void lookupViewportRentFlags(lat, lon, {
     city: place?.city || "",
     state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
@@ -6899,6 +6992,7 @@ async function refreshHouseNumbers() {
     paintFlagDock();
     return;
   }
+  hydratePersistedFlags();
   const searchB = flagSearchBounds();
   if (!searchB) {
     houseLayer.clearLayers();
@@ -6908,7 +7002,7 @@ async function refreshHouseNumbers() {
   const z = map.getZoom?.() ?? 14;
   const key = `flag|${houseBoundsKey(searchB, z)}|${flagSearchKm().toFixed(1)}`;
   if (houseCache.key === key && houseCache.nums.length) {
-    paintHouseLayer([], houseCache.nums);
+    scheduleFlagLayerPaint();
     const c0 = map.getCenter?.();
     if (c0 && !houseCache.nums.some((n) => n.phone_kind === "rental")) {
       kickRentFlags(c0.lat, c0.lng, { city: "", state: "" }, houseGen);
@@ -6920,21 +7014,31 @@ async function refreshHouseNumbers() {
     }, 60);
     return;
   }
-  emitPhoneFlagsStatus(`Loading flags (~${flagSearchKm().toFixed(0)} km)…`);
+  const cachedReady = readyFlagList(houseCache.nums).length;
+  emitPhoneFlagsStatus(
+    cachedReady ? flagStatusLine("Cached") : `Loading flags (~${flagSearchKm().toFixed(0)} km)…`,
+  );
   const padB = searchB.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
   const west = padB.getWest();
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
+  const center = map.getCenter?.();
+  if (center) {
+    kickRentFlags(center.lat, center.lng, {
+      city: "",
+      state: isOklahomaLatLon(center.lat, center.lng) ? "OK" : "",
+    }, gen);
+  }
   const mapDump = await osmMapJson(south, west, north, east, 22000).catch(() => null);
   const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
   const osmNums = numsFromOsmElements(mapDump?.elements);
   if (!map || !phoneFlagsEnabled()) return;
   const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
   houseCache = { key, rings: [], nums };
-  paintHouseLayer([], nums);
-  const center = map.getCenter?.();
+  persistBizFlags(nums);
+  scheduleFlagLayerPaint();
   const place = placeFromOsmElements(mapDump?.elements);
   if (center) {
     if (!place.city && isOklahomaLatLon(center.lat, center.lng)) place.city = "Edmond";
@@ -6945,8 +7049,8 @@ async function refreshHouseNumbers() {
     .then((overPois) => {
       if (gen !== houseGen || !overPois?.elements?.length) return;
       houseCache.nums = mergeHouseNums(houseCache.nums, numsFromOsmElements(overPois.elements, { requireBusinessPhone: true }));
-      housePaintSig = "";
-      paintHouseLayer([], houseCache.nums);
+      persistBizFlags(houseCache.nums);
+      scheduleFlagLayerPaint();
     })
     .catch(() => {});
   const ready = readyFlagList(nums).length;
@@ -6980,6 +7084,7 @@ export function startPhoneFlagScan() {
   houseHoldUntil = 0;
   housePaintSig = "";
   houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
+  hydratePersistedFlags();
   if (houseTimer) {
     clearTimeout(houseTimer);
     houseTimer = 0;

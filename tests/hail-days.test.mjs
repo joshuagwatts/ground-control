@@ -117,7 +117,7 @@ const vpData = { viewport: true, hail: [nearRow, farRow], _meta: { viewport: tru
 assert(filterHailRaw(vpData, { km: 10, hailIn: 0, days: 730, year: "all" }).length === 2, "viewport list ignores NEAR km");
 
 assert(spcLookbackDays(90) <= 16, "SPC never walks 90 daily CSVs");
-assert(spcLookbackDays(90) === 8, "browser/CORS path keeps SPC to 8 days");
-assert(lsrFirstDays(730) <= 120, "first LSR window stays small on slow browsers");
+assert(spcLookbackDays(90) === 16, "desktop/Android keep a 16-day SPC walk");
+assert(lsrFirstDays(730) === 400, "first LSR window is wider off Safari");
 
 console.log("hail-days ok");

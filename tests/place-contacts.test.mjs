@@ -34,6 +34,11 @@ import {
   parseZillowRentSearchJson,
   parseZillowRentDetailPhone,
   isOklahomaLatLon,
+  citiesNearPoint,
+  mergeRentFlagList,
+  persistRentFlags,
+  loadPersistedRentFlags,
+  persistedRentFlagsAt,
 } from "../www/contacts.js";
 import { parseOsmXmlNodes } from "../www/net.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
@@ -315,5 +320,26 @@ const osmNodes = parseOsmXmlNodes(`
   </osm>`);
 assert(osmNodes.length === 1 && osmNodes[0].tags.name === "Bondi Bowls", "parse osm xml node");
 assert(osmNodes[0].tags.phone.includes("405"), "parse osm xml phone");
+
+assert(citiesNearPoint(35.6528, -97.4778)[0] === "Edmond", "viewport nearest Edmond");
+assert(citiesNearPoint(35.2226, -97.4395)[0] === "Norman", "viewport nearest Norman");
+assert(citiesNearPoint(36.154, -95.9928)[0] === "Tulsa", "viewport nearest Tulsa");
+
+const store = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(String(k), String(v)),
+  removeItem: (k) => store.delete(k),
+};
+const rowA = { phone: "(405) 348-0001", lat: 35.6528, lon: -97.4778, city: "Edmond", source: "rent-com" };
+const rowB = { phone: "(405) 348-0001", lat: 35.6528, lon: -97.4778, city: "Edmond", source: "rent-com" };
+const rowC = { phone: "(405) 321-0002", lat: 35.2226, lon: -97.4395, city: "Norman", source: "rent-com" };
+assert(mergeRentFlagList([], [rowA, rowB, rowC]).length === 2, "merge rent flags dedupes phone+coord");
+persistRentFlags([rowA, rowC]);
+const cached = loadPersistedRentFlags();
+assert(cached.length === 2 && cached[0].city === "Edmond", "persist rent flags");
+assert(persistedRentFlagsAt() > 0, "persist stamp");
+persistRentFlags([rowA]);
+assert(loadPersistedRentFlags().length === 2, "persist merge keeps prior cities");
 
 console.log("place-contacts ok");

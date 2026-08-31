@@ -107,16 +107,71 @@ export function useDesktopChrome() {
   return detectFormFactor() === "desktop";
 }
 
-/** Browser Pages / Safari without native HTTP — SWDI goes through CORS proxies. */
-export function isSlowBrowserNet() {
-  if (capacitorPlatform() !== "web") return false;
+export function isAndroid(ua = uaBlob(), cap = capacitorPlatform()) {
+  if (cap === "android") return true;
+  return /Android/i.test(String(ua || ""));
+}
+
+export function isAppleDevice(ua = uaBlob(), cap = capacitorPlatform()) {
+  if (cap === "ios") return true;
+  const blob = String(ua || "");
+  if (/iPhone|iPad|iPod/i.test(blob)) return true;
+  if (typeof navigator !== "undefined" && navigator.platform === "MacIntel" && (navigator.maxTouchPoints || 0) > 1) {
+    return true;
+  }
+  return false;
+}
+
+/** Listing scrapes: iPhone UA only on Apple (Zillow 403s desktop Chrome). Android stays Chrome. */
+export function listingBrowserHeaders({ zillow = false, ua, cap } = {}) {
+  const apple = isAppleDevice(ua ?? uaBlob(), cap ?? capacitorPlatform());
+  if (apple || zillow) {
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9",
+    };
+    if (zillow) headers.Referer = "https://www.zillow.com/";
+    return headers;
+  }
+  return {
+    "User-Agent":
+      "Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+    Accept: "text/html,application/xhtml+xml",
+    "Accept-Language": "en-US,en;q=0.9",
+  };
+}
+
+/** How hard Flags may hit the network — Android stays parallel; Safari web stays gentle. */
+export function flagNetProfile({ ua, cap } = {}) {
+  const android = isAndroid(ua ?? uaBlob(), cap ?? capacitorPlatform());
+  const apple = isAppleDevice(ua ?? uaBlob(), cap ?? capacitorPlatform());
+  const slowWeb = isSlowBrowserNet(ua ?? uaBlob(), cap ?? capacitorPlatform());
+  return {
+    cityChunk: android && !slowWeb ? 4 : slowWeb ? 2 : 3,
+    zillowDetails: apple || (!android && !slowWeb) ? 4 : 0,
+    paintMax: android ? 220 : 400,
+  };
+}
+
+/**
+ * Safari / iOS web only. Android Chrome, Capacitor, and desktop Chrome stay on the
+ * fast path — Apple CORS/proxy throttles were making Android feel frozen.
+ */
+export function isSlowBrowserNet(ua = uaBlob(), cap = capacitorPlatform()) {
+  if (cap === "android" || cap === "ios") return false;
   try {
-    const cap = window.Capacitor;
-    if (cap?.Plugins?.CapacitorHttp) return false;
+    const plug = typeof window !== "undefined" ? window.Capacitor : null;
+    if (plug?.Plugins?.CapacitorHttp) return false;
   } catch {
     /* web */
   }
-  return true;
+  if (isAndroid(ua, cap)) return false;
+  if (isAppleDevice(ua, cap)) return true;
+  const blob = String(ua || "");
+  if (/Safari/i.test(blob) && !/Chrome|Chromium|Edg|OPR|Firefox|Android/i.test(blob)) return true;
+  return false;
 }
 
 /** Apply gc-phone | gc-tablet | gc-desktop on <body>. */

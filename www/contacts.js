@@ -1,15 +1,10 @@
 /** High-confidence listing for a pinned house — OSM/Nominatim at this address only. */
 import { httpGet, overpassJson } from "./net.js";
+import { flagNetProfile, listingBrowserHeaders } from "./device.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
-/** Zillow city rentals 403 on desktop Chrome; iPhone Safari + language headers work. */
-const LISTING_SAFARI_UA = {
-  "User-Agent":
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-  Accept: "text/html,application/xhtml+xml",
-  "Accept-Language": "en-US,en;q=0.9",
-};
-const ZILLOW_LISTING_HEADERS = { ...LISTING_SAFARI_UA, Referer: "https://www.zillow.com/" };
+const RENT_STORE_KEY = "hs-rent-flags-v1";
+const RENT_STORE_MAX = 1400;
 const US_STATES = {
   alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
   colorado: "co", connecticut: "ct", delaware: "de", "district of columbia": "dc",
@@ -500,6 +495,80 @@ const OK_RENT_CITIES = [
 
 const rentFlagCache = new Map();
 const rentCityCache = new Map();
+let rentSweepInFlight = null;
+
+const OK_RENT_CITY_COORDS = {
+  Edmond: [35.6528, -97.4778],
+  "Oklahoma City": [35.4676, -97.5164],
+  Norman: [35.2226, -97.4395],
+  Moore: [35.3395, -97.4867],
+  "Midwest City": [35.4495, -97.3967],
+  Yukon: [35.5067, -97.7625],
+  "The Village": [35.5595, -97.5564],
+  Bethany: [35.5184, -97.6323],
+  "Del City": [35.442, -97.4409],
+  Mustang: [35.3842, -97.7245],
+  Newcastle: [35.2473, -97.5997],
+  Noble: [35.139, -97.3947],
+  Tulsa: [36.154, -95.9928],
+  "Broken Arrow": [36.0365, -95.797],
+  Stillwater: [36.1156, -97.0584],
+  Lawton: [34.6036, -98.3959],
+  Shawnee: [35.3273, -96.9253],
+  Enid: [36.3956, -97.8784],
+  Owasso: [36.2695, -95.8547],
+  Guthrie: [35.8789, -97.4253],
+  Choctaw: [35.4976, -97.2689],
+  Piedmont: [35.642, -97.7487],
+  Claremore: [36.3126, -95.6161],
+  Bartlesville: [36.7473, -95.9808],
+  Muskogee: [35.7479, -95.3697],
+  "Ponca City": [36.707, -97.0856],
+  Ardmore: [34.1743, -97.1436],
+  Duncan: [34.5023, -97.9578],
+  Altus: [34.6381, -99.334],
+  Weatherford: [35.5262, -98.7076],
+  "El Reno": [35.5323, -97.955],
+};
+
+export function loadPersistedRentFlags() {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const j = JSON.parse(localStorage.getItem(RENT_STORE_KEY) || "null");
+    if (!j || !Array.isArray(j.flags)) return [];
+    return j.flags.filter((r) => r?.phone && Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lon)));
+  } catch {
+    return [];
+  }
+}
+
+export function persistedRentFlagsAt() {
+  try {
+    if (typeof localStorage === "undefined") return 0;
+    const j = JSON.parse(localStorage.getItem(RENT_STORE_KEY) || "null");
+    return Number(j?.at) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function persistRentFlags(rows) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const merged = mergeRentFlagList(loadPersistedRentFlags(), rows).slice(0, RENT_STORE_MAX);
+    localStorage.setItem(RENT_STORE_KEY, JSON.stringify({ at: Date.now(), flags: merged }));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+export function citiesNearPoint(lat, lon) {
+  return OK_RENT_CITIES.slice().sort((a, b) => {
+    const A = OK_RENT_CITY_COORDS[a] || [lat, lon];
+    const B = OK_RENT_CITY_COORDS[b] || [lat, lon];
+    return haversineKm(lat, lon, A[0], A[1]) - haversineKm(lat, lon, B[0], B[1]);
+  });
+}
 
 export function isOklahomaLatLon(lat, lon) {
   return Number(lat) >= 33.6 && Number(lat) <= 37.05 && Number(lon) >= -103.05 && Number(lon) <= -94.4;
@@ -525,7 +594,7 @@ function inferOkCity(lat, lon) {
   return best?.city || (isOklahomaLatLon(lat, lon) ? "Oklahoma City" : "");
 }
 
-function mergeRentFlagList(into, rows) {
+export function mergeRentFlagList(into, rows) {
   const out = Array.isArray(into) ? into.slice() : [];
   const seen = new Set(
     out.map((r) => `${phoneDigits(r.phone)}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}`),
@@ -554,7 +623,7 @@ async function fetchRentComCityPages(city, state, { kinds = ["apartments", "hous
           if ((rentFlagCache.get(url) || []).length < 20) break;
           continue;
         }
-        const pageHit = await fetchHtml(url, 16000, LISTING_SAFARI_UA);
+        const pageHit = await fetchHtml(url, 16000, listingBrowserHeaders());
         const list = parseRentComSearchJson(pageHit?.html || "");
         rentFlagCache.set(url, list);
         acc.push(...list);
@@ -577,7 +646,7 @@ async function fetchRentComCityPages(city, state, { kinds = ["apartments", "hous
 async function fetchZillowCityRentPhones(city, state, { lat, lon, have = [], maxDetails = 6 } = {}) {
   const url = formatZillowCityRentUrl(city, state);
   if (!url) return [];
-  const page = await fetchHtml(url, 16000, ZILLOW_LISTING_HEADERS);
+  const page = await fetchHtml(url, 16000, listingBrowserHeaders({ zillow: true }));
   const found = parseZillowRentSearchJson(page?.html || "");
   const withPhone = found.filter((r) => r.phone);
   const needPhone = found
@@ -587,7 +656,7 @@ async function fetchZillowCityRentPhones(city, state, { lat, lon, have = [], max
     .slice(0, maxDetails);
   const details = [];
   for (const row of needPhone) {
-    const deep = await fetchHtml(row.listingUrl, 14000, ZILLOW_LISTING_HEADERS);
+    const deep = await fetchHtml(row.listingUrl, 14000, listingBrowserHeaders({ zillow: true }));
     const phone = parseZillowRentDetailPhone(deep?.html || "");
     if (phone) details.push({ ...row, phone, phone_kind: "rental", zillow_rent: true, source: "zillow-rent" });
   }
@@ -595,64 +664,79 @@ async function fetchZillowCityRentPhones(city, state, { lat, lon, have = [], max
 }
 
 /**
- * Viewport / metro rental flags from Rent.com (phones in search JSON) + Zillow rentals.
- * Oklahoma loads major cities (Edmond → Norman → Tulsa…) so Flags are not stuck in a 10 km box.
+ * Persist + viewport-first statewide rental flags.
+ * Map-center cities paint first; the rest of Oklahoma fills in the background.
  */
+const RENT_SWEEP_FRESH_MS = 25 * 60 * 1000;
+
 export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const onBatch = typeof opts.onBatch === "function" ? opts.onBatch : null;
   const city = String(opts.city || inferOkCity(lat, lon) || "").trim();
   const state = String(opts.state || (isOklahomaLatLon(lat, lon) ? "OK" : "")).trim();
   const inOk = isOklahomaLatLon(lat, lon) || stateAbbr(state) === "ok";
+  const profile = flagNetProfile();
   let acc = [];
+  const persistAt = persistedRentFlagsAt();
+  const persistCount = loadPersistedRentFlags().length;
   const emit = (rows) => {
     acc = mergeRentFlagList(acc, rows);
+    persistRentFlags(acc);
     if (onBatch) onBatch(acc.slice());
   };
 
-  const firstCities = [];
-  const pushCity = (c) => {
-    const name = String(c || "").trim();
-    if (!name) return;
-    if (firstCities.some((x) => cityPathSlug(x) === cityPathSlug(name))) return;
-    firstCities.push(name);
-  };
-  pushCity(city);
-  if (inOk) {
-    for (const extra of ["Edmond", "Oklahoma City", "Norman"]) pushCity(extra);
-  }
+  const cached = loadPersistedRentFlags();
+  if (cached.length) emit(cached);
 
-  const runCities = async (names, pages, kinds) => {
-    const chunk = 3;
-    for (let i = 0; i < names.length; i += chunk) {
-      const part = names.slice(i, i + chunk);
-      const batches = await Promise.all(
-        part.map((c) => fetchRentComCityPages(c, state || "OK", { kinds, pages }).catch(() => [])),
-      );
-      for (const rows of batches) emit(rows);
+  if (rentSweepInFlight) return rentSweepInFlight.then(() => acc);
+
+  const work = (async () => {
+    const ordered = inOk ? citiesNearPoint(lat, lon) : city ? [city] : [];
+    const viewCities = [];
+    const pushCity = (c) => {
+      const name = String(c || "").trim();
+      if (!name) return;
+      if (viewCities.some((x) => cityPathSlug(x) === cityPathSlug(name))) return;
+      viewCities.push(name);
+    };
+    pushCity(city);
+    for (const extra of ordered.slice(0, 2)) pushCity(extra);
+
+    const runCities = async (names, pages, kinds) => {
+      const chunk = Math.max(1, profile.cityChunk || 3);
+      for (let i = 0; i < names.length; i += chunk) {
+        const part = names.slice(i, i + chunk);
+        const batches = await Promise.all(
+          part.map((c) => fetchRentComCityPages(c, state || "OK", { kinds, pages }).catch(() => [])),
+        );
+        for (const rows of batches) emit(rows);
+      }
+    };
+
+    await runCities(viewCities, 1, ["apartments", "houses"]);
+
+    if (profile.zillowDetails > 0 && (city || inOk)) {
+      const zCity = city || viewCities[0];
+      const zRows = await fetchZillowCityRentPhones(zCity, state || "OK", {
+        lat,
+        lon,
+        have: acc,
+        maxDetails: profile.zillowDetails,
+      }).catch(() => []);
+      if (zRows.length) emit(zRows);
     }
-  };
 
-  // First paint: page 1 apartments+houses for Edmond / OKC / Norman.
-  await runCities(firstCities, 1, ["apartments", "houses"]);
+    const statewideDue = inOk && (persistCount < 80 || Date.now() - persistAt > RENT_SWEEP_FRESH_MS);
+    if (statewideDue) {
+      const rest = ordered.filter((c) => !viewCities.some((x) => cityPathSlug(x) === cityPathSlug(c)));
+      await runCities(rest, 1, ["apartments", "houses"]);
+    }
+    return acc;
+  })();
 
-  if (city || inOk) {
-    const zCity = city || firstCities[0];
-    const zRows = await fetchZillowCityRentPhones(zCity, state || "OK", {
-      lat,
-      lon,
-      have: acc,
-      maxDetails: inOk ? 4 : 6,
-    }).catch(() => []);
-    if (zRows.length) emit(zRows);
-  }
-
-  if (inOk) {
-    await runCities(firstCities, 2, ["apartments", "houses"]);
-    const rest = OK_RENT_CITIES.filter((c) => !firstCities.some((x) => cityPathSlug(x) === cityPathSlug(c)));
-    await runCities(rest, 1, ["apartments", "houses"]);
-  }
-
-  return acc;
+  rentSweepInFlight = work.finally(() => {
+    rentSweepInFlight = null;
+  });
+  return work;
 }
 
 export function formatYellowPagesAddressUrl(address) {
