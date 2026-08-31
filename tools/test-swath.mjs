@@ -43,7 +43,14 @@ const fns = [
   "chaikinSmoothRing",
   "convexHullLatLon",
   "padPolygon",
+  "haversineKm",
   "hailFootprintM",
+  "isAxisBoxRing",
+  "softCircleBands",
+  "softBandsFromRing",
+  "ringAreaApproxM2",
+  "clusterPoints",
+  "buildHailSwathRingsCluster",
   "buildHailSwathRings",
   "stackHailBandPolys",
   "ensureClosedRing",
@@ -71,7 +78,7 @@ const stubs = {
 };
 const factory = new Function(
   ...Object.keys(stubs),
-  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys };`,
+  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing };`,
 );
 const g = factory(...Object.values(stubs));
 g.nestHailBandPolys = g.stackHailBandPolys;
@@ -201,6 +208,43 @@ for (let i = 0; i < 60; i++) {
     "statewide coverage (no grid clipping)",
     latCov > 0.85 && lonCov > 0.85,
     `latCoverage=${(latCov * 100).toFixed(0)}% lonCoverage=${(lonCov * 100).toFixed(0)}% rings=${rings.length}`,
+  );
+}
+
+// Sparse city hits must NOT become axis-aligned rectangles (the OKC screenshot bug).
+{
+  ZOOM = 14;
+  const sparse = [
+    { lat: 35.467, lon: -97.516, size_in: 1.0, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.47, lon: -97.51, size_in: 0.85, source: "spotter", date: "2026-05-01" },
+  ];
+  // Also mix in far statewide points that used to coarsen the whole mesh into boxes.
+  for (let i = 0; i < 20; i++) {
+    sparse.push({
+      lat: 34.0 + i * 0.15,
+      lon: -99.0 + i * 0.12,
+      size_in: 0.9,
+      source: "noaa-swdi-radar",
+      date: "2026-05-01",
+    });
+  }
+  const rings = g.buildHailSwathRings(sparse, { size_in: 1.0, date: "2026-05-01" });
+  const okc = rings.filter((r) => {
+    const c = r.ring.reduce(
+      (a, p) => ({ lat: a.lat + p[0], lon: a.lon + p[1], n: a.n + 1 }),
+      { lat: 0, lon: 0, n: 0 },
+    );
+    const lat = c.lat / c.n;
+    const lon = c.lon / c.n;
+    return Math.abs(lat - 35.47) < 0.2 && Math.abs(lon + 97.51) < 0.2;
+  });
+  const boxed = okc.filter((r) => g.isAxisBoxRing(r.ring) || boxiness(r.ring) > 0.55);
+  check(
+    "OKC sparse + statewide day → no axis boxes",
+    okc.length >= 1 && boxed.length === 0,
+    `okcRings=${okc.length} boxed=${boxed.length} maxBoxiness=${(
+      Math.max(0, ...okc.map((r) => boxiness(r.ring))) * 100
+    ).toFixed(0)}%`,
   );
 }
 
