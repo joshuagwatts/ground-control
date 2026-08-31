@@ -66,7 +66,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.147";
+} from "./wx.js?v=0.2.148";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1518,7 +1518,7 @@ function paintFieldSheet() {
 function paintRadarToggle() {
   const el = $("#hs-radar-top");
   if (!el) return;
-  const on = db.settings.showRadar !== false;
+  const on = db.settings.showRadar === true;
   el.classList.toggle("off", !on);
   el.innerHTML = `<button type="button" id="hs-radar-btn" class="hs-radar-toggle ${on ? "on" : ""}" aria-label="Weather radar" title="Live precip radar"><span class="hs-radar-icon" aria-hidden="true"></span>Radar</button>`;
   el.onclick = (e) => {
@@ -1526,7 +1526,7 @@ function paintRadarToggle() {
     if (!b) return;
     e.preventDefault();
     e.stopPropagation();
-    db.settings.showRadar = !(db.settings.showRadar !== false);
+    db.settings.showRadar = !(db.settings.showRadar === true);
     persist();
     paintRadarToggle();
     paintHailScopeRadarBar();
@@ -1539,7 +1539,7 @@ function paintHailScopeRadarBar() {
   if (!shell) return;
   syncHailScopeRadar(db.settings);
   let bar = $("#hs-radar-bar");
-  const on = db.settings.showRadar !== false;
+  const on = db.settings.showRadar === true;
   if (!on) {
     bar?.remove();
     shell.classList.remove("hs-radar-open");

@@ -264,11 +264,11 @@ export function setHailScopeMode(on) {
   if (!hailScopeMode) hailSearchQ = "";
 }
 /** HailScope live radar — separate from pip wx timeline filters. */
-let hailScopeRadarOn = true;
+let hailScopeRadarOn = false;
 export const hailScopeRadarFilters = { precip: true, wind: true };
 
 function hailScopeRadarActive() {
-  return hailScopeMode && hailScopeRadarOn !== false;
+  return hailScopeMode && hailScopeRadarOn === true;
 }
 
 function wantPrecipRadarTiles() {
@@ -1955,7 +1955,7 @@ function hailScopeLiveScrubberInnerHtml() {
 }
 
 export function hailScopeRadarBarHtml(settings) {
-  if (settings) hailScopeRadarOn = settings.showRadar !== false;
+  if (settings) hailScopeRadarOn = settings.showRadar === true;
   if (!hailScopeRadarActive()) return "";
   const f = hailScopeRadarFilters;
   const scrub = hailScopeLiveScrubberInnerHtml();
@@ -2154,7 +2154,7 @@ function syncHailScopeRadarLayers() {
 }
 
 export function syncHailScopeRadar(settings) {
-  hailScopeRadarOn = settings?.showRadar !== false;
+  hailScopeRadarOn = settings?.showRadar === true;
   if (!hailScopeMode || !map) return;
   if (!hailScopeRadarActive()) {
     stopRadarPlay();
