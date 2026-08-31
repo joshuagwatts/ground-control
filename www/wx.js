@@ -6725,7 +6725,9 @@ async function refreshHouseNumbers() {
       ? flagStatusLine(`Scanning listings…`)
       : nums.length
         ? flagStatusLine(`Scanning listings…`)
-        : "No rental or business listings near map center",
+        : mapDump
+          ? "No rental or business phones near map center"
+          : "Flag lookup blocked — turn off VPN / check Wi‑Fi, then tap Flags again",
   );
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
   houseEnrichTimer = setTimeout(() => {
