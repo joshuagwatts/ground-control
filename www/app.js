@@ -65,7 +65,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.129";
+} from "./wx.js?v=0.2.130";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -73,8 +73,9 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale } from "./marks.js";
-import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse } from "./done.js";
+import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
+import { CACHE_BUST } from "./version.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -1585,6 +1586,176 @@ function paintLayerToggles() {
   };
 }
 
+async function ensureDoneHousesPlaced() {
+  const text = (db.done?.text || "").trim();
+  const lines = parseDoneList(text);
+  const houses = doneHouses();
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (!lines.length) {
+    if (placed) paintFieldMap();
+    return;
+  }
+  if (placed >= lines.length && houses.length >= lines.length) {
+    paintFieldMap();
+    return;
+  }
+  if (!doneBusy) await loadDoneAddresses();
+}
+
+async function loadDoneAddresses({ textId = "job-done-text" } = {}) {
+  if (doneBusy) return;
+  const text = document.querySelector("#" + textId)?.value ?? db.done?.text ?? "";
+  const parsed = parseDoneList(text);
+  if (!parsed.length) {
+    setStatus("Paste completed addresses first");
+    return;
+  }
+  const lines = parsed.slice(0, MAX_DONE);
+  if (!db.done) db.done = { text: "", houses: [], geo: {} };
+  db.done.text = text;
+  persist();
+  doneBusy = true;
+  paintFieldSheet();
+  const cityHint = db.settings.city || "Edmond, OK";
+  const geo = { ...(db.done.geo || {}) };
+  const houses = [];
+  let miss = 0;
+  try {
+    for (let i = 0; i < lines.length; i++) {
+      const addr = lines[i];
+      const q = withCity(addr, cityHint);
+      const cacheKey = q.toLowerCase();
+      setStatus(`Placing ${i + 1} of ${lines.length}…`);
+      let hit = geo[cacheKey];
+      if (!geoCacheOk(hit, q)) {
+        try {
+          const found = await geocodeAddress(q);
+          const top = found[0];
+          hit = {
+            lat: top.lat,
+            lon: top.lon,
+            address: top.address || addr,
+            v: 2,
+            houseOk: Boolean(top.houseOk),
+            source: top.source || "",
+          };
+          geo[cacheKey] = hit;
+        } catch {
+          hit = { lat: null, lon: null, address: addr, v: 2, houseOk: false };
+          miss += 1;
+        }
+        await new Promise((r) => setTimeout(r, 900));
+      }
+      houses.push(
+        normalizeDoneHouse(
+          {
+            id: `done-${i}`,
+            address: hit.address || addr,
+            lat: hit.lat,
+            lon: hit.lon,
+          },
+          `done-${i}`,
+        ),
+      );
+    }
+    db.done = { text, houses, geo };
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    const n = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
+    const capped = parsed.length > MAX_DONE ? `  — first ${MAX_DONE}` : "";
+    setStatus(`${n} yellow marker${n === 1 ? "" : "s"}${miss ? `  — ${miss} not found` : ""}${capped}`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+  } finally {
+    doneBusy = false;
+    paintFieldSheet();
+    if (tab === "jobs" && document.getElementById("job-done-text")) renderJobs();
+  }
+}
+
+function teamDoneSnapshot() {
+  return serializeTeamDonePack(db.done || {});
+}
+
+async function syncTeamDonePack() {
+  try {
+    const res = await fetch(`./data/team-done.json?v=${CACHE_BUST}`, { cache: "no-cache" });
+    if (!res.ok) return { ok: false, reason: "missing" };
+    const pack = await res.json();
+    const hasPack =
+      (Array.isArray(pack?.houses) && pack.houses.length) || String(pack?.text || "").trim();
+    if (!hasPack) return { ok: true, added: 0 };
+    const before = JSON.stringify(serializeTeamDonePack(db.done || {}));
+    const merged = mergeDonePack(db.done || {}, pack);
+    const after = JSON.stringify(serializeTeamDonePack(merged));
+    if (before === after) {
+      return {
+        ok: true,
+        added: 0,
+        placed: doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length,
+      };
+    }
+    const prevPlaced = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+    db.done = merged;
+    persist();
+    const placed = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+    return { ok: true, added: Math.max(0, placed - prevPlaced), placed };
+  } catch {
+    return { ok: false, reason: "fetch" };
+  }
+}
+
+async function downloadTeamDonePack() {
+  const pack = teamDoneSnapshot();
+  const placed = (pack.houses || []).filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (!placed && !String(pack.text || "").trim()) {
+    setStatus("No done targets to share yet");
+    return;
+  }
+  const json = JSON.stringify(pack, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const file = new File([blob], "team-done.json", { type: "application/json" });
+  const copied = await copyText(json);
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ title: "Ground Control done targets", files: [file], text: json.slice(0, 4000) });
+      setStatus(`Shared ${placed} done target${placed === 1 ? "" : "s"}${copied ? " · also copied" : ""}`);
+      return;
+    }
+  } catch (e) {
+    if (/abort|cancel/i.test(String(e.message || e))) return;
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "team-done.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(
+    copied
+      ? `Copied ${placed} done target${placed === 1 ? "" : "s"} — paste here or send team-done.json to publish for Safari`
+      : `Exported ${placed} done target${placed === 1 ? "" : "s"} — send team-done.json to update the team site`,
+  );
+}
+
+async function importTeamDoneFile(file) {
+  if (!file) return;
+  try {
+    const pack = JSON.parse(await file.text());
+    const merged = mergeDonePack(db.done || {}, pack);
+    db.done = merged;
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    const placed = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+    setStatus(`Imported team pack — ${placed} yellow marker${placed === 1 ? "" : "s"}`);
+    if (tab === "jobs") renderJobs();
+    if (placed < parseDoneList(merged.text).length) void loadDoneAddresses();
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+  }
+}
+
 function onMapHold(lat, lon) {
   openMarkComposer({ lat, lon });
 }
@@ -2003,11 +2174,17 @@ function renderJobs() {
         : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
     <h3>Completed houses</h3>
-    <p class="muted">Paste finished addresses (one per line), then load yellow markers on HailScope. Lines without a city use Settings city.</p>
+    <p class="muted">Paste finished addresses (one per line), then load yellow markers on HailScope. Lines without a city use Settings city. Safari / LAN auto-load the shared team pack so nobody re-pastes.</p>
     <textarea id="job-done-text" rows="6" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="actions">
       <button type="button" class="primary" id="job-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load yellow markers"}</button>
       <button type="button" id="job-done-clear"${houses.length ? "" : " disabled"}>Clear markers</button>
+    </div>
+    <div class="actions">
+      <button type="button" id="job-done-share"${houses.length || rawText.trim() ? "" : " disabled"}>Share team pack</button>
+      <button type="button" id="job-done-import">Import pack</button>
+      <input id="job-done-import-file" type="file" accept="application/json,.json" hidden />
+      <button type="button" id="job-done-pull">Pull team pack</button>
     </div>
     <p class="muted">${placed.length ? `${placed.length} yellow marker${placed.length === 1 ? "" : "s"} ready — open HailScope to see them.` : "No yellow markers yet."}</p>
     ${placed
@@ -2067,6 +2244,32 @@ function renderJobs() {
       paintFieldMap();
       renderJobs();
       setStatus("Cleared yellow markers");
+    };
+  }
+  const shareBtn = $("#job-done-share");
+  if (shareBtn) shareBtn.onclick = () => void downloadTeamDonePack();
+  const importBtn = $("#job-done-import");
+  const importFile = $("#job-done-import-file");
+  if (importBtn && importFile) {
+    importBtn.onclick = () => importFile.click();
+    importFile.onchange = () => {
+      const file = importFile.files?.[0];
+      importFile.value = "";
+      void importTeamDoneFile(file);
+    };
+  }
+  const pullBtn = $("#job-done-pull");
+  if (pullBtn) {
+    pullBtn.onclick = async () => {
+      setStatus("Pulling team pack…");
+      const res = await syncTeamDonePack();
+      paintFieldMap();
+      renderJobs();
+      if (!res.ok) setStatus("Team pack unavailable");
+      else if (res.placed) {
+        setStatus(`Team pack ready — ${res.placed} yellow marker${res.placed === 1 ? "" : "s"}`);
+        void ensureDoneHousesPlaced();
+      } else setStatus("Team pack empty");
     };
   }
 }
@@ -2298,6 +2501,14 @@ function boot() {
       });
     })
     .catch(() => {});
+  void (async () => {
+    const res = await syncTeamDonePack();
+    if (res.ok && res.placed) {
+      if (isHailTab()) paintFieldMap();
+      setStatus(`Team pack · ${res.placed} done target${res.placed === 1 ? "" : "s"}`);
+      void ensureDoneHousesPlaced();
+    }
+  })();
 }
 
 void matchCatalog;
