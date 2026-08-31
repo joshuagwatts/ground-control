@@ -19,6 +19,10 @@ import {
   isOklahomaAddress,
   publicTextFromHtml,
   parseAiContactJson,
+  formatApartmentsComSearchUrl,
+  formatRealtorRentSearchUrl,
+  formatYellowPagesAddressUrl,
+  extractSearchResultUrls,
 } from "../www/contacts.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
@@ -177,6 +181,22 @@ assert(aiHit.name === "Jane Doe", "ai name");
 assert(/582/.test(aiHit.phone), "ai phone");
 assert(aiHit.email === "office@example-roof.test", "ai email");
 assert(parseAiContactJson("not json").name === "", "ai empty on junk");
+
+const apt = formatApartmentsComSearchUrl("400 S Bryant Ave, Edmond, OK 73034");
+assert(/apartments\.com\/400-s-bryant-ave-edmond-ok-73034/i.test(apt), `apartments slug, got ${apt}`);
+const rtr = formatRealtorRentSearchUrl("400 S Bryant Ave, Edmond, OK 73034");
+assert(/realtor\.com\/apartments\/edmond_ok\/400-S-Bryant-Ave/i.test(rtr), `realtor rent, got ${rtr}`);
+const yp = formatYellowPagesAddressUrl("400 S Bryant Ave, Edmond, OK 73034");
+assert(/yellowpages\.com\/search/i.test(yp) && /400/i.test(yp), `yp url, got ${yp}`);
+const chamberHits = extractSearchResultUrls(
+  `<a href="https://duckduckgo.com/l/?uddg=${encodeURIComponent("https://www.woodwardokchamber.com/list/acme-roofing")}">x</a>
+   <a href="https://www.edmondchamber.com/directory/member">y</a>
+   <a href="https://www.zillow.com/homes/foo">skip</a>`,
+  { allowHostRe: /chamber/i, limit: 6 },
+);
+assert(chamberHits.some((u) => /woodwardokchamber/i.test(u)), "extract chamber uddg");
+assert(chamberHits.some((u) => /edmondchamber/i.test(u)), "extract chamber href");
+assert(!chamberHits.some((u) => /zillow/i.test(u)), "skip zillow in chamber extract");
 assert(parseAiContactJson('{"owner_name":"Bob","owner_phone":"405-555-1212"}').name === "Bob", "ai owner_* keys");
 
 console.log("place-contacts ok");

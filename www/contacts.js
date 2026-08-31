@@ -247,6 +247,236 @@ async function oklahomaPhoneBookContacts(address, parts) {
   return null;
 }
 
+function cityPathSlug(city) {
+  return String(city || "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/** apartments.com address / city search for this street. */
+export function formatApartmentsComSearchUrl(address) {
+  const p = parseStreetAddress(address);
+  if (!p.house || !p.street) return "";
+  const streetSlug = String(p.street || "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+  const city = cityPathSlug(p.city || "edmond");
+  const state = String(p.state || "ok").toLowerCase();
+  const slug = [p.house, streetSlug, city, state, p.zip].filter(Boolean).join("-").replace(/-+/g, "-");
+  return `https://www.apartments.com/${slug}/`;
+}
+
+export function formatRealtorRentSearchUrl(address) {
+  const p = parseStreetAddress(address);
+  if (!p.house || !p.street) return "";
+  const city = cityPathSlug(p.city || "edmond");
+  const street = String(p.street || "")
+    .replace(/\./g, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Za-z0-9-]/g, "");
+  return `https://www.realtor.com/apartments/${city}_ok/${p.house}-${street}`;
+}
+
+export function formatYellowPagesAddressUrl(address) {
+  const p = parseStreetAddress(address);
+  if (!p.house || !p.street) return "";
+  const city = cityPathSlug(p.city || "edmond");
+  const street = encodeURIComponent(`${p.house} ${p.street}`);
+  return `https://www.yellowpages.com/search?search_terms=${street}&geo_location_terms=${encodeURIComponent(`${p.city || "Edmond"}, OK`)}`;
+}
+
+/** OK city → chamber / member-directory hosts (business phones at the address). */
+const OK_CHAMBER_HOSTS = {
+  woodward: ["woodwardokchamber.com", "woodwardchamber.com"],
+  edmond: ["edmondchamber.com"],
+  oklahoma: ["okcchamber.com", "greateroklahomacity.com"],
+  "oklahoma city": ["okcchamber.com", "greateroklahomacity.com"],
+  okc: ["okcchamber.com"],
+  tulsa: ["tulsachamber.com"],
+  enid: ["enidchamber.com"],
+  stillwater: ["stillwaterchamber.org"],
+  norman: ["normanokchamber.org", "normanchamber.com"],
+  lawton: ["lawtonfortsillchamber.com"],
+  moore: ["moorechamber.com"],
+  yukon: ["yukonchamber.com"],
+  "midwest city": ["midwestcitychamber.com"],
+  "broken arrow": ["brokenarrowchamber.com"],
+  shawnee: ["shawneechamber.com"],
+  bartlesville: ["bartlesville.com"],
+  muskogee: ["muskogeechamber.org"],
+  ponca: ["poncacitychamber.com"],
+  "ponca city": ["poncacitychamber.com"],
+  ardmore: ["ardmore.org"],
+  duncan: ["duncanchamber.com"],
+  altus: ["altuschamber.com"],
+  guymon: ["guymonchamber.com"],
+  weatherford: ["weatherfordokchamber.com"],
+  clinton: ["clintonok.org"],
+  elreno: ["elrenochamber.com"],
+  "el reno": ["elrenochamber.com"],
+};
+
+function chamberHostsForCity(city) {
+  const key = String(city || "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .trim();
+  if (!key) return [];
+  if (OK_CHAMBER_HOSTS[key]) return OK_CHAMBER_HOSTS[key];
+  for (const [k, hosts] of Object.entries(OK_CHAMBER_HOSTS)) {
+    if (key.includes(k) || k.includes(key)) return hosts;
+  }
+  return [];
+}
+
+/** Pull listing phones from HTML (embedded JSON + tel: + address-gated extract). */
+function phonesFromListingHtml(html, parts) {
+  if (!html || isEmptyOrHardBlock(html)) return null;
+  if (!pageMentionsAddress(html, parts)) {
+    // Search result shells sometimes bury the house # in JSON only.
+    if (!String(html).includes(String(parts.house || ""))) return null;
+  }
+  const contacts = extractContactsFromHtml(html.slice(0, 240000), parts, { requireAddress: false });
+  let phone = contacts?.phone || "";
+  if (!phone) {
+    const embedded = extractZillowEmbeddedPhones(html);
+    if (embedded[0]) phone = formatPhone(embedded[0]);
+  }
+  if (!phone) {
+    const tel = String(html).match(/tel:(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/i);
+    if (tel && !isJunkPhone(tel[1])) phone = formatPhone(tel[1]);
+  }
+  if (!phone) {
+    for (const d of extractPhones(html)) {
+      if (isJunkPhone(d)) continue;
+      phone = formatPhone(d);
+      break;
+    }
+  }
+  if (!phone) return null;
+  return {
+    ...(contacts || {}),
+    phone,
+    name: contacts?.name || "",
+    _public_text: publicTextFromHtml(html),
+  };
+}
+
+async function contactsFromDirectUrls(urls, parts, source) {
+  for (const url of urls.filter(Boolean).slice(0, 4)) {
+    const page = await fetchHtml(url, 12000);
+    if (!page?.html) continue;
+    const hit = phonesFromListingHtml(page.html, parts);
+    if (hit?.phone) return { ...hit, source };
+    // Follow one apartment/business detail link if search page has no phone.
+    const detail =
+      page.html.match(/href="(https?:\/\/www\.apartments\.com\/[^"]{12,180})"/i) ||
+      page.html.match(/href="(https?:\/\/www\.realtor\.com\/[^"]{12,180})"/i) ||
+      page.html.match(/href="(\/[^"]*(?:apartment|property|listing|member)[^"]{8,120})"/i);
+    if (detail?.[1]) {
+      const next = detail[1].startsWith("http") ? detail[1] : new URL(detail[1], page.url || url).href;
+      if (next === url) continue;
+      const deep = await fetchHtml(next, 12000);
+      const deepHit = phonesFromListingHtml(deep?.html || "", parts);
+      if (deepHit?.phone) return { ...deepHit, source };
+    }
+  }
+  return null;
+}
+
+/** apartments.com + Realtor apartments for this house. */
+async function apartmentsListingContacts(address, parts) {
+  if (!parts?.house || !parts?.street) return null;
+  const urls = [formatApartmentsComSearchUrl(address), formatRealtorRentSearchUrl(address)].filter(Boolean);
+  return contactsFromDirectUrls(urls, parts, "apartments");
+}
+
+/** Yellow Pages business listing at this address. */
+async function yellowPagesBusinessContacts(address, parts) {
+  if (!parts?.house || !parts?.street) return null;
+  const url = formatYellowPagesAddressUrl(address);
+  return contactsFromDirectUrls([url], parts, "yellowpages");
+}
+
+/**
+ * Parse DuckDuckGo HTML results into absolute https URLs (chamber / rental hosts).
+ */
+export function extractSearchResultUrls(html, { allowHostRe = null, limit = 6 } = {}) {
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    try {
+      let u = decodeURIComponent(String(raw || "").replace(/\+/g, " "));
+      if (!/^https?:\/\//i.test(u)) return;
+      u = u.split("#")[0];
+      const host = new URL(u).hostname.toLowerCase();
+      if (SKIP_HOST.test(host) && !/apartments\.com|realtor\.com|yellowpages|chamber/i.test(host)) return;
+      if (allowHostRe && !allowHostRe.test(host)) return;
+      if (seen.has(u)) return;
+      seen.add(u);
+      out.push(u);
+    } catch {
+      /* ignore */
+    }
+  };
+  const blob = String(html || "");
+  let m;
+  const uddg = /uddg=([^&"]+)/gi;
+  while ((m = uddg.exec(blob)) && out.length < limit) push(m[1]);
+  const href = /href="(https?:\/\/[^"]+)"/gi;
+  while ((m = href.exec(blob)) && out.length < limit) {
+    if (/duckduckgo|google\.|bing\.|yahoo\./i.test(m[1])) continue;
+    push(m[1]);
+  }
+  return out.slice(0, limit);
+}
+
+/**
+ * OK chamber of commerce + similar business directories for the address
+ * (e.g. Woodward Chamber member listings).
+ */
+async function okChamberBusinessContacts(address, parts) {
+  if (!parts?.house || !isOklahomaAddress(address, parts)) return null;
+  const city = String(parts.city || "").trim();
+  const streetQ = `${parts.house} ${parts.street}`.trim();
+  const hosts = chamberHostsForCity(city);
+  const queries = [];
+  if (hosts.length) {
+    for (const host of hosts.slice(0, 2)) {
+      queries.push(`site:${host} "${streetQ}"`);
+      queries.push(`site:${host} ${streetQ} ${city}`);
+    }
+  }
+  queries.push(`"${streetQ}" ${city} OK "chamber of commerce"`);
+  queries.push(`"${streetQ}" ${city} OK (chamber OR "member directory")`);
+  const allowHostRe =
+    /chamber|chambermaster|growthzone|memberclicks|yellowpages|apartments\.com|realtor\.com|biz|business/i;
+  const urls = [];
+  for (const q of queries.slice(0, 4)) {
+    const page = await fetchHtml(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, 10000);
+    if (!page?.html) continue;
+    urls.push(...extractSearchResultUrls(page.html, { allowHostRe, limit: 5 }));
+    if (urls.length >= 6) break;
+  }
+  // ChamberMaster / GrowthZone directory paths when we know the host.
+  for (const host of hosts.slice(0, 2)) {
+    urls.push(`https://www.${host}/list/`);
+    urls.push(`https://www.${host}/directory/`);
+    urls.push(`https://${host}/list/`);
+    urls.push(`https://members.${host}/list/`);
+    urls.push(`https://www.${host}/search?q=${encodeURIComponent(streetQ)}`);
+    urls.push(`https://www.${host}/list/ql/any/any/any/any?q=${encodeURIComponent(streetQ)}`);
+  }
+  const uniq = [...new Set(urls)].slice(0, 8);
+  return contactsFromDirectUrls(uniq, parts, "chamber");
+}
+
 /** Strip tags for LLM extraction — listing/assessor pages only, never people-search. */
 export function publicTextFromHtml(html) {
   return decodeEntities(String(html || ""))
@@ -804,26 +1034,28 @@ async function contactsFromWebsite(url, parts) {
   return huntPages(paths, parts);
 }
 
-/** Fast phone hunt for Flags — OK directories + Zillow rent/sale, no full website crawl. */
+/** Fast phone hunt for Flags — directories, apartments.com, chambers, Zillow. */
 export async function lookupFlagPhone(lat, lon, address = "") {
   const parts = parseStreetAddress(address);
   const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "" };
   if (!parts.house) return blank;
   let hit = { name: "", phone: "", email: "", zillow_url: "" };
-  // Phone book first in OK — often the listing that has a landline.
-  if (isOklahomaAddress(address, parts)) {
-    const book = await oklahomaPhoneBookContacts(address, parts).catch(() => null);
-    if (book) hit = mergeContacts(hit, book);
-  }
-  if (!hit.phone) {
-    const rent = await zillowRentContacts(address, parts).catch(() => null);
-    if (rent) hit = mergeContacts(hit, rent);
+
+  // Parallel public listing sources — businesses (chamber) + rentals + phone book.
+  const batch = await Promise.all([
+    isOklahomaAddress(address, parts) ? oklahomaPhoneBookContacts(address, parts).catch(() => null) : null,
+    apartmentsListingContacts(address, parts).catch(() => null),
+    yellowPagesBusinessContacts(address, parts).catch(() => null),
+    isOklahomaAddress(address, parts) ? okChamberBusinessContacts(address, parts).catch(() => null) : null,
+    zillowRentContacts(address, parts).catch(() => null),
+  ]);
+  for (const part of batch) {
+    if (part) hit = mergeContacts(hit, part);
   }
   if (!hit.phone) {
     const sale = await zillowListingContacts(address, parts).catch(() => null);
     if (sale) hit = mergeContacts(hit, sale);
   }
-  // OSM tags at this rooftop when directories miss.
   if (!hit.phone && Number.isFinite(lat) && Number.isFinite(lon)) {
     const osm = await overpassContacts(lat, lon, parts).catch(() => null);
     if (osm) hit = mergeContacts(hit, osm);
@@ -855,7 +1087,7 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}, set
   ]);
   hit = mergeContacts(hit, osm, nom);
 
-  // Sale listing first, then For Rent (landlord / leasing phones → green labels).
+  // Sale / rent listings + apartments.com + chamber / YP businesses.
   const zillowHit = await zillowListingContacts(address, parts).catch(() => null);
   if (zillowHit?._public_text) publicChunks.push(zillowHit._public_text);
   if (zillowHit) hit = mergeContacts(hit, zillowHit);
@@ -863,6 +1095,21 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}, set
     const rentHit = await zillowRentContacts(address, parts).catch(() => null);
     if (rentHit?._public_text) publicChunks.push(rentHit._public_text);
     if (rentHit) hit = mergeContacts(hit, rentHit);
+  }
+  if (!hit.phone) {
+    const apts = await apartmentsListingContacts(address, parts).catch(() => null);
+    if (apts?._public_text) publicChunks.push(apts._public_text);
+    if (apts) hit = mergeContacts(hit, apts);
+  }
+  if (!hit.phone && isOklahomaAddress(address, parts)) {
+    const chamber = await okChamberBusinessContacts(address, parts).catch(() => null);
+    if (chamber?._public_text) publicChunks.push(chamber._public_text);
+    if (chamber) hit = mergeContacts(hit, chamber);
+  }
+  if (!hit.phone) {
+    const yp = await yellowPagesBusinessContacts(address, parts).catch(() => null);
+    if (yp?._public_text) publicChunks.push(yp._public_text);
+    if (yp) hit = mergeContacts(hit, yp);
   }
 
   // Oklahoma phone book (411 / Whitepages address directory) — OK addresses only.
