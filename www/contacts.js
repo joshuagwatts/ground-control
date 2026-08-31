@@ -1,5 +1,5 @@
 /** High-confidence listing for a pinned house — OSM/Nominatim at this address only. */
-import { httpGet } from "./net.js";
+import { httpGet, overpassJson } from "./net.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
 const US_STATES = {
@@ -199,6 +199,7 @@ async function zillowRentContacts(address, parts) {
     phone: phone || contacts?.phone || "",
     zillow_url: /homedetails|apartments|_bpid|_zpid/i.test(detailUrl) ? detailUrl : "",
     zillow_rent: true,
+    source: "zillow-rent",
     _public_text: publicTextFromHtml(html),
   };
 }
@@ -897,13 +898,47 @@ export function mergeContacts(...parts) {
     if (!hit.instagram) hit.instagram = publicInstagramUrl(p.instagram || p.instagram_url || "");
     const z = String(p.zillow_url || "").trim();
     if (z && isUsableZillowUrl(z)) hit.zillow_url = z;
+    if (p.zillow_rent === true) hit.zillow_rent = true;
   }
   return hit;
 }
 
-/** Chamber / YP / apartments (and similar) → blue business flags. */
+/** For-rent listing hosts → green flags (phone required). */
+export function isRentalPhoneSource(source) {
+  return /zillow[-_]?rent|for_rent|apartments|realtor/i.test(String(source || ""));
+}
+
+/** Chamber / YP / OSM amenity (and similar) → blue business flags. */
 export function isBusinessPhoneSource(source) {
-  return /chamber|yellowpages|apartments|realtor|yp\b|business|member/i.test(String(source || ""));
+  return /chamber|yellowpages|yp\b|business|member|osm-business|amenity|shop|office|craft/i.test(
+    String(source || ""),
+  );
+}
+
+/** OSM POI tags that are public businesses, not residential house phones. */
+export function isOsmBusinessTags(tags = {}) {
+  return Boolean(tags?.amenity || tags?.shop || tags?.office || tags?.craft || tags?.healthcare);
+}
+
+/**
+ * Flags only: rental listing + phone → "rental"; business directory + phone → "business".
+ * Homeowner / phone-book / sale-listing phones stay empty (no flag).
+ */
+export function classifyFlagPhone(hit = {}) {
+  const phone = String(hit.phone || hit.owner_phone || "").trim();
+  if (!phone) return "";
+  const source = String(hit.source || "");
+  const url = String(hit.zillow_url || "");
+  if (
+    hit.zillow_rent === true ||
+    hit.phone_kind === "rental" ||
+    /for_rent|\/apartments\//i.test(url) ||
+    isRentalPhoneSource(source)
+  ) {
+    return "rental";
+  }
+  if (hit.phone_kind === "business" || isBusinessPhoneSource(source)) return "business";
+  return "";
 }
 
 async function fetchHtml(url, ms = 9000) {
@@ -968,8 +1003,7 @@ async function overpassContacts(lat, lon, parts) {
     nwr(around:140,${lat},${lon})["addr:housenumber"="${hn}"];
   );out tags center 16;`;
   try {
-    const { body } = await httpGet(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`, 14000);
-    const data = JSON.parse(body || "{}");
+    const data = await overpassJson(q, 14000);
     const scored = [];
     for (const el of data.elements || []) {
       const tags = el.tags || {};
@@ -993,6 +1027,7 @@ async function overpassContacts(lat, lon, parts) {
         website,
         ...social,
         wikidata: tags.wikidata || "",
+        source: isOsmBusinessTags(tags) ? "osm-business" : "",
       });
     }
     scored.sort((a, b) => a.dist - b.dist);
@@ -1042,33 +1077,30 @@ async function contactsFromWebsite(url, parts) {
   return huntPages(paths, parts);
 }
 
-/** Fast phone hunt for Flags — directories, apartments.com, chambers, Zillow. */
+/** Fast phone hunt for Flags — rentals + public businesses only (no phone book / sale listings). */
 export async function lookupFlagPhone(lat, lon, address = "") {
   const parts = parseStreetAddress(address);
-  const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "" };
+  const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "", source: "", phone_kind: "" };
   if (!parts.house) return blank;
   let hit = { name: "", phone: "", email: "", zillow_url: "" };
 
-  // Parallel public listing sources — businesses (chamber) + rentals + phone book.
   const batch = await Promise.all([
-    isOklahomaAddress(address, parts) ? oklahomaPhoneBookContacts(address, parts).catch(() => null) : null,
     apartmentsListingContacts(address, parts).catch(() => null),
+    zillowRentContacts(address, parts).catch(() => null),
     yellowPagesBusinessContacts(address, parts).catch(() => null),
     isOklahomaAddress(address, parts) ? okChamberBusinessContacts(address, parts).catch(() => null) : null,
-    zillowRentContacts(address, parts).catch(() => null),
   ]);
   for (const part of batch) {
     if (part) hit = mergeContacts(hit, part);
   }
-  if (!hit.phone) {
-    const sale = await zillowListingContacts(address, parts).catch(() => null);
-    if (sale) hit = mergeContacts(hit, sale);
-  }
   if (!hit.phone && Number.isFinite(lat) && Number.isFinite(lon)) {
     const osm = await overpassContacts(lat, lon, parts).catch(() => null);
-    if (osm) hit = mergeContacts(hit, osm);
+    if (osm?.phone && classifyFlagPhone(osm) === "business") hit = mergeContacts(hit, osm);
   }
-  const phoneKind = isBusinessPhoneSource(hit.source) ? "business" : hit.phone ? "home" : "";
+  const phoneKind = classifyFlagPhone(hit);
+  if (!phoneKind) {
+    return { ...blank, owner_name: hit.name || "", owner_email: hit.email || "", zillow_url: hit.zillow_url || "" };
+  }
   return {
     owner_name: hit.name || "",
     owner_phone: hit.phone || "",
@@ -1076,6 +1108,7 @@ export async function lookupFlagPhone(lat, lon, address = "") {
     zillow_url: hit.zillow_url || "",
     source: hit.source || "",
     phone_kind: phoneKind,
+    zillow_rent: hit.zillow_rent === true,
   };
 }
 

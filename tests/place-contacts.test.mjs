@@ -23,6 +23,10 @@ import {
   formatRealtorRentSearchUrl,
   formatYellowPagesAddressUrl,
   extractSearchResultUrls,
+  classifyFlagPhone,
+  isRentalPhoneSource,
+  isBusinessPhoneSource,
+  isOsmBusinessTags,
 } from "../www/contacts.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
@@ -198,5 +202,22 @@ assert(chamberHits.some((u) => /woodwardokchamber/i.test(u)), "extract chamber u
 assert(chamberHits.some((u) => /edmondchamber/i.test(u)), "extract chamber href");
 assert(!chamberHits.some((u) => /zillow/i.test(u)), "skip zillow in chamber extract");
 assert(parseAiContactJson('{"owner_name":"Bob","owner_phone":"405-555-1212"}').name === "Bob", "ai owner_* keys");
+
+assert(isRentalPhoneSource("apartments") && !isBusinessPhoneSource("apartments"), "apartments = rental");
+assert(classifyFlagPhone({ phone: "(405) 348-9911", source: "apartments" }) === "rental", "apts class");
+assert(classifyFlagPhone({ phone: "4053489911", source: "zillow-rent", zillow_rent: true }) === "rental", "zillow rent class");
+assert(
+  classifyFlagPhone({ phone: "4053489911", zillow_url: "https://www.zillow.com/homes/for_rent/400-S-Bryant_rb/" }) ===
+    "rental",
+  "for_rent url class",
+);
+assert(classifyFlagPhone({ phone: "4053489911", source: "chamber" }) === "business", "chamber class");
+assert(classifyFlagPhone({ phone: "4053489911", source: "yellowpages" }) === "business", "yp class");
+assert(classifyFlagPhone({ phone: "4053489911", source: "osm-business" }) === "business", "osm class");
+assert(classifyFlagPhone({ phone: "4053489911", source: "ok-phonebook" }) === "", "phone book is not a flag");
+assert(classifyFlagPhone({ phone: "4053489911", source: "zillow" }) === "", "sale listing is not a flag");
+assert(classifyFlagPhone({ source: "apartments" }) === "", "rental without phone is not a flag");
+assert(isOsmBusinessTags({ amenity: "cafe" }), "amenity is business");
+assert(!isOsmBusinessTags({ building: "house", phone: "1" }), "house phone is not a business");
 
 console.log("place-contacts ok");

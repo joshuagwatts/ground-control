@@ -103,7 +103,9 @@ async function nativeRequest(method, url, headers, body, timeoutMs) {
   };
   if (body !== undefined) {
     req.data = typeof body === "string" ? body : JSON.stringify(body);
-    req.headers["Content-Type"] = "application/json";
+    if (!req.headers["Content-Type"] && !req.headers["content-type"]) {
+      req.headers["Content-Type"] = "application/json";
+    }
   }
   let res;
   try {
@@ -293,6 +295,68 @@ async function httpGetViaCorsProxy(url, timeoutMs) {
 
 export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {
   return withLanBypass(() => request("GET", url, extraHeaders, undefined, timeoutMs, assertLan));
+}
+
+/** form-urlencoded POST — Overpass prefers this over huge GET query strings. */
+export async function httpPostForm(url, formBody, timeoutMs = 18000) {
+  const target = assertPublic(url);
+  const headers = {
+    "User-Agent": UA,
+    Accept: "application/json,*/*",
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  const body = String(formBody || "");
+  const native = await nativeRequest("POST", target, headers, body, timeoutMs);
+  if (native) {
+    const status = native.status;
+    if (!status) throw new Error("network failed — check data/Wi‑Fi · Proton may block this API");
+    if (status >= 400) throw new Error(`fetch ${status}`);
+    return { url: native.url || target, status, body: bodyToText(native.data) };
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(target, { method: "POST", signal: ctrl.signal, headers, body });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    return { url: res.url, status: res.status, body: await res.text() };
+  } catch (e) {
+    const msg = String(e?.message || e || "fetch failed");
+    if (/abort/i.test(msg)) throw new Error("timeout");
+    throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+const OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.osm.ch/api/interpreter",
+];
+
+/** Run an Overpass QL query (POST first, GET fallback, each public interpreter). */
+export async function overpassJson(query, timeoutMs = 18000) {
+  const q = String(query || "").trim();
+  if (!q) throw new Error("empty overpass query");
+  const form = `data=${encodeURIComponent(q)}`;
+  let last = "overpass failed";
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const { body } = await httpPostForm(endpoint, form, timeoutMs);
+      const data = JSON.parse(body || "{}");
+      if (Array.isArray(data.elements)) return data;
+    } catch (e) {
+      last = String(e?.message || e || "overpass post failed");
+    }
+    try {
+      const { body } = await httpGet(`${endpoint}?${form}`, timeoutMs);
+      const data = JSON.parse(body || "{}");
+      if (Array.isArray(data.elements)) return data;
+    } catch (e) {
+      last = String(e?.message || e || "overpass get failed");
+    }
+  }
+  throw new Error(last);
 }
 
 export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {

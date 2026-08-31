@@ -67,7 +67,7 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   startPhoneFlagScan,
-} from "./wx.js?v=0.2.156";
+} from "./wx.js?v=0.2.157";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1577,7 +1577,7 @@ function paintLayerToggles() {
   el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="dots" class="hs-dots-toggle ${dotsOn ? "on" : ""}" aria-label="Hail dots" title="Show spotter (red) and radar (green) dots"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-g"></i></span>Dots</button>
-    <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="Small green flags and blue pins for parsed owner info"><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="Green flags = for-rent listings with a phone. Blue pins = businesses with a phone."><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
     <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
   if (!el._hsFlagsStatusBound) {
@@ -1585,7 +1585,7 @@ function paintLayerToggles() {
     window.addEventListener("hs-phone-flags", (ev) => {
       const msg = String(ev.detail?.msg || "").trim();
       const btn = el.querySelector('[data-ov="flags"]');
-      if (btn) btn.title = msg || "Show green flags where a public phone was found";
+      if (btn) btn.title = msg || "Green flags = for-rent listings with a phone. Blue pins = businesses with a phone.";
       if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
     });
   }
@@ -1605,7 +1605,7 @@ function paintLayerToggles() {
       paintLayerToggles();
       paintFieldMap();
       if (db.settings.showPhoneFlags === true) {
-        setStatus("Loading phone flags…");
+        setStatus("Loading rental and business flags…");
         startPhoneFlagScan();
       } else setStatus("");
       return;

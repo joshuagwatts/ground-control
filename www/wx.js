@@ -1,5 +1,5 @@
 /** WX map + storm dossier — runs on phone (public APIs). */
-import { httpGet, httpLanGet, httpLanPostJson, openUrl } from "./net.js";
+import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
 import {
   lookupPlaceContacts,
@@ -14,7 +14,8 @@ import {
   resolveZillowUrl,
   isUsableZillowUrl,
   fillContactGapsWithChat,
-  isBusinessPhoneSource,
+  classifyFlagPhone,
+  isOsmBusinessTags,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
@@ -5893,31 +5894,37 @@ function housePhoneFor(n) {
 }
 
 function houseHasUseful(n) {
-  if (!n) return false;
-  if (houseHasPhone(n)) return true;
-  if (String(n.owner_name || "").trim() || String(n.email || "").trim()) return true;
-  const key = housePhoneKey(n);
-  const u = key ? houseUsefulByKey.get(key) : null;
-  return Boolean(u && (u.phone || u.name || u.email));
+  return houseHasFlag(n);
 }
 
-function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "" } = {}) {
+function houseHasFlag(n) {
+  if (!houseHasPhone(n)) return false;
+  const kind = housePhoneKind(n);
+  return kind === "rental" || kind === "business";
+}
+
+function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "", source = "" } = {}) {
   const key = housePhoneKey(info);
   if (!key) return;
   const prev = houseUsefulByKey.get(key) || {};
-  const nextKind =
-    kind === "business" || prev.kind === "business" || isBusinessPhoneSource(kind)
-      ? "business"
-      : kind || prev.kind || "";
+  const nextKind = classifyFlagPhone({
+    phone: phone || prev.phone || "",
+    source: source || kind || prev.source || "",
+    phone_kind: kind || prev.kind || "",
+    zillow_url: info?.zillow_url || "",
+    zillow_rent: info?.zillow_rent === true,
+  });
+  if (!nextKind) return;
   const next = {
     phone: phone || prev.phone || "",
     name: name || prev.name || "",
     email: email || prev.email || "",
-    kind: nextKind === "business" ? "business" : nextKind || "home",
+    kind: nextKind,
+    source: source || prev.source || "",
   };
-  if (!next.phone && !next.name && !next.email) return;
+  if (!next.phone) return;
   houseUsefulByKey.set(key, next);
-  if (next.phone) rememberHousePhone(info, next.phone);
+  rememberHousePhone(info, next.phone);
   if (Number.isFinite(info?.lat) && Number.isFinite(info?.lon)) {
     houseUsefulByKey.set(housePhoneKey({ lat: info.lat, lon: info.lon }), next);
   }
@@ -5926,9 +5933,20 @@ function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "
 function housePhoneKind(n) {
   const key = housePhoneKey(n);
   const u = key ? houseUsefulByKey.get(key) : null;
-  if (u?.kind === "business" || n?.phone_kind === "business") return "business";
-  if (isBusinessPhoneSource(n?.source || u?.source)) return "business";
-  return "home";
+  return classifyFlagPhone({
+    phone: housePhoneFor(n) || n?.phone || u?.phone || "",
+    source: n?.source || u?.source || "",
+    phone_kind: n?.phone_kind || u?.kind || "",
+    zillow_url: n?.zillow_url || "",
+    zillow_rent: n?.zillow_rent === true,
+  });
+}
+
+function houseKindLabel(n) {
+  const kind = housePhoneKind(n);
+  if (kind === "business") return "Business";
+  if (kind === "rental") return "For rent";
+  return "";
 }
 
 function houseUsefulTip(n) {
@@ -5937,20 +5955,29 @@ function houseUsefulTip(n) {
   const phone = housePhoneFor(n) || n.phone || u?.phone || "";
   const name = String(n.owner_name || u?.name || "").trim();
   const email = String(n.email || u?.email || "").trim();
-  const biz = housePhoneKind(n) === "business" ? "Business" : "";
-  return [biz, name, phone, email].filter(Boolean).join(" · ");
+  return [houseKindLabel(n), name, phone, email].filter(Boolean).join(" · ");
 }
 
-/** Pin / dossier found useful public owner info — paint that number green. */
+/** Pin dossier — only paint a flag when the phone is a rental listing or a public business. */
 function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
   const parts = parseStreetAddress(addr || "");
-  const info = { num: parts.house, street: parts.street, lat, lon };
-  rememberHouseUseful(info, {
+  const info = { num: parts.house, street: parts.street, lat, lon, zillow_url: extra.zillow_url || "" };
+  const kind = classifyFlagPhone({
     phone: phone || "",
+    source: extra.source || "",
+    phone_kind: extra.phone_kind || "",
+    zillow_url: extra.zillow_url || "",
+    zillow_rent: extra.zillow_rent === true,
+  });
+  if (!kind || !phone) return;
+  rememberHouseUseful(info, {
+    phone,
     name: extra.owner_name || extra.name || "",
     email: extra.owner_email || extra.email || "",
+    kind,
+    source: extra.source || "",
   });
-  const pretty = phone ? rememberHousePhone(info, phone) : housePhoneFor(info);
+  const pretty = rememberHousePhone(info, phone);
   let changed = false;
   let matched = false;
   for (const n of houseCache.nums || []) {
@@ -5978,10 +6005,13 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
       n.email = extra.owner_email;
       changed = true;
     }
+    if (n.phone_kind !== kind) {
+      n.phone_kind = kind;
+      changed = true;
+    }
+    if (extra.source && n.source !== extra.source) n.source = extra.source;
     if (!n.street && parts.street) n.street = parts.street;
-    if (!houseHasUseful(n) && (pretty || extra.owner_name || extra.owner_email)) changed = true;
   }
-  // No OSM point under Google’s label — still drop a green number so it covers the white tile text.
   if (!matched && parts.house && Number.isFinite(lat) && Number.isFinite(lon)) {
     if (!Array.isArray(houseCache.nums)) houseCache.nums = [];
     houseCache.nums.push({
@@ -5994,10 +6024,12 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
       phone: pretty || "",
       owner_name: extra.owner_name || extra.name || "",
       email: extra.owner_email || extra.email || "",
+      phone_kind: kind,
+      source: extra.source || "",
     });
     changed = true;
   }
-  if (changed || pretty || extra.owner_name || extra.owner_email) {
+  if (changed) {
     housePaintSig = "";
     paintHouseLayer([], houseCache.nums);
   }
@@ -6012,9 +6044,7 @@ function phoneFlagsEnabled() {
 }
 
 function flagMarkerKind(n) {
-  if (housePhoneKind(n) === "business") return "business";
-  if (houseHasPhone(n)) return "home";
-  return "info";
+  return housePhoneKind(n) === "business" ? "business" : "home";
 }
 
 function phoneFlagIcon(tip = "", kind = "home") {
@@ -6037,7 +6067,7 @@ function phoneFlagIcon(tip = "", kind = "home") {
 
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
-  const list = (nums || []).filter((n) => houseHasUseful(n) && Number.isFinite(n.lat) && Number.isFinite(n.lon));
+  const list = (nums || []).filter((n) => houseHasFlag(n) && Number.isFinite(n.lat) && Number.isFinite(n.lon));
   if (!c || list.length <= 80) return list;
   return list
     .slice()
@@ -6087,7 +6117,8 @@ function paintFlagDock() {
   flagDockIdx = ((flagDockIdx % ready.length) + ready.length) % ready.length;
   const cur = ready[flagDockIdx];
   const kind = flagMarkerKind(cur);
-  const label = [cur.num, cur.street].filter(Boolean).join(" ") || housePhoneFor(cur) || "Flag";
+  const kindLabel = houseKindLabel(cur);
+  const label = [kindLabel, cur.num, cur.street].filter(Boolean).join(" ") || housePhoneFor(cur) || "Flag";
   dock.hidden = false;
   dock.innerHTML = `<button type="button" class="hs-flag-dock-nav" data-flag-act="prev" aria-label="Previous flag">‹</button>
     <button type="button" class="hs-flag-dock-go" data-flag-act="go" title="Zoom to this flag">
@@ -6144,17 +6175,18 @@ function housePhonePopupHtml(n) {
   const e164 = phoneDigits(pretty);
   const name = String(n.owner_name || houseUsefulByKey.get(housePhoneKey(n))?.name || "").trim();
   const street = [n.num, n.street].filter(Boolean).join(" ");
+  const kindLabel = houseKindLabel(n);
   const biz = housePhoneKind(n) === "business";
   if (!e164) {
     return `<div class="hs-house-pop${biz ? " biz" : ""}">
-      <strong class="hs-house-pop-num">${escHousePop(street || n.num)}</strong>
-      ${name ? `<span class="hs-house-pop-who">${escHousePop(name)}${biz ? " · Business" : ""}</span>` : ""}
+      <strong class="hs-house-pop-num">${escHousePop(street || n.num || name)}</strong>
+      ${kindLabel || name ? `<span class="hs-house-pop-who">${escHousePop([name, kindLabel].filter(Boolean).join(" · "))}</span>` : ""}
       <span class="hs-place-miss">No phone yet</span>
     </div>`;
   }
   return `<div class="hs-house-pop${biz ? " biz" : ""}">
-    <strong class="hs-house-pop-num">${escHousePop(street || n.num)}</strong>
-    ${name ? `<span class="hs-house-pop-who">${escHousePop(name)}${biz ? " · Business" : ""}</span>` : biz ? `<span class="hs-house-pop-who">Business</span>` : ""}
+    <strong class="hs-house-pop-num">${escHousePop(street || n.num || name)}</strong>
+    ${name || kindLabel ? `<span class="hs-house-pop-who">${escHousePop([name, kindLabel].filter(Boolean).join(" · "))}</span>` : ""}
     <div class="hs-house-pop-actions">
       <a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(pretty)}</a>
       <a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>
@@ -6286,7 +6318,7 @@ async function addressForHouseNum(n) {
   return "";
 }
 
-/** Merge OSM house points into the session pool (keeps phones found off-screen). */
+/** Merge OSM house / POI points into the session pool (keeps phones found off-screen). */
 function mergeHouseNums(into, nums) {
   const out = Array.isArray(into) ? [...into] : [];
   const idx = new Map();
@@ -6298,7 +6330,8 @@ function mergeHouseNums(into, nums) {
     if (k) idx.set(k, i);
   }
   for (const n of nums || []) {
-    if (!n?.num || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) continue;
+    if (!n || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) continue;
+    if (!n.num && !n.owner_name && !n.phone) continue;
     const k =
       housePhoneKey(n) ||
       `@${n.lat.toFixed(5)},${n.lon.toFixed(5)}`;
@@ -6306,13 +6339,22 @@ function mergeHouseNums(into, nums) {
     const u = houseUsefulByKey.get(housePhoneKey(n));
     const next = {
       ...n,
+      num: n.num || n.owner_name || "",
       phone: n.phone || cachedPhone || "",
       owner_name: n.owner_name || u?.name || "",
       email: n.email || u?.email || "",
+      phone_kind: n.phone_kind || u?.kind || "",
+      source: n.source || u?.source || "",
     };
     if (idx.has(k)) {
       const i = idx.get(k);
-      out[i] = { ...out[i], ...next, phone: next.phone || out[i].phone || "" };
+      out[i] = {
+        ...out[i],
+        ...next,
+        phone: next.phone || out[i].phone || "",
+        phone_kind: next.phone_kind || out[i].phone_kind || "",
+        source: next.source || out[i].source || "",
+      };
     } else {
       idx.set(k, out.length);
       out.push(next);
@@ -6323,14 +6365,28 @@ function mergeHouseNums(into, nums) {
   return out;
 }
 
-/** Public listing + assessor scan — idle, one-at-a-time, never retries this session. */
+function flagStatusLine(extra = "") {
+  const list = readyFlagList(houseCache.nums);
+  const rent = list.filter((n) => housePhoneKind(n) === "rental").length;
+  const biz = list.filter((n) => housePhoneKind(n) === "business").length;
+  const bits = [];
+  if (rent) bits.push(`${rent} for rent`);
+  if (biz) bits.push(`${biz} business`);
+  const ready = bits.length ? `${bits.join(" · ")} ready` : "";
+  if (extra && ready) return `${extra} · ${ready}`;
+  return extra || ready || "No rental or business phones yet";
+}
+
+/** Rental / business listing scan — idle, one-at-a-time. Network misses can retry. */
 async function enrichVisibleHouseInfo(nums, gen) {
   if (!phoneFlagsEnabled() || !map || !nums?.length) return;
   const c = map.getCenter?.();
   if (!c) return;
   const queue = nums
     .filter((n) => {
-      if (!n?.num || houseHasPhone(n)) return false;
+      if (houseHasFlag(n)) return false;
+      if (n.phone_kind === "business" || n.source === "osm-business") return false;
+      if (!n?.num) return false;
       const k = housePhoneKey(n) || `@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
       return k && !houseEnrichTried.has(k);
     })
@@ -6342,53 +6398,62 @@ async function enrichVisibleHouseInfo(nums, gen) {
     .slice(0, HOUSE_ENRICH_MAX)
     .map((x) => x.n);
   const runOne = async (n) => {
-    if (gen !== houseGen || !map || !phoneFlagsEnabled() || mapBusy > 0) return;
+    if (!map || !phoneFlagsEnabled()) return;
+    if (mapBusy > 0) return "busy";
     const key = housePhoneKey(n) || `@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
     if (!key || houseEnrichTried.has(key)) return;
-    houseEnrichTried.add(key);
     const addr = await addressForHouseNum(n);
-    if (!addr || !parseStreetAddress(addr).house) return;
+    if (!addr || !parseStreetAddress(addr).house) {
+      houseEnrichTried.add(key);
+      return;
+    }
     try {
-      const [assessor, contacts] = await Promise.all([
-        lookupAssessorParcel(n.lat, n.lon, addr).catch(() => null),
-        lookupFlagPhone(n.lat, n.lon, addr).catch(() => ({})),
-      ]);
-      if (gen !== houseGen) return;
+      const contacts = await lookupFlagPhone(n.lat, n.lon, addr);
+      houseEnrichTried.add(key);
       const phone = contacts?.owner_phone || "";
-      const name = assessor?.name || contacts?.owner_name || "";
-      const email = contacts?.owner_email || "";
-      const kind = contacts?.phone_kind || (isBusinessPhoneSource(contacts?.source) ? "business" : "home");
-      if (phone || name || email) {
-        n.phone = phone || n.phone || "";
-        n.owner_name = name || n.owner_name || "";
-        n.email = email || n.email || "";
-        n.phone_kind = kind;
-        rememberHouseUseful(n, { phone, name, email, kind });
-        housePaintSig = "";
-        paintHouseLayer([], houseCache.nums);
-        const flags = readyFlagList(houseCache.nums).length;
-        emitPhoneFlagsStatus(`${flags} flag${flags === 1 ? "" : "s"} ready`);
-      }
-    } catch {
-      /* keep scanning */
+      const kind = contacts?.phone_kind || classifyFlagPhone(contacts);
+      if (!phone || (kind !== "rental" && kind !== "business")) return;
+      n.phone = phone;
+      n.owner_name = contacts.owner_name || n.owner_name || "";
+      n.email = contacts.owner_email || n.email || "";
+      n.phone_kind = kind;
+      n.source = contacts.source || n.source || "";
+      if (contacts.zillow_url) n.zillow_url = contacts.zillow_url;
+      if (contacts.zillow_rent) n.zillow_rent = true;
+      rememberHouseUseful(n, {
+        phone,
+        name: n.owner_name,
+        email: n.email,
+        kind,
+        source: n.source,
+      });
+      housePaintSig = "";
+      paintHouseLayer([], houseCache.nums);
+    } catch (e) {
+      const msg = String(e?.message || e || "");
+      if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
     }
   };
   if (!queue.length) {
-    const flags = readyFlagList(houseCache.nums).length;
-    emitPhoneFlagsStatus(flags ? `${flags} flag${flags === 1 ? "" : "s"} ready` : "No public phones found yet");
+    emitPhoneFlagsStatus(flagStatusLine());
     return;
   }
-  emitPhoneFlagsStatus(`Loading flags… 0/${queue.length}`);
+  emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… 0/${queue.length}`));
   for (let i = 0; i < queue.length; i++) {
-    if (gen !== houseGen || !map || !phoneFlagsEnabled()) return;
-    if (mapBusy > 0) return;
+    if (!map || !phoneFlagsEnabled()) return;
+    if (gen !== houseGen && houseCache.nums !== nums) {
+      /* map moved — still finish this house, then stop starting new ones */
+    }
+    if (mapBusy > 0) {
+      emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
+      return;
+    }
     await runOne(queue[i]);
-    const flags = readyFlagList(houseCache.nums).length;
-    emitPhoneFlagsStatus(`Loading flags… ${i + 1}/${queue.length} · ${flags} ready`);
+    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${i + 1}/${queue.length}`));
     await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
+    if (gen !== houseGen) return;
   }
-  const flags = readyFlagList(houseCache.nums).length;
-  emitPhoneFlagsStatus(flags ? `${flags} flag${flags === 1 ? "" : "s"} ready` : "No public phones found yet");
+  emitPhoneFlagsStatus(flagStatusLine());
 }
 
 async function arcgisGet(url, timeoutMs = 14000) {
@@ -6515,7 +6580,8 @@ async function fetchOsmHouseData(south, west, north, east) {
     const street = String(el.tags?.["addr:street"] || "").trim();
     const phoneRaw = firstTagPhone(el.tags || {});
     const phone = phoneRaw && !isJunkPhone(phoneRaw) ? formatPhone(phoneRaw) || phoneRaw : "";
-    if (phone) rememberHousePhone({ num, street, lat, lon }, phone);
+    const biz = isOsmBusinessTags(el.tags || {});
+    if (phone && biz) rememberHouseUseful({ num, street, lat, lon }, { phone, name: el.tags?.name || "", kind: "business", source: "osm-business" });
     nums.push({
       num,
       lat,
@@ -6523,54 +6589,74 @@ async function fetchOsmHouseData(south, west, north, east) {
       street,
       city: String(el.tags?.["addr:city"] || "").trim(),
       zip: String(el.tags?.["addr:postcode"] || "").trim(),
-      phone,
+      phone: phone && biz ? phone : "",
+      owner_name: String(el.tags?.name || "").trim(),
+      phone_kind: phone && biz ? "business" : "",
+      source: phone && biz ? "osm-business" : "",
     });
   }
   return { rings, nums };
 }
 
-/** Address points only — skip building footprints so Overpass returns fast for Flags. */
-async function fetchOsmHouseNums(south, west, north, east) {
-  const q = `[out:json][timeout:22][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
-  const urls = [
-    `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`,
-    `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(q)}`,
-    `https://overpass.osm.ch/api/interpreter?data=${encodeURIComponent(q)}`,
-  ];
-  let data = null;
-  for (const url of urls) {
-    try {
-      const { body } = await httpGet(url, 18000);
-      data = JSON.parse(body || "{}");
-      if (data && Array.isArray(data.elements) && data.elements.length) break;
-    } catch {
-      /* try next Overpass host */
-    }
+function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false } = {}) {
+  const tags = el.tags || {};
+  const lat = Number(el.lat ?? el.center?.lat);
+  const lon = Number(el.lon ?? el.center?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const num = escHouseNum(tags["addr:housenumber"]) || "";
+  const name = String(tags.name || tags.operator || "").trim();
+  const street = String(tags["addr:street"] || "").trim();
+  const phoneRaw = firstTagPhone(tags);
+  const phone = phoneRaw && !isJunkPhone(phoneRaw) ? formatPhone(phoneRaw) || phoneRaw : "";
+  const biz = isOsmBusinessTags(tags);
+  if (requireBusinessPhone && !(phone && biz)) return;
+  if (!num && !name && !phone) return;
+  const key = `${num || name}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
+  if (seen.has(key) || nums.length >= HOUSE_NUM_MAX) return;
+  seen.add(key);
+  if (phone && biz) {
+    rememberHouseUseful(
+      { num: num || name, street, lat, lon },
+      { phone, name, kind: "business", source: "osm-business" },
+    );
   }
+  nums.push({
+    num: num || name,
+    lat,
+    lon,
+    street,
+    city: String(tags["addr:city"] || "").trim(),
+    zip: String(tags["addr:postcode"] || "").trim(),
+    phone: phone && biz ? phone : "",
+    owner_name: name,
+    phone_kind: phone && biz ? "business" : "",
+    source: phone && biz ? "osm-business" : "",
+  });
+}
+
+/** Business POIs with a public OSM phone — paint blue flags immediately. */
+async function fetchOsmFlagPois(south, west, north, east) {
+  const q = `[out:json][timeout:18][bbox:${south},${west},${north},${east}];(
+    nwr["phone"][~"^(amenity|shop|office|craft|healthcare)$"~"."];
+    nwr["contact:phone"][~"^(amenity|shop|office|craft|healthcare)$"~"."];
+  );out tags center;`;
+  const data = await overpassJson(q, 18000).catch(() => null);
   const nums = [];
   const seen = new Set();
   for (const el of data?.elements || []) {
-    const num = escHouseNum(el.tags?.["addr:housenumber"]);
-    if (!num || nums.length >= HOUSE_NUM_MAX) continue;
-    const lat = Number(el.lat ?? el.center?.lat);
-    const lon = Number(el.lon ?? el.center?.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    const key = `${num}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const street = String(el.tags?.["addr:street"] || "").trim();
-    const phoneRaw = firstTagPhone(el.tags || {});
-    const phone = phoneRaw && !isJunkPhone(phoneRaw) ? formatPhone(phoneRaw) || phoneRaw : "";
-    if (phone) rememberHousePhone({ num, street, lat, lon }, phone);
-    nums.push({
-      num,
-      lat,
-      lon,
-      street,
-      city: String(el.tags?.["addr:city"] || "").trim(),
-      zip: String(el.tags?.["addr:postcode"] || "").trim(),
-      phone,
-    });
+    pushOsmFlagNum(el, nums, seen, { requireBusinessPhone: true });
+  }
+  return nums;
+}
+
+/** Address points only — skip building footprints so Overpass returns fast for Flags. */
+async function fetchOsmHouseNums(south, west, north, east) {
+  const q = `[out:json][timeout:18][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
+  const data = await overpassJson(q, 18000).catch(() => null);
+  const nums = [];
+  const seen = new Set();
+  for (const el of data?.elements || []) {
+    pushOsmFlagNum(el, nums, seen);
   }
   return nums;
 }
@@ -6601,23 +6687,28 @@ async function refreshHouseNumbers() {
     }, 60);
     return;
   }
-  emitPhoneFlagsStatus(`Loading homes (~${flagSearchKm().toFixed(0)} km)…`);
+  emitPhoneFlagsStatus(`Loading flags (~${flagSearchKm().toFixed(0)} km)…`);
   const padB = searchB.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
   const west = padB.getWest();
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  const osmNums = await fetchOsmHouseNums(south, west, north, east).catch(() => []);
+  const [pois, osmNums] = await Promise.all([
+    fetchOsmFlagPois(south, west, north, east).catch(() => []),
+    fetchOsmHouseNums(south, west, north, east).catch(() => []),
+  ]);
   if (gen !== houseGen || !map) return;
-  const nums = mergeHouseNums(houseCache.nums, osmNums);
+  const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
-  const phones = nums.filter((n) => houseHasPhone(n)).length;
+  const ready = readyFlagList(nums).length;
   emitPhoneFlagsStatus(
-    nums.length
-      ? `Scanning phones… ${phones} flag${phones === 1 ? "" : "s"} · ${nums.length} homes`
-      : "No house numbers near map center",
+    ready
+      ? flagStatusLine(`Scanning listings…`)
+      : nums.length
+        ? flagStatusLine(`Scanning listings…`)
+        : "No rental or business listings near map center",
   );
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
   houseEnrichTimer = setTimeout(() => {
