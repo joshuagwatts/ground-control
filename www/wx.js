@@ -3560,20 +3560,20 @@ function hailFootprintM(sizeIn, source) {
   const sz = parseFloat(sizeIn);
   const s = Number.isNaN(sz) ? 0.75 : sz;
   const radar = /swdi|radar/i.test(String(source || ""));
-  const base = (radar ? 900 : 420) + s * (radar ? 720 : 400);
-  return Math.max(500, Math.min(6200, base * 1.5));
+  const base = (radar ? 780 : 380) + s * (radar ? 620 : 360);
+  return Math.max(480, Math.min(4800, base * 1.2));
 }
 
 /**
  * Hailswath / MESH-style region builder (Cheresnick & Basara 2005; MRMS MESH contouring).
- * Rasterize size-weighted footprints onto a local km grid, close gaps by a fixed
- * km distance, then extract nested isosurfaces at hail-size thresholds.
+ * Rasterize size-weighted footprints onto a local km grid, lightly close stair-steps,
+ * then extract nested isosurfaces — separate lobes may overlap; we do not fuse them.
  */
 const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.5, 2.0, 2.5];
-/** Gap-closing distance per threshold — km, NOT cells, so shape ≠ f(resolution).
- *  Fringe bands close farther so green radar dots along a track merge into one corridor. */
-/** Fringe closes wide (corridor); cores close tight so multiple same-level lobes survive. */
-const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 12 : thr <= 0.75 ? 7.5 : thr <= 1 ? 4.2 : thr <= 1.5 ? 2.0 : 1.2);
+/** Light morphological close only — wide closes were gluing every core into one blob. */
+const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 3.2 : thr <= 0.75 ? 2.4 : thr <= 1 ? 1.6 : thr <= 1.5 ? 1.1 : 0.75);
+/** Hits farther than this become separate overlapping zones (not one mega-corridor). */
+const HAIL_LOBE_SPLIT_KM = 11;
 
 function blurFloatField(field, w, h, passes = 2) {
   let src = field;
@@ -3874,29 +3874,9 @@ function buildHailSwathRings(rawPts, zone = {}) {
     return softCircleBands(p.lat, p.lon, sz, p);
   }
 
-  let minLat = Infinity;
-  let maxLat = -Infinity;
-  let minLon = Infinity;
-  let maxLon = -Infinity;
-  for (const p of pts) {
-    minLat = Math.min(minLat, p.lat);
-    maxLat = Math.max(maxLat, p.lat);
-    minLon = Math.min(minLon, p.lon);
-    maxLon = Math.max(maxLon, p.lon);
-  }
-  const spanKm = Math.max(
-    haversineKm(minLat, minLon, maxLat, maxLon),
-    haversineKm(minLat, maxLon, maxLat, minLon),
-    1,
-  );
-  // Metro / regional corridor → one continuous anisotropic mesh.
-  if (spanKm <= 140) {
-    return buildHailSwathRingsCluster(pts, zone);
-  }
-
-  // Statewide: keep cells on a fine mesh; never soft-circle a lone radar in a storm day
-  // when neighbors exist within ~70 km — fold them into the same corridor.
-  const clusters = clusterPoints(pts, 70);
+  // Split into local lobes (~11 km). Overlapping is fine — one metro mesh was
+  // gluing every core into a single white blob.
+  const clusters = clusterPoints(pts, HAIL_LOBE_SPLIT_KM);
   const out = [];
   for (const cluster of clusters) {
     if (cluster.length === 1) {
@@ -4094,14 +4074,15 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const field = new Float32Array(w * h);
 
   for (const k of kernels) {
-    const alongSig = Math.max(0.18, k.rKm * (k.spot ? 0.85 : 1.45));
-    const acrossSig = Math.max(0.12, k.rKm * (k.spot ? 0.55 : 0.38));
-    const reach = Math.max(alongSig, acrossSig) * 2.6;
+    // Compact kernels — long anisotropic stretch was bridging separate cores.
+    const alongSig = Math.max(0.14, k.rKm * (k.spot ? 0.7 : 0.92));
+    const acrossSig = Math.max(0.1, k.rKm * (k.spot ? 0.48 : 0.4));
+    const reach = Math.max(alongSig, acrossSig) * 2.05;
     const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const radarBoost = k.spot ? 1 : 2.1;
+    const radarBoost = k.spot ? 1 : 1.85;
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
         const cx = minX + (gx + 0.5) * cellKm;
@@ -4111,7 +4092,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
         const along = dx * ax + dy * ay;
         const across = -dx * ay + dy * ax;
         const d2 = (along * along) / (alongSig * alongSig) + (across * across) / (acrossSig * acrossSig);
-        if (d2 > 6.25) continue;
+        if (d2 > 5.5) continue;
         const contrib = k.size * radarBoost * Math.exp(-0.5 * d2);
         const i = gy * w + gx;
         if (contrib > field[i]) field[i] = contrib;
@@ -4123,7 +4104,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
-  const softField = blurFloatField(field, w, h, 3);
+  const softField = blurFloatField(field, w, h, 1);
 
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     const binary = new Uint8Array(w * h);

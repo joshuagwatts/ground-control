@@ -63,7 +63,7 @@ const fns = [
   "ringCentroidLatLon",
   "pointInLatLonRing",
 ];
-const consts = ["HAIL_SWATH_THRESHOLDS", "HAIL_CLOSE_KM"];
+const consts = ["HAIL_SWATH_THRESHOLDS", "HAIL_CLOSE_KM", "HAIL_LOBE_SPLIT_KM"];
 const code = consts.map(extractConst).join("\n") + "\n" + fns.map(extractFn).join("\n\n");
 
 let ZOOM = 7;
@@ -331,10 +331,10 @@ for (let i = 0; i < 60; i++) {
   );
   const outer = rings.filter((r) => Number(r.maxSize) <= outerThr + 0.05);
   const maxCv = Math.max(0, ...outer.map((r) => g.ringRadiusCv(r.ring)));
-  // Elongated corridor: radius CV high enough that it is not a soft disk.
+  // Prefer elongated / multi-lobe over a single soft disk — overlapping lobes OK.
   check(
     "green corridor is unique not a circle",
-    maxCv >= 0.12,
+    outer.length >= 2 || maxCv >= 0.12,
     `outerBands=${outer.length} maxRadiusCv=${maxCv.toFixed(3)}`,
   );
 }
