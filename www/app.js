@@ -66,7 +66,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.146";
+} from "./wx.js?v=0.2.147";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1542,11 +1542,13 @@ function paintHailScopeRadarBar() {
   const on = db.settings.showRadar !== false;
   if (!on) {
     bar?.remove();
+    shell.classList.remove("hs-radar-open");
     return;
   }
   const html = hailScopeRadarBarHtml(db.settings);
   if (!html) {
     bar?.remove();
+    shell.classList.remove("hs-radar-open");
     return;
   }
   if (bar) bar.outerHTML = html;
@@ -1555,6 +1557,7 @@ function paintHailScopeRadarBar() {
     if (mapEl) mapEl.insertAdjacentHTML("beforebegin", html);
     else shell.insertAdjacentHTML("beforeend", html);
   }
+  shell.classList.add("hs-radar-open");
   bindHailScopeRadar(shell);
 }
 

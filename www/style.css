@@ -2423,6 +2423,13 @@ body.wx-map-expanded .hs-field {
   top: 8px;
   right: 8px;
 }
+/* Clear the Radar toggle (and scrubber when open) so the blue locator isn't covered. */
+.hs-map-shell .leaflet-top.leaflet-right .hs-locate-ctl {
+  margin-top: 48px;
+}
+.hs-map-shell.hs-radar-open .leaflet-top.leaflet-right .hs-locate-ctl {
+  margin-top: 118px;
+}
 .hs-map-shell .leaflet-bottom.leaflet-left {
   bottom: 44px;
   left: 8px;
