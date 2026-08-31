@@ -5,9 +5,11 @@ import {
   lookupPlaceContacts,
   formatPhone,
   phoneDigits,
+  isJunkPhone,
   mergeContacts,
   listingForPin,
   parseStreetAddress,
+  streetKey,
   resolveZillowUrl,
   isUsableZillowUrl,
   fillContactGapsWithChat,
@@ -237,6 +239,8 @@ let houseTimer = 0;
 let houseGen = 0;
 let houseCache = { key: "", rings: [], nums: [] };
 let housePaintSig = "";
+/** Session map of house keys → owner phone (drives green house-number labels). */
+const housePhoneByKey = new Map();
 let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
@@ -410,6 +414,7 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
       };
     }
   }
+  if (fields.owner_phone) noteHouseOwnerPhone(lat, lon, addr, fields.owner_phone);
   return dossier;
 }
 
@@ -5679,15 +5684,97 @@ function ringCentroid(ring) {
   return { lat: lat / n, lon: lon / n };
 }
 
+function housePhoneKey({ num, street, lat, lon } = {}) {
+  const n = String(num || "")
+    .trim()
+    .toLowerCase();
+  const s = streetKey(street || "");
+  if (n && s) return `${n}|${s}`;
+  if (Number.isFinite(lat) && Number.isFinite(lon)) return `@${lat.toFixed(4)},${lon.toFixed(4)}`;
+  return n ? `n:${n}` : "";
+}
+
+function firstTagPhone(tags = {}) {
+  return (
+    String(tags.phone || tags["contact:phone"] || tags["contact:mobile"] || "")
+      .split(/[;,/|]/)
+      .map((s) => s.trim())
+      .find(Boolean) || ""
+  );
+}
+
+function rememberHousePhone(info, phone) {
+  if (isJunkPhone(phone)) return "";
+  const digits = phoneDigits(phone);
+  if (!digits) return "";
+  const pretty = formatPhone(phone) || digits;
+  const key = housePhoneKey(info);
+  if (key) housePhoneByKey.set(key, pretty);
+  if (Number.isFinite(info?.lat) && Number.isFinite(info?.lon)) {
+    housePhoneByKey.set(housePhoneKey({ lat: info.lat, lon: info.lon }), pretty);
+  }
+  return pretty;
+}
+
+function houseHasPhone(n) {
+  if (!n) return false;
+  if (n.phone && !isJunkPhone(n.phone) && phoneDigits(n.phone)) return true;
+  const key = housePhoneKey(n);
+  return Boolean(key && housePhoneByKey.has(key));
+}
+
+function housePhoneFor(n) {
+  if (n?.phone && !isJunkPhone(n.phone) && phoneDigits(n.phone)) return formatPhone(n.phone) || n.phone;
+  const key = housePhoneKey(n);
+  return (key && housePhoneByKey.get(key)) || "";
+}
+
+/** After a pin finds an owner phone, turn that house number green on the map. */
+function noteHouseOwnerPhone(lat, lon, addr, phone) {
+  const parts = parseStreetAddress(addr || "");
+  const pretty = rememberHousePhone(
+    { num: parts.house, street: parts.street, lat, lon },
+    phone,
+  );
+  if (!pretty) return;
+  let changed = false;
+  for (const n of houseCache.nums || []) {
+    const sameNum =
+      parts.house && String(n.num || "").toLowerCase() === String(parts.house).toLowerCase();
+    const sameStreet =
+      !parts.street || !n.street || streetKey(n.street) === streetKey(parts.street);
+    const near =
+      Number.isFinite(lat) &&
+      Number.isFinite(lon) &&
+      Number.isFinite(n.lat) &&
+      Number.isFinite(n.lon) &&
+      haversineKm(lat, lon, n.lat, n.lon) <= 0.05;
+    if ((sameNum && sameStreet) || near) {
+      if (n.phone !== pretty) {
+        n.phone = pretty;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    housePaintSig = "";
+    paintHouseLayer([], houseCache.nums);
+  }
+}
+
 function paintHouseLayer(rings, nums, style) {
-  const sig = `${houseCache.key}|${(nums || []).length}`;
+  const list = nums || [];
+  const phoneBits = list.map((n) => (houseHasPhone(n) ? "1" : "0")).join("");
+  const sig = `${houseCache.key}|${list.length}|${phoneBits}`;
   if (sig === housePaintSig && houseLayer?.getLayers?.().length) return;
   housePaintSig = sig;
   houseLayer.clearLayers();
-  for (const n of nums || []) {
+  for (const n of list) {
+    const hasPhone = houseHasPhone(n);
+    const phone = hasPhone ? housePhoneFor(n) : "";
     const icon = window.L.divIcon({
-      className: "hs-housenum",
-      html: `<span>${n.num}</span>`,
+      className: `hs-housenum${hasPhone ? " hs-housenum-phone" : ""}`,
+      html: `<span class="${hasPhone ? "has-phone" : ""}"${phone ? ` title="Owner phone ${phone.replace(/"/g, "")}"` : ""}>${n.num}</span>`,
       iconSize: [44, 16],
       iconAnchor: [22, 8],
     });
@@ -5821,13 +5908,18 @@ async function fetchOsmHouseData(south, west, north, east) {
     const key = `${num}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const street = String(el.tags?.["addr:street"] || "").trim();
+    const phoneRaw = firstTagPhone(el.tags || {});
+    const phone = phoneRaw && !isJunkPhone(phoneRaw) ? formatPhone(phoneRaw) || phoneRaw : "";
+    if (phone) rememberHousePhone({ num, street, lat, lon }, phone);
     nums.push({
       num,
       lat,
       lon,
-      street: String(el.tags?.["addr:street"] || "").trim(),
+      street,
       city: String(el.tags?.["addr:city"] || "").trim(),
       zip: String(el.tags?.["addr:postcode"] || "").trim(),
+      phone,
     });
   }
   return { rings, nums };
@@ -5857,7 +5949,11 @@ async function refreshHouseNumbers() {
   const gen = ++houseGen;
   const osm = await fetchOsmHouseData(south, west, north, east).catch(() => ({ rings: [], nums: [] }));
   if (gen !== houseGen || !map) return;
-  const nums = osm.nums || [];
+  const nums = (osm.nums || []).map((n) => {
+    if (n.phone) return n;
+    const cached = housePhoneFor(n);
+    return cached ? { ...n, phone: cached } : n;
+  });
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
 }
