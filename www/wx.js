@@ -1017,9 +1017,19 @@ function parseIemLsrCsv(body, lat, lon, km) {
   return out;
 }
 
+const lsrHailCache = new Map();
+
+/** First LSR window — keep the CSV small so iPhone Safari can paint dates before the 2-year dump. */
+export function lsrFirstDays(requested = 730) {
+  const days = Math.min(Math.max(Number(requested) || 730, 7), 730);
+  return isSlowBrowserNet() ? Math.min(days, 120) : Math.min(days, 400);
+}
+
 async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
   const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
   const days = Math.min(Math.max(Number(daysBack) || 365, 7), 730);
+  const cacheKey = `${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
+  if (lsrHailCache.has(cacheKey)) return lsrHailCache.get(cacheKey);
   const end = new Date();
   const start = new Date();
   start.setUTCDate(start.getUTCDate() - days);
@@ -1032,13 +1042,17 @@ async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
     `https://mesonet.agron.iastate.edu/geojson/lsr.py?${range}&${box}`,
     `https://mesonet.agron.iastate.edu/geojson/lsr.geojson?${range}&${box}`,
   ];
+  const timeout = isSlowBrowserNet() ? 9000 : 20000;
   for (const url of urls) {
     try {
-      const { body } = await httpGet(url, 20000);
+      const { body } = await httpGet(url, timeout);
       const rows = /"features"|FeatureCollection/i.test(body || "")
         ? parseIemLsrGeojson(body, lat, lon, km)
         : parseIemLsrCsv(body, lat, lon, km);
-      if (rows.length) return rows;
+      if (rows.length) {
+        lsrHailCache.set(cacheKey, rows);
+        return rows;
+      }
     } catch {
       /* try next */
     }
@@ -1257,9 +1271,50 @@ function enrichStormDates(storms, hail, wind) {
   return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 100);
 }
 
-async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 30) {
+const spcDayCache = new Map();
+const spcDayInflight = new Map();
+
+/** SPC filtered CSVs are one HTTP hit per day — keep this tiny on iPhone Safari/CORS. */
+export function spcLookbackDays(requested = 16) {
+  const want = Math.min(Math.max(Number(requested) || 16, 7), 90);
+  return Math.min(want, isSlowBrowserNet() ? 8 : 16);
+}
+
+async function fetchSpcDay(stamp, iso) {
+  if (spcDayCache.has(stamp)) return spcDayCache.get(stamp);
+  if (spcDayInflight.has(stamp)) return spcDayInflight.get(stamp);
+  const job = (async () => {
+    try {
+      const { body, status } = await httpGet(
+        `https://www.spc.noaa.gov/climo/reports/${stamp}_rpts_filtered.csv`,
+        isSlowBrowserNet() ? 4000 : 5500,
+      );
+      if (status === 404) {
+        const empty = { hail: [], wind: [] };
+        spcDayCache.set(stamp, empty);
+        return empty;
+      }
+      const row = {
+        hail: parseSpcHailCsv(body, iso),
+        wind: parseSpcSection(body, iso, "Time,Speed,", "wind", "wind_mph"),
+      };
+      spcDayCache.set(stamp, row);
+      return row;
+    } catch {
+      return { hail: [], wind: [] };
+    }
+  })();
+  spcDayInflight.set(stamp, job);
+  try {
+    return await job;
+  } finally {
+    spcDayInflight.delete(stamp);
+  }
+}
+
+async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 16, { onProgress } = {}) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 90);
+  const days = spcLookbackDays(daysBack);
   const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
   const stamps = [];
   for (let d = 0; d < days; d++) {
@@ -1272,37 +1327,28 @@ async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 30) {
   }
   const hailHits = [];
   const windHits = [];
-  const batch = 12;
+  const takeDay = (dayRows) => {
+    for (const row of dayRows.hail) {
+      const dist = haversineKm(lat, lon, row.lat, row.lon);
+      if (dist <= km) {
+        const sz = parseFloat(row.size_in);
+        hailHits.push({ ...row, distance_km: Math.round(dist * 10) / 10, score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3 });
+      }
+    }
+    for (const row of dayRows.wind) {
+      const dist = haversineKm(lat, lon, row.lat, row.lon);
+      if (dist <= km) {
+        windHits.push({ ...row, distance_km: Math.round(dist * 10) / 10, score: (row.wind_mph || 0) >= 58 ? 4 : 2 });
+      }
+    }
+  };
+  const batch = isSlowBrowserNet() ? 6 : 10;
   for (let i = 0; i < stamps.length; i += batch) {
     const chunk = stamps.slice(i, i + batch);
-    const parts = await Promise.all(
-      chunk.map(async ({ stamp, iso }) => {
-        try {
-          const { body, status } = await httpGet(`https://www.spc.noaa.gov/climo/reports/${stamp}_rpts_filtered.csv`, 5500);
-          if (status === 404) return { hail: [], wind: [] };
-          return {
-            hail: parseSpcHailCsv(body, iso),
-            wind: parseSpcSection(body, iso, "Time,Speed,", "wind", "wind_mph"),
-          };
-        } catch {
-          return { hail: [], wind: [] };
-        }
-      }),
-    );
-    for (const dayRows of parts) {
-      for (const row of dayRows.hail) {
-        const dist = haversineKm(lat, lon, row.lat, row.lon);
-        if (dist <= km) {
-          const sz = parseFloat(row.size_in);
-          hailHits.push({ ...row, distance_km: Math.round(dist * 10) / 10, score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3 });
-        }
-      }
-      for (const row of dayRows.wind) {
-        const dist = haversineKm(lat, lon, row.lat, row.lon);
-        if (dist <= km) {
-          windHits.push({ ...row, distance_km: Math.round(dist * 10) / 10, score: (row.wind_mph || 0) >= 58 ? 4 : 2 });
-        }
-      }
+    const parts = await Promise.all(chunk.map(({ stamp, iso }) => fetchSpcDay(stamp, iso)));
+    for (const dayRows of parts) takeDay(dayRows);
+    if (onProgress && (hailHits.length || windHits.length)) {
+      onProgress({ hail: hailHits.slice(), wind: windHits.slice() });
     }
   }
   hailHits.sort((a, b) => b.date.localeCompare(a.date));
@@ -3031,7 +3077,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const viewport = Boolean(filters.viewport);
   const km = viewport ? filterKm(filters) : dossierWideKm(filters);
   const swdiDays = swdiDaysForRing(km, filterDays);
-  const spcDays = Math.min(filterDays, deep ? 90 : 30);
+  const spcDays = spcLookbackDays(deep ? 16 : 8);
   const geo = await geoP;
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const placeP = place
@@ -3100,10 +3146,8 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   const wideFetch = wideKm > fastKm + 1;
   const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
   const wxP = currentWeather(lat, lon).catch(() => ({ ok: false }));
-  const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, days).catch(() => []);
-  const spcFastP = fetchSpcReports(lat, lon, fastKm, 30);
+  const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, lsrFirstDays(days)).catch(() => []);
   const lsrWideP = wideFetch ? fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []) : null;
-  const spcWideP = wideFetch ? fetchSpcReports(lat, lon, wideKm, 30) : null;
 
   let accHail = [];
   let accWind = [];
@@ -3140,11 +3184,19 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   accHail = mergeHailRows([], [], lsrFast);
   pushPartial("lsr", { loading: true, fetchedKm: fastKm });
 
-  // Start SWDI while SPC / place resolve — don't wait for contacts before radar dates.
+  // Start SWDI + a short SPC lookback — don't wait for contacts before radar dates.
   const swdiFastP = fetchSwdiHail(lat, lon, fastKm, swdiFastDays, {
     onProgress: (swdiBatch) => {
       accHail = mergeHailRows(spcFast.hail || [], swdiBatch, lsrFast);
       pushPartial("swdi", { loading: true, fetchedKm: fastKm });
+    },
+  });
+  const spcFastP = fetchSpcReports(lat, lon, fastKm, 14, {
+    onProgress: (part) => {
+      spcFast = part;
+      accHail = mergeHailRows(part.hail || [], accHail, lsrFast);
+      accWind = part.wind || accWind;
+      pushPartial("spc", { loading: true, fetchedKm: fastKm });
     },
   });
 
@@ -3158,13 +3210,11 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   pushPartial("swdi-fast", { loading: wideFetch, fetchedKm: fastKm });
 
   if (wideFetch) {
-    const [lsrWide, swdiWide, spcWide] = await Promise.all([
+    const [lsrWide, swdiWide] = await Promise.all([
       lsrWideP,
       fetchSwdiHail(lat, lon, wideKm, swdiWideDays),
-      spcWideP,
     ]);
-    accHail = mergeHailRows(spcWide.hail || [], swdiWide || [], lsrWide, accHail);
-    accWind = spcWide.wind?.length ? spcWide.wind : accWind;
+    accHail = mergeHailRows(spcFast.hail || [], swdiWide || [], lsrWide, accHail);
     pushPartial("wide", { loading: false, fetchedKm: wideKm });
   }
 
@@ -3423,7 +3473,8 @@ export async function viewportDossier(settings, filters = wxFilters, { onPartial
   // iPhone Safari/Pages: start with a tighter ring so dates appear before statewide SWDI.
   const km = slow ? Math.min(kmFull, 110) : kmFull;
   const days = Number(filters.days) || 730;
-  const spcDays = Math.min(days, 90);
+  const lsrDays = lsrFirstDays(days);
+  const spcDays = spcLookbackDays(14);
   const recentDays = Math.min(days, slow ? 90 : 120);
   const deepDays = slow ? Math.min(days, 365) : days;
   const deepKm = slow ? Math.min(kmFull, 200) : kmFull;
@@ -3473,9 +3524,8 @@ export async function viewportDossier(settings, filters = wxFilters, { onPartial
   let lsr = [];
   let spc = { hail: [], wind: [] };
 
-  // Kick all three at once — sequential waits made iPhone web feel stuck on "Loading…".
-  const lsrP = fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []);
-  const spcP = fetchSpcReports(q.lat, q.lon, km, spcDays);
+  // LSR + SWDI first. SPC is a short recent supplement — 90 daily CSVs freeze iPhone Safari.
+  const lsrP = fetchIemLsrHail(q.lat, q.lon, km, lsrDays).catch(() => []);
   const swdiP = fetchSwdiHail(q.lat, q.lon, km, recentDays, {
     onProgress: (batch) => {
       accHail = mergeHailRows(spc.hail || [], batch, lsr);
@@ -3486,13 +3536,26 @@ export async function viewportDossier(settings, filters = wxFilters, { onPartial
   lsr = await lsrP;
   accHail = mergeHailRows([], [], lsr);
   push(accHail, accWind, { loading: true, partial: "lsr", fetchedKm: km });
+  const lsrDeepP = days > lsrDays + 20 ? fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []) : null;
 
+  const spcP = fetchSpcReports(q.lat, q.lon, km, spcDays, {
+    onProgress: (part) => {
+      spc = part;
+      accHail = mergeHailRows(part.hail || [], accHail, lsr);
+      accWind = part.wind || accWind;
+      push(accHail, accWind, { loading: true, partial: "spc", fetchedKm: km });
+    },
+  });
   spc = await spcP;
-  accHail = mergeHailRows(spc.hail || [], [], lsr);
+  accHail = mergeHailRows(spc.hail || [], accHail, lsr);
   accWind = spc.wind || [];
   push(accHail, accWind, { loading: true, partial: "spc", fetchedKm: km });
 
   const swdiRecent = await swdiP;
+  if (lsrDeepP) {
+    const lsrDeep = await lsrDeepP;
+    if (lsrDeep?.length) lsr = mergeHailRows(lsr, lsrDeep);
+  }
   accHail = mergeHailRows(spc.hail || [], swdiRecent || [], lsr);
   const needDeep = deepDays > recentDays + 7 || deepKm > km + 8;
   push(accHail, accWind, { loading: needDeep, partial: "swdi-recent", fetchedKm: km });
@@ -3634,7 +3697,7 @@ async function refreshHailMapFill() {
   const km = mapViewFetchKm();
   try {
     const [spc, swdi, lsr] = await Promise.all([
-      fetchSpcReports(q.lat, q.lon, km, Math.min(days, 90)),
+      fetchSpcReports(q.lat, q.lon, km, 14),
       fetchSwdiHail(q.lat, q.lon, km, swdiDaysForRing(km, days)),
       fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []),
     ]);

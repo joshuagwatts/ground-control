@@ -10,6 +10,8 @@ import {
   PIN_FETCH_MIN_KM,
   dossierFetchKm,
   dossierWideKm,
+  spcLookbackDays,
+  lsrFirstDays,
 } from "../www/wx.js";
 
 function assert(cond, msg) {
@@ -113,5 +115,9 @@ assert(filterHailRaw(pinData, { km: 10, hailIn: 0, days: 730, year: "all" }).len
 assert(filterHailRaw(pinData, { km: 40, hailIn: 0, days: 730, year: "all" }).length === 2, "wider NEAR shows more cached storms");
 const vpData = { viewport: true, hail: [nearRow, farRow], _meta: { viewport: true, listLocked: true } };
 assert(filterHailRaw(vpData, { km: 10, hailIn: 0, days: 730, year: "all" }).length === 2, "viewport list ignores NEAR km");
+
+assert(spcLookbackDays(90) <= 16, "SPC never walks 90 daily CSVs");
+assert(spcLookbackDays(90) === 8, "browser/CORS path keeps SPC to 8 days");
+assert(lsrFirstDays(730) <= 120, "first LSR window stays small on slow browsers");
 
 console.log("hail-days ok");
