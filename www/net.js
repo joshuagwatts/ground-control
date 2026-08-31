@@ -331,32 +331,76 @@ export async function httpPostForm(url, formBody, timeoutMs = 18000) {
 const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass.osm.ch/api/interpreter",
+  "https://lz4.overpass-api.de/api/interpreter",
 ];
 
-/** Run an Overpass QL query (POST first, GET fallback, each public interpreter). */
+/** Run an Overpass QL query (POST first, GET fallback). Skip empty hosts so regional mirrors cannot win. */
 export async function overpassJson(query, timeoutMs = 18000) {
   const q = String(query || "").trim();
   if (!q) throw new Error("empty overpass query");
   const form = `data=${encodeURIComponent(q)}`;
   let last = "overpass failed";
+  let empty = null;
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
       const { body } = await httpPostForm(endpoint, form, timeoutMs);
       const data = JSON.parse(body || "{}");
-      if (Array.isArray(data.elements)) return data;
+      if (Array.isArray(data.elements) && data.elements.length) return data;
+      if (Array.isArray(data.elements)) empty = data;
     } catch (e) {
-      last = String(e?.message || e || "overpass post failed");
-    }
-    try {
-      const { body } = await httpGet(`${endpoint}?${form}`, timeoutMs);
-      const data = JSON.parse(body || "{}");
-      if (Array.isArray(data.elements)) return data;
-    } catch (e) {
-      last = String(e?.message || e || "overpass get failed");
+      last = String(e?.message || e || "overpass failed");
     }
   }
+  if (empty) return empty;
   throw new Error(last);
+}
+
+function clampOsmMapBbox(south, west, north, east) {
+  const max = 0.24;
+  let s = Number(south);
+  let n = Number(north);
+  let w = Number(west);
+  let e = Number(east);
+  if (n - s > max) {
+    const mid = (s + n) / 2;
+    s = mid - max / 2;
+    n = mid + max / 2;
+  }
+  if (e - w > max) {
+    const mid = (w + e) / 2;
+    w = mid - max / 2;
+    e = mid + max / 2;
+  }
+  return { south: s, west: w, north: n, east: e };
+}
+
+/** Parse OSM API 0.6 map XML nodes into Overpass-shaped `{ tags, lat, lon }` elements. */
+export function parseOsmXmlNodes(xml) {
+  const out = [];
+  const re = /<node\b([^>]*)>([\s\S]*?)<\/node>/gi;
+  let m;
+  while ((m = re.exec(String(xml || "")))) {
+    const attrs = m[1];
+    const inner = m[2];
+    const lat = Number((attrs.match(/\blat="([^"]+)"/) || [])[1]);
+    const lon = Number((attrs.match(/\blon="([^"]+)"/) || [])[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const tags = {};
+    const tre = /<tag k="([^"]+)" v="([^"]*)"/g;
+    let t;
+    while ((t = tre.exec(inner))) tags[t[1]] = t[2];
+    if (!Object.keys(tags).length) continue;
+    out.push({ type: "node", lat, lon, tags });
+  }
+  return out;
+}
+
+/** Viewport dump from api.openstreetmap.org — works when Overpass mirrors are down. */
+export async function osmMapJson(south, west, north, east, timeoutMs = 18000) {
+  const b = clampOsmMapBbox(south, west, north, east);
+  const url = `https://api.openstreetmap.org/api/0.6/map?bbox=${b.west},${b.south},${b.east},${b.north}`;
+  const { body } = await httpGet(url, timeoutMs);
+  return { elements: parseOsmXmlNodes(body) };
 }
 
 export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {

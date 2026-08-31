@@ -1,5 +1,5 @@
 /** WX map + storm dossier — runs on phone (public APIs). */
-import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson } from "./net.js";
+import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson, osmMapJson } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
 import {
   lookupPlaceContacts,
@@ -6634,31 +6634,41 @@ function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false } = {}) {
   });
 }
 
-/** Business POIs with a public OSM phone — paint blue flags immediately. */
-async function fetchOsmFlagPois(south, west, north, east) {
-  const q = `[out:json][timeout:18][bbox:${south},${west},${north},${east}];(
-    nwr["phone"][~"^(amenity|shop|office|craft|healthcare)$"~"."];
-    nwr["contact:phone"][~"^(amenity|shop|office|craft|healthcare)$"~"."];
-  );out tags center;`;
-  const data = await overpassJson(q, 18000).catch(() => null);
+function numsFromOsmElements(elements, opts) {
   const nums = [];
   const seen = new Set();
-  for (const el of data?.elements || []) {
-    pushOsmFlagNum(el, nums, seen, { requireBusinessPhone: true });
+  for (const el of elements || []) {
+    pushOsmFlagNum(el, nums, seen, opts);
   }
   return nums;
 }
 
+function osmPoiQuery(south, west, north, east) {
+  return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(
+    node["phone"]["amenity"];node["phone"]["shop"];node["phone"]["office"];node["phone"]["craft"];node["phone"]["healthcare"];
+    node["contact:phone"]["amenity"];node["contact:phone"]["shop"];node["contact:phone"]["office"];
+    way["phone"]["amenity"];way["phone"]["shop"];way["phone"]["office"];
+  );out tags center;`;
+}
+
+function osmHouseQuery(south, west, north, east) {
+  return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
+}
+
+/** Business POIs with a public OSM phone — paint blue flags immediately. */
+async function fetchOsmFlagPois(south, west, north, east) {
+  const over = await overpassJson(osmPoiQuery(south, west, north, east), 9000).catch(() => null);
+  if (over?.elements?.length) return numsFromOsmElements(over.elements, { requireBusinessPhone: true });
+  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
+  return numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
+}
+
 /** Address points only — skip building footprints so Overpass returns fast for Flags. */
 async function fetchOsmHouseNums(south, west, north, east) {
-  const q = `[out:json][timeout:18][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
-  const data = await overpassJson(q, 18000).catch(() => null);
-  const nums = [];
-  const seen = new Set();
-  for (const el of data?.elements || []) {
-    pushOsmFlagNum(el, nums, seen);
-  }
-  return nums;
+  const over = await overpassJson(osmHouseQuery(south, west, north, east), 9000).catch(() => null);
+  if (over?.elements?.length) return numsFromOsmElements(over.elements);
+  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
+  return numsFromOsmElements(mapDump?.elements);
 }
 
 async function refreshHouseNumbers() {
@@ -6694,14 +6704,21 @@ async function refreshHouseNumbers() {
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  const [pois, osmNums] = await Promise.all([
-    fetchOsmFlagPois(south, west, north, east).catch(() => []),
-    fetchOsmHouseNums(south, west, north, east).catch(() => []),
-  ]);
+  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
+  const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
+  const osmNums = numsFromOsmElements(mapDump?.elements);
   if (gen !== houseGen || !map) return;
   const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
+  void overpassJson(osmPoiQuery(south, west, north, east), 8000)
+    .then((overPois) => {
+      if (gen !== houseGen || !overPois?.elements?.length) return;
+      houseCache.nums = mergeHouseNums(houseCache.nums, numsFromOsmElements(overPois.elements, { requireBusinessPhone: true }));
+      housePaintSig = "";
+      paintHouseLayer([], houseCache.nums);
+    })
+    .catch(() => {});
   const ready = readyFlagList(nums).length;
   emitPhoneFlagsStatus(
     ready

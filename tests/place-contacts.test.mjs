@@ -28,6 +28,7 @@ import {
   isBusinessPhoneSource,
   isOsmBusinessTags,
 } from "../www/contacts.js";
+import { parseOsmXmlNodes } from "../www/net.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
 
 function assert(ok, msg) {
@@ -219,5 +220,17 @@ assert(classifyFlagPhone({ phone: "4053489911", source: "zillow" }) === "", "sal
 assert(classifyFlagPhone({ source: "apartments" }) === "", "rental without phone is not a flag");
 assert(isOsmBusinessTags({ amenity: "cafe" }), "amenity is business");
 assert(!isOsmBusinessTags({ building: "house", phone: "1" }), "house phone is not a business");
+
+const osmNodes = parseOsmXmlNodes(`
+  <osm>
+    <node id="1" lat="35.65928" lon="-97.47879">
+      <tag k="name" v="Bondi Bowls"/>
+      <tag k="shop" v="health_food"/>
+      <tag k="phone" v="+1-405-982-8606"/>
+    </node>
+    <node id="2" lat="35.65" lon="-97.48"/>
+  </osm>`);
+assert(osmNodes.length === 1 && osmNodes[0].tags.name === "Bondi Bowls", "parse osm xml node");
+assert(osmNodes[0].tags.phone.includes("405"), "parse osm xml phone");
 
 console.log("place-contacts ok");
