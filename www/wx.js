@@ -1768,16 +1768,53 @@ export function stopHourPlay() {
   }
 }
 
+/**
+ * Build a precip scrubber with Present near the middle: past half + nowcast/future half.
+ * Uses full RainViewer nowcast when present; if the API omits forecast frames,
+ * mirrors the past window with forward time slots (last tile held) so wind/play
+ * still have a future half and Present stays centered.
+ */
+function assembleRainViewerRadarFrames(pastIn, nowcastIn) {
+  const pastAll = (pastIn || []).filter((f) => f && f.path);
+  const nowAll = (nowcastIn || []).filter((f) => f && f.path);
+  if (!pastAll.length && !nowAll.length) return { frames: [], presentIdx: 0 };
+
+  const nowcast = nowAll.slice(0, 18);
+  if (nowcast.length) {
+    // Match past length to forecast so Present sits mid-track.
+    const past = pastAll.slice(-Math.max(nowcast.length, 1));
+    return { frames: [...past, ...nowcast], presentIdx: Math.max(0, past.length - 1) };
+  }
+
+  // No nowcast from API — keep ~1h past and synthesize a matching future half.
+  const past = pastAll.slice(-6);
+  if (!past.length) return { frames: [], presentIdx: 0 };
+  const last = past[past.length - 1];
+  const dt =
+    past.length >= 2
+      ? Math.max(300, Number(past[past.length - 1].time) - Number(past[past.length - 2].time) || 600)
+      : 600;
+  const future = [];
+  for (let i = 1; i <= past.length; i++) {
+    future.push({
+      time: Number(last.time) + dt * i,
+      path: last.path,
+      forecast: true,
+    });
+  }
+  return { frames: [...past, ...future], presentIdx: Math.max(0, past.length - 1) };
+}
+
 function hailScopeLiveTimeWindow() {
   const now = Date.now() / 1000;
-  // Always prefer RainViewer span when loaded so Present % matches precip mode.
+  // Symmetric window so Present sits mid-scrubber when radar isn't loaded yet.
   if (radarFrames.length >= 2) {
     return {
-      t0: Number(radarFrames[0].time) || now - 2 * 3600,
+      t0: Number(radarFrames[0].time) || now - 3600,
       t1: Number(radarFrames[radarFrames.length - 1].time) || now + 3600,
     };
   }
-  return { t0: now - 2 * 3600, t1: now + 3600 };
+  return { t0: now - 3600, t1: now + 3600 };
 }
 
 function hailScopeLiveTimeline() {
@@ -1821,13 +1858,18 @@ function nearestFrameIdx(frames, timeSec) {
 function updateHailScopeLiveLabel(timeSec) {
   const label = document.getElementById("hs-live-label") || document.getElementById("wx-radar-label");
   if (!label) return;
-  const d = new Date((Number(timeSec) || 0) * 1000);
+  const t = Number(timeSec) || 0;
+  const d = new Date(t * 1000);
   const when = Number.isFinite(d.getTime())
     ? d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : "…";
   const windOn = hailScopeRadarFilters.wind && windFrames[windFrameIdx];
   const mph = windOn ? ` · ${Math.round(windFrames[windFrameIdx].speed || 0)} mph` : "";
-  label.textContent = `${when}${mph}`;
+  const now = Date.now() / 1000;
+  const fr = radarFrames[radarFrameIdx];
+  const forecast =
+    (fr && fr.forecast) || (t > now + 90) ? " · forecast" : "";
+  label.textContent = `${when}${mph}${forecast}`;
 }
 
 export function setHailScopeLiveFrame(idx, { crossfade = false } = {}) {
@@ -2010,10 +2052,9 @@ async function fetchRainViewerFrames() {
     const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 2500);
     const rv = JSON.parse(body || "{}");
     radarHost = rv.host || "https://tilecache.rainviewer.com";
-    const past = ((rv.radar || {}).past || []).slice(-12);
-    const nowcast = ((rv.radar || {}).nowcast || []).slice(0, 3);
-    radarFrames = [...past, ...nowcast].filter((f) => f && f.path);
-    radarFrameIdx = Math.max(0, past.length - 1);
+    const assembled = assembleRainViewerRadarFrames((rv.radar || {}).past, (rv.radar || {}).nowcast);
+    radarFrames = assembled.frames;
+    radarFrameIdx = assembled.presentIdx;
   } catch {
     /* optional */
   }
@@ -2798,11 +2839,10 @@ async function localMapConfig(settings, center) {
     const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 2500);
     const rv = JSON.parse(body || "{}");
     radarHost = rv.host || "https://tilecache.rainviewer.com";
-    const past = ((rv.radar || {}).past || []).slice(-12);
-    const nowcast = ((rv.radar || {}).nowcast || []).slice(0, 3);
-    radarFrames = [...past, ...nowcast].filter((f) => f && f.path);
-    radarFrameIdx = Math.max(0, past.length - 1);
-    const frame = radarFrames[radarFrameIdx] || past.slice(-1)[0];
+    const assembled = assembleRainViewerRadarFrames((rv.radar || {}).past, (rv.radar || {}).nowcast);
+    radarFrames = assembled.frames;
+    radarFrameIdx = assembled.presentIdx;
+    const frame = radarFrames[radarFrameIdx] || radarFrames[0];
     const ir = ((rv.satellite || {}).infrared || []).slice(-1)[0];
     const vis = ((rv.satellite || {}).visible || []).slice(-1)[0];
     if (frame?.path) {
@@ -5227,7 +5267,7 @@ async function ensureWindFrames({ force = false } = {}) {
       const t = Date.parse(times[ti]);
       if (!Number.isFinite(t)) continue;
       const sec = t / 1000;
-      if (sec < now - 12 * 3600 || sec > now + 12 * 3600) continue;
+      if (sec < now - 6 * 3600 || sec > now + 6 * 3600) continue;
       const speed = new Float32Array(cols * rows);
       const dir = new Float32Array(cols * rows);
       const gust = new Float32Array(cols * rows);
