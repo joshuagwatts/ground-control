@@ -1561,7 +1561,7 @@ function ensureRadarLayer(url) {
 }
 
 function setRadarTilePath(path, { crossfade = false } = {}) {
-  if (!map || !window.L || !path) return;
+  if (!map || !window.L || !path) return Promise.resolve();
   const url = rainTileUrl(radarHost, path, radarColor);
   const wantOn = wantPrecipRadarTiles();
 
@@ -1572,6 +1572,7 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
       overlays.precip = layer;
       overlays.radar = layer;
       if (wantOn && !map.hasLayer(layer)) layer.addTo(map);
+      layer.setOpacity(0.72);
     } else {
       overlays.precip = window.L.tileLayer(url, {
         attribution: "© RainViewer",
@@ -1581,12 +1582,12 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
         tileSize: 256,
         updateWhenIdle: false,
         updateWhenZooming: false,
-        keepBuffer: 4,
+        keepBuffer: 6,
       });
       overlays.radar = overlays.precip;
       if (wantOn) overlays.precip.addTo(map);
     }
-    return;
+    return Promise.resolve();
   }
 
   ensureRadarLayer(url);
@@ -1594,26 +1595,57 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
   const back = 1 - front;
   const frontLayer = radarLayers[front];
   const backLayer = radarLayers[back];
-  if (!frontLayer || !backLayer) return;
-  if (backLayer._url === url) return;
+  if (!frontLayer || !backLayer) return Promise.resolve();
+  if (backLayer._url === url && backLayer.options?.opacity > 0.3) return Promise.resolve();
 
-  backLayer.setUrl(url);
-  if (wantOn && !map.hasLayer(backLayer)) backLayer.addTo(map);
-  backLayer.setOpacity(0);
+  return new Promise((resolve) => {
+    let done = false;
+    let tilesHit = 0;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      backLayer.off("load", onReady);
+      backLayer.off("tileload", onTile);
+      const frontEl = frontLayer.getContainer?.();
+      const backEl = backLayer.getContainer?.();
+      if (frontEl) frontEl.style.transition = "opacity 0.55s ease";
+      if (backEl) backEl.style.transition = "opacity 0.55s ease";
+      backLayer.setOpacity(0.72);
+      frontLayer.setOpacity(0);
+      window.setTimeout(() => {
+        if (frontEl) {
+          frontEl.style.transition = "";
+          frontEl.style.opacity = "";
+        }
+        if (backEl) {
+          backEl.style.transition = "";
+          backEl.style.opacity = "";
+        }
+        try {
+          if (map.hasLayer(frontLayer) && frontLayer !== backLayer) map.removeLayer(frontLayer);
+        } catch {
+          /* ignore */
+        }
+        radarActiveSlot = back;
+        overlays.precip = backLayer;
+        overlays.radar = backLayer;
+        resolve();
+      }, 560);
+    };
+    const onReady = () => finish();
+    const onTile = () => {
+      tilesHit += 1;
+      if (tilesHit >= 4) finish();
+    };
 
-  let done = false;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    backLayer.off("load", finish);
-    backLayer.setOpacity(0.72);
-    frontLayer.setOpacity(0);
-    radarActiveSlot = back;
-    overlays.precip = backLayer;
-    overlays.radar = backLayer;
-  };
-  backLayer.on("load", finish);
-  window.setTimeout(finish, 160);
+    backLayer.setOpacity(0);
+    backLayer.setUrl(url);
+    if (wantOn && !map.hasLayer(backLayer)) backLayer.addTo(map);
+    backLayer.on("load", onReady);
+    backLayer.on("tileload", onTile);
+    // Wait for tiles — old 160ms cutover flashed empty frames mid-playback.
+    window.setTimeout(finish, 1100);
+  });
 }
 
 export function applyWxTimelineFilters() {
@@ -1693,11 +1725,11 @@ export function bindWxTimelineFilters(root = document, onChange) {
 }
 
 export function setRadarFrame(idx, { crossfade = false } = {}) {
-  if (!radarFrames.length) return;
+  if (!radarFrames.length) return Promise.resolve();
   const i = Math.max(0, Math.min(radarFrames.length - 1, Number(idx) || 0));
   radarFrameIdx = i;
   const frame = radarFrames[i];
-  if (frame?.path) setRadarTilePath(frame.path, { crossfade });
+  const paint = frame?.path ? setRadarTilePath(frame.path, { crossfade }) : Promise.resolve();
   const label = document.getElementById("wx-radar-label");
   if (label && frame?.time) {
     const d = new Date(frame.time * 1000);
@@ -1710,6 +1742,7 @@ export function setRadarFrame(idx, { crossfade = false } = {}) {
   }
   const range = document.getElementById("wx-radar-range");
   if (range && String(range.value) !== String(i)) range.value = String(i);
+  return paint;
 }
 
 export function stopRadarPlay() {
@@ -1775,21 +1808,26 @@ function updateHailScopeLiveLabel(timeSec) {
 
 export function setHailScopeLiveFrame(idx, { crossfade = false } = {}) {
   const steps = hailScopeLiveTimeline();
-  if (!steps.length) return;
+  if (!steps.length) return Promise.resolve();
   const i = Math.max(0, Math.min(steps.length - 1, Number(idx) || 0));
   liveTlIdx = i;
   const t = steps[i].time;
+  const jobs = [];
   if (hailScopeRadarFilters.precip && radarFrames.length) {
-    setRadarFrame(nearestFrameIdx(radarFrames, t), { crossfade });
+    jobs.push(setRadarFrame(nearestFrameIdx(radarFrames, t), { crossfade }));
   }
   if (hailScopeRadarFilters.wind && windFrames.length) {
     const wi = nearestFrameIdx(windFrames, t);
+    // During precip play, only repaint wind every other step — full field redraw
+    // every frame made playback feel like a constant refresh.
+    const skipWindPaint = crossfade && radarPlaying && i % 2 === 1 && wi === windFrameIdx;
     windFrameIdx = wi;
-    paintWindFieldFromFrame(windFrames[wi]);
+    if (!skipWindPaint) paintWindFieldFromFrame(windFrames[wi]);
   }
   updateHailScopeLiveLabel(t);
   const range = document.getElementById("hs-live-range") || document.getElementById("wx-radar-range");
   if (range && String(range.value) !== String(i)) range.value = String(i);
+  return Promise.all(jobs);
 }
 
 function radarPresentMarkPct(steps) {
@@ -1846,11 +1884,11 @@ function bindHailScopeLiveScrubber(root = document) {
   const range = root.querySelector?.("#hs-live-range") || document.getElementById("hs-live-range");
   const play = root.querySelector?.("#hs-live-play") || document.getElementById("hs-live-play");
   if (!range) return;
-  setHailScopeLiveFrame(liveTlIdx);
+  void setHailScopeLiveFrame(liveTlIdx);
   range.oninput = () => {
     stopRadarPlay();
     stopWindPlay();
-    setHailScopeLiveFrame(range.value);
+    void setHailScopeLiveFrame(range.value, { crossfade: true });
   };
   if (play) {
     play.onclick = () => {
@@ -1863,13 +1901,14 @@ function bindHailScopeLiveScrubber(root = document) {
       play.textContent = "PAUSE";
       play.classList.add("on");
       radarPlaying = true;
-      const tick = () => {
+      const tick = async () => {
         if (!radarPlaying) return;
         const next = (liveTlIdx + 1) % hailScopeLiveTimeline().length;
-        setHailScopeLiveFrame(next, { crossfade: true });
-        radarPlayRaf = window.setTimeout(tick, 520);
+        await setHailScopeLiveFrame(next, { crossfade: true });
+        if (!radarPlaying) return;
+        radarPlayRaf = window.setTimeout(tick, 280);
       };
-      tick();
+      void tick();
     };
   }
 }
@@ -2113,10 +2152,10 @@ export function bindRadarScrubber(root = document) {
   const range = root.querySelector?.("#wx-radar-range") || document.getElementById("wx-radar-range");
   const play = root.querySelector?.("#wx-radar-play") || document.getElementById("wx-radar-play");
   if (!range) return;
-  setRadarFrame(radarFrameIdx);
+  void setRadarFrame(radarFrameIdx);
   range.oninput = () => {
     stopRadarPlay();
-    setRadarFrame(range.value);
+    void setRadarFrame(range.value, { crossfade: true });
   };
   if (play) {
     play.onclick = () => {
@@ -2128,13 +2167,14 @@ export function bindRadarScrubber(root = document) {
       play.textContent = "PAUSE";
       play.classList.add("on");
       radarPlaying = true;
-      const tick = () => {
+      const tick = async () => {
         if (!radarPlaying) return;
         const next = (radarFrameIdx + 1) % radarFrames.length;
-        setRadarFrame(next, { crossfade: true });
-        radarPlayRaf = window.setTimeout(tick, 520);
+        await setRadarFrame(next, { crossfade: true });
+        if (!radarPlaying) return;
+        radarPlayRaf = window.setTimeout(tick, 280);
       };
-      tick();
+      void tick();
     };
   }
 }
