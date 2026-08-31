@@ -27,6 +27,13 @@ import {
   isRentalPhoneSource,
   isBusinessPhoneSource,
   isOsmBusinessTags,
+  formatZillowCityRentUrl,
+  formatRentComCityUrl,
+  statePathSlug,
+  parseRentComSearchJson,
+  parseZillowRentSearchJson,
+  parseZillowRentDetailPhone,
+  isOklahomaLatLon,
 } from "../www/contacts.js";
 import { parseOsmXmlNodes } from "../www/net.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
@@ -204,8 +211,84 @@ assert(chamberHits.some((u) => /edmondchamber/i.test(u)), "extract chamber href"
 assert(!chamberHits.some((u) => /zillow/i.test(u)), "skip zillow in chamber extract");
 assert(parseAiContactJson('{"owner_name":"Bob","owner_phone":"405-555-1212"}').name === "Bob", "ai owner_* keys");
 
+assert(statePathSlug("OK") === "oklahoma", "ok state slug");
+assert(formatZillowCityRentUrl("Edmond", "OK") === "https://www.zillow.com/edmond-ok/rentals/", "zillow city rent url");
+assert(
+  formatRentComCityUrl("Oklahoma City", "OK") === "https://www.rent.com/oklahoma/oklahoma-city-apartments",
+  "rent.com city url",
+);
+assert(
+  formatRentComCityUrl("Edmond", "OK", { kind: "houses", page: 2 }) ===
+    "https://www.rent.com/oklahoma/edmond-houses?page=2",
+  "rent.com houses page 2",
+);
+assert(isOklahomaLatLon(35.65, -97.48), "edmond is oklahoma");
+assert(!isOklahomaLatLon(45.6, -118.7), "oregon is not oklahoma");
+
+const rentNextHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+  props: {
+    pageProps: {
+      pageData: {
+        location: {
+          listingSearch: {
+            listings: [
+              {
+                name: "Plaza East",
+                address: "1600 Chelsea Dr",
+                phoneMobile: "4057098424",
+                phoneDesktop: "4057098424",
+                urlPathname: "/apartment/plaza-east-edmond-ok-lc5911042",
+                location: { lat: 35.637553, lng: -97.47956, city: "Edmond", stateAbbr: "OK", zip: "73013" },
+              },
+              {
+                name: "No Phone Place",
+                address: "1 Missing Ave",
+                location: { lat: 35.65, lng: -97.48, city: "Edmond", stateAbbr: "OK" },
+              },
+            ],
+          },
+        },
+      },
+    },
+  },
+})}</script>`;
+const rentFlags = parseRentComSearchJson(rentNextHtml);
+assert(rentFlags.length === 1 && rentFlags[0].source === "rent-com", "rent.com skips phoneless");
+assert(rentFlags[0].phone.includes("405") && rentFlags[0].name === "Plaza East", "rent.com phone+name");
+assert(rentFlags[0].lat === 35.637553 && /rent\.com\/apartment\//.test(rentFlags[0].listingUrl), "rent.com coord+url");
+
+const zillowHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+  props: {
+    pageProps: {
+      searchPageState: {
+        cat1: {
+          searchResults: {
+            listResults: [
+              {
+                statusType: "FOR_RENT",
+                buildingName: "The Oaks at Covell",
+                addressStreet: "3100 N Sooner Rd",
+                addressCity: "Edmond",
+                addressState: "OK",
+                detailUrl: "/apartments/edmond-ok/the-oaks-at-covell/9ShCCW/",
+                latLong: { latitude: 35.685337, longitude: -97.42201 },
+              },
+            ],
+          },
+        },
+      },
+    },
+  },
+})}</script>`;
+const zSearch = parseZillowRentSearchJson(zillowHtml);
+assert(zSearch.length === 1 && zSearch[0].source === "zillow-rent", "zillow city search row");
+assert(!zSearch[0].phone && /zillow\.com\/apartments\//.test(zSearch[0].listingUrl), "zillow search has url, no phone");
+assert(parseZillowRentDetailPhone(`<a href="tel:4052813307">Call</a>`) === "(405) 281-3307", "zillow detail tel");
+
 assert(isRentalPhoneSource("apartments") && !isBusinessPhoneSource("apartments"), "apartments = rental");
+assert(isRentalPhoneSource("rent-com") && !isBusinessPhoneSource("rent-com"), "rent.com = rental");
 assert(classifyFlagPhone({ phone: "(405) 348-9911", source: "apartments" }) === "rental", "apts class");
+assert(classifyFlagPhone({ phone: "4053489911", source: "rent-com" }) === "rental", "rent.com class");
 assert(classifyFlagPhone({ phone: "4053489911", source: "zillow-rent", zillow_rent: true }) === "rental", "zillow rent class");
 assert(
   classifyFlagPhone({ phone: "4053489911", zillow_url: "https://www.zillow.com/homes/for_rent/400-S-Bryant_rb/" }) ===

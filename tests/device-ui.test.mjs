@@ -19,6 +19,7 @@ assert(!isBusinessPhoneSource("ok-phonebook"), "phonebook home");
 assert(!isBusinessPhoneSource("zillow"), "zillow sale home");
 assert(isRentalPhoneSource("apartments"), "apts rental");
 assert(isRentalPhoneSource("zillow-rent"), "zillow rent source");
+assert(isRentalPhoneSource("rent-com"), "rent.com rental");
 assert(isRentalPhoneSource("realtor"), "realtor rental");
 
 console.log("device-ui ok");

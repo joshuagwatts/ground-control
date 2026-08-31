@@ -2,6 +2,14 @@
 import { httpGet, overpassJson } from "./net.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
+/** Zillow city rentals 403 on desktop Chrome; iPhone Safari + language headers work. */
+const LISTING_SAFARI_UA = {
+  "User-Agent":
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+  Accept: "text/html,application/xhtml+xml",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+const ZILLOW_LISTING_HEADERS = { ...LISTING_SAFARI_UA, Referer: "https://www.zillow.com/" };
 const US_STATES = {
   alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
   colorado: "co", connecticut: "ct", delaware: "de", "district of columbia": "dc",
@@ -282,6 +290,369 @@ export function formatRealtorRentSearchUrl(address) {
     .replace(/\s+/g, "-")
     .replace(/[^A-Za-z0-9-]/g, "");
   return `https://www.realtor.com/apartments/${city}_ok/${p.house}-${street}`;
+}
+
+/** Full state name slug for Rent.com paths (`OK` → `oklahoma`). */
+export function statePathSlug(state) {
+  const abbr = stateAbbr(state);
+  if (!abbr) return cityPathSlug(state);
+  const hit = Object.entries(US_STATES).find(([, code]) => code === abbr);
+  return hit ? hit[0].replace(/\s+/g, "-") : abbr;
+}
+
+/** Zillow city For Rent search (`edmond-ok/rentals`). */
+export function formatZillowCityRentUrl(city, state) {
+  const c = cityPathSlug(city);
+  const st = stateAbbr(state) || cityPathSlug(state);
+  if (!c || !st) return "";
+  return `https://www.zillow.com/${c}-${st}/rentals/`;
+}
+
+/**
+ * Rent.com city search. `kind` is apartments | houses.
+ * Homes-for-rent pages carry leasing phones in __NEXT_DATA__.
+ */
+export function formatRentComCityUrl(city, state, { kind = "apartments", page = 1 } = {}) {
+  const c = cityPathSlug(city);
+  const st = statePathSlug(state);
+  if (!c || !st) return "";
+  const type = kind === "houses" ? "houses" : "apartments";
+  const base = `https://www.rent.com/${st}/${c}-${type}`;
+  return page > 1 ? `${base}?page=${page}` : base;
+}
+
+export function extractNextDataJson(html) {
+  const m = String(html || "").match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  if (!m?.[1]) return null;
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
+}
+
+function listingPhoneFromRaw(...raws) {
+  for (const raw of raws) {
+    const s = String(raw || "").trim();
+    if (!s || isJunkPhone(s)) continue;
+    const pretty = formatPhone(s);
+    if (pretty) return pretty;
+  }
+  return "";
+}
+
+function rentFlagRow({ name, street, city, state, zip, lat, lon, phone, listingUrl, source }) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!phone || !Number.isFinite(la) || !Number.isFinite(lo)) return null;
+  return {
+    name: String(name || "").trim(),
+    street: String(street || "").trim(),
+    city: String(city || "").trim(),
+    state: String(state || "").trim(),
+    zip: String(zip || "").trim(),
+    lat: la,
+    lon: lo,
+    phone,
+    listingUrl: String(listingUrl || "").trim(),
+    source,
+    phone_kind: "rental",
+    zillow_rent: source === "zillow-rent",
+  };
+}
+
+/** Rent.com city search — listings include lat/lng + leasing phones. */
+export function parseRentComSearchJson(html) {
+  const data = extractNextDataJson(html);
+  const listings = data?.props?.pageProps?.pageData?.location?.listingSearch?.listings;
+  const out = [];
+  const seen = new Set();
+  for (const row of Array.isArray(listings) ? listings : []) {
+    const loc = row?.location || {};
+    const path = String(row?.urlPathname || row?.url || "").trim();
+    const listingUrl = path
+      ? path.startsWith("http")
+        ? path
+        : `https://www.rent.com${path.startsWith("/") ? "" : "/"}${path}`
+      : "";
+    const hit = rentFlagRow({
+      name: row?.name || "",
+      street: row?.address || row?.addressFull || "",
+      city: loc.city || "",
+      state: loc.stateAbbr || loc.state || "",
+      zip: loc.zip || "",
+      lat: loc.lat,
+      lon: loc.lng,
+      phone: listingPhoneFromRaw(
+        row?.phoneMobile,
+        row?.phoneDesktop,
+        row?.phoneMobileText,
+        row?.phoneDesktopText,
+        row?.mitsPhone?.raw,
+        row?.mitsPhone?.formatted,
+      ),
+      listingUrl,
+      source: "rent-com",
+    });
+    if (!hit) continue;
+    const key = `${phoneDigits(hit.phone)}|${hit.lat.toFixed(5)}|${hit.lon.toFixed(5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(hit);
+  }
+  return out;
+}
+
+/** Zillow city rentals — coords + detail URL; phones live on the detail page. */
+export function parseZillowRentSearchJson(html) {
+  const data = extractNextDataJson(html);
+  const listings = data?.props?.pageProps?.searchPageState?.cat1?.searchResults?.listResults;
+  const out = [];
+  for (const row of Array.isArray(listings) ? listings : []) {
+    const ll = row?.latLong || {};
+    const status = String(row?.statusType || row?.statusText || "");
+    if (status && !/FOR_RENT|for\s*rent/i.test(status)) continue;
+    const path = String(row?.detailUrl || "").trim();
+    const listingUrl = path
+      ? path.startsWith("http")
+        ? path
+        : `https://www.zillow.com${path.startsWith("/") ? "" : "/"}${path}`
+      : "";
+    const hit = rentFlagRow({
+      name: row?.buildingName || "",
+      street: row?.addressStreet || row?.address || "",
+      city: row?.addressCity || "",
+      state: row?.addressState || "",
+      zip: row?.addressZipcode || "",
+      lat: ll.latitude,
+      lon: ll.longitude,
+      phone: listingPhoneFromRaw(row?.brokerPhoneNumber, row?.phone, row?.phoneNumber),
+      listingUrl,
+      source: "zillow-rent",
+    });
+    if (!hit && Number.isFinite(Number(ll.latitude)) && Number.isFinite(Number(ll.longitude)) && listingUrl) {
+      out.push({
+        name: String(row?.buildingName || "").trim(),
+        street: String(row?.addressStreet || row?.address || "").trim(),
+        city: String(row?.addressCity || "").trim(),
+        state: String(row?.addressState || "").trim(),
+        zip: String(row?.addressZipcode || "").trim(),
+        lat: Number(ll.latitude),
+        lon: Number(ll.longitude),
+        phone: "",
+        listingUrl,
+        source: "zillow-rent",
+        phone_kind: "rental",
+        zillow_rent: true,
+      });
+      continue;
+    }
+    if (hit) out.push(hit);
+  }
+  return out;
+}
+
+export function parseZillowRentDetailPhone(html) {
+  const h = String(html || "");
+  if (!h) return "";
+  if (isEmptyOrHardBlock(h) && !/tel:/i.test(h)) return "";
+  const embedded = extractZillowEmbeddedPhones(h);
+  if (embedded[0]) return formatPhone(embedded[0]);
+  const tel = h.match(/tel:(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/i);
+  if (tel && !isJunkPhone(tel[1])) return formatPhone(tel[1]);
+  return "";
+}
+
+/** Oklahoma metro + statewide cities so Flags reach Norman / Tulsa / Lawton, not just 10 km. */
+const OK_RENT_CITIES = [
+  "Edmond",
+  "Oklahoma City",
+  "Norman",
+  "Moore",
+  "Midwest City",
+  "Yukon",
+  "The Village",
+  "Bethany",
+  "Del City",
+  "Mustang",
+  "Newcastle",
+  "Noble",
+  "Tulsa",
+  "Broken Arrow",
+  "Stillwater",
+  "Lawton",
+  "Shawnee",
+  "Enid",
+  "Owasso",
+  "Guthrie",
+  "Choctaw",
+  "Piedmont",
+  "Claremore",
+  "Bartlesville",
+  "Muskogee",
+  "Ponca City",
+  "Ardmore",
+  "Duncan",
+  "Altus",
+  "Weatherford",
+  "El Reno",
+];
+
+const rentFlagCache = new Map();
+const rentCityCache = new Map();
+
+export function isOklahomaLatLon(lat, lon) {
+  return Number(lat) >= 33.6 && Number(lat) <= 37.05 && Number(lon) >= -103.05 && Number(lon) <= -94.4;
+}
+
+function inferOkCity(lat, lon) {
+  const hints = [
+    { city: "Edmond", lat: 35.6528, lon: -97.4778, r: 14 },
+    { city: "Norman", lat: 35.2226, lon: -97.4395, r: 12 },
+    { city: "Moore", lat: 35.3395, lon: -97.4867, r: 7 },
+    { city: "Midwest City", lat: 35.4495, lon: -97.3967, r: 8 },
+    { city: "Yukon", lat: 35.5067, lon: -97.7625, r: 8 },
+    { city: "Tulsa", lat: 36.154, lon: -95.9928, r: 16 },
+    { city: "Stillwater", lat: 36.1156, lon: -97.0584, r: 10 },
+    { city: "Lawton", lat: 34.6036, lon: -98.3959, r: 12 },
+    { city: "Oklahoma City", lat: 35.4676, lon: -97.5164, r: 22 },
+  ];
+  let best = null;
+  for (const h of hints) {
+    const d = haversineKm(lat, lon, h.lat, h.lon);
+    if (d <= h.r && (!best || d < best.d)) best = { city: h.city, d };
+  }
+  return best?.city || (isOklahomaLatLon(lat, lon) ? "Oklahoma City" : "");
+}
+
+function mergeRentFlagList(into, rows) {
+  const out = Array.isArray(into) ? into.slice() : [];
+  const seen = new Set(
+    out.map((r) => `${phoneDigits(r.phone)}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}`),
+  );
+  for (const r of rows || []) {
+    if (!r?.phone || !Number.isFinite(r.lat) || !Number.isFinite(r.lon)) continue;
+    const key = `${phoneDigits(r.phone)}|${r.lat.toFixed(4)}|${r.lon.toFixed(4)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
+async function fetchRentComCityPages(city, state, { kinds = ["apartments", "houses"], pages = 2 } = {}) {
+  const cacheKey = `${cityPathSlug(city)}|${statePathSlug(state)}|${kinds.join(",")}|${pages}`;
+  if (rentCityCache.has(cacheKey)) return rentCityCache.get(cacheKey);
+  const work = (async () => {
+    const acc = [];
+    for (const kind of kinds) {
+      for (let page = 1; page <= pages; page++) {
+        const url = formatRentComCityUrl(city, state, { kind, page });
+        if (!url) break;
+        if (rentFlagCache.has(url)) {
+          acc.push(...rentFlagCache.get(url));
+          if ((rentFlagCache.get(url) || []).length < 20) break;
+          continue;
+        }
+        const pageHit = await fetchHtml(url, 16000, LISTING_SAFARI_UA);
+        const list = parseRentComSearchJson(pageHit?.html || "");
+        rentFlagCache.set(url, list);
+        acc.push(...list);
+        if (list.length < 20) break;
+      }
+    }
+    return mergeRentFlagList([], acc);
+  })();
+  rentCityCache.set(cacheKey, work);
+  try {
+    const rows = await work;
+    rentCityCache.set(cacheKey, Promise.resolve(rows));
+    return rows;
+  } catch {
+    rentCityCache.delete(cacheKey);
+    return [];
+  }
+}
+
+async function fetchZillowCityRentPhones(city, state, { lat, lon, have = [], maxDetails = 6 } = {}) {
+  const url = formatZillowCityRentUrl(city, state);
+  if (!url) return [];
+  const page = await fetchHtml(url, 16000, ZILLOW_LISTING_HEADERS);
+  const found = parseZillowRentSearchJson(page?.html || "");
+  const withPhone = found.filter((r) => r.phone);
+  const needPhone = found
+    .filter((r) => !r.phone && r.listingUrl)
+    .filter((r) => !have.some((h) => haversineKm(h.lat, h.lon, r.lat, r.lon) < 0.08))
+    .sort((a, b) => haversineKm(lat, lon, a.lat, a.lon) - haversineKm(lat, lon, b.lat, b.lon))
+    .slice(0, maxDetails);
+  const details = [];
+  for (const row of needPhone) {
+    const deep = await fetchHtml(row.listingUrl, 14000, ZILLOW_LISTING_HEADERS);
+    const phone = parseZillowRentDetailPhone(deep?.html || "");
+    if (phone) details.push({ ...row, phone, phone_kind: "rental", zillow_rent: true, source: "zillow-rent" });
+  }
+  return mergeRentFlagList(withPhone, details);
+}
+
+/**
+ * Viewport / metro rental flags from Rent.com (phones in search JSON) + Zillow rentals.
+ * Oklahoma loads major cities (Edmond → Norman → Tulsa…) so Flags are not stuck in a 10 km box.
+ */
+export async function lookupViewportRentFlags(lat, lon, opts = {}) {
+  const onBatch = typeof opts.onBatch === "function" ? opts.onBatch : null;
+  const city = String(opts.city || inferOkCity(lat, lon) || "").trim();
+  const state = String(opts.state || (isOklahomaLatLon(lat, lon) ? "OK" : "")).trim();
+  const inOk = isOklahomaLatLon(lat, lon) || stateAbbr(state) === "ok";
+  let acc = [];
+  const emit = (rows) => {
+    acc = mergeRentFlagList(acc, rows);
+    if (onBatch) onBatch(acc.slice());
+  };
+
+  const firstCities = [];
+  const pushCity = (c) => {
+    const name = String(c || "").trim();
+    if (!name) return;
+    if (firstCities.some((x) => cityPathSlug(x) === cityPathSlug(name))) return;
+    firstCities.push(name);
+  };
+  pushCity(city);
+  if (inOk) {
+    for (const extra of ["Edmond", "Oklahoma City", "Norman"]) pushCity(extra);
+  }
+
+  const runCities = async (names, pages, kinds) => {
+    const chunk = 3;
+    for (let i = 0; i < names.length; i += chunk) {
+      const part = names.slice(i, i + chunk);
+      const batches = await Promise.all(
+        part.map((c) => fetchRentComCityPages(c, state || "OK", { kinds, pages }).catch(() => [])),
+      );
+      for (const rows of batches) emit(rows);
+    }
+  };
+
+  // First paint: page 1 apartments+houses for Edmond / OKC / Norman.
+  await runCities(firstCities, 1, ["apartments", "houses"]);
+
+  if (city || inOk) {
+    const zCity = city || firstCities[0];
+    const zRows = await fetchZillowCityRentPhones(zCity, state || "OK", {
+      lat,
+      lon,
+      have: acc,
+      maxDetails: inOk ? 4 : 6,
+    }).catch(() => []);
+    if (zRows.length) emit(zRows);
+  }
+
+  if (inOk) {
+    await runCities(firstCities, 2, ["apartments", "houses"]);
+    const rest = OK_RENT_CITIES.filter((c) => !firstCities.some((x) => cityPathSlug(x) === cityPathSlug(c)));
+    await runCities(rest, 1, ["apartments", "houses"]);
+  }
+
+  return acc;
 }
 
 export function formatYellowPagesAddressUrl(address) {
@@ -905,7 +1276,7 @@ export function mergeContacts(...parts) {
 
 /** For-rent listing hosts → green flags (phone required). */
 export function isRentalPhoneSource(source) {
-  return /zillow[-_]?rent|for_rent|apartments|realtor/i.test(String(source || ""));
+  return /zillow[-_]?rent|for_rent|apartments|realtor|rent[-_.]?com/i.test(String(source || ""));
 }
 
 /** Chamber / YP / OSM amenity (and similar) → blue business flags. */
@@ -941,9 +1312,9 @@ export function classifyFlagPhone(hit = {}) {
   return "";
 }
 
-async function fetchHtml(url, ms = 9000) {
+async function fetchHtml(url, ms = 9000, extraHeaders = {}) {
   try {
-    const { body, url: finalUrl } = await httpGet(url, ms);
+    const { body, url: finalUrl } = await httpGet(url, ms, extraHeaders);
     return { html: String(body || ""), url: finalUrl || url };
   } catch {
     return null;

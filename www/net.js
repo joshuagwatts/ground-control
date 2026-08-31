@@ -252,6 +252,7 @@ function needsBrowserCorsProxy(url) {
       h.endsWith("openstreetmap.org") ||
       h.endsWith("zillow.com") ||
       h.endsWith("apartments.com") ||
+      h.endsWith("rent.com") ||
       h.endsWith("realtor.com") ||
       h.endsWith("411.com") ||
       h.endsWith("whitepages.com") ||

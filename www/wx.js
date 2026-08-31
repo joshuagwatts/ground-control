@@ -16,6 +16,8 @@ import {
   fillContactGapsWithChat,
   classifyFlagPhone,
   isOsmBusinessTags,
+  lookupViewportRentFlags,
+  isOklahomaLatLon,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
@@ -1424,9 +1426,11 @@ const MAP_MAX_ZOOM = 22;
 const MAP_MIN_ZOOM = 3;
 /** Max hail fetch radius when zoomed out to regional / multi-state view. */
 const MAP_HAIL_MAX_KM = 450;
-/** Search radius (km) around map center for Flags — works at any zoom. */
+/** Search radius (km) around map center for OSM business flags. */
 const FLAG_SEARCH_KM_MIN = 2.2;
 const FLAG_SEARCH_KM_MAX = 10;
+/** Painted flag cap — rentals are never dropped to make room for businesses. */
+const FLAG_PAINT_MAX = 400;
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
 const HOUSE_ENRICH_MAX = 10;
@@ -6128,18 +6132,23 @@ function phoneFlagIcon(tip = "", kind = "home") {
   });
 }
 
+function flagDist2(n, c) {
+  if (!c) return 0;
+  const dLat = n.lat - c.lat;
+  const dLon = n.lon - c.lng;
+  return dLat * dLat + dLon * dLon;
+}
+
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
   const list = (nums || []).filter((n) => houseHasFlag(n) && Number.isFinite(n.lat) && Number.isFinite(n.lon));
-  if (!c || list.length <= 80) return list;
-  return list
-    .slice()
-    .sort(
-      (a, b) =>
-        (a.lat - c.lat) * (a.lat - c.lat) + (a.lon - c.lng) * (a.lon - c.lng) -
-        ((b.lat - c.lat) * (b.lat - c.lat) + (b.lon - c.lng) * (b.lon - c.lng)),
-    )
-    .slice(0, 80);
+  const rentals = list.filter((n) => housePhoneKind(n) === "rental");
+  const biz = list.filter((n) => housePhoneKind(n) !== "rental");
+  rentals.sort((a, b) => flagDist2(a, c) - flagDist2(b, c));
+  biz.sort((a, b) => flagDist2(a, c) - flagDist2(b, c));
+  const rentKeep = rentals.slice(0, FLAG_PAINT_MAX);
+  const room = Math.max(0, FLAG_PAINT_MAX - rentKeep.length);
+  return [...rentKeep, ...biz.slice(0, room)];
 }
 
 function flyToFlag(n) {
@@ -6423,8 +6432,12 @@ function mergeHouseNums(into, nums) {
       out.push(next);
     }
   }
-  // Cap pool so long sessions don't balloon.
-  if (out.length > 900) return out.slice(out.length - 750);
+  // Cap pool so long sessions don't balloon — keep rentals first.
+  if (out.length > 1600) {
+    const rentals = out.filter((n) => n.phone_kind === "rental" || /rent/i.test(n.source || ""));
+    const rest = out.filter((n) => n.phone_kind !== "rental" && !/rent/i.test(n.source || ""));
+    return [...rentals.slice(-900), ...rest.slice(-400)];
+  }
   return out;
 }
 
@@ -6706,6 +6719,66 @@ function numsFromOsmElements(elements, opts) {
   return nums;
 }
 
+function placeFromOsmElements(elements) {
+  const cities = new Map();
+  const states = new Map();
+  for (const el of elements || []) {
+    const c = String(el.tags?.["addr:city"] || "").trim();
+    const s = String(el.tags?.["addr:state"] || "").trim();
+    if (c) cities.set(c, (cities.get(c) || 0) + 1);
+    if (s) states.set(s, (states.get(s) || 0) + 1);
+  }
+  const top = (m) => [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  return { city: top(cities), state: top(states) };
+}
+
+function numsFromRentFlags(flags) {
+  const out = [];
+  for (const r of flags || []) {
+    if (!r?.phone || !Number.isFinite(r.lat) || !Number.isFinite(r.lon)) continue;
+    const addr = [r.street, r.city, r.state, r.zip].filter(Boolean).join(", ");
+    const parts = parseStreetAddress(addr);
+    const num = parts.house || r.name || r.street || "For rent";
+    rememberHouseUseful(
+      { num, street: parts.street || r.street, lat: r.lat, lon: r.lon, zillow_url: r.listingUrl, zillow_rent: true },
+      { phone: r.phone, name: r.name || "", kind: "rental", source: r.source || "rent-com" },
+    );
+    out.push({
+      num,
+      street: parts.street || r.street || "",
+      city: r.city || "",
+      zip: r.zip || "",
+      lat: r.lat,
+      lon: r.lon,
+      phone: r.phone,
+      owner_name: r.name || "",
+      phone_kind: "rental",
+      source: r.source || "rent-com",
+      zillow_url: r.listingUrl || "",
+      zillow_rent: true,
+    });
+  }
+  return out;
+}
+
+function applyRentFlagBatch(flags, _gen) {
+  if (!phoneFlagsEnabled() || !map || !flags?.length) return;
+  houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(flags));
+  housePaintSig = "";
+  paintHouseLayer([], houseCache.nums);
+  emitPhoneFlagsStatus(flagStatusLine("Listings"));
+}
+
+function kickRentFlags(lat, lon, place, gen) {
+  void lookupViewportRentFlags(lat, lon, {
+    city: place?.city || "",
+    state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
+    onBatch: (flags) => applyRentFlagBatch(flags, gen),
+  })
+    .then((flags) => applyRentFlagBatch(flags, gen))
+    .catch(() => {});
+}
+
 function osmPoiQuery(south, west, north, east) {
   return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(
     node["phone"]["amenity"];node["phone"]["shop"];node["phone"]["office"];node["phone"]["craft"];node["phone"]["healthcare"];
@@ -6753,6 +6826,10 @@ async function refreshHouseNumbers() {
   const key = `flag|${houseBoundsKey(searchB, z)}|${flagSearchKm().toFixed(1)}`;
   if (houseCache.key === key && houseCache.nums.length) {
     paintHouseLayer([], houseCache.nums);
+    const c0 = map.getCenter?.();
+    if (c0 && !houseCache.nums.some((n) => n.phone_kind === "rental")) {
+      kickRentFlags(c0.lat, c0.lng, { city: "", state: "" }, houseGen);
+    }
     if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
     houseEnrichTimer = setTimeout(() => {
       houseEnrichTimer = 0;
@@ -6774,6 +6851,13 @@ async function refreshHouseNumbers() {
   const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
   houseCache = { key, rings: [], nums };
   paintHouseLayer([], nums);
+  const center = map.getCenter?.();
+  const place = placeFromOsmElements(mapDump?.elements);
+  if (center) {
+    if (!place.city && isOklahomaLatLon(center.lat, center.lng)) place.city = "Edmond";
+    if (!place.state && isOklahomaLatLon(center.lat, center.lng)) place.state = "OK";
+    kickRentFlags(center.lat, center.lng, place, gen);
+  }
   void overpassJson(osmPoiQuery(south, west, north, east), 8000)
     .then((overPois) => {
       if (gen !== houseGen || !overPois?.elements?.length) return;
