@@ -1469,18 +1469,18 @@ function refreshZoomScaledUi(force = false) {
   }
 }
 
-/** Single fill opacity for every hail band — cutout holes prevent stacking mud. */
-const HAIL_BAND_FILL = 0.78;
-const HAIL_BAND_FILL_SAT = 0.84;
+/** Per-band fill (composited inside pane). Pane opacity caps total map coverage ~50%. */
+const HAIL_BAND_FILL = 0.72;
+const HAIL_BAND_FILL_SAT = 0.78;
 
 function hailZoneOpacityBoost(_base) {
   void _base;
   return activeLayer === "sat" ? HAIL_BAND_FILL_SAT : HAIL_BAND_FILL;
 }
 
-/** Pane stays fully opaque; nested solid fills overwrite (HailTrace cut-out). */
+/** Cap stacked hail fills so overlaps never fully block the basemap (~50%). */
 function hailFillPaneOpacity() {
-  return 1;
+  return 0.5;
 }
 
 function ensureHailPanes() {
@@ -4540,12 +4540,13 @@ function stackHailBandPolys(subs) {
 }
 
 function hailLayerFillOpacity(sz) {
+  // Relative strength only — hailFills pane opacity (~0.5) caps how much map is blocked.
   const s = Number(sz) || 0;
-  if (s <= 0.5) return 0.32;
-  if (s < 1) return 0.44;
-  if (s < 1.5) return 0.5;
-  if (s < 2) return 0.55;
-  return 0.58;
+  if (s <= 0.5) return 0.45;
+  if (s < 1) return 0.58;
+  if (s < 1.5) return 0.68;
+  if (s < 2) return 0.78;
+  return 0.85;
 }
 
 function hailZonePopupHtml(h, sub) {
@@ -5782,6 +5783,7 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
   });
   const pretty = phone ? rememberHousePhone(info, phone) : housePhoneFor(info);
   let changed = false;
+  let matched = false;
   for (const n of houseCache.nums || []) {
     const sameNum =
       parts.house && String(n.num || "").toLowerCase() === String(parts.house).toLowerCase();
@@ -5794,6 +5796,7 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
       Number.isFinite(n.lon) &&
       haversineKm(lat, lon, n.lat, n.lon) <= 0.05;
     if (!(sameNum && sameStreet) && !near) continue;
+    matched = true;
     if (pretty && n.phone !== pretty) {
       n.phone = pretty;
       changed = true;
@@ -5806,7 +5809,24 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
       n.email = extra.owner_email;
       changed = true;
     }
+    if (!n.street && parts.street) n.street = parts.street;
     if (!houseHasUseful(n) && (pretty || extra.owner_name || extra.owner_email)) changed = true;
+  }
+  // No OSM point under Google’s label — still drop a green number so it covers the white tile text.
+  if (!matched && parts.house && Number.isFinite(lat) && Number.isFinite(lon)) {
+    if (!Array.isArray(houseCache.nums)) houseCache.nums = [];
+    houseCache.nums.push({
+      num: parts.house,
+      street: parts.street || "",
+      city: parts.city || "",
+      zip: parts.zip || "",
+      lat,
+      lon,
+      phone: pretty || "",
+      owner_name: extra.owner_name || extra.name || "",
+      email: extra.owner_email || extra.email || "",
+    });
+    changed = true;
   }
   if (changed || pretty || extra.owner_name || extra.owner_email) {
     housePaintSig = "";
@@ -5834,8 +5854,8 @@ function paintHouseLayer(_rings, nums) {
     const icon = window.L.divIcon({
       className: "hs-housenum hs-housenum-phone",
       html: `<span class="has-phone"${tip ? ` title="${tip}"` : ""}>${n.num}</span>`,
-      iconSize: [48, 18],
-      iconAnchor: [24, 9],
+      iconSize: [56, 22],
+      iconAnchor: [28, 11],
     });
     window.L.marker([n.lat, n.lon], {
       icon,
@@ -5846,6 +5866,36 @@ function paintHouseLayer(_rings, nums) {
   }
 }
 
+/** Build a lookup address for an OSM house point (street often missing in OK). */
+async function addressForHouseNum(n) {
+  if (!n?.num) return "";
+  if (n.street) {
+    const cityBit = n.city ? `, ${n.city}` : "";
+    const zipBit = n.zip ? ` ${n.zip}` : "";
+    let addr = `${n.num} ${n.street}${cityBit}${zipBit}`.trim();
+    if (!/,\s*[A-Z]{2}\b|Oklahoma/i.test(addr)) {
+      const c = map?.getCenter?.();
+      const inOk =
+        !c || (c.lat > 33.5 && c.lat < 37.1 && c.lng > -103.1 && c.lng < -94.3);
+      if (inOk) addr = `${addr}, OK`;
+    }
+    return addr;
+  }
+  try {
+    const geo = await reverseGeocode(n.lat, n.lon);
+    if (geo?.ok && geo.address && /^\d/.test(geo.address)) {
+      const parts = parseStreetAddress(geo.address);
+      if (parts.street) n.street = parts.street;
+      if (parts.city && !n.city) n.city = parts.city;
+      if (parts.zip && !n.zip) n.zip = parts.zip;
+      return geo.address;
+    }
+  } catch {
+    /* fall through */
+  }
+  return "";
+}
+
 /** Public listing + assessor scan for visible houses (capped) — greens numbers as hits land. */
 async function enrichVisibleHouseInfo(nums, gen) {
   if (!map || !nums?.length) return;
@@ -5853,32 +5903,26 @@ async function enrichVisibleHouseInfo(nums, gen) {
   if (z < 17) return;
   const c = map.getCenter?.();
   if (!c) return;
+  // Street optional — many OK OSM nodes only have addr:housenumber (Google still labels them).
   const queue = nums
-    .filter((n) => n?.num && n.street && !houseHasUseful(n))
+    .filter((n) => n?.num && !houseHasUseful(n))
     .map((n) => ({
       n,
       d: (n.lat - c.lat) * (n.lat - c.lat) + (n.lon - c.lng) * (n.lon - c.lng),
     }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, 10)
+    .slice(0, 14)
     .map((x) => x.n);
-  for (const n of queue) {
+  const runOne = async (n) => {
     if (gen !== houseGen || !map) return;
-    const cityBit = n.city ? `, ${n.city}` : "";
-    const zipBit = n.zip ? ` ${n.zip}` : "";
-    let addr = `${n.num} ${n.street}${cityBit}${zipBit}`.trim();
-    // Phone-book + Zillow rent lookups need a state; default OK in-market.
-    if (!/,\s*OK\b|Oklahoma/i.test(addr)) {
-      const c = map.getCenter?.();
-      const inOk =
-        !c || (c.lat > 33.5 && c.lat < 37.1 && c.lng > -103.1 && c.lng < -94.3);
-      if (inOk) addr = `${addr}, OK`;
-    }
+    const addr = await addressForHouseNum(n);
+    if (!addr || !parseStreetAddress(addr).house) return;
     try {
       const [assessor, contacts] = await Promise.all([
         lookupAssessorParcel(n.lat, n.lon, addr).catch(() => null),
         lookupPlaceContacts(n.lat, n.lon, addr, {}, null).catch(() => ({})),
       ]);
+      if (gen !== houseGen) return;
       const phone = contacts?.owner_phone || "";
       const name = assessor?.name || contacts?.owner_name || "";
       const email = contacts?.owner_email || "";
@@ -5893,7 +5937,12 @@ async function enrichVisibleHouseInfo(nums, gen) {
     } catch {
       /* keep scanning */
     }
-    await new Promise((r) => setTimeout(r, 420));
+  };
+  // Two at a time so phones land sooner while still polite to directories.
+  for (let i = 0; i < queue.length; i += 2) {
+    if (gen !== houseGen || !map) return;
+    await Promise.all([runOne(queue[i]), queue[i + 1] ? runOne(queue[i + 1]) : null]);
+    await new Promise((r) => setTimeout(r, 280));
   }
 }
 

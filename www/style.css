@@ -2505,18 +2505,17 @@ body.wx-map-expanded .hs-field {
   white-space: nowrap;
   pointer-events: none;
 }
-/* Green address text over Google’s white rooftop labels when owner info exists. */
+/* Green address text covering Google’s white rooftop labels when owner info exists. */
 .hs-housenum span.has-phone,
 .hs-housenum-phone span {
-  color: #22e36a;
-  background: transparent;
-  box-shadow: none;
-  text-shadow:
-    -1px -1px 0 #0a0a0a,
-    1px -1px 0 #0a0a0a,
-    -1px 1px 0 #0a0a0a,
-    1px 1px 0 #0a0a0a,
-    0 0 5px rgba(0, 0, 0, 0.9);
+  color: #1dff6e;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(6, 14, 10, 0.92);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  text-shadow: none;
 }
 .hs-locate-ctl a {
   display: flex !important;
