@@ -1968,6 +1968,27 @@ body.wx-map-expanded .hs-sheet {
   opacity: 0.35;
   filter: grayscale(0.55);
 }
+.hs-layers button.hs-flags-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.hs-layers button.hs-flags-toggle .hs-flag-ico {
+  display: inline-block;
+  width: 11px;
+  height: 14px;
+  background:
+    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
+    linear-gradient(#1dff6e, #1dff6e) 3px 1px / 8px 7px no-repeat;
+}
+.hs-layers button.hs-flags-toggle:not(.on) .hs-flag-ico {
+  opacity: 0.35;
+}
+.hs-layers button.hs-flags-toggle.on {
+  background: rgba(29, 255, 110, 0.18);
+  color: #1dff6e;
+  border-color: rgba(29, 255, 110, 0.45);
+}
 .hs-radar-top {
   position: absolute;
   z-index: 500;
@@ -2470,7 +2491,7 @@ body.wx-map-expanded .hs-field {
 .hs-night-tiles {
   filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.35) contrast(0.95);
 }
-.leaflet-div-icon.hs-me, .leaflet-div-icon.hs-housenum, .leaflet-div-icon.hs-done-pin {
+.leaflet-div-icon.hs-me, .leaflet-div-icon.hs-housenum, .leaflet-div-icon.hs-phone-flag, .leaflet-div-icon.hs-done-pin {
   background: transparent !important;
   border: none !important;
   overflow: visible !important;
@@ -2505,33 +2526,25 @@ body.wx-map-expanded .hs-field {
   white-space: nowrap;
   pointer-events: none;
 }
-/* Green address text covering Google’s white rooftop labels when owner info exists. */
-.leaflet-div-icon.hs-housenum-phone {
+/* Green phone flags — tap Call/Text, hold to copy. */
+.leaflet-div-icon.hs-phone-flag {
   pointer-events: auto !important;
   cursor: pointer;
 }
-.hs-housenum span.has-phone,
-.hs-housenum-phone span {
-  color: #1dff6e;
-  font-size: 14px;
-  font-weight: 800;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: rgba(6, 14, 10, 0.92);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
-  text-shadow: none;
+.hs-phone-flag-ico {
+  display: block;
+  line-height: 0;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65));
   pointer-events: auto;
   -webkit-user-select: none;
   user-select: none;
   touch-action: manipulation;
 }
-.hs-housenum span.has-phone.copied {
-  color: #0a0a0d;
-  background: #1dff6e;
+.hs-phone-flag-ico.copied svg path[fill="#1dff6e"] {
+  fill: #b8ffd0;
 }
-.hs-housenum span.has-phone.copy-fail {
-  background: rgba(80, 20, 20, 0.95);
-  color: #ffb4b4;
+.hs-phone-flag-ico.copy-fail {
+  filter: drop-shadow(0 0 3px rgba(255, 80, 80, 0.9));
 }
 .hs-house-pop {
   display: flex;

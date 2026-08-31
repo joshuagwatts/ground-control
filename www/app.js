@@ -66,7 +66,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.145";
+} from "./wx.js?v=0.2.146";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1212,6 +1212,7 @@ function paintFieldMap() {
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
     showHailDots: db.settings.showHailDots !== false,
+    showPhoneFlags: db.settings.showPhoneFlags !== false,
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onDone: (h) => {
@@ -1564,9 +1565,11 @@ function paintLayerToggles() {
   const marksOn = db.settings.showMarks !== false;
   const meOn = db.settings.showMyLocation !== false;
   const dotsOn = db.settings.showHailDots !== false;
+  const flagsOn = db.settings.showPhoneFlags !== false;
   el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="dots" class="hs-dots-toggle ${dotsOn ? "on" : ""}" aria-label="Hail dots" title="Show spotter (red) and radar (green) dots"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-g"></i></span>Dots</button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="Show green flags where a public phone was found"><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
     <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
   el.onclick = (e) => {
@@ -1579,6 +1582,7 @@ function paintLayerToggles() {
       setMyLocationVisible(db.settings.showMyLocation);
     }
     if (b.dataset.ov === "dots") db.settings.showHailDots = !dotsOn;
+    if (b.dataset.ov === "flags") db.settings.showPhoneFlags = !flagsOn;
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
     if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
     persist();
