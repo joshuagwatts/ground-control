@@ -223,10 +223,58 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
     const msg = String(e?.message || e || "fetch failed");
     if (/abort/i.test(msg)) throw new Error("timeout");
     if (/^fetch \d/.test(msg)) throw e;
+    // Browser CORS (GitHub Pages / Safari): retry NOAA & public weather hosts via a proxy.
+    if (needsBrowserCorsProxy(target)) {
+      try {
+        return await httpGetViaCorsProxy(target, timeoutMs);
+      } catch {
+        /* fall through */
+      }
+    }
     throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
   } finally {
     clearTimeout(t);
   }
+}
+
+function needsBrowserCorsProxy(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return (
+      h.endsWith("ncdc.noaa.gov") ||
+      h.endsWith("noaa.gov") ||
+      h.endsWith("weather.gov") ||
+      h.endsWith("mesonet.org") ||
+      h.endsWith("iowa.edu")
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function httpGetViaCorsProxy(url, timeoutMs) {
+  const proxies = [
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  ];
+  let last = "cors proxy failed";
+  for (const proxy of proxies) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
+      if (!res.ok) {
+        last = `fetch ${res.status}`;
+        continue;
+      }
+      return { url, status: res.status, body: await res.text() };
+    } catch (e) {
+      last = String(e?.message || e || "proxy failed");
+    } finally {
+      clearTimeout(t);
+    }
+  }
+  throw new Error(last);
 }
 
 export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {

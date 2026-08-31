@@ -44,4 +44,10 @@ Every push to `main` (or **Ship**) builds a new APK with a higher version code, 
 
 The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator** zip on every push. A device IPA needs Apple signing secrets (`IOS_CERTIFICATE_BASE64`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISION_BASE64`, `IOS_TEAM_ID`) in the GitHub repo.
 
-Quick phone check of the web UI (same as the app shell): open Safari to your PC's LAN preview, e.g. `http://192.168.1.162:4173`, while `npm start` is running.
+## Team web (iPhone Safari, free)
+
+Every push to `main` also deploys the app to **GitHub Pages** — no PC required:
+
+**https://joshuagwatts.github.io/ground-control/**
+
+Open that link on any phone browser. Add to Home Screen for an app-like icon. LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.

@@ -1410,10 +1410,7 @@ function applyHailStrokeZoomStyles(force = false) {
               return { weight: Math.min(1.4, s.weight), opacity: Math.min(0.65, s.opacity), dashArray: s.dashArray };
             })()
           : kind === "zone"
-            ? // Keep fill-led bands — zoom must not re-wire every nested hole edge.
-              outer
-                ? { weight: 1.1, opacity: 0.45, stroke: true, dashArray: null }
-                : { weight: 0, opacity: 0, stroke: false }
+            ? { weight: 1.35, opacity: 0.72, stroke: true, dashArray: null }
             : hailZoneStrokeStyle(confirmed, size, z);
     try {
       layer.setStyle(style);
@@ -3678,24 +3675,9 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
  * Inspired by MESH isosurfaces + Hailswath footprint accumulation.
  */
 function buildHailSwathRings(rawPts, zone = {}) {
-  let pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
-  const z = map?.getZoom?.() ?? 14;
-  const wide = z < 11;
-  // Zoomed in: mesh only hits near the viewport so grid cells stay fine where the
-  // user is looking (statewide day pools otherwise force coarse, off-center grids).
-  if (!wide && pts.length > 2) {
-    try {
-      const b = map?.getBounds?.()?.pad?.(1.2);
-      if (b) {
-        const inView = pts.filter((p) => b.contains([p.lat, p.lon]));
-        if (inView.length) pts = inView;
-      }
-    } catch {
-      /* keep all */
-    }
-  }
-  // Never paint raw SWDI polygons as separate bubbles — fold them into the mesh so
-  // nested bands + cutouts stay clean (no double-fill / fake subtraction).
+  const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  // Always mesh the full day pool — viewport clipping made shapes morph while panning
+  // ("updatey"). Zoom/pan only change the view, never which hits form the swath.
   const swdiRings = [];
 
   if (pts.length < 2 && !swdiRings.length) {
@@ -3775,12 +3757,11 @@ function buildHailSwathRings(rawPts, zone = {}) {
   maxY += pad;
 
   const span = Math.max(maxX - minX, maxY - minY, 2);
-  // Cell size scales with data span so the grid ALWAYS covers every hit (a cellKm
-  // cap used to clip statewide swaths to one corner). Zoom only changes resolution:
-  // finer floor when viewport-meshed, quantized steps + lattice-snapped bounds so
-  // the same geography rasterizes identically between redraws.
-  const maxCells = 208;
-  const cellKm = Math.max(wide ? 0.3 : 0.12, Math.ceil(span / maxCells / 0.05) * 0.05);
+  // Cell size scales with data span so the grid ALWAYS covers every hit. Finer floor
+  // + more cells → smoother corridors (less voxel stair-step). Lattice-snapped so
+  // redraws land on the same cells.
+  const maxCells = 256;
+  const cellKm = Math.max(0.18, Math.ceil(span / maxCells / 0.05) * 0.05);
   minX = Math.floor(minX / cellKm) * cellKm;
   minY = Math.floor(minY / cellKm) * cellKm;
   const w = Math.min(maxCells + 2, Math.max(16, Math.ceil((maxX - minX) / cellKm)));
@@ -3828,7 +3809,7 @@ function buildHailSwathRings(rawPts, zone = {}) {
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      const smooth = chaikinSmoothRing(ring, 5);
+      const smooth = chaikinSmoothRing(ring, 6);
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
       // Uniform pad (not thr-scaled) so nested cutouts stay inside parents.
@@ -3954,39 +3935,23 @@ function pointInLatLonRing(lat, lon, ring) {
 }
 
 /**
- * Nest weaker→stronger isosurfaces into annulus bands (outer ring with holes).
- * Prevents opacity stacking: each band paints once; stronger cores sit in the cutouts.
+ * Each hail-size threshold keeps its own full region (HailTrace / TV-radar style).
+ * Layers stack as translucent fills — no hole cutouts, no shared wire mesh.
  */
-function nestHailBandPolys(subs) {
-  const bands = (subs || [])
+function stackHailBandPolys(subs) {
+  return (subs || [])
     .filter((s) => Array.isArray(s?.ring) && s.ring.length >= 3)
-    .map((s) => ({ ...s, ring: ensureClosedRing(s.ring) }))
+    .map((s) => ({ ...s, ring: ensureClosedRing(s.ring), holes: [] }))
     .sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
+}
 
-  return bands.map((band, i) => {
-    const holes = [];
-    for (let j = i + 1; j < bands.length; j++) {
-      const stronger = bands[j];
-      const c = ringCentroidLatLon(stronger.ring);
-      if (!c || !pointInLatLonRing(c.lat, c.lon, band.ring)) continue;
-      // Only cut with immediate children — skip rings already nested inside a mid band.
-      let nestedDeeper = false;
-      for (let k = i + 1; k < j; k++) {
-        const mid = bands[k];
-        const mc = ringCentroidLatLon(mid.ring);
-        if (
-          mc &&
-          pointInLatLonRing(c.lat, c.lon, mid.ring) &&
-          pointInLatLonRing(mc.lat, mc.lon, band.ring)
-        ) {
-          nestedDeeper = true;
-          break;
-        }
-      }
-      if (!nestedDeeper) holes.push(reverseRing(stronger.ring));
-    }
-    return { ...band, holes };
-  });
+function hailLayerFillOpacity(sz) {
+  const s = Number(sz) || 0;
+  if (s <= 0.5) return 0.32;
+  if (s < 1) return 0.44;
+  if (s < 1.5) return 0.5;
+  if (s < 2) return 0.55;
+  return 0.58;
 }
 
 function hailZonePopupHtml(h, sub) {
@@ -4140,32 +4105,22 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         source: dayHits.some((p) => !isSpotterHail(p)) ? "spot+radar" : "spotter",
       });
     }
-    // Outer / weaker first — nest stronger rings as holes (true bands, no opacity stack).
+    // Weak → strong: each size layer is its own full region (overlapping translucent fills).
     subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
-    const bands = nestHailBandPolys(subRings);
-    const fillOp = hailZoneOpacityBoost(1);
-    // Weakest band size → only that outer envelope gets a soft stroke.
-    // Inner bands + hole edges stay fill-only so nested cutouts don't draw a wire mesh.
-    const outerSz = bands.reduce(
-      (m, b) => Math.min(m, Number(b.maxSize) || Infinity),
-      Infinity,
-    );
+    const bands = stackHailBandPolys(subRings);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
       const isRadarZone = /radar|mesh|swdi/i.test(String(sub.source || ""));
       const isConfirm = Boolean(sub.confirmed) || sub.source === "spot+radar" || isRadarZone;
       fitPts.push(...sub.ring);
-      const holes = sub.holes || [];
-      const latlngs = holes.length ? [sub.ring, ...holes] : sub.ring;
-      const isOuterEnvelope = Number(sz) === outerSz;
-      const poly = window.L.polygon(latlngs, {
+      const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: sz <= 0.5 ? Math.min(0.55, fillOp * 0.7) : fillOp,
-        weight: isOuterEnvelope ? 1.1 : 0,
-        opacity: isOuterEnvelope ? 0.45 : 0,
-        stroke: isOuterEnvelope,
+        fillOpacity: hailLayerFillOpacity(sz),
+        weight: 1.35,
+        opacity: 0.72,
+        stroke: true,
         pane: "hailFills",
         renderer: hailFillSvg,
         interactive: true,
@@ -4180,7 +4135,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         confirmed: isConfirm,
         size: sz,
         kind: "zone",
-        outer: isOuterEnvelope,
+        outer: true,
       });
     }
     const spots = dayHits.filter(isSpotterHail);
@@ -5824,18 +5779,10 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   map.on("zoomend", () => {
     lastZoomUiScale = 0;
     scheduleZoomUiRefresh(true);
-    // Re-mesh swaths when crossing zoom bands (wide corridors ↔ detail bubbles).
+    // Dot visibility flips with zoom; geometry itself is zoom-invariant.
     if (hasSelectedStormDates() && (lastHailRows.length || lastWindRows.length)) {
       lastHailDrawSig = "";
       drawHailMarkers(lastHailRows, lastWindRows);
-    }
-  });
-  map.on("moveend", () => {
-    // Zoomed in, the mesh is viewport-focused — re-mesh after panning so zones
-    // follow the view instead of staying where the map used to be.
-    const zm = map?.getZoom?.() ?? 14;
-    if (zm >= 11 && hasSelectedStormDates() && lastHailRows.length) {
-      scheduleSelectedStormZoneRedraw(lastHailRows, lastWindRows);
     }
   });
   map.on("moveend zoomend", () => {

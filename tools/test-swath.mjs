@@ -43,7 +43,7 @@ const fns = [
   "padPolygon",
   "hailFootprintM",
   "buildHailSwathRings",
-  "nestHailBandPolys",
+  "stackHailBandPolys",
   "ensureClosedRing",
   "reverseRing",
   "ringCentroidLatLon",
@@ -69,9 +69,10 @@ const stubs = {
 };
 const factory = new Function(
   ...Object.keys(stubs),
-  `${code}\nreturn { buildHailSwathRings, nestHailBandPolys };`,
+  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys };`,
 );
 const g = factory(...Object.values(stubs));
+g.nestHailBandPolys = g.stackHailBandPolys;
 
 function ringAreaKm2(ring) {
   if (!ring || ring.length < 4) return 0;
