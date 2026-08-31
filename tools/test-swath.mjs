@@ -40,6 +40,7 @@ const fns = [
   "relaxRing",
   "walkBinaryExterior",
   "traceBinaryExteriorRings",
+  "slimRingVerts",
   "chaikinSmoothRing",
   "convexHullLatLon",
   "padPolygon",
@@ -54,6 +55,7 @@ const fns = [
   "clusterPoints",
   "buildHailSwathRingsCluster",
   "ensureRadarInsideBands",
+  "softOrganicEnvelopeRing",
   "buildHailSwathRings",
   "stackHailBandPolys",
   "ensureClosedRing",
@@ -81,7 +83,7 @@ const stubs = {
 };
 const factory = new Function(
   ...Object.keys(stubs),
-  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness, ringRadiusCv, pointInLatLonRing };`,
+  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness, ringRadiusCv, pointInLatLonRing, softOrganicEnvelopeRing };`,
 );
 const g = factory(...Object.values(stubs));
 g.nestHailBandPolys = g.stackHailBandPolys;
@@ -335,6 +337,41 @@ for (let i = 0; i < 60; i++) {
     maxCv >= 0.12,
     `outerBands=${outer.length} maxRadiusCv=${maxCv.toFixed(3)}`,
   );
+}
+
+// Convex-hull envelopes made fake right angles — organic remesh must stay rounded.
+{
+  const pts = [
+    { lat: 35.45, lon: -97.75 },
+    { lat: 35.48, lon: -97.65 },
+    { lat: 35.52, lon: -97.55 },
+    { lat: 35.55, lon: -97.48 },
+    { lat: 35.50, lon: -97.70 },
+  ];
+  const ring = g.softOrganicEnvelopeRing(pts, 3.2);
+  check("organic envelope exists", ring && ring.length >= 8, `verts=${ring?.length || 0}`);
+  let sharp = 0;
+  if (ring) {
+    const open =
+      ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+        ? ring.slice(0, -1)
+        : ring.slice();
+    for (let i = 0; i < open.length; i++) {
+      const a = open[(i - 1 + open.length) % open.length];
+      const b = open[i];
+      const c = open[(i + 1) % open.length];
+      const ux = a[1] - b[1];
+      const uy = a[0] - b[0];
+      const vx = c[1] - b[1];
+      const vy = c[0] - b[0];
+      const lu = Math.hypot(ux, uy) || 1e-12;
+      const lv = Math.hypot(vx, vy) || 1e-12;
+      const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy) / (lu * lv)));
+      const deg = (Math.acos(cos) * 180) / Math.PI;
+      if (Math.abs(deg - 90) < 18) sharp++;
+    }
+  }
+  check("organic envelope has no fake right angles", sharp <= 2, `sharp90≈${sharp}`);
 }
 
 process.exit(fail ? 1 : 0);

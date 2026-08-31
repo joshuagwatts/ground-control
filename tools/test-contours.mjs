@@ -25,6 +25,7 @@ const names = [
   "relaxRing",
   "walkBinaryExterior",
   "traceBinaryExteriorRings",
+  "slimRingVerts",
   "chaikinSmoothRing",
   "convexHullLatLon",
 ];

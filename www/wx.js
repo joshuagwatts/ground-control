@@ -1767,16 +1767,39 @@ export function stopHourPlay() {
   }
 }
 
+function hailScopeLiveTimeWindow() {
+  const now = Date.now() / 1000;
+  // Always prefer RainViewer span when loaded so Present % matches precip mode.
+  if (radarFrames.length >= 2) {
+    return {
+      t0: Number(radarFrames[0].time) || now - 2 * 3600,
+      t1: Number(radarFrames[radarFrames.length - 1].time) || now + 3600,
+    };
+  }
+  return { t0: now - 2 * 3600, t1: now + 3600 };
+}
+
 function hailScopeLiveTimeline() {
   const f = hailScopeRadarFilters;
-  // Shared past→present→future playhead: RainViewer steps when precip is on
-  // (includes nowcast future). Wind-only falls back to hourly Open-Meteo.
-  if (f.precip && radarFrames.length >= 2) {
+  if (!f.precip && !f.wind) return [];
+
+  // One shared clock: RainViewer frame times whenever available — even wind-only —
+  // so the Present tick sits in the same place on the scrubber.
+  if (radarFrames.length >= 2) {
     return radarFrames.map((fr, i) => ({ time: fr.time, radarIdx: i }));
   }
+
   if (f.wind && windFrames.length >= 2) {
+    const { t0, t1 } = hailScopeLiveTimeWindow();
+    const steps = [];
+    const dt = 600;
+    for (let t = t0; t <= t1 + 1; t += dt) {
+      steps.push({ time: t, windIdx: nearestFrameIdx(windFrames, t) });
+    }
+    if (steps.length >= 2) return steps;
     return windFrames.map((fr, i) => ({ time: fr.time, windIdx: i }));
   }
+
   return [];
 }
 
@@ -1935,11 +1958,12 @@ export function bindHailScopeRadar(root = document) {
       const steps = hailScopeLiveTimeline();
       if (steps.length) {
         const prefer =
+          steps[Math.min(liveTlIdx, steps.length - 1)]?.time ||
           (hailScopeRadarFilters.precip && radarFrames[radarFrameIdx]?.time) ||
           (hailScopeRadarFilters.wind && windFrames[windFrameIdx]?.time) ||
-          steps[Math.min(liveTlIdx, steps.length - 1)].time;
+          steps[0].time;
         liveTlIdx = nearestFrameIdx(steps, prefer);
-      }
+      } else liveTlIdx = 0;
       syncHailScopeRadarLayers();
       const host = root.querySelector?.("#hs-radar-bar") || document.getElementById("hs-radar-bar");
       if (host) {
@@ -2079,9 +2103,15 @@ export function syncHailScopeRadar(settings) {
   if (hailScopeRadarFilters.wind) {
     void ensureWindFrames().then(() => {
       if (!hailScopeRadarActive() || !hailScopeRadarFilters.wind) return;
-      if (hailScopeRadarFilters.precip && radarFrames[radarFrameIdx]) {
-        windFrameIdx = nearestFrameIdx(windFrames, radarFrames[radarFrameIdx].time);
-        liveTlIdx = radarFrameIdx;
+      // Shared RainViewer clock whenever frames exist — Present must not jump
+      // between precip-only (10‑min) and wind-only (hourly) scrubbers.
+      const keep =
+        (radarFrames[radarFrameIdx] && radarFrames[radarFrameIdx].time) ||
+        windFrames[windFrameIdx]?.time ||
+        Date.now() / 1000;
+      if (radarFrames.length) {
+        windFrameIdx = nearestFrameIdx(windFrames, keep);
+        liveTlIdx = nearestFrameIdx(hailScopeLiveTimeline(), keep);
       } else {
         liveTlIdx = windFrameIdx;
       }
@@ -2094,7 +2124,7 @@ export function syncHailScopeRadar(settings) {
       }
     });
   } else if (hailScopeRadarFilters.precip && radarFrames.length) {
-    liveTlIdx = radarFrameIdx;
+    liveTlIdx = nearestFrameIdx(hailScopeLiveTimeline(), radarFrames[radarFrameIdx]?.time);
   }
 }
 
@@ -3539,9 +3569,22 @@ function relaxRing(ring, iters = 2) {
   return pts;
 }
 
+function slimRingVerts(ring, target = 120) {
+  if (!ring || ring.length <= target + 1) return ring;
+  const closed =
+    ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const open = closed ? ring.slice(0, -1) : ring.slice();
+  const stride = Math.max(1, Math.ceil(open.length / Math.max(8, target)));
+  const slim = [];
+  for (let i = 0; i < open.length; i += stride) slim.push(open[i]);
+  if (slim.length < 3) return ring;
+  slim.push(slim[0]);
+  return slim;
+}
+
 function chaikinSmoothRing(ring, iters = 2) {
   if (!ring || ring.length < 4) return ring;
-  let pts = ring.slice();
+  let pts = slimRingVerts(ring, 140);
   const closed =
     pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
   if (!closed) pts = pts.concat([pts[0]]);
@@ -3554,7 +3597,8 @@ function chaikinSmoothRing(ring, iters = 2) {
       next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
     }
     next.push(next[0]);
-    pts = next;
+    // Cap growth — repeated pad→Chaikin used to explode to OOM (500MB+).
+    pts = next.length > 360 ? slimRingVerts(next, 160) : next;
   }
   return pts;
 }
@@ -3731,28 +3775,29 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
       }
       let closed = walkBinaryExterior(grid, w, h, seedX, seedY, cellKm, xyToLatLon);
       if (!closed || closed.length < 4) {
-        const edgePts = [];
+        // Rounded bbox capsule — never convexHull (fake right angles) and never
+        // softOrganicEnvelopeRing (that calls back into this tracer).
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
         for (const [cx, cy] of q) {
-          let edge = false;
-          for (let k = 0; k < 8; k++) {
-            if (!isOn(cx + DX[k], cy + DY[k])) {
-              edge = true;
-              break;
-            }
-          }
-          if (!edge && q.length > 1) continue;
-          edgePts.push({
-            lat: xyToLatLon((cx + 0.5) * cellKm, (cy + 0.5) * cellKm)[0],
-            lon: xyToLatLon((cx + 0.5) * cellKm, (cy + 0.5) * cellKm)[1],
-          });
+          minX = Math.min(minX, cx);
+          maxX = Math.max(maxX, cx);
+          minY = Math.min(minY, cy);
+          maxY = Math.max(maxY, cy);
         }
-        if (edgePts.length < 3) continue;
-        const hull = convexHullLatLon(edgePts);
-        if (!hull || hull.length < 3) continue;
-        closed =
-          hull[0][0] === hull[hull.length - 1][0] && hull[0][1] === hull[hull.length - 1][1]
-            ? hull
-            : hull.concat([hull[0]]);
+        const midX = (minX + maxX + 1) * 0.5;
+        const midY = (minY + maxY + 1) * 0.5;
+        const rx = Math.max(1.2, (maxX - minX + 1) * 0.55 + 1.2);
+        const ry = Math.max(1.2, (maxY - minY + 1) * 0.55 + 1.2);
+        const oval = [];
+        const n = 28;
+        for (let i = 0; i <= n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          oval.push(xyToLatLon((midX + Math.cos(a) * rx) * cellKm, (midY + Math.sin(a) * ry) * cellKm));
+        }
+        closed = oval;
       }
       rings.push(chaikinSmoothRing(closed, 2));
     }
@@ -4038,13 +4083,20 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     if (!any) continue;
     const closed = closeBinaryKm(binary, w, h, cellKm, HAIL_CLOSE_KM(thr));
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
-    for (const ring of rings) {
-      if (!ring || ring.length < 4) continue;
+    for (const rawRing of rings) {
+      if (!rawRing || rawRing.length < 4) continue;
       // Keep the walked contour — never collapse to a circle (that killed unique shapes).
-      let smooth = relaxRing(chaikinSmoothRing(ring, 6), 3);
+      let ring = rawRing;
+      if (ring.length > 160) {
+        const stride = Math.ceil(ring.length / 120);
+        const slim = [];
+        for (let i = 0; i < ring.length - 1; i += stride) slim.push(ring[i]);
+        slim.push(slim[0]);
+        ring = slim;
+      }
+      let smooth = relaxRing(chaikinSmoothRing(ring, 4), 2);
       if (isAxisBoxRing(smooth)) {
-        // Remesh boxy stairs with more smoothing only — still not a disk.
-        smooth = relaxRing(chaikinSmoothRing(ring, 8), 4);
+        smooth = relaxRing(chaikinSmoothRing(ring, 5), 3);
       }
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
@@ -4059,17 +4111,19 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   }
 
   if (!out.length) {
-    // Fallback: unique hull of hits (still not stacked identical circles).
-    const hull = convexHullLatLon(pts);
-    if (hull && hull.length >= 3) {
-      const base = ensureClosedRing(hull);
+    // Fallback: soft organic envelope of hits (still not a convex right-angle box).
+    const env = softOrganicEnvelopeRing(
+      pts.map((p) => ({ lat: p.lat, lon: p.lon })),
+      3.5,
+    );
+    if (env && env.length >= 4) {
       const sz = Math.max(...pts.map((p) => parseFloat(p.size_in) || 0), parseFloat(zone.size_in) || 0.75);
       const bands = [];
       for (const thr of HAIL_SWATH_THRESHOLDS) {
         if (sz + 0.01 < thr) continue;
-        const padM = thr <= 0.5 ? 900 : thr <= 0.75 ? 550 : thr <= 1 ? 320 : thr <= 1.5 ? 160 : 60;
+        const padM = thr <= 0.5 ? 80 : thr <= 0.75 ? 40 : thr <= 1 ? 0 : -80;
         bands.push({
-          ring: relaxRing(chaikinSmoothRing(padPolygon(base, padM), 5), 3),
+          ring: padM ? relaxRing(chaikinSmoothRing(padPolygon(env, padM), 4), 2) : env,
           maxSize: thr,
           hits: pts.length,
           confirmed: spotConfirm || radarCount > 0,
@@ -4086,8 +4140,9 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
 }
 
 /**
- * Guarantee every green radar hit sits inside the outer band — by expanding /
- * rebuilding a unique corridor hull, never by dropping soft-circle bubbles.
+ * Guarantee every green radar hit sits inside the outer band.
+ * Expand existing organic contours (pad / remesh) — never a convex hull
+ * (those create fake right-angle corners like the Yukon corner screenshot).
  */
 function ensureRadarInsideBands(bands, pts) {
   const radar = (pts || []).filter(
@@ -4108,62 +4163,122 @@ function ensureRadarInsideBands(bands, pts) {
   const misses = radar.filter((p) => !inOuter(p.lat, p.lon));
   if (!misses.length) return out;
 
-  // Seed a corridor hull from existing outer verts + every radar hit.
-  const seed = [];
-  for (const b of out) {
-    if (Number(b.maxSize) > thr + 0.05) continue;
-    const ring = b.ring;
-    const step = Math.max(1, Math.floor((ring.length - 1) / 48));
-    for (let i = 0; i < ring.length - 1; i += step) {
-      seed.push({ lat: ring[i][0], lon: ring[i][1] });
-    }
-  }
-  for (const p of radar) seed.push({ lat: p.lat, lon: p.lon });
-  for (const p of pts || []) {
-    if (!Number.isFinite(p?.lat) || !Number.isFinite(p?.lon)) continue;
-    seed.push({ lat: p.lat, lon: p.lon });
-  }
-  const hull = convexHullLatLon(seed);
-  if (hull && hull.length >= 3) {
-    let ring = ensureClosedRing(hull);
-    ring = relaxRing(chaikinSmoothRing(padPolygon(ring, 700), 6), 3);
-    // Drop prior outer disks/blobs; keep stronger cores.
+  // Remesh outer from radar hits — organic corridor, no hull / no pad→Chaikin explosion.
+  const env = softOrganicEnvelopeRing(
+    radar.map((p) => ({ lat: p.lat, lon: p.lon })),
+    3.2,
+  );
+  if (env && env.length >= 4) {
     out = out.filter((b) => Number(b.maxSize) > thr + 0.05);
     out.unshift({
-      ring,
+      ring: env,
       maxSize: thr,
       hits: radar.length,
       confirmed: true,
       source: "mesh-swath",
     });
-  } else {
-    // Last resort: pad nearest outer ring until misses are inside.
-    for (const p of misses) {
-      let best = -1;
-      let bestD = Infinity;
-      for (let i = 0; i < out.length; i++) {
-        if (Number(out[i].maxSize) > thr + 0.05) continue;
-        const c = ringCentroidLatLon(out[i].ring);
-        if (!c) continue;
-        const d = haversineKm(p.lat, p.lon, c.lat, c.lon);
-        if (d < bestD) {
-          bestD = d;
-          best = i;
-        }
-      }
-      if (best < 0) continue;
-      for (let padM = 400; padM <= 10000; padM += 400) {
-        const next = padPolygon(out[best].ring, padM);
-        if (pointInLatLonRing(p.lat, p.lon, next)) {
-          out[best].ring = next;
-          break;
-        }
-        out[best].ring = next;
-      }
-    }
   }
   out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
   return out;
+}
+
+/** Soft distance-field envelope through points — rounded corridor, not a convex box. */
+function softOrganicEnvelopeRing(points, padKm = 3) {
+  const pts = (points || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lon));
+  if (pts.length < 2) return null;
+  const oLat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
+  const oLon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
+  const cos = Math.cos((oLat * Math.PI) / 180);
+  const toXY = (lat, lon) => ({
+    x: (lon - oLon) * 111.32 * Math.max(0.2, cos),
+    y: (lat - oLat) * 111.32,
+  });
+  const xyToLatLon = (xKm, yKm) => [oLat + yKm / 111.32, oLon + xKm / (111.32 * Math.max(0.2, cos))];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const xy = pts.map((p) => {
+    const q = toXY(p.lat, p.lon);
+    minX = Math.min(minX, q.x);
+    maxX = Math.max(maxX, q.x);
+    minY = Math.min(minY, q.y);
+    maxY = Math.max(maxY, q.y);
+    return q;
+  });
+  const pad = Math.max(2.5, padKm + 1.5);
+  minX -= pad;
+  minY -= pad;
+  maxX += pad;
+  maxY += pad;
+  const span = Math.max(maxX - minX, maxY - minY, 2);
+  const maxCells = 96;
+  const cellKm = Math.max(0.18, Math.min(0.55, Math.ceil(span / maxCells / 0.05) * 0.05));
+  minX = Math.floor(minX / cellKm) * cellKm;
+  minY = Math.floor(minY / cellKm) * cellKm;
+  const w = Math.min(maxCells + 2, Math.max(20, Math.ceil((maxX - minX) / cellKm)));
+  const h = Math.min(maxCells + 2, Math.max(20, Math.ceil((maxY - minY) / cellKm)));
+  const field = new Float32Array(w * h);
+  const rKm = Math.max(1.2, padKm * 0.85);
+  const sigma = rKm * 0.72;
+  const twoSig2 = 2 * sigma * sigma;
+  for (const k of xy) {
+    const reach = rKm * 1.8;
+    const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
+    const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
+    const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
+    const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const cx = minX + (gx + 0.5) * cellKm;
+        const cy = minY + (gy + 0.5) * cellKm;
+        const d2 = (cx - k.x) * (cx - k.x) + (cy - k.y) * (cy - k.y);
+        if (d2 > reach * reach) continue;
+        const contrib = Math.exp(-d2 / twoSig2);
+        const i = gy * w + gx;
+        if (contrib > field[i]) field[i] = contrib;
+      }
+    }
+  }
+  const soft = blurFloatField(field, w, h, 2);
+  const binary = new Uint8Array(w * h);
+  let any = 0;
+  for (let i = 0; i < soft.length; i++) {
+    if (soft[i] >= 0.22) {
+      binary[i] = 1;
+      any = 1;
+    }
+  }
+  if (!any) return null;
+  const closed = closeBinaryKm(binary, w, h, cellKm, Math.max(4, padKm));
+  const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
+  let seedX = -1;
+  let seedY = -1;
+  for (let y = 0; y < h && seedX < 0; y++) {
+    for (let x = 0; x < w; x++) {
+      if (closed[y * w + x]) {
+        seedX = x;
+        seedY = y;
+        break;
+      }
+    }
+  }
+  if (seedX < 0) return null;
+  let best = walkBinaryExterior(closed, w, h, seedX, seedY, cellKm, xyCell);
+  if (!best || best.length < 4) {
+    // Direct oval from point cloud — avoid tracer recursion / hull corners.
+    const oval = [];
+    const n = 32;
+    const rx = Math.max(1.5, (maxX - minX) * 0.5);
+    const ry = Math.max(1.5, (maxY - minY) * 0.5);
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      oval.push(xyToLatLon(Math.cos(a) * rx, Math.sin(a) * ry));
+    }
+    best = oval;
+  }
+  const ring = slimRingVerts(best, 96);
+  return relaxRing(chaikinSmoothRing(padPolygon(ring, 120), 2), 2);
 }
 
 /** Fraction of ring edges that run N/S or E/W — high means chunky / voxel look. */
