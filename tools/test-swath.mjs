@@ -51,6 +51,7 @@ const fns = [
   "ringBoxiness",
   "clusterPoints",
   "buildHailSwathRingsCluster",
+  "ensureRadarInsideBands",
   "buildHailSwathRings",
   "stackHailBandPolys",
   "ensureClosedRing",
@@ -78,7 +79,7 @@ const stubs = {
 };
 const factory = new Function(
   ...Object.keys(stubs),
-  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness };`,
+  `${code}\nreturn { buildHailSwathRings, stackHailBandPolys, isAxisBoxRing, ringBoxiness, pointInLatLonRing };`,
 );
 const g = factory(...Object.values(stubs));
 g.nestHailBandPolys = g.stackHailBandPolys;
@@ -296,6 +297,33 @@ for (let i = 0; i < 60; i++) {
     "densified SWDI → smooth mesh not boxes",
     rings.length >= 1 && !anyAxis && maxBox < 0.35,
     `rings=${rings.length} maxBoxiness=${(maxBox * 100).toFixed(0)}%`,
+  );
+}
+
+// Green radar dots must sit inside the outermost zone fill (corridor guarantee).
+{
+  ZOOM = 13;
+  const greens = [
+    { lat: 35.45, lon: -97.55, size_in: 0.85, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.47, lon: -97.48, size_in: 1.1, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.50, lon: -97.42, size_in: 0.9, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.52, lon: -97.36, size_in: 1.25, source: "noaa-swdi-radar", date: "2026-05-01" },
+    { lat: 35.49, lon: -97.45, size_in: 0.75, source: "spotter", date: "2026-05-01" },
+  ];
+  const rings = g.buildHailSwathRings(greens, { size_in: 1.0, date: "2026-05-01" });
+  const outerThr = rings.reduce((m, r) => Math.min(m, Number(r.maxSize) || 9), 9);
+  const radar = greens.filter((p) => !/spotter|lsr/i.test(String(p.source || "")));
+  let missed = 0;
+  for (const p of radar) {
+    const ok = rings.some(
+      (r) => Number(r.maxSize) <= outerThr + 0.05 && g.pointInLatLonRing(p.lat, p.lon, r.ring),
+    );
+    if (!ok) missed++;
+  }
+  check(
+    "all green radar dots inside outer zone",
+    rings.length >= 1 && missed === 0,
+    `rings=${rings.length} outer=${outerThr} missed=${missed}/${radar.length}`,
   );
 }
 
