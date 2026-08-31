@@ -2506,6 +2506,10 @@ body.wx-map-expanded .hs-field {
   pointer-events: none;
 }
 /* Green address text covering Google’s white rooftop labels when owner info exists. */
+.leaflet-div-icon.hs-housenum-phone {
+  pointer-events: auto !important;
+  cursor: pointer;
+}
 .hs-housenum span.has-phone,
 .hs-housenum-phone span {
   color: #1dff6e;
@@ -2516,6 +2520,62 @@ body.wx-map-expanded .hs-field {
   background: rgba(6, 14, 10, 0.92);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
   text-shadow: none;
+  pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+.hs-housenum span.has-phone.copied {
+  color: #0a0a0d;
+  background: #1dff6e;
+}
+.hs-housenum span.has-phone.copy-fail {
+  background: rgba(80, 20, 20, 0.95);
+  color: #ffb4b4;
+}
+.hs-house-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 148px;
+}
+.hs-house-pop-num {
+  color: #1dff6e;
+  font-size: 15px;
+}
+.hs-house-pop-who {
+  font-size: 12px;
+  color: var(--muted, #9a9a9e);
+}
+.hs-house-pop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.hs-house-pop-actions .hs-tel,
+.hs-house-pop-actions .hs-sms {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+.hs-house-pop-actions .hs-tel {
+  color: #1dff6e !important;
+  border-color: rgba(29, 255, 110, 0.35);
+}
+.hs-house-pop-actions .hs-sms {
+  color: var(--text) !important;
+}
+.hs-house-pop-hint {
+  font-size: 10px;
+  color: var(--muted, #9a9a9e);
+  letter-spacing: 0.04em;
 }
 .hs-locate-ctl a {
   display: flex !important;

@@ -5838,6 +5838,7 @@ function noteHouseOwnerPhone(lat, lon, addr, phone, extra = {}) {
  * Only draw house numbers with useful public contact info (green).
  * Google hybrid tiles already bake white address labels into imagery — we overlay
  * green text on top when phone / owner / email is known.
+ * Tap → Call / Text popup; hold → copy number.
  */
 function paintHouseLayer(_rings, nums) {
   ensureHousePane();
@@ -5857,13 +5858,114 @@ function paintHouseLayer(_rings, nums) {
       iconSize: [56, 22],
       iconAnchor: [28, 11],
     });
-    window.L.marker([n.lat, n.lon], {
+    const marker = window.L.marker([n.lat, n.lon], {
       icon,
       pane: "houseNums",
-      interactive: false,
-      keyboard: false,
+      interactive: true,
+      keyboard: true,
+      bubblingMouseEvents: false,
     }).addTo(houseLayer);
+    bindHousePhoneMarker(marker, n);
   }
+}
+
+function escHousePop(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+function housePhonePopupHtml(n) {
+  const phone = housePhoneFor(n);
+  const pretty = formatPhone(phone) || phone;
+  const e164 = phoneDigits(pretty);
+  const name = String(n.owner_name || houseUsefulByKey.get(housePhoneKey(n))?.name || "").trim();
+  if (!e164) {
+    return `<div class="hs-house-pop"><strong>${escHousePop(n.num)}</strong><span class="hs-place-miss">No phone yet</span></div>`;
+  }
+  return `<div class="hs-house-pop">
+    <strong class="hs-house-pop-num">${escHousePop(n.num)}</strong>
+    ${name ? `<span class="hs-house-pop-who">${escHousePop(name)}</span>` : ""}
+    <div class="hs-house-pop-actions">
+      <a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(pretty)}</a>
+      <a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>
+    </div>
+    <span class="hs-house-pop-hint">Hold green # to copy</span>
+  </div>`;
+}
+
+function bindHousePhoneMarker(marker, n) {
+  const phone = housePhoneFor(n);
+  const pretty = formatPhone(phone) || phone;
+  const e164 = phoneDigits(pretty);
+  marker.bindPopup(housePhonePopupHtml(n), {
+    className: "hs-zone-popup hs-house-popup",
+    closeButton: true,
+    maxWidth: 240,
+    offset: [0, -6],
+    autoPan: true,
+  });
+  if (!e164) return;
+  let holdTimer = 0;
+  let held = false;
+  const clearHold = () => {
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = 0;
+    }
+  };
+  const flashCopied = (ok) => {
+    const el = marker.getElement()?.querySelector?.(".has-phone");
+    if (!el) return;
+    el.classList.toggle("copied", ok);
+    el.classList.toggle("copy-fail", !ok);
+    clearTimeout(el._copyFlash);
+    el._copyFlash = setTimeout(() => el.classList.remove("copied", "copy-fail"), 1400);
+  };
+  const onHoldCopy = async () => {
+    held = true;
+    holdTimer = 0;
+    const ok = await copyTextToClipboard(pretty);
+    flashCopied(ok);
+    try {
+      marker.closePopup();
+    } catch {
+      /* ignore */
+    }
+    try {
+      navigator.vibrate?.(12);
+    } catch {
+      /* ignore */
+    }
+  };
+  const startHold = (ev) => {
+    if (ev?.type === "mousedown" && ev.button != null && ev.button !== 0) return;
+    held = false;
+    clearHold();
+    holdTimer = setTimeout(onHoldCopy, 480);
+  };
+  const endHold = () => clearHold();
+  marker.on("mousedown", startHold);
+  marker.on("touchstart", startHold, { passive: true });
+  marker.on("mouseup", endHold);
+  marker.on("mouseleave", endHold);
+  marker.on("touchend", endHold);
+  marker.on("touchcancel", endHold);
+  marker.on("dragstart", endHold);
+  marker.on("click", (e) => {
+    if (!held) return;
+    held = false;
+    if (window.L?.DomEvent) {
+      window.L.DomEvent.stop(e);
+      if (e.originalEvent) window.L.DomEvent.stop(e.originalEvent);
+    }
+    try {
+      marker.closePopup();
+    } catch {
+      /* ignore */
+    }
+  });
 }
 
 /** Build a lookup address for an OSM house point (street often missing in OK). */
