@@ -59,7 +59,7 @@ export const HOUSE_HAIL_KM = 1.6;
 export const HOUSE_ZONE_KM = 2.5;
 /** Cap is soft guidance only — user can overlay as many storm dates as they want. */
 export const MAX_STORM_DATES = 500;
-const HAIL_IN_CHOICES = [0, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6];
+const HAIL_IN_CHOICES = [0, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6];
 let wxFilters = { ...DEFAULT_FILTERS };
 const RADIUS_KM = [5, 10, 16, 25, 40, 50];
 let wxUnits = "imperial";
@@ -1004,6 +1004,8 @@ function hailZoneColor(sizeIn) {
   if (sz >= 1.5) return { stroke: "#ff1744", fill: "#e53935", core: "#ff8a80" };
   if (sz >= 1) return { stroke: "#ff6d00", fill: "#ef6c00", core: "#ffab40" };
   if (sz >= 0.75) return { stroke: "#ffb300", fill: "#f9a825", core: "#ffe082" };
+  // 0.5″ fringe — large soft white envelope under the yellow cores.
+  if (sz >= 0.5) return { stroke: "#eceff1", fill: "#fafafa", core: "#ffffff" };
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
@@ -1397,7 +1399,7 @@ function applyHailStrokeZoomStyles(force = false) {
   if (!force && applyHailStrokeZoomStyles._bucket === bucket) return;
   applyHailStrokeZoomStyles._bucket = bucket;
   for (const entry of hailStrokeLayers) {
-    const { layer, confirmed, size, kind } = entry;
+    const { layer, confirmed, size, kind, outer } = entry;
     if (!layer?.setStyle) continue;
     const style =
       kind === "core"
@@ -1407,7 +1409,12 @@ function applyHailStrokeZoomStyles(force = false) {
               const s = hailZoneStrokeStyle(false, size, z);
               return { weight: Math.min(1.4, s.weight), opacity: Math.min(0.65, s.opacity), dashArray: s.dashArray };
             })()
-          : hailZoneStrokeStyle(confirmed, size, z);
+          : kind === "zone"
+            ? // Keep fill-led bands — zoom must not re-wire every nested hole edge.
+              outer
+                ? { weight: 1.1, opacity: 0.45, stroke: true, dashArray: null }
+                : { weight: 0, opacity: 0, stroke: false }
+            : hailZoneStrokeStyle(confirmed, size, z);
     try {
       layer.setStyle(style);
     } catch {
@@ -3441,9 +3448,9 @@ function hailFootprintM(sizeIn, source) {
  * Rasterize size-weighted footprints onto a local km grid, close gaps by a fixed
  * km distance, then extract nested isosurfaces at hail-size thresholds.
  */
-const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.5, 2.0, 2.5];
+const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.5, 2.0, 2.5];
 /** Gap-closing distance per threshold — km, NOT cells, so shape ≠ f(resolution). */
-const HAIL_CLOSE_KM = (thr) => (thr <= 1 ? 7 : thr <= 1.5 ? 5 : 3.5);
+const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 10 : thr <= 1 ? 7 : thr <= 1.5 ? 5 : 3.5);
 
 function chaikinSmoothRing(ring, iters = 2) {
   if (!ring || ring.length < 4) return ring;
@@ -3781,12 +3788,12 @@ function buildHailSwathRings(rawPts, zone = {}) {
   const field = new Float32Array(w * h);
 
   for (const k of kernels) {
-    const reach = k.rKm * 1.3;
+    const reach = k.rKm * 1.45;
     const gx0 = Math.max(0, Math.floor((k.x - reach - minX) / cellKm));
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const sigma = Math.max(0.1, k.rKm * 0.68);
+    const sigma = Math.max(0.12, k.rKm * 0.75);
     const twoSig2 = 2 * sigma * sigma;
     const radarBoost = k.spot ? 1 : 1.55;
     for (let gy = gy0; gy <= gy1; gy++) {
@@ -3821,9 +3828,9 @@ function buildHailSwathRings(rawPts, zone = {}) {
     const rings = traceBinaryExteriorRings(closed, w, h, cellKm, xyCell, 12);
     for (const ring of rings) {
       if (!ring || ring.length < 4) continue;
-      const smooth = chaikinSmoothRing(ring, 3);
+      const smooth = chaikinSmoothRing(ring, 5);
       const meshConfirmed =
-        (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.75) || (radarCount >= 1 && thr >= 1);
+        (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
       // Uniform pad (not thr-scaled) so nested cutouts stay inside parents.
       out.push({
         ring: padPolygon(smooth, 36),
@@ -4135,25 +4142,30 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     }
     // Outer / weaker first — nest stronger rings as holes (true bands, no opacity stack).
     subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
-    const sat = activeLayer === "sat";
     const bands = nestHailBandPolys(subRings);
     const fillOp = hailZoneOpacityBoost(1);
+    // Weakest band size → only that outer envelope gets a soft stroke.
+    // Inner bands + hole edges stay fill-only so nested cutouts don't draw a wire mesh.
+    const outerSz = bands.reduce(
+      (m, b) => Math.min(m, Number(b.maxSize) || Infinity),
+      Infinity,
+    );
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
       const isRadarZone = /radar|mesh|swdi/i.test(String(sub.source || ""));
       const isConfirm = Boolean(sub.confirmed) || sub.source === "spot+radar" || isRadarZone;
       fitPts.push(...sub.ring);
-      const stroke = hailZoneStrokeStyle(isConfirm, sz, undefined, { radar: isRadarZone });
       const holes = sub.holes || [];
       const latlngs = holes.length ? [sub.ring, ...holes] : sub.ring;
+      const isOuterEnvelope = Number(sz) === outerSz;
       const poly = window.L.polygon(latlngs, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: fillOp,
-        weight: Math.max(1.2, stroke.weight + (wideView ? 0.6 : sat && zDraw < 13 ? 0.45 : 0)),
-        opacity: 1,
-        dashArray: wideView ? null : stroke.dashArray,
+        fillOpacity: sz <= 0.5 ? Math.min(0.55, fillOp * 0.7) : fillOp,
+        weight: isOuterEnvelope ? 1.1 : 0,
+        opacity: isOuterEnvelope ? 0.45 : 0,
+        stroke: isOuterEnvelope,
         pane: "hailFills",
         renderer: hailFillSvg,
         interactive: true,
@@ -4164,7 +4176,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
             ? "wx-hail-topo wx-hail-radar"
             : "wx-hail-topo",
       }).addTo(hailLayer);
-      trackHailStroke(bindHailZoneTap(poly, h, sub), { confirmed: isConfirm, size: sz, kind: "zone" });
+      trackHailStroke(bindHailZoneTap(poly, h, sub), {
+        confirmed: isConfirm,
+        size: sz,
+        kind: "zone",
+        outer: isOuterEnvelope,
+      });
     }
     const spots = dayHits.filter(isSpotterHail);
     const radar = dayHits.filter((p) => !isSpotterHail(p));
