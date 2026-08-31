@@ -5864,7 +5864,16 @@ async function enrichVisibleHouseInfo(nums, gen) {
     .map((x) => x.n);
   for (const n of queue) {
     if (gen !== houseGen || !map) return;
-    const addr = [n.num, n.street, n.city, n.zip].filter(Boolean).join(n.city ? ", " : " ");
+    const cityBit = n.city ? `, ${n.city}` : "";
+    const zipBit = n.zip ? ` ${n.zip}` : "";
+    let addr = `${n.num} ${n.street}${cityBit}${zipBit}`.trim();
+    // Phone-book + Zillow rent lookups need a state; default OK in-market.
+    if (!/,\s*OK\b|Oklahoma/i.test(addr)) {
+      const c = map.getCenter?.();
+      const inOk =
+        !c || (c.lat > 33.5 && c.lat < 37.1 && c.lng > -103.1 && c.lng < -94.3);
+      if (inOk) addr = `${addr}, OK`;
+    }
     try {
       const [assessor, contacts] = await Promise.all([
         lookupAssessorParcel(n.lat, n.lon, addr).catch(() => null),

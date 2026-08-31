@@ -60,6 +60,8 @@ export function isUsableZillowUrl(url) {
   const u = String(url || "").trim();
   if (!u || /^https?:\/\/(www\.)?zillow\.com\/?$/i.test(u)) return false;
   if (/zillow\.com\/homedetails\//i.test(u)) return true;
+  if (/zillow\.com\/homes\/for_rent\//i.test(u)) return true;
+  if (/zillow\.com\/(?:apartments|b)\//i.test(u)) return true;
   if (/zillow\.com\/homes\/[^/?#]+_rb\/?$/i.test(u)) return true;
   return /zillow\.com\/homes\/\d+[A-Za-z]?-/i.test(u);
 }
@@ -70,6 +72,49 @@ export function resolveZillowUrl(address, existing = "") {
   if (isUsableZillowUrl(ex)) return ex;
   const built = formatZillowUrl(address);
   return built || "";
+}
+
+/** Zillow For Rent search URL for a street address. */
+export function formatZillowRentUrl(address) {
+  const sale = formatZillowUrl(address);
+  if (!sale) return "";
+  return sale.replace("/homes/", "/homes/for_rent/");
+}
+
+/** True when address is in Oklahoma (phone-book lookups are OK-only). */
+export function isOklahomaAddress(address, parts = null) {
+  const p = parts && typeof parts === "object" ? parts : parseStreetAddress(address);
+  if (stateAbbr(p.state) === "ok") return true;
+  return /\bOK\b|\bOklahoma\b/i.test(String(address || ""));
+}
+
+function addressPathSlug(parts) {
+  const streetSlug = String(parts.street || "")
+    .replace(/\./g, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Za-z0-9-]/g, "");
+  const citySlug = String(parts.city || "")
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Za-z0-9-]/g, "");
+  return {
+    street: [parts.house, streetSlug].filter(Boolean).join("-").replace(/-+/g, "-"),
+    cityState: [citySlug, "OK"].filter(Boolean).join("-").replace(/-+/g, "-"),
+    zip: String(parts.zip || "").trim(),
+  };
+}
+
+/** Pull phones embedded in Zillow page JSON (rent / sale contact cards). */
+function extractZillowEmbeddedPhones(html) {
+  const out = [];
+  const re =
+    /"(?:phoneNumber|contactPhone|businessPhone|agentPhoneNumber|phone)"\s*:\s*"([^"]{7,40})"/gi;
+  let m;
+  while ((m = re.exec(String(html || ""))) && out.length < 8) {
+    if (isJunkPhone(m[1])) continue;
+    const d = phoneDigits(m[1]);
+    if (d && !out.includes(d)) out.push(d);
+  }
+  return out;
 }
 
 async function zillowListingContacts(address, parts) {
@@ -90,10 +135,106 @@ async function zillowListingContacts(address, parts) {
     if (detail?.html) html = detail.html;
   }
   const contacts = extractContactsFromHtml(html.slice(0, 220000), parts, { requireAddress: false });
+  const embedded = extractZillowEmbeddedPhones(html);
+  let phone = contacts?.phone || "";
+  if (!phone && embedded[0]) phone = formatPhone(embedded[0]);
   const zillow_url = detailUrl.includes("homedetails") ? detailUrl : "";
   const _public_text = publicTextFromHtml(html);
-  const base = contacts ? { ...contacts, zillow_url } : zillow_url ? { zillow_url } : null;
+  const base =
+    contacts || phone || zillow_url
+      ? { ...(contacts || {}), phone: phone || contacts?.phone || "", zillow_url }
+      : null;
   return base ? { ...base, _public_text } : _public_text ? { _public_text } : null;
+}
+
+/**
+ * Zillow For Rent — landlord / leasing phone on the rental listing for this house.
+ * Green map labels use these phones the same as sale-listing contacts.
+ */
+async function zillowRentContacts(address, parts) {
+  const url = formatZillowRentUrl(address);
+  if (!url || !parts?.house) return null;
+  const page = await fetchHtml(url, 14000);
+  if (!page?.html || /captcha|access denied|cf-challenge/i.test(page.html)) return null;
+  let html = page.html;
+  let detailUrl = page.url || url;
+  // Prefer a specific rental homedetails / apartment card when the search page lists one.
+  const rentRel =
+    html.match(/href="(\/homedetails\/[^"]+?\/[^"]+_zpid\/[^"]*)"/i) ||
+    html.match(/href="(\/b\/[^"]+?\/\d+_bpid\/[^"]*)"/i) ||
+    html.match(/href="(\/apartments\/[^"]+?\/\d+_zpid\/[^"]*)"/i);
+  const rentAbs = html.match(
+    /https:\/\/www\.zillow\.com\/(?:homedetails|apartments|b)\/[^"'\s]+/i,
+  );
+  if (rentRel?.[1]) detailUrl = `https://www.zillow.com${rentRel[1]}`;
+  else if (rentAbs?.[0]) detailUrl = rentAbs[0];
+  if (detailUrl !== (page.url || url)) {
+    const detail = await fetchHtml(detailUrl, 14000);
+    if (detail?.html) html = detail.html;
+  }
+  // Rent pages often omit the full street in the contact card — still require house #.
+  const contacts = extractContactsFromHtml(html.slice(0, 240000), parts, { requireAddress: false });
+  const embedded = extractZillowEmbeddedPhones(html);
+  let phone = contacts?.phone || "";
+  if (!phone && embedded[0]) phone = formatPhone(embedded[0]);
+  if (!phone) {
+    const tel = String(html).match(/tel:(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/i);
+    if (tel && !isJunkPhone(tel[1])) phone = formatPhone(tel[1]);
+  }
+  if (!phone && !contacts?.email && !contacts?.name) {
+    const text = publicTextFromHtml(html);
+    return text ? { _public_text: text, zillow_rent: true } : null;
+  }
+  return {
+    ...(contacts || {}),
+    phone: phone || contacts?.phone || "",
+    zillow_url: /homedetails|apartments|_bpid|_zpid/i.test(detailUrl) ? detailUrl : "",
+    zillow_rent: true,
+    _public_text: publicTextFromHtml(html),
+  };
+}
+
+/**
+ * Oklahoma-only modern phone book: address → listed phone (411 / Whitepages address pages).
+ * Address-keyed directory only — not people-search profile pages.
+ */
+async function oklahomaPhoneBookContacts(address, parts) {
+  if (!parts?.house || !isOklahomaAddress(address, parts)) return null;
+  const city = String(parts.city || "").trim();
+  if (!city) return null;
+  const slug = addressPathSlug({ ...parts, state: "ok" });
+  if (!slug.street) return null;
+  const urls = [
+    `https://www.411.com/address/${slug.street}/${slug.cityState}${slug.zip ? `/${slug.zip}` : ""}`,
+    `https://www.whitepages.com/address/${slug.street}/${slug.cityState}${slug.zip ? `/${slug.zip}` : ""}`,
+  ];
+  for (const url of urls) {
+    const page = await fetchHtml(url, 12000);
+    if (!page?.html || /captcha|access denied|cf-challenge|are you a robot/i.test(page.html)) continue;
+    // Must mention this house number so we don't take a random neighbor listing.
+    const contacts = extractContactsFromHtml(page.html.slice(0, 200000), parts, { requireAddress: true });
+    if (contacts?.phone && !isJunkPhone(contacts.phone)) {
+      return {
+        ...contacts,
+        phone: contacts.phone,
+        source: "ok-phonebook",
+        _public_text: publicTextFromHtml(page.html),
+      };
+    }
+    // Fallback: first non-junk tel: on an address page that includes the house #.
+    if (pageMentionsAddress(page.html, parts)) {
+      const tels = extractPhones(page.html);
+      for (const d of tels) {
+        if (isJunkPhone(d)) continue;
+        return {
+          phone: formatPhone(d),
+          source: "ok-phonebook",
+          _public_text: publicTextFromHtml(page.html),
+        };
+      }
+    }
+  }
+  return null;
 }
 
 /** Strip tags for LLM extraction — listing/assessor pages only, never people-search. */
@@ -671,9 +812,24 @@ export async function lookupPlaceContacts(lat, lon, address = "", seed = {}, set
     nominatimSearchContacts(address, parts).catch(() => null),
   ]);
   hit = mergeContacts(hit, osm, nom);
+
+  // Sale listing first, then For Rent (landlord / leasing phones → green labels).
   const zillowHit = await zillowListingContacts(address, parts).catch(() => null);
   if (zillowHit?._public_text) publicChunks.push(zillowHit._public_text);
   if (zillowHit) hit = mergeContacts(hit, zillowHit);
+  if (!hit.phone) {
+    const rentHit = await zillowRentContacts(address, parts).catch(() => null);
+    if (rentHit?._public_text) publicChunks.push(rentHit._public_text);
+    if (rentHit) hit = mergeContacts(hit, rentHit);
+  }
+
+  // Oklahoma phone book (411 / Whitepages address directory) — OK addresses only.
+  if (!hit.phone && isOklahomaAddress(address, parts)) {
+    const book = await oklahomaPhoneBookContacts(address, parts).catch(() => null);
+    if (book?._public_text) publicChunks.push(book._public_text);
+    if (book) hit = mergeContacts(hit, book);
+  }
+
   const site = osm?.website || nom?.website || hit.website;
   if (site && (!hit.phone || !hit.email || !hit.facebook)) {
     hit = mergeContacts(hit, await contactsFromWebsite(site, parts));

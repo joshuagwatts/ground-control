@@ -13,8 +13,10 @@ import {
   sameHouse,
   listingForPin,
   formatZillowUrl,
+  formatZillowRentUrl,
   resolveZillowUrl,
   isUsableZillowUrl,
+  isOklahomaAddress,
   publicTextFromHtml,
   parseAiContactJson,
 } from "../www/contacts.js";
@@ -33,6 +35,15 @@ assert(parsed.zip === "73034", "zip");
 
 const z1 = formatZillowUrl("400 S Bryant Ave, Edmond, OK 73034");
 assert(z1 === "https://www.zillow.com/homes/400-S-Bryant-Ave-Edmond-OK-73034_rb/", `zillow slug, got ${z1}`);
+const zr = formatZillowRentUrl("400 S Bryant Ave, Edmond, OK 73034");
+assert(
+  zr === "https://www.zillow.com/homes/for_rent/400-S-Bryant-Ave-Edmond-OK-73034_rb/",
+  `zillow rent slug, got ${zr}`,
+);
+assert(isOklahomaAddress("400 S Bryant Ave, Edmond, OK 73034"), "ok address");
+assert(isOklahomaAddress("400 S Bryant Ave, Edmond, Oklahoma"), "oklahoma word");
+assert(!isOklahomaAddress("100 Main St, Dallas, TX 75201"), "not oklahoma");
+assert(isUsableZillowUrl(zr), "for_rent url usable");
 const z2 = formatZillowUrl("2521 Tredington Way, Edmond, Oklahoma, 73034");
 assert(z2.includes("2521-Tredington") && z2.endsWith("_rb/"), `zillow tredington, got ${z2}`);
 assert(formatZillowUrl("35.6521, -97.4783") === "", "coords only, no zillow");
@@ -75,6 +86,14 @@ assert(hit.email === "office@example-roof.test", "email");
 
 const miss = extractContactsFromHtml(`<a href="tel:9185820001">918-582-0001</a>`, { house: "100", street: "Main" });
 assert(!miss, "reject phone on a page that is not this house");
+
+const rentHtml = `
+  <p>For rent · 400 S Bryant Ave</p>
+  <script>window.__data = {"phoneNumber":"(405) 348-9911","listingType":"FOR_RENT"}</script>
+  <a href="tel:4053489911">Call</a>
+`;
+const rentHit = extractContactsFromHtml(rentHtml, { house: "400", street: "Bryant" }, { requireAddress: false });
+assert(rentHit && /348/.test(rentHit.phone || ""), `rent-style phone, got ${JSON.stringify(rentHit)}`);
 
 const phones = extractPhones("Call (918) 582-0001 or 405-555-0100");
 assert(phones.includes("+19185820001"), "extract 918");
