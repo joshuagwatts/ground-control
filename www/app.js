@@ -69,7 +69,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.221";
+} from "./wx.js?v=3.0.0";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -79,6 +79,20 @@ import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale } from "./marks.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
+import {
+  OUTREACH_STATUS,
+  OUTREACH_TEMPLATES,
+  leadFromDossier,
+  upsertLead,
+  updateLead,
+  removeLead,
+  countByStatus,
+  renderOutreachMessage,
+  outreachCsv,
+  phoneDigits,
+  statusLabel,
+  templateLabel,
+} from "./outreach.js";
 import { CACHE_BUST } from "./version.js";
 import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
 
@@ -2025,7 +2039,6 @@ async function renderWx() {
       void onHailViewport();
     });
     bindStormSheetOpen(() => {
-      // No house pin: show idle Search storms UI — do not auto-fetch
       if (wxPinSelected()) return;
       const sheet = $("#hs-sheet");
       if (!sheet) return;
@@ -2064,6 +2077,7 @@ async function renderWx() {
       const sheetIdle = $("#hs-sheet");
       if (sheetIdle && !wxPinSelected()) paintHailSearchIdle(sheetIdle, esc);
     }
+    wireReachPin();
     void finishWxBoot(gen);
   } catch (e) {
     if (!isHailTab()) return;
@@ -2235,6 +2249,211 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
 
 async function onWxTap(lat, lon) {
   return onHailTap(lat, lon);
+}
+
+function wireReachPin() {
+  const sheet = $("#hs-sheet");
+  if (!sheet || sheet.dataset.reachBound) return;
+  sheet.dataset.reachBound = "1";
+  sheet.addEventListener("click", (e) => {
+    const btn = e.target.closest(".hs-reach-add");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    addCurrentPinToReach();
+  });
+}
+
+function addCurrentPinToReach() {
+  if (!Number.isFinite(wxState.lat) || !Number.isFinite(wxState.lon)) {
+    setStatus("Pin a house on HailScope first");
+    return;
+  }
+  if (!db.outreach) db.outreach = { leads: [], template: "hail_inspection" };
+  const dossier = wxState.data || {
+    address: wxState.address,
+    lat: wxState.lat,
+    lon: wxState.lon,
+  };
+  const lead = leadFromDossier(dossier, { template: db.outreach.template || "hail_inspection" });
+  const { list, lead: saved, added } = upsertLead(db.outreach.leads, lead, { idGen: uid });
+  db.outreach.leads = list;
+  persist();
+  setStatus(added ? `Reach: queued ${saved.address || "lead"}` : `Reach: already on list — ${saved.address || "lead"}`);
+  if (tab === "reach") renderReach();
+}
+
+function renderReach() {
+  leaveWx();
+  document.body.classList.remove("comm");
+  if (!db.outreach) db.outreach = { leads: [], template: "hail_inspection" };
+  const leads = db.outreach.leads || [];
+  const filter = db.outreach.filter || "all";
+  const template = db.outreach.template || "hail_inspection";
+  const counts = countByStatus(leads);
+  const active = filter === "all" ? leads : leads.filter((l) => l.status === filter);
+  const canAddPin = Number.isFinite(wxState.lat) && Number.isFinite(wxState.lon);
+  const tplOpts = OUTREACH_TEMPLATES.map(
+    (t) => `<option value="${esc(t.id)}"${t.id === template ? " selected" : ""}>${esc(t.label)}</option>`,
+  ).join("");
+  const filterBtns = [
+    `<button type="button" class="reach-filter${filter === "all" ? " on" : ""}" data-reach-filter="all">All (${leads.length})</button>`,
+    ...OUTREACH_STATUS.filter((s) => counts[s.id]).map(
+      (s) =>
+        `<button type="button" class="reach-filter${filter === s.id ? " on" : ""}" data-reach-filter="${esc(s.id)}">${esc(s.label)} (${counts[s.id]})</button>`,
+    ),
+  ].join("");
+  $("#view").innerHTML = `
+    <h3>Reach</h3>
+    <p class="muted">Storm-targeted outreach queue — add homeowners from HailScope, call or text with ready scripts, track disposition on this device.</p>
+    <div class="reach-stats">${OUTREACH_STATUS.map((s) => (counts[s.id] ? `<span class="reach-stat">${esc(s.label)} <strong>${counts[s.id]}</strong></span>` : "")).join("")}</div>
+    <div class="actions">
+      <button type="button" class="primary" id="reach-add-pin"${canAddPin ? "" : " disabled"}>Add current pin</button>
+      <select id="reach-template" aria-label="Default template">${tplOpts}</select>
+      <button type="button" id="reach-export"${leads.length ? "" : " disabled"}>Export CSV</button>
+      <button type="button" id="reach-clear-done"${counts.won || counts.lost || counts.skip ? "" : " disabled"}>Clear closed</button>
+    </div>
+    <div class="reach-filters">${filterBtns}</div>
+    <div class="reach-list">${
+      active.length
+        ? active
+            .map((l) => {
+              const msg = renderOutreachMessage(l.template || template, l, db.settings);
+              const e164 = phoneDigits(l.owner_phone);
+              const stOpts = OUTREACH_STATUS.map(
+                (s) => `<option value="${esc(s.id)}"${s.id === l.status ? " selected" : ""}>${esc(s.label)}</option>`,
+              ).join("");
+              const tplRow = OUTREACH_TEMPLATES.map(
+                (t) => `<option value="${esc(t.id)}"${t.id === (l.template || template) ? " selected" : ""}>${esc(t.label)}</option>`,
+              ).join("");
+              return `<article class="job-card reach-card" data-id="${esc(l.id)}">
+                <strong>${esc(l.address || "Unpinned")}</strong>
+                ${l.owner_name ? `<p class="muted">${esc(l.owner_name)}</p>` : ""}
+                ${l.storm ? `<p class="muted reach-storm">${esc(l.storm)}</p>` : ""}
+                ${l.assessor_record ? `<p class="muted reach-record">${esc(l.assessor_record)}</p>` : ""}
+                <div class="actions reach-card-actions">
+                  ${e164 ? `<a class="hs-tel" href="tel:${esc(e164)}">Call</a><a class="hs-sms" href="sms:${esc(e164)}?body=${encodeURIComponent(msg.body)}">Text script</a>` : `<span class="hs-place-miss">No phone yet</span>`}
+                  <button type="button" data-reach-copy="${esc(l.id)}">Copy script</button>
+                  <button type="button" data-reach-map="${esc(l.id)}">Map</button>
+                  <button type="button" data-reach-del="${esc(l.id)}">Remove</button>
+                </div>
+                <div class="reach-meta">
+                  <label class="reach-field"><span>Status</span><select data-reach-status="${esc(l.id)}">${stOpts}</select></label>
+                  <label class="reach-field"><span>Template</span><select data-reach-tpl="${esc(l.id)}">${tplRow}</select></label>
+                </div>
+                <textarea class="reach-notes" data-reach-notes="${esc(l.id)}" rows="2" placeholder="Notes — callback time, gate code, spouse name…">${esc(l.notes || "")}</textarea>
+                <p class="muted reach-preview">${esc(msg.body.slice(0, 160))}${msg.body.length > 160 ? "…" : ""}</p>
+              </article>`;
+            })
+            .join("")
+        : `<p class="muted">${leads.length ? "No leads in this filter." : "No leads yet. Pin a storm-hit house on HailScope and tap Reach, or use Add current pin."}</p>`
+    }</div>`;
+  const addBtn = $("#reach-add-pin");
+  if (addBtn) addBtn.onclick = () => addCurrentPinToReach();
+  const tplSel = $("#reach-template");
+  if (tplSel) {
+    tplSel.onchange = () => {
+      db.outreach.template = tplSel.value;
+      persistSoon();
+    };
+    tplSel.onblur = () => persist();
+  }
+  const exp = $("#reach-export");
+  if (exp) {
+    exp.onclick = () => {
+      const blob = new Blob([outreachCsv(leads)], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `ground-control-reach-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setStatus(`Exported ${leads.length} leads`);
+    };
+  }
+  const clr = $("#reach-clear-done");
+  if (clr) {
+    clr.onclick = () => {
+      const closed = new Set(["won", "lost", "skip"]);
+      const before = leads.length;
+      db.outreach.leads = leads.filter((l) => !closed.has(l.status));
+      persist();
+      renderReach();
+      setStatus(`Removed ${before - db.outreach.leads.length} closed leads`);
+    };
+  }
+  document.querySelectorAll("[data-reach-filter]").forEach((btn) => {
+    btn.onclick = () => {
+      db.outreach.filter = btn.getAttribute("data-reach-filter");
+      renderReach();
+    };
+  });
+  document.querySelectorAll("[data-reach-status]").forEach((sel) => {
+    sel.onchange = () => {
+      const id = sel.getAttribute("data-reach-status");
+      const { list } = updateLead(db.outreach.leads, id, { status: sel.value });
+      db.outreach.leads = list;
+      persist();
+      renderReach();
+      setStatus(`Reach: ${statusLabel(sel.value)}`);
+    };
+  });
+  document.querySelectorAll("[data-reach-tpl]").forEach((sel) => {
+    sel.onchange = () => {
+      const id = sel.getAttribute("data-reach-tpl");
+      const { list } = updateLead(db.outreach.leads, id, { template: sel.value });
+      db.outreach.leads = list;
+      persist();
+      renderReach();
+    };
+  });
+  document.querySelectorAll("[data-reach-notes]").forEach((box) => {
+    box.oninput = () => {
+      const id = box.getAttribute("data-reach-notes");
+      const { list } = updateLead(db.outreach.leads, id, { notes: box.value });
+      db.outreach.leads = list;
+      persistSoon();
+    };
+    box.onblur = () => persist();
+  });
+  document.querySelectorAll("[data-reach-copy]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute("data-reach-copy");
+      const lead = leads.find((l) => String(l.id) === String(id));
+      if (!lead) return;
+      const msg = renderOutreachMessage(lead.template || template, lead, db.settings);
+      try {
+        await navigator.clipboard.writeText(msg.body);
+        setStatus("Script copied");
+      } catch {
+        setStatus("Could not copy — select text manually");
+      }
+    };
+  });
+  document.querySelectorAll("[data-reach-map]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.getAttribute("data-reach-map");
+      const lead = leads.find((l) => String(l.id) === String(id));
+      if (!lead || !Number.isFinite(Number(lead.lat)) || !Number.isFinite(Number(lead.lon))) {
+        setStatus("No map pin for this lead");
+        return;
+      }
+      tab = "hailscope";
+      render();
+      void onHailTap(Number(lead.lat), Number(lead.lon), { address: lead.address || "" });
+    };
+  });
+  document.querySelectorAll("[data-reach-del]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.getAttribute("data-reach-del");
+      const lead = leads.find((l) => String(l.id) === String(id));
+      if (!lead) return;
+      if (!confirm(`Remove "${lead.address || "lead"}" from Reach?`)) return;
+      db.outreach.leads = removeLead(db.outreach.leads, id);
+      persist();
+      renderReach();
+      setStatus("Lead removed");
+    };
+  });
 }
 
 function renderJobs() {
@@ -2512,6 +2731,7 @@ function render() {
   } else {
     leaveWx();
     if (tab === "jobs") renderJobs();
+    else if (tab === "reach") renderReach();
     else if (tab === "keys") renderKeys();
   }
   renderPrivacy();
