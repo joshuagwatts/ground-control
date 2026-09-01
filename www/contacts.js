@@ -3,6 +3,7 @@ import { httpGet, overpassJson } from "./net.js";
 import { flagNetProfile, listingBrowserHeaders } from "./device.js";
 import { OK_RENT_CITY_ROWS } from "./ok-rent-cities.js";
 import { OK_RENT_FLAG_SEED } from "./ok-rent-flags.js";
+import { OK_BIZ_FLAG_SEED } from "./ok-biz-flags.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
 const RENT_STORE_KEY = "hs-rent-flags-v1";
@@ -1373,6 +1374,111 @@ export function rentFlagsForViewport(bounds, lat, lon, padKm = 56) {
     return borrowPhonesAcrossRentRows(rentFlagsNearPoint(rows, lat, lon, Math.max(36, padKm)), 15);
   }
   return borrowPhonesAcrossRentRows(rows.filter((r) => r?.phone || r?.listingUrl), 15);
+}
+
+function isBizFlagRow(r) {
+  return (
+    Number.isFinite(Number(r?.lat)) &&
+    Number.isFinite(Number(r?.lon)) &&
+    Boolean(r?.phone || r?.name || r?.owner_name || r?.num || r?.street)
+  );
+}
+
+export function mergeBizFlagList(into, rows) {
+  const out = Array.isArray(into) ? into.slice() : [];
+  const seen = new Set(
+    out.map((r) => {
+      const name = String(r?.name || r?.owner_name || r?.num || "")
+        .toLowerCase()
+        .slice(0, 40);
+      return `${phoneDigits(r?.phone) || name}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}`;
+    }),
+  );
+  for (const r of rows || []) {
+    if (!isBizFlagRow(r)) continue;
+    const name = String(r.name || r.owner_name || r.num || "")
+      .toLowerCase()
+      .slice(0, 40);
+    const key = `${phoneDigits(r.phone) || name}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}`;
+    if (seen.has(key)) continue;
+    if (r.phone) {
+      for (let i = 0; i < out.length; i++) {
+        const o = out[i];
+        if (o.phone) continue;
+        if (haversineKm(o.lat, o.lon, r.lat, r.lon) > 0.12) continue;
+        out[i] = { ...o, phone: r.phone, phone_kind: "business", source: o.source || r.source || "osm-business" };
+      }
+    }
+    seen.add(key);
+    out.push({
+      name: r.name || r.owner_name || r.num || "",
+      street: r.street || "",
+      city: r.city || "",
+      state: r.state || "OK",
+      zip: r.zip || "",
+      lat: Number(r.lat),
+      lon: Number(r.lon),
+      phone: r.phone || "",
+      source: r.source || "osm-business",
+      phone_kind: "business",
+    });
+  }
+  return out;
+}
+
+function bizFlagsNearPoint(rows, lat, lon, km = 28) {
+  return (rows || []).filter(
+    (r) => isBizFlagRow(r) && haversineKm(lat, lon, Number(r.lat), Number(r.lon)) <= km,
+  );
+}
+
+function bizFlagsInBounds(rows, bounds, padKm = 12) {
+  if (!bounds) return Array.isArray(rows) ? rows.filter(isBizFlagRow) : [];
+  const south = Number(bounds.south);
+  const west = Number(bounds.west);
+  const north = Number(bounds.north);
+  const east = Number(bounds.east);
+  if (![south, west, north, east].every(Number.isFinite)) {
+    return Array.isArray(rows) ? rows.filter(isBizFlagRow) : [];
+  }
+  const midLat = (south + north) / 2;
+  const dLat = padKm / 111.32;
+  const dLon = padKm / (111.32 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
+  const s = south - dLat;
+  const n = north + dLat;
+  const w = west - dLon;
+  const e = east + dLon;
+  return (rows || []).filter(
+    (r) =>
+      isBizFlagRow(r) &&
+      Number(r.lat) >= s &&
+      Number(r.lat) <= n &&
+      Number(r.lon) >= w &&
+      Number(r.lon) <= e,
+  );
+}
+
+/** Bundled OK commercial seed (+ optional localStorage rows) for the map frame. */
+export function bizFlagsForViewport(bounds, lat, lon, padKm = 56, extra = []) {
+  const rows = mergeBizFlagList(extra, OK_BIZ_FLAG_SEED);
+  if (!rows.length) return [];
+  const south = Number(bounds?.south);
+  const west = Number(bounds?.west);
+  const north = Number(bounds?.north);
+  const east = Number(bounds?.east);
+  const hasB = [south, west, north, east].every(Number.isFinite);
+  if (hasB) {
+    let hit = bizFlagsInBounds(rows, bounds, padKm);
+    if (hit.length < 12) hit = bizFlagsInBounds(rows, bounds, padKm + 40);
+    if (hit.length < 12 && Number.isFinite(lat) && Number.isFinite(lon)) {
+      hit = mergeBizFlagList(hit, bizFlagsNearPoint(rows, lat, lon, Math.max(36, padKm)));
+    }
+    return hit;
+  }
+  if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lon))) {
+    return bizFlagsNearPoint(rows, lat, lon, Math.max(36, padKm));
+  }
+  return rows.filter(isBizFlagRow);
 }
 
 function isOklahomaCityName(name) {

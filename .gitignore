@@ -15,3 +15,4 @@ android/app/upload.jks
 .idea/
 android/app/src/main/assets/public/
 www/data/ok-rent-flags-progress.json
+www/data/ok-biz-flags-progress.json

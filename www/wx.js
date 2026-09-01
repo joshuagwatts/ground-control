@@ -25,6 +25,7 @@ import {
   inferOkCity,
   citiesInMapBounds,
   rentFlagsForViewport,
+  bizFlagsForViewport,
   loadPersistedRentFlags,
   persistRentFlags,
   clearPersistedRentFlags,
@@ -6666,7 +6667,7 @@ function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "
     kind: nextKind,
     source: source || prev.source || "",
   };
-  if (!next.phone && !(info?.zillow_rent && info?.zillow_url)) return;
+  if (!next.phone && !(info?.zillow_rent && info?.zillow_url) && !(nextKind === "business" && next.name)) return;
   houseUsefulByKey.set(key, next);
   if (next.phone) rememberHousePhone(info, next.phone);
   if (Number.isFinite(info?.lat) && Number.isFinite(info?.lon)) {
@@ -7807,6 +7808,38 @@ function numsFromRentFlags(flags) {
   return out;
 }
 
+function numsFromBizFlags(flags) {
+  const out = [];
+  for (const r of flags || []) {
+    if (!Number.isFinite(r?.lat) || !Number.isFinite(r?.lon)) continue;
+    const name = String(r.name || r.owner_name || r.num || "").trim();
+    if (!r.phone && !name && !r.street) continue;
+    const addr = [r.street, r.city, r.state, r.zip].filter(Boolean).join(", ");
+    const parts = parseStreetAddress(addr);
+    const num = parts.house || name || r.street || "Business";
+    if (r.phone || name) {
+      rememberHouseUseful(
+        { num, street: parts.street || r.street, lat: r.lat, lon: r.lon },
+        { phone: r.phone || "", name, kind: "business", source: r.source || "osm-business" },
+      );
+    }
+    if (r.phone) rememberHousePhone({ num, street: parts.street || r.street, lat: r.lat, lon: r.lon }, r.phone);
+    out.push({
+      num,
+      street: parts.street || r.street || "",
+      city: r.city || "",
+      zip: r.zip || "",
+      lat: r.lat,
+      lon: r.lon,
+      phone: r.phone || "",
+      owner_name: name,
+      phone_kind: "business",
+      source: r.source || "osm-business",
+    });
+  }
+  return out;
+}
+
 function loadPersistedBizFlags() {
   try {
     if (typeof localStorage === "undefined") return [];
@@ -7883,6 +7916,11 @@ function hydratePersistedFlags() {
       rememberHouseUseful(n, { phone: n.phone, name: n.owner_name, kind: "business", source: n.source });
     }
     houseCache.nums = mergeHouseNums(houseCache.nums, biz);
+  }
+  // Seed paints immediately even when localStorage is empty / Overpass is down.
+  if (map) {
+    mergeViewportRentFlagsIntoCache();
+    mergeViewportBizFlagsIntoCache();
   }
   if (!houseCache.nums.some((n) => houseHasFlag(n))) return;
   scheduleFlagLayerPaint(true);
@@ -8132,6 +8170,20 @@ function mergeViewportRentFlagsIntoCache() {
   if (listingPumpWanted && !listingPumpBusy) void pumpRentListingPhones(houseGen);
 }
 
+function mergeViewportBizFlagsIntoCache() {
+  if (!phoneFlagsEnabled() || !map) return;
+  const bounds = flagViewBoundsPayload();
+  const c = map.getCenter?.();
+  if (!bounds && !c) return;
+  const rows = bizFlagsForViewport(bounds, c?.lat, c?.lng, 72, loadPersistedBizFlags());
+  if (!rows.length) return;
+  const before = houseCache.nums.length;
+  const beforeBiz = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
+  houseCache.nums = mergeHouseNums(houseCache.nums, numsFromBizFlags(rows));
+  const afterBiz = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
+  if (houseCache.nums.length !== before || afterBiz !== beforeBiz) scheduleFlagLayerPaint(true);
+}
+
 /** Scrape listing pages for every phoneless green flag in the map frame. */
 async function pumpRentListingPhones(gen) {
   if (!phoneFlagsEnabled() || !map || listingPumpBusy) return;
@@ -8220,10 +8272,12 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
 
   trimHouseCacheOutsideView();
   mergeViewportRentFlagsIntoCache();
+  mergeViewportBizFlagsIntoCache();
 
   const frameChanged = houseCache.key !== key;
   if (!forceRent && !frameChanged && houseCache.nums.length) {
     mergeViewportRentFlagsIntoCache();
+    mergeViewportBizFlagsIntoCache();
     scheduleFlagLayerPaint();
     if (center) {
       void kickRentFlags(
@@ -8255,6 +8309,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   const gen = ++houseGen;
   houseCache = { key, rings: [], nums: forceRent ? [] : houseCache.nums || [] };
   mergeViewportRentFlagsIntoCache();
+  mergeViewportBizFlagsIntoCache();
 
   let rentWork = Promise.resolve([]);
   if (center) {
