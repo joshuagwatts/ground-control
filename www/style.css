@@ -2559,6 +2559,7 @@ body.wx-map-expanded .hs-field {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-height: 0;
 }
 .hs-filter-opt {
   display: block;
