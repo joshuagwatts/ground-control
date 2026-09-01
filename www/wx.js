@@ -461,7 +461,6 @@ function placeContactHtml(data, esc) {
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
   // Mailing address omitted — street address is already shown above the contacts row.
   if (homestead) bits.push(`<span class="hs-homestead" title="Homestead exemption on file">Homestead</span>`);
-  bits.push(`<button type="button" class="hs-reach-add" title="Add to Reach queue">Reach</button>`);
   const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
   return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }

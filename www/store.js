@@ -7,7 +7,6 @@ function blank() {
     marks: [],
     acculynx: { jobs: [], geo: {}, syncedAt: "" },
     done: { text: "", houses: [], geo: {} },
-    outreach: { leads: [], template: "hail_inspection" },
     lens: { mode: "shingle", photos: [], shots: [], last: null, field: null },
     settings: {
       operator: "Joshua",
@@ -77,10 +76,6 @@ export function load() {
         text: String(raw.done?.text || ""),
         houses: Array.isArray(raw.done?.houses) ? raw.done.houses : [],
         geo: raw.done?.geo && typeof raw.done.geo === "object" ? raw.done.geo : {},
-      },
-      outreach: {
-        leads: Array.isArray(raw.outreach?.leads) ? raw.outreach.leads : [],
-        template: String(raw.outreach?.template || "hail_inspection"),
       },
     };
   } catch {
