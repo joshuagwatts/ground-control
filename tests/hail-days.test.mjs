@@ -5,9 +5,11 @@ import {
   hailRowsForZones,
   mapHailRows,
   mergeHailRows,
+  OK_SWDI_BBOX,
   resolvedStormDrawPools,
   selectStormDate,
   setWxPin,
+  spotterSwdiBbox,
   swdiApiDateRange,
   stormPassesSizeFilter,
   HOUSE_HAIL_KM,
@@ -202,5 +204,16 @@ const oneDay = swdiApiDateRange(["2024-05-25"]);
 assert(oneDay.start === "2024-05-25" && oneDay.end === "2024-05-26", "SWDI API end date is exclusive");
 const multi = swdiApiDateRange(["2024-05-25", "2024-05-26"]);
 assert(multi.end === "2024-05-27", "multi-day SWDI range adds one past last day");
+
+const stormBbox = spotterSwdiBbox(
+  ["2024-05-25"],
+  [
+    { date: "2024-05-25", lat: 35.47, lon: -97.52, source: "iem-lsr" },
+    { date: "2024-05-25", lat: 36.12, lon: -96.99, source: "noaa-spc" },
+  ],
+  { lat: 35.467, lon: -97.516 },
+);
+assert(stormBbox && /-9[67]\.\d/.test(stormBbox) && /36\.\d/.test(stormBbox), "spotter storm bbox spans the footprint");
+assert(OK_SWDI_BBOX.includes("-103"), "OK fallback bbox");
 
 console.log("hail-days ok");

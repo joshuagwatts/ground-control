@@ -938,30 +938,86 @@ export function swdiApiDateRange(isoDays) {
   return { start: days[0], end: addIsoDay(days[days.length - 1], 1), days };
 }
 
-/** One SWDI request for exact storm calendar day(s) — Oklahoma radar for the tapped date. */
-async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays) {
+/** Oklahoma state bbox — storm-day SWDI fallback when pin ring is empty. */
+export const OK_SWDI_BBOX = "-103.0020,33.6150,-94.4310,37.0020";
+
+function bboxCenter(bbox) {
+  const [w, s, e, n] = String(bbox || "")
+    .split(",")
+    .map(Number);
+  return { lat: (s + n) / 2, lon: (w + e) / 2 };
+}
+
+function ingestKmForBbox(center, bbox) {
+  const [w, s, e, n] = String(bbox || "")
+    .split(",")
+    .map(Number);
+  let maxD = 0;
+  for (const la of [s, n]) {
+    for (const lo of [w, e]) {
+      maxD = Math.max(maxD, haversineKm(center.lat, center.lon, la, lo));
+    }
+  }
+  return Math.min(MAP_HAIL_MAX_KM, maxD + 12);
+}
+
+/** Bbox covering spotter reports for selected storm day(s) — radar follows spotters, not just the pin. */
+export function spotterSwdiBbox(days, pool, anchor = null) {
+  const daySet = new Set((days || []).map((d) => String(d).slice(0, 10)));
+  const pts = (pool || []).filter(
+    (h) =>
+      daySet.has(String(h.date || "").slice(0, 10)) &&
+      isSpotterHail(h) &&
+      Number.isFinite(h.lat) &&
+      Number.isFinite(h.lon),
+  );
+  if (anchor && Number.isFinite(anchor.lat) && Number.isFinite(anchor.lon)) {
+    pts.push({ lat: anchor.lat, lon: anchor.lon });
+  }
+  if (!pts.length) return null;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  for (const p of pts) {
+    minLat = Math.min(minLat, p.lat);
+    maxLat = Math.max(maxLat, p.lat);
+    minLon = Math.min(minLon, p.lon);
+    maxLon = Math.max(maxLon, p.lon);
+  }
+  const pad = 0.6;
+  return `${(minLon - pad).toFixed(4)},${(minLat - pad).toFixed(4)},${(maxLon + pad).toFixed(4)},${(maxLat + pad).toFixed(4)}`;
+}
+
+async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOverride } = {}) {
   const range = swdiApiDateRange(isoDays);
-  if (!range) return [];
+  if (!range) return { rows: [], raw: 0, err: "bad-days" };
   const { start, end, days } = range;
   const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
-  const bbox = bboxForKm(lat, lon, km);
+  const bbox = bboxOverride || bboxForKm(lat, lon, km);
+  const center = bboxOverride ? bboxCenter(bbox) : { lat, lon };
+  const ingestKm = bboxOverride ? ingestKmForBbox(center, bbox) : km;
   const fmt = (iso) => iso.replace(/-/g, "");
   const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
   const daySet = new Set(days);
   const slow = isSlowBrowserNet();
-  const timeout = slow ? 14000 : 18000;
+  const timeout = slow ? 18000 : 24000;
+  let lastErr = "";
   for (let attempt = 0; attempt < (slow ? 2 : 3); attempt++) {
     try {
       const { body } = await httpGet(url, timeout);
       const data = JSON.parse(body || "{}");
-      return [...ingestSwdiItems(data.result || [], lat, lon, km).values()].filter((h) =>
+      const raw = Array.isArray(data.result) ? data.result : [];
+      const rows = [...ingestSwdiItems(raw, center.lat, center.lon, ingestKm).values()].filter((h) =>
         daySet.has(String(h.date || "").slice(0, 10)),
       );
-    } catch {
+      return { rows, raw: raw.length, err: rows.length ? "" : raw.length ? "filtered" : "empty" };
+    } catch (e) {
+      lastErr = String(e?.message || e || "fetch failed");
       if (attempt >= (slow ? 1 : 2)) break;
     }
   }
-  return [];
+  return { rows: [], raw: 0, err: lastErr || "fetch failed" };
 }
 
 function pinHailPack(hail) {
@@ -1028,10 +1084,31 @@ async function ensureSwdiForSelectedStormDays() {
   const gen = ++pinStormSwdiGen;
   const km = hailRadarZoneKm();
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
-  const swdi = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need);
+  const spotBbox = spotterSwdiBbox(need, pool, anchor);
+  let result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, spotBbox ? { bbox: spotBbox } : {});
+  let swdi = result.rows;
+  if (!swdi.length && isOklahomaLatLon(anchor.lat, anchor.lon)) {
+    result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need, { bbox: OK_SWDI_BBOX });
+    swdi = result.rows;
+  }
+  if (!swdi.length && spotBbox) {
+    result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need);
+    swdi = result.rows;
+  }
   if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
   if (!swdi.length) {
-    emitMapStatus(`No SWDI radar in ${Math.round(km)} km for selected day${need.length === 1 ? "" : "s"}`);
+    const spotN = pool.filter(
+      (h) => need.includes(String(h.date || "").slice(0, 10)) && isSpotterHail(h),
+    ).length;
+    if (result.err && /fetch|proxy|timeout|cors/i.test(result.err)) {
+      emitMapStatus(`SWDI fetch failed — refresh once (${result.err.slice(0, 48)})`);
+    } else if (result.raw > 0) {
+      emitMapStatus(`SWDI ${result.raw} sigs fetched · none matched this day/area`);
+    } else if (spotN > 0) {
+      emitMapStatus(`No SWDI in NOAA feed for this day (${spotN} spotter${spotN === 1 ? "" : "s"} shown)`);
+    } else {
+      emitMapStatus(`No SWDI radar in ${Math.round(km)} km for selected day${need.length === 1 ? "" : "s"}`);
+    }
     return;
   }
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);

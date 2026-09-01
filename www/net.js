@@ -284,6 +284,12 @@ function corsProxyCandidates(url) {
   const enc = encodeURIComponent(url);
   const local = [];
   try {
+    if (typeof location !== "undefined") {
+      // Service worker on GitHub Pages / static host — bypass broken public CORS proxies.
+      const same = new URL("proxy", location.href);
+      same.searchParams.set("url", url);
+      local.push(same.toString());
+    }
     if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
       // Same-origin first when using scripts/dev-server.mjs (serves www + /proxy).
       local.push(`${location.protocol}//${location.host}/proxy?url=${enc}`);
@@ -295,10 +301,23 @@ function corsProxyCandidates(url) {
   }
   return [
     ...local,
-    `https://corsproxy.io/?url=${enc}`,
     `https://api.allorigins.win/raw?url=${enc}`,
     `https://api.allorigins.win/get?url=${enc}`,
   ];
+}
+
+function validProxyBody(body) {
+  const t = String(body || "").trim();
+  if (!t) return false;
+  if (t.startsWith("{") || t.startsWith("[")) {
+    try {
+      JSON.parse(t);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return t.length >= 80;
 }
 
 function unwrapProxyBody(body) {
@@ -318,39 +337,24 @@ function unwrapProxyBody(body) {
 async function httpGetViaCorsProxy(url, timeoutMs) {
   const proxies = corsProxyCandidates(url);
   if (!proxies.length) throw new Error("cors proxy failed");
-  // Race proxies — sequential 18s×N made Flags feel frozen when one host hung.
-  const perMs = Math.min(7000, Math.max(2800, Math.floor(Number(timeoutMs) * 0.5) || 4000));
-  const ctrls = proxies.map(() => new AbortController());
-  const timers = ctrls.map((ctrl) => setTimeout(() => ctrl.abort(), perMs));
-  const abortAll = () => {
-    for (const c of ctrls) {
-      try {
-        c.abort();
-      } catch {
-        /* ignore */
-      }
+  const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 12000), 28000);
+  let lastErr = "cors proxy failed";
+  for (const proxy of proxies) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), perMs);
+    try {
+      const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
+      if (!res.ok) throw new Error(`fetch ${res.status}`);
+      const body = unwrapProxyBody(await res.text());
+      if (!validProxyBody(body)) throw new Error("proxy empty");
+      clearTimeout(timer);
+      return { url, status: res.status, body };
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = String(e?.message || e || "cors proxy failed");
     }
-    for (const t of timers) clearTimeout(t);
-  };
-  try {
-    const hit = await Promise.any(
-      proxies.map(async (proxy, i) => {
-        const res = await fetch(proxy, { signal: ctrls[i].signal, redirect: "follow" });
-        if (!res.ok) throw new Error(`fetch ${res.status}`);
-        const body = unwrapProxyBody(await res.text());
-        if (body.length < 200) throw new Error("proxy empty");
-        return { url, status: res.status, body };
-      }),
-    );
-    abortAll();
-    return hit;
-  } catch (e) {
-    abortAll();
-    const msg =
-      e?.errors?.map?.((x) => String(x?.message || x)).filter(Boolean)[0] ||
-      String(e?.message || e || "cors proxy failed");
-    throw new Error(msg);
   }
+  throw new Error(lastErr);
 }
 
 export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {
