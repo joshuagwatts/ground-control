@@ -116,6 +116,24 @@ assert(filterHailRaw(pinData, { km: 40, hailIn: 0, days: 730, year: "all" }).len
 const vpData = { viewport: true, hail: [nearRow, farRow], _meta: { viewport: true, listLocked: true } };
 assert(filterHailRaw(vpData, { km: 10, hailIn: 0, days: 730, year: "all" }).length === 2, "viewport list ignores NEAR km");
 
+const smallRadar = {
+  date: "2025-05-01",
+  lat: 35.47,
+  lon: -97.52,
+  size_in: "0.55",
+  source: "noaa-swdi-radar",
+  distance_km: 2,
+};
+const pinSmall = { lat: 35.467, lon: -97.516, hail: [smallRadar] };
+assert(
+  filterHailRaw(pinSmall, { km: 10, hailIn: 0.75, days: 730, year: "all" }).length === 0,
+  "sheet list drops sub-0.75 hail",
+);
+assert(
+  filterHailRaw(pinSmall, { km: 10, hailIn: 0.75, days: 730, year: "all" }, { forMap: true }).length === 1,
+  "map paint keeps SWDI radar below sheet hailMin",
+);
+
 assert(spcLookbackDays(90) <= 16, "SPC never walks 90 daily CSVs");
 assert(spcLookbackDays(90) === 16, "desktop/Android keep a 16-day SPC walk");
 assert(lsrFirstDays(730) === 400, "first LSR window is wider off Safari");

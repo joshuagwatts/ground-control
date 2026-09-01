@@ -4364,6 +4364,15 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
       pushK(cLat, cLon, coreR * 0.85);
       continue;
     }
+    let drawRing = ensureClosedRing(ring);
+    drawRing = relaxRing(chaikinSmoothRing(drawRing, 2), 2);
+    swdiRings.push({
+      ring: padPolygon(drawRing, 24),
+      maxSize: sz,
+      hits: 1,
+      confirmed: true,
+      source: "radar-poly",
+    });
     const edgeR = Math.max(0.2, coreR * 0.32);
     pushK(cLat, cLon, coreR);
     const step = Math.max(1, Math.floor(ring.length / 28));
@@ -5079,12 +5088,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const ring = topoZoneRing(anchor, rows);
       if (!ring || ring.length < 3) continue;
       const sz = parseFloat(anchor.size_in) || parseFloat(rows[0]?.size_in) || 0.75;
-      const col = hailZoneColor(sz);
+      const hasRadar = rows.some(isRadarHail);
+      const col = hasRadar ? hailSwdiZoneColor(sz) : hailZoneColor(sz);
       fitPts.push(...ring);
       window.L.polygon(ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: Math.min(0.75, hailLayerFillOpacity(sz) + 0.15),
+        fillOpacity: hasRadar
+          ? Math.min(0.78, hailLayerFillOpacity(sz) + 0.1)
+          : Math.min(0.75, hailLayerFillOpacity(sz) + 0.15),
         weight: 1.4,
         opacity: 0.82,
         stroke: true,
@@ -5093,7 +5105,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         renderer: hailFillSvg,
         interactive: true,
         bubblingMouseEvents: false,
-        className: "wx-hail-topo",
+        className: hasRadar ? "wx-hail-topo wx-hail-swath-sig" : "wx-hail-topo",
       }).addTo(hailLayer);
     }
   }
@@ -9223,6 +9235,8 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
       }
       if (dist != null && dist > paintKm) return false;
     }
+    // Map zones/dots: never drop NOAA SWDI radar fringe — sheet hailMin still applies to spotters.
+    if (forMap && isRadarHail(h)) return true;
     const sz = parseFloat(h.size_in);
     return Number.isNaN(sz) || sz >= hailMin;
   });
