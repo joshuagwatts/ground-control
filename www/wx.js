@@ -10101,34 +10101,34 @@ function roofDossierHtml(data, esc, onResearch) {
           ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
         </div>
         <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm != null ? formatDistance(meta.fetchedKm) : "?"}` : "Quick scan · DEEP RESEARCH for full trace + news · Shingle ID → CHAT → LENS"}</p>
-        <div class="wx-filters">
-          <label>NEAR <select id="wx-f-km">
+        <div class="wx-filters hs-filters">
+          <label class="hs-select"><span class="hs-select-lab">Near</span><select id="wx-f-km" aria-label="Radius">
             ${radiusOptionHtml()}
           </select></label>
-          <label>HAIL ≥ <select id="wx-f-hail">
+          <label class="hs-select"><span class="hs-select-lab">Hail</span><select id="wx-f-hail" aria-label="Minimum hail size">
             ${hailInOptionHtml(wxFilters.hailIn, { short: true })}
           </select></label>
-          <label>WIND ≥ <select id="wx-f-wind">
-            <option value="0"${wxFilters.windMph == 0 ? " selected" : ""}>any</option>
+          <label class="hs-select"><span class="hs-select-lab">Wind</span><select id="wx-f-wind" aria-label="Minimum wind">
+            <option value="0"${wxFilters.windMph == 0 ? " selected" : ""}>Any</option>
             <option value="38"${wxFilters.windMph == 38 ? " selected" : ""}>38 mph</option>
             <option value="50"${wxFilters.windMph == 50 ? " selected" : ""}>50 mph</option>
             <option value="58"${wxFilters.windMph == 58 ? " selected" : ""}>58 mph</option>
           </select></label>
-          <label>WINDOW <select id="wx-f-days">
-            <option value="30"${wxFilters.days == 30 ? " selected" : ""}>30d</option>
-            <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90d</option>
-            <option value="180"${wxFilters.days == 180 ? " selected" : ""}>180d</option>
-            <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1y</option>
-            <option value="730"${wxFilters.days == 730 ? " selected" : ""}>2y</option>
+          <label class="hs-select"><span class="hs-select-lab">Window</span><select id="wx-f-days" aria-label="Time window">
+            <option value="30"${wxFilters.days == 30 ? " selected" : ""}>30 days</option>
+            <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90 days</option>
+            <option value="180"${wxFilters.days == 180 ? " selected" : ""}>6 months</option>
+            <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1 year</option>
+            <option value="730"${wxFilters.days == 730 ? " selected" : ""}>2 years</option>
           </select></label>
-          <label>YEAR <select id="wx-f-year">
-            <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>all</option>
+          <label class="hs-select"><span class="hs-select-lab">Year</span><select id="wx-f-year" aria-label="Year">
+            <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>All years</option>
             ${years.map((y) => `<option value="${esc(y)}"${String(wxFilters.year) === y ? " selected" : ""}>${esc(y)}</option>`).join("")}
           </select></label>
-          <label>SORT <select id="wx-f-sort">
-            <option value="date"${wxFilters.sort !== "size" && wxFilters.sort !== "storm" ? " selected" : ""}>chrono</option>
-            <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>extreme ★</option>
-            <option value="storm"${wxFilters.sort === "storm" ? " selected" : ""}>biggest storm</option>
+          <label class="hs-select"><span class="hs-select-lab">Sort</span><select id="wx-f-sort" aria-label="Sort order">
+            <option value="date"${wxFilters.sort !== "size" && wxFilters.sort !== "storm" ? " selected" : ""}>Newest</option>
+            <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>Largest hail</option>
+            <option value="storm"${wxFilters.sort === "storm" ? " selected" : ""}>Biggest storm</option>
           </select></label>
         </div>
         <h4>HAIL TRACE · ${hail.length} DAYS${hasSelectedStormDates() ? ` · MAP ${esc(selectedStormDateSig())}` : ""}</h4>
@@ -10260,6 +10260,7 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
   bind("#wx-f-days", "days", Number);
   bind("#wx-f-year", "year", String);
   bind("#wx-f-sort", "sort", String);
+  enhanceHsFilterSelects(root);
 }
 
 export function renderRoofDossier(root, data, esc, onResearch, onRefetch) {
@@ -10664,6 +10665,134 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
   return `${rows}${pager}`;
 }
 
+let hsFilterSheet = null;
+let hsFilterSheetSelect = null;
+
+function escFilterAttr(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
+}
+
+function escFilterHtml(s) {
+  return escFilterAttr(s);
+}
+
+function syncHsFilterTrigger(select) {
+  const trig = select?._hsFilterTrig;
+  if (!trig) return;
+  const val = trig.querySelector(".hs-filter-trig-val");
+  const opt = select.options[select.selectedIndex];
+  if (val) val.textContent = opt?.textContent?.trim() || opt?.value || "";
+}
+
+function closeHsFilterSheet() {
+  if (!hsFilterSheet) return;
+  hsFilterSheet.classList.remove("open");
+  hsFilterSheetSelect?._hsFilterTrig?.classList.remove("open");
+  hsFilterSheetSelect?._hsFilterTrig?.setAttribute("aria-expanded", "false");
+  hsFilterSheetSelect = null;
+  window.setTimeout(() => {
+    if (hsFilterSheet && !hsFilterSheet.classList.contains("open")) hsFilterSheet.hidden = true;
+  }, 280);
+}
+
+function ensureHsFilterSheet() {
+  if (hsFilterSheet) return hsFilterSheet;
+  hsFilterSheet = document.createElement("div");
+  hsFilterSheet.id = "hs-filter-sheet";
+  hsFilterSheet.className = "hs-filter-sheet";
+  hsFilterSheet.hidden = true;
+  hsFilterSheet.innerHTML = `<button type="button" class="hs-filter-sheet-bg" aria-label="Close filter picker"></button>
+    <div class="hs-filter-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="hs-filter-sheet-title">
+      <header class="hs-filter-sheet-head">
+        <div>
+          <div class="hs-filter-sheet-kicker">Storm filter</div>
+          <div class="hs-filter-sheet-title" id="hs-filter-sheet-title"></div>
+        </div>
+        <button type="button" class="hs-filter-sheet-close">Done</button>
+      </header>
+      <div class="hs-filter-sheet-list" role="listbox"></div>
+    </div>`;
+  document.body.appendChild(hsFilterSheet);
+  hsFilterSheet.querySelector(".hs-filter-sheet-bg")?.addEventListener("click", closeHsFilterSheet);
+  hsFilterSheet.querySelector(".hs-filter-sheet-close")?.addEventListener("click", closeHsFilterSheet);
+  if (!document._hsFilterEscBound) {
+    document._hsFilterEscBound = true;
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && hsFilterSheet?.classList.contains("open")) closeHsFilterSheet();
+    });
+  }
+  return hsFilterSheet;
+}
+
+function openHsFilterSheet(select) {
+  if (!select) return;
+  const sheet = ensureHsFilterSheet();
+  hsFilterSheetSelect = select;
+  const title = sheet.querySelector(".hs-filter-sheet-title");
+  const list = sheet.querySelector(".hs-filter-sheet-list");
+  const lab =
+    select.closest(".hs-select")?.querySelector(".hs-select-lab")?.textContent?.trim() ||
+    select.getAttribute("aria-label") ||
+    "Filter";
+  if (title) title.textContent = lab;
+  if (list) {
+    list.innerHTML = [...select.options]
+      .map((opt) => {
+        const on = opt.selected ? " on" : "";
+        return `<button type="button" class="hs-filter-opt${on}" data-val="${escFilterAttr(opt.value)}" role="option" aria-selected="${opt.selected ? "true" : "false"}">${escFilterHtml(opt.textContent)}</button>`;
+      })
+      .join("");
+    list.querySelectorAll(".hs-filter-opt").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const val = btn.getAttribute("data-val");
+        if (select.value !== val) {
+          select.value = val;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        syncHsFilterTrigger(select);
+        closeHsFilterSheet();
+      };
+    });
+  }
+  select._hsFilterTrig?.classList.add("open");
+  select._hsFilterTrig?.setAttribute("aria-expanded", "true");
+  sheet.hidden = false;
+  requestAnimationFrame(() => sheet.classList.add("open"));
+}
+
+function enhanceHsFilterSelects(root) {
+  if (!root) return;
+  for (const select of root.querySelectorAll(".hs-filters select, .wx-filters select")) {
+    if (select._hsFilterTrig) {
+      syncHsFilterTrigger(select);
+      continue;
+    }
+    select.classList.add("hs-filter-native");
+    const field = select.closest(".hs-select");
+    if (!field) continue;
+    field.classList.add("hs-filter-field");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "hs-filter-trig";
+    btn.setAttribute("aria-haspopup", "listbox");
+    btn.innerHTML = `<span class="hs-filter-trig-val"></span><span class="hs-filter-trig-chev" aria-hidden="true"></span>`;
+    select.insertAdjacentElement("afterend", btn);
+    select._hsFilterTrig = btn;
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openHsFilterSheet(select);
+    };
+    select.addEventListener("change", () => syncHsFilterTrigger(select));
+    syncHsFilterTrigger(select);
+  }
+}
+
 function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (!root) return;
   const meta = data._meta || {};
@@ -10739,6 +10868,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   bind("#hs-f-year", "year", String);
   bind("#hs-f-sort", "sort", String);
   bindHailAddrCopy(root);
+  enhanceHsFilterSelects(root);
 }
 
 async function copyTextToClipboard(text) {
