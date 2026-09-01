@@ -1997,26 +1997,43 @@ body.wx-map-expanded .hs-sheet {
   opacity: 0.35;
   filter: grayscale(0.55);
 }
+.hs-flag-ico {
+  display: inline-block;
+  width: 11px;
+  height: 14px;
+  flex-shrink: 0;
+  vertical-align: -2px;
+}
+.hs-flag-ico.green {
+  background:
+    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
+    linear-gradient(#1dff6e, #1dff6e) 3px 1px / 8px 7px no-repeat;
+}
+.hs-flag-ico.blue {
+  background:
+    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
+    linear-gradient(#2a81cb, #4a9eff) 3px 1px / 8px 7px no-repeat;
+}
+.hs-flag-ico.gradient {
+  background:
+    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
+    linear-gradient(145deg, #1dff6e 0%, #2a81cb 100%) 3px 1px / 8px 7px no-repeat;
+}
 .hs-layers button.hs-flags-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
 }
-.hs-layers button.hs-flags-toggle .hs-flag-ico {
-  display: inline-block;
-  width: 11px;
-  height: 14px;
-  background:
-    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
-    linear-gradient(#1dff6e, #1dff6e) 3px 1px / 8px 7px no-repeat;
-}
 .hs-layers button.hs-flags-toggle:not(.on) .hs-flag-ico {
   opacity: 0.35;
 }
 .hs-layers button.hs-flags-toggle.on {
-  background: rgba(29, 255, 110, 0.18);
-  color: #1dff6e;
-  border-color: rgba(29, 255, 110, 0.45);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.hs-layers button.hs-flags-toggle.on .hs-flag-ico {
+  opacity: 1;
 }
 .hs-layers button.hs-flags-toggle.busy {
   box-shadow: 0 0 0 1px rgba(29, 255, 110, 0.55);
@@ -2714,27 +2731,63 @@ body.wx-map-expanded .hs-field {
 .hs-flag-dock-kind,
 .hs-flag-dock-hide {
   flex: 0 0 auto;
-  padding: 0.18rem 0.4rem;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  padding: 0.22rem 0.38rem;
+  font-size: 0;
+  line-height: 1;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.hs-flag-dock-kind .hs-flag-ico {
+  opacity: 0.45;
+  filter: grayscale(0.45);
+}
+.hs-flag-dock-kind.on .hs-flag-ico {
+  opacity: 1;
+  filter: none;
 }
 .hs-flag-dock-kind.on {
-  color: #1dff6e;
   border-color: rgba(29, 255, 110, 0.4);
   background: rgba(29, 255, 110, 0.08);
 }
-.hs-flag-dock-kind[data-flag-act="biz"].on {
+.hs-flag-dock-kind.biz.on {
   color: #7ec8ff;
   border-color: rgba(42, 129, 203, 0.45);
   background: rgba(42, 129, 203, 0.12);
 }
+.hs-layers button.hs-flag-kind-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.32rem 0.45rem;
+  line-height: 1;
+  font-size: 0;
+}
+.hs-layers button.hs-flag-kind-toggle[data-ov="rent-flags"].on {
+  background: rgba(29, 255, 110, 0.18);
+  border-color: rgba(29, 255, 110, 0.45);
+}
+.hs-layers button.hs-flag-kind-toggle[data-ov="biz-flags"].on {
+  background: rgba(42, 129, 203, 0.18);
+  border-color: rgba(42, 129, 203, 0.45);
+}
+.hs-layers button.hs-flag-kind-toggle:not(.on) .hs-flag-ico {
+  opacity: 0.35;
+  filter: grayscale(0.55);
+}
+.hs-layers button.hs-flag-kind-toggle.on .hs-flag-ico {
+  opacity: 1;
+  filter: none;
+}
 .hs-flag-dock-hide {
+  font-size: 10px;
+  font-weight: 700;
   color: var(--text);
+  padding: 0.18rem 0.4rem;
 }
 .hs-flag-dock-empty {
   flex: 1 1 auto;
@@ -2743,34 +2796,6 @@ body.wx-map-expanded .hs-field {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.hs-layers button.hs-flag-kind-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-.hs-layers button.hs-flag-kind-toggle .hs-flag-ico {
-  display: inline-block;
-  width: 11px;
-  height: 14px;
-  flex-shrink: 0;
-}
-.hs-layers button.hs-flag-kind-toggle .hs-flag-ico.green {
-  background:
-    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
-    linear-gradient(#1dff6e, #1dff6e) 3px 1px / 8px 7px no-repeat;
-}
-.hs-layers button.hs-flag-kind-toggle .hs-flag-ico.blue {
-  width: 10px;
-  height: 10px;
-  border-radius: 50% 50% 50% 0;
-  transform: rotate(-45deg);
-  background: #2a81cb;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65);
-}
-.hs-layers button.hs-flag-kind-toggle:not(.on) .hs-flag-ico {
-  opacity: 0.35;
-  filter: grayscale(0.55);
 }
 .hs-house-pop-actions .hs-flag-hide {
   display: inline-flex;

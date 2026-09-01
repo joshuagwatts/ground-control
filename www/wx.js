@@ -6948,8 +6948,8 @@ function paintFlagDock() {
   dock.hidden = false;
   const rentOn = flagKindFilter.rental;
   const bizOn = flagKindFilter.business;
-  const kindToggles = `<button type="button" class="hs-flag-dock-kind ${rentOn ? "on" : ""}" data-flag-act="rent" aria-pressed="${rentOn ? "true" : "false"}" title="Show or hide green for-rent flags">Green</button>
-    <button type="button" class="hs-flag-dock-kind biz ${bizOn ? "on" : ""}" data-flag-act="biz" aria-pressed="${bizOn ? "true" : "false"}" title="Show or hide blue business flags">Biz</button>`;
+  const kindToggles = `<button type="button" class="hs-flag-dock-kind ${rentOn ? "on" : ""}" data-flag-act="rent" aria-pressed="${rentOn ? "true" : "false"}" aria-label="Green rental flags" title="Show or hide green for-rent flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
+    <button type="button" class="hs-flag-dock-kind biz ${bizOn ? "on" : ""}" data-flag-act="biz" aria-pressed="${bizOn ? "true" : "false"}" aria-label="Blue business flags" title="Show or hide blue business flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>`;
   if (!ready.length) {
     flagDockIdx = 0;
     dock.innerHTML = `${kindToggles}<span class="hs-flag-dock-empty muted">No ${bizOn && !rentOn ? "business" : rentOn && !bizOn ? "rental" : ""} flags in view</span>`;

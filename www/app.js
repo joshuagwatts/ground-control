@@ -69,7 +69,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   toggleFlagKindFilter,
-} from "./wx.js?v=0.2.208";
+} from "./wx.js?v=0.2.209";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1613,9 +1613,9 @@ function paintLayerToggles() {
     el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="dots" class="hs-dots-toggle" aria-label="Hail signature dots" title="Spotter (red) and SWDI radar (size-colored) dots — not weather radar or rental flags"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-b"></i></span>Dots</button>
-    <button type="button" data-ov="flags" class="hs-flags-toggle" aria-label="Phone flags" title="Phone flags on map — use Green/Biz to filter"><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
-    <button type="button" data-ov="rent-flags" class="hs-flag-kind-toggle" hidden aria-label="Green rental flags" title="Show or hide green for-rent flags"><span class="hs-flag-ico green" aria-hidden="true"></span>Green</button>
-    <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" hidden aria-label="Blue business flags" title="Show or hide blue business flags"><span class="hs-flag-ico blue" aria-hidden="true"></span>Biz</button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle" aria-label="Phone flags" title="Phone flags on map — tap Green or Biz to filter"><span class="hs-flag-ico gradient" aria-hidden="true"></span>Flags</button>
+    <button type="button" data-ov="rent-flags" class="hs-flag-kind-toggle" hidden aria-label="Green rental flags" title="Show or hide green for-rent flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
+    <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" hidden aria-label="Blue business flags" title="Show or hide blue business flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>
     <button type="button" data-ov="done">Done</button>
     <button type="button" data-ov="marks">Marks</button>`;
     if (!el._hsFlagsStatusBound) {
