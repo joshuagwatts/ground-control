@@ -6221,23 +6221,29 @@ function setFlagKindFilter(kind, on) {
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
   const b = map?.getBounds?.();
-  // City bulk rentals sit at listing coords — paint far enough to cover the nearest town,
-  // not just a tight circle that drops flags the user just fetched for this view.
-  let rentKm = Math.max(flagSearchKm() * 4.2, 36);
-  let bizKm = Math.max(flagSearchKm() * 2.6, 14);
-  if (b?.isValid?.()) {
-    const diag = haversineKm(b.getSouth(), b.getWest(), b.getNorth(), b.getEast());
-    rentKm = Math.max(rentKm, diag * 0.7 + 10);
-    bizKm = Math.max(bizKm, Math.min(diag * 0.55 + 6, 28));
-  }
+  // Match what the user sees: rentals inside the padded map frame (Zillow-style),
+  // not a 36 km circle that floods Edmond with OKC pins.
   const list = (nums || []).filter((n) => {
     if (!houseHasFlag(n) || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
     if (flagHiddenKeys.has(flagItemKey(n))) return false;
     const kind = housePhoneKind(n);
     if (kind === "rental" && !flagKindFilter.rental) return false;
     if (kind === "business" && !flagKindFilter.business) return false;
+    if (kind === "rental" && b?.isValid?.()) {
+      const s = b.getSouth();
+      const n0 = b.getNorth();
+      const w = b.getWest();
+      const e = b.getEast();
+      const dLat = Math.max(0.01, (n0 - s) * 0.2);
+      const dLon = Math.max(0.01, (e - w) * 0.2);
+      const inFrame = n.lat >= s - dLat && n.lat <= n0 + dLat && n.lon >= w - dLon && n.lon <= e + dLon;
+      if (inFrame) return true;
+      // Tiny grace for pins just off-screen.
+      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 1.4, 6)) return true;
+      return false;
+    }
     if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
-      const maxKm = kind === "rental" ? rentKm : bizKm;
+      const maxKm = Math.max(flagSearchKm() * 2.4, 12);
       if (haversineKm(c.lat, c.lng, n.lat, n.lon) > maxKm) return false;
     }
     return true;

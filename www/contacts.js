@@ -759,7 +759,9 @@ export function citiesNearPoint(lat, lon) {
     .sort((a, b) => {
       const da = haversineKm(lat, lon, a.lat, a.lon);
       const db = haversineKm(lat, lon, b.lat, b.lon);
-      if (Math.abs(da - db) < 6) return (b.pop || 0) - (a.pop || 0);
+      // Distance wins. Pop is only a tiny tie-break — a 6 km pop bias was
+      // promoting Oklahoma City over nearer suburbs (Edmond / Moore / Yukon).
+      if (Math.abs(da - db) < 0.8) return (b.pop || 0) - (a.pop || 0);
       return da - db;
     })
     .map((r) => r.name);
@@ -869,17 +871,40 @@ async function fetchZillowCityRentPhones(city, state, { lat, lon, have = [], max
     .sort((a, b) => haversineKm(lat, lon, a.lat, a.lon) - haversineKm(lat, lon, b.lat, b.lon))
     .slice(0, maxDetails);
   const details = [];
-  for (const row of needPhone) {
-    const deep = await fetchHtml(row.listingUrl, 14000, listingBrowserHeaders({ zillow: true }));
-    const phone = parseZillowRentDetailPhone(deep?.html || "");
-    if (phone) details.push({ ...row, phone, phone_kind: "rental", zillow_rent: true, source: "zillow-rent" });
+  // Parallel detail fetches — sequential made map-view Zillow feel stuck behind OKC cache.
+  const chunk = 3;
+  for (let i = 0; i < needPhone.length; i += chunk) {
+    const part = needPhone.slice(i, i + chunk);
+    const got = await Promise.all(
+      part.map(async (row) => {
+        const deep = await fetchHtml(row.listingUrl, 12000, listingBrowserHeaders({ zillow: true })).catch(() => null);
+        const phone = parseZillowRentDetailPhone(deep?.html || "");
+        if (!phone) return null;
+        return { ...row, phone, phone_kind: "rental", zillow_rent: true, source: "zillow-rent" };
+      }),
+    );
+    for (const row of got) if (row) details.push(row);
   }
   return mergeRentFlagList(withPhone, details);
 }
 
+function rentFlagsNearPoint(rows, lat, lon, km = 28) {
+  return (rows || []).filter(
+    (r) =>
+      r?.phone &&
+      Number.isFinite(Number(r.lat)) &&
+      Number.isFinite(Number(r.lon)) &&
+      haversineKm(lat, lon, Number(r.lat), Number(r.lon)) <= km,
+  );
+}
+
+function isOklahomaCityName(name) {
+  return /^(oklahoma\s*city|okc)$/i.test(String(name || "").trim());
+}
+
 /**
  * Persist + viewport-first statewide rental flags.
- * Map-center cities paint first; the rest of Oklahoma fills in the background.
+ * Map-center city (Zillow + Rent.com) first — never dump OKC cache over the view.
  */
 const RENT_SWEEP_FRESH_MS = 25 * 60 * 1000;
 
@@ -887,27 +912,34 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const onBatch = typeof opts.onBatch === "function" ? opts.onBatch : null;
   const force = opts.force === true;
   const retarget = opts.retarget === true;
-  const city = String(opts.city || inferOkCity(lat, lon) || "").trim();
+  const ordered =
+    isOklahomaLatLon(lat, lon) || stateAbbr(opts.state || "") === "ok" ? citiesNearPoint(lat, lon) : [];
+  const city = String(opts.city || ordered[0] || inferOkCity(lat, lon) || "").trim();
   const state = String(opts.state || (isOklahomaLatLon(lat, lon) ? "OK" : "")).trim();
   const inOk = isOklahomaLatLon(lat, lon) || stateAbbr(state) === "ok";
   const profile = flagNetProfile();
   let acc = [];
   let persistTimer = 0;
-  const emit = (rows) => {
-    acc = mergeRentFlagList(acc, rows);
-    // Throttle localStorage writes — every batch used to stall the UI thread.
+  const schedulePersist = () => {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = 0;
       persistRentFlags(acc);
     }, 280);
-    if (onBatch) onBatch(acc.slice());
+  };
+  const emitNear = (rows) => {
+    acc = mergeRentFlagList(acc, rows);
+    schedulePersist();
+    // Only hand the map flags near this center so OKC persist cannot bury the view.
+    if (onBatch) onBatch(rentFlagsNearPoint(acc, lat, lon, 32));
   };
 
   const cached = loadPersistedRentFlags();
-  if (cached.length) emit(cached);
+  if (cached.length) {
+    acc = mergeRentFlagList(acc, cached);
+    if (onBatch) onBatch(rentFlagsNearPoint(cached, lat, lon, 28));
+  }
 
-  // Cancel an in-flight crawl when the map retargets — but only wipe caches on hard force.
   if ((force || retarget) && rentSweepInFlight) {
     rentSweepEpoch += 1;
     rentSweepInFlight = null;
@@ -924,70 +956,79 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const epoch = rentSweepEpoch;
   const work = (async () => {
     if (epoch !== rentSweepEpoch) return acc;
-    const ordered = inOk ? citiesNearPoint(lat, lon) : city ? [city] : [];
-    const viewCities = [];
-    const pushCity = (c) => {
+    const primary = city || ordered[0] || "";
+    const neighbors = [];
+    const pushNeighbor = (c) => {
       const name = String(c || "").trim();
       if (!name) return;
-      if (viewCities.some((x) => cityPathSlug(x) === cityPathSlug(name))) return;
-      viewCities.push(name);
+      if (primary && cityPathSlug(name) === cityPathSlug(primary)) return;
+      if (neighbors.some((x) => cityPathSlug(x) === cityPathSlug(name))) return;
+      // Never pull Oklahoma City into the fast path unless the map is centered there.
+      if (isOklahomaCityName(name) && !isOklahomaCityName(primary)) return;
+      neighbors.push(name);
     };
-    pushCity(city);
-    // Nearest towns for this map center — enough to cover the viewport.
-    for (const extra of ordered.slice(0, 6)) pushCity(extra);
+    for (const extra of ordered) {
+      if (neighbors.length >= 2) break;
+      pushNeighbor(extra);
+    }
 
-    const runCities = async (names, pages, kinds) => {
-      const chunk = Math.max(1, profile.cityChunk || 3);
-      for (let i = 0; i < names.length; i += chunk) {
-        if (epoch !== rentSweepEpoch) return;
-        const part = names.slice(i, i + chunk);
-        const batches = await Promise.all(
-          part.map(async (c) => {
-            const [rentRows, aptRows] = await Promise.all([
-              fetchRentComCityPages(c, state || "OK", { kinds, pages }).catch(() => []),
-              fetchApartmentsComCityPages(c, state || "OK", { pages: 1 }).catch(() => []),
-            ]);
-            return mergeRentFlagList(rentRows, aptRows);
-          }),
+    const runCityBundle = async (c, { zillow = false, zillowMax = 0 } = {}) => {
+      if (!c || epoch !== rentSweepEpoch) return [];
+      const jobs = [
+        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages: 1 }).catch(() => []),
+        fetchApartmentsComCityPages(c, state || "OK", { pages: 1 }).catch(() => []),
+      ];
+      if (zillow && zillowMax > 0) {
+        jobs.unshift(
+          fetchZillowCityRentPhones(c, state || "OK", {
+            lat,
+            lon,
+            have: acc,
+            maxDetails: zillowMax,
+          }).catch(() => []),
         );
-        for (const rows of batches) emit(rows);
       }
+      const parts = await Promise.all(jobs);
+      return mergeRentFlagList([], parts.flat());
     };
 
-    await runCities(viewCities, 1, ["apartments", "houses"]);
-    markRentCitiesSwept(viewCities);
-    if (epoch !== rentSweepEpoch) return acc;
-
-    if (profile.zillowDetails > 0 && (city || inOk)) {
-      const zCities = viewCities.slice(0, 2);
-      for (const zCity of zCities) {
-        if (epoch !== rentSweepEpoch) return acc;
-        const zRows = await fetchZillowCityRentPhones(zCity, state || "OK", {
-          lat,
-          lon,
-          have: acc,
-          maxDetails: profile.zillowDetails,
-        }).catch(() => []);
-        if (zRows.length) emit(zRows);
-      }
+    // 1) Map-view primary city first — Zillow + Rent + apartments together.
+    if (primary) {
+      const zMax = Number(profile.zillowDetails) > 0 ? Math.max(8, Number(profile.zillowDetails)) : 0;
+      const primaryRows = await runCityBundle(primary, { zillow: zMax > 0, zillowMax: zMax });
+      emitNear(primaryRows);
+      markRentCitiesSwept([primary]);
     }
     if (epoch !== rentSweepEpoch) return acc;
 
-    // Background statewide fill — do not block the view-city result.
+    // 2) One–two neighbors (still not OKC unless centered there).
+    for (const n of neighbors) {
+      if (epoch !== rentSweepEpoch) return acc;
+      const zMax = Number(profile.zillowDetails) > 0 ? Math.min(4, Number(profile.zillowDetails)) : 0;
+      const rows = await runCityBundle(n, { zillow: zMax > 0, zillowMax: zMax });
+      emitNear(rows);
+      markRentCitiesSwept([n]);
+    }
+    if (epoch !== rentSweepEpoch) return acc;
+
+    // 3) Background statewide — does not block map-view paint.
     if (inOk) {
       const swept = loadSweptRentCities();
       const now = Date.now();
-      const rest = ordered.filter(
-        (c) =>
-          !viewCities.some((x) => cityPathSlug(x) === cityPathSlug(c)) && rentCityNeedsSweep(c, swept, now),
-      );
-      const batchSize = Math.max(6, Number(profile.statewideBatch) || 10);
+      const skip = new Set([primary, ...neighbors].map((c) => cityPathSlug(c)).filter(Boolean));
+      const rest = ordered.filter((c) => !skip.has(cityPathSlug(c)) && rentCityNeedsSweep(c, swept, now));
+      const batchSize = Math.max(4, Number(profile.statewideBatch) || 8);
       const batch = rest.slice(0, batchSize);
       if (batch.length) {
         void (async () => {
-          if (epoch !== rentSweepEpoch) return;
-          await runCities(batch, 1, ["apartments", "houses"]);
-          if (epoch === rentSweepEpoch) markRentCitiesSwept(batch);
+          const chunk = Math.max(1, profile.cityChunk || 3);
+          for (let i = 0; i < batch.length; i += chunk) {
+            if (epoch !== rentSweepEpoch) return;
+            const part = batch.slice(i, i + chunk);
+            const batches = await Promise.all(part.map((c) => runCityBundle(c, { zillow: false }).catch(() => [])));
+            for (const rows of batches) emitNear(rows);
+            markRentCitiesSwept(part);
+          }
         })();
       }
     }
