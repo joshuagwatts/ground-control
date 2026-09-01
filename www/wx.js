@@ -22,6 +22,7 @@ import {
   citiesInMapBounds,
   loadPersistedRentFlags,
   persistRentFlags,
+  clearPersistedRentFlags,
   cancelRentFlagSweep,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
@@ -7331,9 +7332,9 @@ export function startPhoneFlagScan() {
     houseEnrichTimer = 0;
   }
 
-  // Blank the layer first so refresh is visible (no stale persist flash).
+  // Blank the layer + wipe stale localStorage so toggle-on is a real re-search.
   houseCache = { key: "", rings: [], nums: [] };
-  // Mark hydrated so a later pan doesn't dump the whole statewide localStorage into the layer.
+  clearPersistedRentFlags();
   persistHydrated = true;
   try {
     houseLayer?.clearLayers?.();

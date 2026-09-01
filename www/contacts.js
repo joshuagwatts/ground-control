@@ -894,6 +894,28 @@ export function persistRentFlags(rows) {
   }
 }
 
+/** Wipe stored rent pins + city sweep marks (Flags toggle-on hard refresh). */
+export function clearPersistedRentFlags() {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.removeItem(RENT_STORE_KEY);
+    localStorage.removeItem(RENT_CITY_SWEPT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Replace stored rent pins (after a force map-view search) — do not merge stale statewide junk. */
+export function replacePersistedRentFlags(rows) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const flags = mergeRentFlagList([], rows).slice(0, RENT_STORE_MAX);
+    localStorage.setItem(RENT_STORE_KEY, JSON.stringify({ at: Date.now(), flags }));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
 export function citiesNearPoint(lat, lon) {
   return OK_RENT_CITY_ROWS.slice()
     .sort((a, b) => {
@@ -1243,7 +1265,8 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = 0;
-      persistRentFlags(acc);
+      if (force) replacePersistedRentFlags(acc);
+      else persistRentFlags(acc);
     }, 400);
   };
   const paintRows = (rows) => {
@@ -1263,22 +1286,29 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     paintRows(acc);
   };
 
-  // Map-frame pins only — never dump statewide localStorage onto a Tulsa view.
-  // Force refresh still paints in-bounds persist so the layer isn't blank while network runs.
-  const cached = loadPersistedRentFlags();
-  if (cached.length) {
-    const frame = bounds
-      ? rentFlagsInBounds(cached, bounds, 28)
-      : rentFlagsNearPoint(cached, lat, lon, 32);
-    if (frame.length) {
-      acc = mergeRentFlagList(acc, frame);
-      paintRows(acc);
+  // Force = wipe stale localStorage first so old Edmond dumps don't mask this map view.
+  if (force) {
+    clearPersistedRentFlags();
+    rentCityCache.clear();
+    rentFlagCache.clear();
+    if (inOk) clearSweptRentCitiesNear(lat, lon, 80);
+  } else {
+    // Map-frame pins only — never dump statewide localStorage onto a Tulsa view.
+    const cached = loadPersistedRentFlags();
+    if (cached.length) {
+      const frame = bounds
+        ? rentFlagsInBounds(cached, bounds, 28)
+        : rentFlagsNearPoint(cached, lat, lon, 32);
+      if (frame.length) {
+        acc = mergeRentFlagList(acc, frame);
+        paintRows(acc);
+      }
     }
   }
   if (Array.isArray(OK_RENT_FLAG_SEED) && OK_RENT_FLAG_SEED.length) {
     const seedRows = bounds
-      ? rentFlagsInBounds(OK_RENT_FLAG_SEED, bounds, 28)
-      : rentFlagsNearPoint(OK_RENT_FLAG_SEED, lat, lon, 32);
+      ? rentFlagsInBounds(OK_RENT_FLAG_SEED, bounds, 36)
+      : rentFlagsNearPoint(OK_RENT_FLAG_SEED, lat, lon, 36);
     if (seedRows.length) {
       acc = mergeRentFlagList(acc, seedRows);
       paintRows(acc);
@@ -1295,13 +1325,6 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       paintRows(merged);
       return merged;
     });
-  }
-
-  if (force) {
-    // Drop poisoned empty page caches so Rent.com / apts retry after a blocked pass.
-    rentCityCache.clear();
-    rentFlagCache.clear();
-    if (inOk) clearSweptRentCitiesNear(lat, lon, 40);
   }
 
   const epoch = rentSweepEpoch;
@@ -1396,7 +1419,10 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
         }).catch(() => []);
         if (epoch === rentSweepEpoch) emitView(rows);
       }
-      if (epoch === rentSweepEpoch) persistRentFlags(acc);
+      if (epoch === rentSweepEpoch) {
+        if (force) replacePersistedRentFlags(acc);
+        else persistRentFlags(acc);
+      }
     })();
 
     if (inOk && !viewportOnly) {
@@ -1424,7 +1450,8 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     if (persistTimer) {
       clearTimeout(persistTimer);
       persistTimer = 0;
-      persistRentFlags(acc);
+      if (force) replacePersistedRentFlags(acc);
+      else persistRentFlags(acc);
     }
     return acc;
   })();

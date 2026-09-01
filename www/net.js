@@ -276,8 +276,10 @@ function corsProxyCandidates(url) {
   const local = [];
   try {
     if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
-      local.push(`http://127.0.0.1:4175/proxy?url=${enc}`);
+      // Same-origin first when using scripts/dev-server.mjs (serves www + /proxy).
+      local.push(`${location.protocol}//${location.host}/proxy?url=${enc}`);
       local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
+      local.push(`http://127.0.0.1:4175/proxy?url=${enc}`);
     }
   } catch {
     /* ignore */
@@ -286,7 +288,6 @@ function corsProxyCandidates(url) {
     ...local,
     `https://api.allorigins.win/raw?url=${enc}`,
     `https://api.allorigins.win/get?url=${enc}`,
-    `https://corsproxy.io/?url=${enc}`,
   ];
 }
 
