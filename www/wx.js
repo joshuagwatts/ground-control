@@ -1,4 +1,12 @@
 /** WX map + storm dossier — runs on phone (public APIs). */
+import {
+  parseStormDay,
+  renderStormCalendar,
+  bindStormCalendar,
+  defaultCalendarMonth,
+  HAIL_EXTREME_IN,
+  HAIL_PIN_CALENDAR_IN,
+} from "./hail-calendar.js";
 import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson, osmMapJson } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
 import {
@@ -158,10 +166,12 @@ let lastHailFetchedKm = PIN_FETCH_FAST_KM;
 let selectedStormDates = new Set();
 /** HailScope: never auto-pick a storm date; zones wait for a tap. */
 let hailScopeMode = false;
+let hsCalendarOpen = false;
+let hsCalendarYear = null;
+let hsCalendarMonth = null;
 
 function stormDateKey(date) {
-  const k = String(date || "").slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(k) ? k : "";
+  return parseStormDay(date);
 }
 
 function hasSelectedStormDates() {
@@ -908,7 +918,7 @@ function ingestSwdiItems(items, lat, lon, km, hits = new Map()) {
     const dist = haversineKm(lat, lon, hitLat, hitLon);
     if (dist > km) continue;
     const ztime = String(item.ZTIME || "");
-    const day = ztime.slice(0, 10) || "";
+    const day = parseStormDay(ztime);
     if (!day) continue;
     const sz = parseFloat(item.MAXSIZE);
     const row = {
@@ -1441,8 +1451,8 @@ export function collapseHailByDate(rows) {
     return Number.isFinite(dist) && dist < 900 ? dist : 999;
   };
   for (const h of rows || []) {
-    const day = String(h.date || "").slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    const day = parseStormDay(h.date);
+    if (!day) continue;
     const sz = parseFloat(h.size_in);
     const size = Number.isNaN(sz) ? 0 : sz;
     const distN = rowDistKm(h);
@@ -10418,6 +10428,124 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   return hail.filter((h) => hailDayMatchesQuery(h, q));
 }
 
+/** Calendar highlights — map view: extreme (≥2″) days; pinned address: ≥1″ at roof. */
+export function hailCalendarHighlightDays(data, { viewport = false } = {}) {
+  const filters = { ...wxFilters, hailIn: 0 };
+  const isViewport = viewport || Boolean(data?.viewport || data?._meta?.viewport);
+  const raw = filterHailRaw(data, filters, { forMap: isViewport });
+  const collapsed = collapseHailByDate(raw);
+  const pinMode = wxPinSelected() && !isViewport;
+  const days = new Set();
+  for (const h of collapsed) {
+    const day = parseStormDay(h.date);
+    if (!day) continue;
+    const sz = parseFloat(h.size_in);
+    const zoneMax = Math.max(
+      Number.isFinite(sz) ? sz : 0,
+      Number(h.max_size) || 0,
+      ...((h.zone_pts || []).map((p) => parseFloat(p.size_in) || 0)),
+    );
+    if (pinMode) {
+      if ((h.near_hits || 0) > 0 && sz >= HAIL_PIN_CALENDAR_IN) days.add(day);
+    } else if (zoneMax >= HAIL_EXTREME_IN) {
+      days.add(day);
+    }
+  }
+  return days;
+}
+
+function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
+  const pop = root.querySelector("#hs-cal-pop");
+  if (!pop || !data) return;
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const pinMode = wxPinSelected() && !viewport;
+  const highlights = hailCalendarHighlightDays(data, { viewport });
+  if (hsCalendarYear == null || hsCalendarMonth == null) {
+    const def = defaultCalendarMonth(highlights);
+    hsCalendarYear = def.year;
+    hsCalendarMonth = def.month;
+  }
+  const subtitle = pinMode
+    ? "Yellow = ≥1″ hail at this address"
+    : "Yellow = extreme hail (≥2″) in map view";
+  pop.innerHTML = renderStormCalendar({
+    year: hsCalendarYear,
+    month: hsCalendarMonth,
+    highlightDays: highlights,
+    selectedDays: selectedStormDates,
+    subtitle,
+    esc,
+  });
+  bindStormCalendar(pop, {
+    onDay: (iso) => {
+      const hailRows = mapHailRows(data, wxFilters);
+      const zoneRows = hailRowsForZones(data, wxFilters);
+      try {
+        selectStormDate(iso, { fit: false, requireDate: true, hailRows, zoneRows, toggle: true });
+      } catch (err) {
+        console.warn("calendar selectStormDate failed", err);
+      }
+      paintHailScopeDateSelection(root, data, esc);
+      paintHailCalendarPanel(root, data, esc, { onRefetch });
+    },
+    onNav: (dir) => {
+      let y = hsCalendarYear;
+      let m = hsCalendarMonth + (dir === "next" ? 1 : -1);
+      if (m > 11) {
+        m = 0;
+        y++;
+      }
+      if (m < 0) {
+        m = 11;
+        y--;
+      }
+      hsCalendarYear = y;
+      hsCalendarMonth = m;
+      paintHailCalendarPanel(root, data, esc, { onRefetch });
+    },
+  });
+}
+
+function bindHailCalendar(root, data, esc, { onRefetch } = {}) {
+  const trig = root.querySelector("#hs-cal-trig");
+  const pop = root.querySelector("#hs-cal-pop");
+  if (!trig || !pop) return;
+  if (!trig._hsCalBound) {
+    trig._hsCalBound = true;
+    trig.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hsCalendarOpen = !hsCalendarOpen;
+      trig.classList.toggle("open", hsCalendarOpen);
+      trig.setAttribute("aria-expanded", hsCalendarOpen ? "true" : "false");
+      pop.hidden = !hsCalendarOpen;
+      if (hsCalendarOpen) {
+        hsCalendarYear = null;
+        hsCalendarMonth = null;
+        paintHailCalendarPanel(root, data, esc, { onRefetch });
+      }
+    };
+    if (!document._hsCalDocBound) {
+      document._hsCalDocBound = true;
+      document.addEventListener(
+        "click",
+        (e) => {
+          if (!hsCalendarOpen) return;
+          if (e.target.closest(".hs-cal-wrap")) return;
+          hsCalendarOpen = false;
+          const t = document.querySelector("#hs-cal-trig");
+          const p = document.querySelector("#hs-cal-pop");
+          t?.classList.remove("open");
+          t?.setAttribute("aria-expanded", "false");
+          if (p) p.hidden = true;
+        },
+        true,
+      );
+    }
+  }
+  if (hsCalendarOpen) paintHailCalendarPanel(root, data, esc, { onRefetch });
+}
+
 function syncHailStormDateSelection(_data) {
   // Never auto-check a storm date — pin mode only switches the filter (newest ≥1″).
   // Map view keeps biggest-storm sort. User taps dates to overlay zones.
@@ -10499,6 +10627,7 @@ function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   }
   paintHailScopeDateSelection(root, data, esc);
   bindHailScopeDates(root, data, esc, { onRefetch });
+  bindHailCalendar(root, data, esc, { onRefetch });
   const filters = root.querySelector(".hs-filters");
   if (filters && !root.querySelector("#hs-q")) {
     /* sheet skeleton missing — full rebuild once */
@@ -10614,6 +10743,10 @@ function hailScopeHtml(data, days, esc) {
           ? `<button type="button" id="hs-hail-search" class="hs-hail-search">${esc(searchLab)}</button>`
           : ""
       }
+    </div>
+    <div class="hs-cal-wrap">
+      <button type="button" id="hs-cal-trig" class="hs-cal-trig" aria-expanded="false" aria-controls="hs-cal-pop">View calendar</button>
+      <div id="hs-cal-pop" class="hs-cal-pop" hidden></div>
     </div>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
@@ -10923,6 +11056,7 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
     };
   }
   bindHailScopeDates(root, data, esc, { onRefetch });
+  bindHailCalendar(root, data, esc, { onRefetch });
   bindPlaceLinks(root);
   const searchBtn = root.querySelector("#hs-hail-search");
   if (searchBtn) {
