@@ -1,5 +1,5 @@
 /** WX map + storm dossier — runs on phone (public APIs). */
-import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson, osmMapJson, ensureWebProxyReady, hasNativeHttp } from "./net.js";
+import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson, osmMapJson } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
 import {
   lookupPlaceContacts,
@@ -1081,21 +1081,6 @@ async function ensureSwdiForSelectedStormDays() {
   });
   if (!need.length) return;
   cancelScheduledStormRedraw();
-  if (!hasNativeHttp()) {
-    const proxyReady = await ensureWebProxyReady(12000);
-    if (!proxyReady) {
-      try {
-        if (!sessionStorage.getItem("gc-proxy-reload")) {
-          sessionStorage.setItem("gc-proxy-reload", "1");
-          emitMapStatus("Loading radar proxy…");
-          location.reload();
-          return;
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-  }
   const gen = ++pinStormSwdiGen;
   const km = hailRadarZoneKm();
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);

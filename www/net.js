@@ -54,6 +54,25 @@ function teamProxyUrl(target) {
   return `${base}/?url=${encodeURIComponent(target)}`;
 }
 
+/** Reliable public CORS relay for large NOAA JSON (prefix URL, do not encode). */
+function corsShProxyUrl(target) {
+  return `https://cors.sh/${target}`;
+}
+
+async function httpGetViaCorsSh(url, timeoutMs) {
+  const proxy = corsShProxyUrl(url);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
+    const body = unwrapProxyBody(await res.text());
+    if (!res.ok || !validProxyBody(body)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    return { url, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function httpGetViaServiceWorkerMessage(url, timeoutMs) {
   const reg = await navigator.serviceWorker.ready;
   const worker = reg.active || reg.waiting || reg.installing;
@@ -381,7 +400,12 @@ function corsProxyCandidates(url) {
   } catch {
     /* ignore */
   }
-  return [...local, `https://api.allorigins.win/raw?url=${enc}`, `https://api.allorigins.win/get?url=${enc}`];
+  return [
+    ...local,
+    corsShProxyUrl(url),
+    `https://api.allorigins.win/raw?url=${enc}`,
+    `https://api.allorigins.win/get?url=${enc}`,
+  ];
 }
 
 function validProxyBody(body) {
@@ -413,12 +437,30 @@ function unwrapProxyBody(body) {
 }
 
 async function httpGetViaCorsProxy(url, timeoutMs) {
-  const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 14000), 32000);
+  const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 16000), 36000);
   let lastErr = "cors proxy failed";
+  const isNoaa = /ncdc\.noaa\.gov|noaa\.gov/i.test(url);
+
+  // NOAA SWDI — cors.sh carries large JSON; try before slow/broken proxies.
+  if (isNoaa) {
+    try {
+      return await httpGetViaCorsSh(url, perMs);
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
 
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator && needsBrowserCorsProxy(url)) {
     try {
-      return await httpGetViaSameOriginProxy(url, perMs);
+      return await httpGetViaSameOriginProxy(url, Math.min(perMs, 8000));
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  if (!isNoaa) {
+    try {
+      return await httpGetViaCorsSh(url, perMs);
     } catch (e) {
       lastErr = String(e?.message || e || lastErr);
     }
@@ -442,7 +484,9 @@ async function httpGetViaCorsProxy(url, timeoutMs) {
     }
   }
 
-  const proxies = corsProxyCandidates(url).filter((p) => p !== team && p !== sameOriginProxyUrl(url));
+  const proxies = corsProxyCandidates(url).filter(
+    (p) => p !== team && p !== sameOriginProxyUrl(url) && p !== corsShProxyUrl(url),
+  );
   for (const proxy of proxies) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), perMs);
