@@ -77,8 +77,8 @@ const pinData = {
   ],
 };
 const pinDays = hailCalendarHighlightDays(pinData, { viewport: false });
-assert(pinDays.has("2026-05-15"), "pin calendar includes ≥1″ at roof");
-assert(!pinDays.has("2026-06-01"), "pin calendar skips far 2.5″ day");
+assert(!pinDays.has("2026-05-15"), "map-view calendar skips sub-extreme hail");
+assert(pinDays.has("2026-06-01"), "map-view calendar highlights ≥2″ hail");
 
 const vpData = {
   viewport: true,

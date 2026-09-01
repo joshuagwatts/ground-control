@@ -803,6 +803,10 @@ function pinCoords() {
 
 /** Lat/lon anchor for on-demand SWDI fetches — house pin or map center. */
 function stormSwdiAnchor() {
+  if (hasSelectedStormDates()) {
+    const q = mapViewHailQuery?.();
+    if (q && Number.isFinite(q.lat) && Number.isFinite(q.lon)) return { lat: q.lat, lon: q.lon };
+  }
   const pin = pinCoords();
   if (pin) return pin;
   const q = mapViewHailQuery?.();
@@ -3928,6 +3932,13 @@ export function hailInMapView(rows) {
   return (rows || []).filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon) && b.contains([h.lat, h.lon]));
 }
 
+/** Clip hail rows to the current map frame — keeps calendar, list, and overlays aligned. */
+function clipHailToMapView(rows) {
+  if (!rows?.length) return rows || [];
+  const inView = hailInMapView(rows);
+  return inView.length ? inView : rows;
+}
+
 export function wxPinSelected() {
   return Number.isFinite(pinLat) && Number.isFinite(pinLon);
 }
@@ -4114,6 +4125,9 @@ function selectPinIcon() {
 function hailNearPin(rows, day = null, { forZones = false } = {}) {
   let pool = rows || [];
   if (day) pool = pool.filter((h) => stormDayMatches(h.date, day));
+  if (hasSelectedStormDates()) {
+    return clipHailToMapView(pool);
+  }
   // House pin + storm day: spotters local; radar uses the wide dossier ring for zone fills.
   if (hailStormAtPin()) {
     const spotKm = hailPinPaintKm();
@@ -4123,10 +4137,6 @@ function hailNearPin(rows, day = null, { forZones = false } = {}) {
       const cap = isRadarHail(h) ? radarKm : spotKm;
       return hailDistKm(h, pinLat, pinLon) <= cap;
     });
-  }
-  // Map-view storm overlay: full fetched footprint so zones don't morph while panning.
-  if (hasSelectedStormDates()) {
-    return pool.filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon));
   }
   if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) {
     return hailInMapView(pool);
@@ -4240,11 +4250,18 @@ async function refreshHailMapFill() {
 }
 
 function scheduleHailMapFill(ms = 280) {
-  if (!hasSelectedStormDates() || wxPinSelected()) return;
+  if (!hasSelectedStormDates()) return;
   if (hailMapFillTimer) clearTimeout(hailMapFillTimer);
   hailMapFillTimer = setTimeout(() => {
     hailMapFillTimer = 0;
-    void refreshHailMapFill();
+    lastHailDrawSig = "";
+    const pools = resolvedStormDrawPools();
+    drawHailMarkers(pools.dotRows, lastWindRows, {
+      requireDate: true,
+      zoneRows: pools.zoneRows,
+    });
+    repaintOpenHsCalendar();
+    if (!wxPinSelected()) void refreshHailMapFill();
   }, ms);
 }
 
@@ -10035,12 +10052,12 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
   const pinLatN = Number(data.lat ?? data._meta?.lat);
   const pinLonN = Number(data.lon ?? data._meta?.lon);
   const viewport = Boolean(data.viewport || data._meta?.viewport);
-  // Map-view storm overlay: full footprint. Pin + storm day: stay within dossier radius.
-  const skipDist = forMap && (viewport || hasSelectedStormDates()) && !hailStormAtPin();
+  // Map-view storm overlay: visible frame. Pin + storm day: map view, not pin ring.
+  const skipDist = forMap && (viewport || hasSelectedStormDates());
   const paintKm = forMap
     ? Math.max(km, Number(data._meta?.fetchedKm) || 0, PIN_FETCH_WIDE_KM, mapViewFetchKm())
     : km;
-  return (data.hail || []).filter((h) => {
+  const filtered = (data.hail || []).filter((h) => {
     if (year !== "all") {
       if (!h.date || !String(h.date).startsWith(year)) return false;
     } else if (h.date && h.date < since) {
@@ -10059,11 +10076,18 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
     const sz = parseFloat(h.size_in);
     return Number.isNaN(sz) || sz >= hailMin;
   });
+  if (forMap && (viewport || hasSelectedStormDates())) {
+    return clipHailToMapView(filtered);
+  }
+  return filtered;
 }
 
 /** Hail rows for zone fills — spotters local, radar uses wide dossier ring at pinned houses. */
 export function hailRowsForZones(data, filters = wxFilters) {
-  if (!wxPinSelected() || !hasSelectedStormDates()) return mapHailRows(data, filters);
+  if (hasSelectedStormDates() || Boolean(data?.viewport || data?._meta?.viewport)) {
+    return mapHailRows(data, filters);
+  }
+  if (!wxPinSelected()) return mapHailRows(data, filters);
   const spots = filterHailRaw(data, filters, { forMap: true });
   const since = cutoffDate(filters.days);
   const year = String(filters.year || "all");
@@ -10095,6 +10119,9 @@ export function filterDossier(data, filters = wxFilters) {
   const year = String(filters.year || "all");
   const sort = String(filters.sort || "date");
   let hailRaw = filterHailRaw(data, filters);
+  if (Boolean(data?.viewport || data?._meta?.viewport)) {
+    hailRaw = clipHailToMapView(hailRaw);
+  }
   // One extremeness tag per date (HailTrace-style).
   let hail = collapseHailByDate(hailRaw).filter((h) => stormPassesSizeFilter(h, filters));
   hail = [...hail].sort((a, b) => {
@@ -10442,26 +10469,28 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   return hail.filter((h) => hailDayMatchesQuery(h, q));
 }
 
+/** Rows for calendar — loaded hail clipped to the visible map frame. */
+function hailCalendarBaseRows(data) {
+  const filters = { ...wxFilters, hailIn: 0 };
+  const raw = filterHailRaw(data, filters, { forMap: true });
+  return clipHailToMapView(raw);
+}
+
 /** All loaded storm days for calendar picking (ignores hail-size filter). */
 export function hailCalendarStormDays(data, { viewport = false } = {}) {
-  const filters = { ...wxFilters, hailIn: 0 };
-  const isViewport = viewport || Boolean(data?.viewport || data?._meta?.viewport);
-  const raw = filterHailRaw(data, filters, { forMap: isViewport });
+  void viewport;
   const days = new Set();
-  for (const h of collapseHailByDate(raw)) {
+  for (const h of collapseHailByDate(hailCalendarBaseRows(data))) {
     const day = parseStormDay(h.date);
     if (day) days.add(day);
   }
   return days;
 }
 
-/** Calendar highlights — map view: extreme (≥2″) days; pinned address: ≥1″ at roof. */
+/** Calendar highlights — bright days are ≥2″ extreme hail in the current map view. */
 export function hailCalendarHighlightDays(data, { viewport = false } = {}) {
-  const filters = { ...wxFilters, hailIn: 0 };
-  const isViewport = viewport || Boolean(data?.viewport || data?._meta?.viewport);
-  const raw = filterHailRaw(data, filters, { forMap: isViewport });
-  const collapsed = collapseHailByDate(raw);
-  const pinMode = wxPinSelected() && !isViewport;
+  void viewport;
+  const collapsed = collapseHailByDate(hailCalendarBaseRows(data));
   const days = new Set();
   for (const h of collapsed) {
     const day = parseStormDay(h.date);
@@ -10472,13 +10501,18 @@ export function hailCalendarHighlightDays(data, { viewport = false } = {}) {
       Number(h.max_size) || 0,
       ...((h.zone_pts || []).map((p) => parseFloat(p.size_in) || 0)),
     );
-    if (pinMode) {
-      if ((h.near_hits || 0) > 0 && sz >= HAIL_PIN_CALENDAR_IN) days.add(day);
-    } else if (zoneMax >= HAIL_EXTREME_IN) {
-      days.add(day);
-    }
+    if (zoneMax >= HAIL_EXTREME_IN) days.add(day);
   }
   return days;
+}
+
+function repaintOpenHsCalendar() {
+  if (!hsCalendarOpen || !hsCalendarSheet) return;
+  const pop = hsCalendarSheet.querySelector("#hs-cal-pop");
+  if (!pop?._hsRoot || !pop._hsEsc) return;
+  const live = hailScopeLiveData(pop._hsRoot, pop._hsData);
+  paintHailCalendarPanel(pop._hsRoot, live, pop._hsEsc, { onRefetch: pop._hsOnRefetch });
+  if (hsCalendarTrig) placeHsCalendarPopover(hsCalendarTrig);
 }
 
 function hailScopeLiveData(root, fallback) {
@@ -10593,18 +10627,14 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
   pop._hsEsc = esc;
   pop._hsRoot = root;
   pop._hsOnRefetch = onRefetch;
-  const viewport = Boolean(data.viewport || data._meta?.viewport);
-  const pinMode = wxPinSelected() && !viewport;
-  const highlights = hailCalendarHighlightDays(data, { viewport });
-  const stormDays = hailCalendarStormDays(data, { viewport });
+  const highlights = hailCalendarHighlightDays(data);
+  const stormDays = hailCalendarStormDays(data);
   if (hsCalendarYear == null || hsCalendarMonth == null) {
     const def = defaultCalendarMonth(stormDays.size ? stormDays : highlights);
     hsCalendarYear = def.year;
     hsCalendarMonth = def.month;
   }
-  const subtitle = pinMode
-    ? "Tap to toggle · bright = ≥1″ at roof"
-    : "Tap to toggle · bright = ≥2″ extreme";
+  const subtitle = "Tap to toggle · bright = ≥2″ in map view";
   pop.innerHTML = renderStormCalendar({
     year: hsCalendarYear,
     month: hsCalendarMonth,
