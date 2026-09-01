@@ -150,7 +150,7 @@ export function flagNetProfile({ ua, cap } = {}) {
   const slowWeb = isSlowBrowserNet(ua ?? uaBlob(), cap ?? capacitorPlatform());
   return {
     cityChunk: android && !slowWeb ? 4 : slowWeb ? 2 : 3,
-    zillowDetails: apple || (!android && !slowWeb) ? 4 : 0,
+    zillowDetails: apple || (!android && !slowWeb) ? 4 : android ? 2 : 0,
     paintMax: android ? 220 : 400,
   };
 }

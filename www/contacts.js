@@ -287,6 +287,215 @@ export function formatRealtorRentSearchUrl(address) {
   return `https://www.realtor.com/apartments/${city}_ok/${p.house}-${street}`;
 }
 
+/** apartments.com city search (`edmond-ok/` or `edmond-ok/2/`). */
+export function formatApartmentsComCityUrl(city, state, { page = 1 } = {}) {
+  const c = cityPathSlug(city);
+  const st = stateAbbr(state) || cityPathSlug(state);
+  if (!c || !st) return "";
+  const base = `https://www.apartments.com/${c}-${st}/`;
+  return page > 1 ? `https://www.apartments.com/${c}-${st}/${page}/` : base;
+}
+
+/**
+ * Pull placards from apartments.com city HTML (window.startup / legacy __APARTMENTS_DATA__ / JSON-LD).
+ */
+export function parseApartmentsComSearchHtml(html) {
+  const h = String(html || "");
+  if (!h) return [];
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    if (!raw) return;
+    const key = `${phoneDigits(raw.phone)}|${Number(raw.lat).toFixed(5)}|${Number(raw.lon).toFixed(5)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(raw);
+  };
+
+  const fromPlacard = (p) => {
+    if (!p || typeof p !== "object") return null;
+    const geo = p.geography || p.location || p.coordinates || {};
+    const addr = p.addressInfo || p.address || p.location || {};
+    const street =
+      addr.address ||
+      addr.streetAddress ||
+      addr.fullAddress ||
+      addr.line1 ||
+      p.streetAddress ||
+      "";
+    const phone = listingPhoneFromRaw(
+      p.phone,
+      p.listingPhone,
+      p.phoneNumber,
+      p.contactPhone,
+      ...(Array.isArray(p.phones) ? p.phones : []),
+      ...(Array.isArray(p.phoneNumbers) ? p.phoneNumbers : []),
+    );
+    const path = String(p.url || p.listingUrl || p.canonicalUrl || p.detailUrl || "").trim();
+    const listingUrl = path
+      ? path.startsWith("http")
+        ? path
+        : `https://www.apartments.com${path.startsWith("/") ? "" : "/"}${path}`
+      : "";
+    return rentFlagRow({
+      name: p.propertyName || p.name || p.buildingName || "",
+      street,
+      city: addr.city || p.city || "",
+      state: addr.state || addr.stateCode || p.state || "",
+      zip: addr.zip || addr.postalCode || p.zip || "",
+      lat: geo.latitude ?? geo.lat ?? p.latitude ?? p.lat,
+      lon: geo.longitude ?? geo.lng ?? geo.lon ?? p.longitude ?? p.lng,
+      phone,
+      listingUrl,
+      source: "apartments",
+    });
+  };
+
+  const tryPlacards = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (const p of arr) push(fromPlacard(p));
+  };
+
+  const extractBalancedObject = (src, fromIdx) => {
+    if (src[fromIdx] !== "{") return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = fromIdx; i < src.length; i++) {
+      const ch = src[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return src.slice(fromIdx, i + 1);
+      }
+    }
+    return null;
+  };
+
+  // Embedded startup blob(s) — brace-match so nested placards survive.
+  const assignRe = /window\.(?:startup|__APARTMENTS_DATA__)\s*=\s*\{/gi;
+  let am;
+  while ((am = assignRe.exec(h))) {
+    const json = extractBalancedObject(h, am.index + am[0].length - 1);
+    if (!json) continue;
+    try {
+      const data = JSON.parse(json);
+      tryPlacards(data?.listing?.placards);
+      tryPlacards(data?.placards);
+      tryPlacards(data?.listing?.map?.pins);
+      tryPlacards(data?.map?.pins);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Loose placards array if the window assign was truncated.
+  if (!out.length) {
+    const looseIdx = h.indexOf('"placards"');
+    if (looseIdx >= 0) {
+      const arrStart = h.indexOf("[", looseIdx);
+      if (arrStart >= 0) {
+        let depth = 0;
+        let inStr = false;
+        let esc = false;
+        for (let i = arrStart; i < h.length; i++) {
+          const ch = h[i];
+          if (inStr) {
+            if (esc) esc = false;
+            else if (ch === "\\") esc = true;
+            else if (ch === '"') inStr = false;
+            continue;
+          }
+          if (ch === '"') {
+            inStr = true;
+            continue;
+          }
+          if (ch === "[") depth += 1;
+          else if (ch === "]") {
+            depth -= 1;
+            if (depth === 0) {
+              try {
+                tryPlacards(JSON.parse(h.slice(arrStart, i + 1)));
+              } catch {
+                /* ignore */
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // JSON-LD ApartmentComplex nodes (coords; phone when present).
+  const ldRe = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = ldRe.exec(h))) {
+    try {
+      const data = JSON.parse(m[1]);
+      const nodes = Array.isArray(data) ? data : data?.["@graph"] ? data["@graph"] : [data];
+      for (const n of nodes) {
+        const entity = n?.mainEntity && typeof n.mainEntity === "object" ? n.mainEntity : n;
+        const types = [].concat(entity?.["@type"] || n?.["@type"] || []).map(String);
+        if (!types.some((t) => /ApartmentComplex|Residence|Place/i.test(t))) continue;
+        const geo = entity?.geo || n?.geo || {};
+        const addr = entity?.address || n?.address || {};
+        const id = String(entity?.["@id"] || n?.["@id"] || entity?.url || n?.url || "").replace(/#.*$/, "");
+        push(
+          rentFlagRow({
+            name: entity?.name || n?.name || "",
+            street: addr.streetAddress || "",
+            city: addr.addressLocality || "",
+            state: addr.addressRegion || "",
+            zip: addr.postalCode || "",
+            lat: geo.latitude,
+            lon: geo.longitude,
+            phone: listingPhoneFromRaw(entity?.telephone, n?.telephone),
+            listingUrl: id.startsWith("http") ? id : "",
+            source: "apartments",
+          }),
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Placard cards: tel: + nearby lat/lng in data attrs or JSON crumbs.
+  if (!out.length) {
+    const cardRe =
+      /data-latitude=["']?(-?\d+\.\d+)["']?[^>]{0,400}data-longitude=["']?(-?\d+\.\d+)["']?[\s\S]{0,1200}?tel:(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/gi;
+    while ((m = cardRe.exec(h))) {
+      push(
+        rentFlagRow({
+          name: "",
+          street: "",
+          city: "",
+          state: "",
+          zip: "",
+          lat: m[1],
+          lon: m[2],
+          phone: m[3],
+          listingUrl: "",
+          source: "apartments",
+        }),
+      );
+    }
+  }
+
+  return out;
+}
+
 /** Full state name slug for Rent.com paths (`OK` → `oklahoma`). */
 export function statePathSlug(state) {
   const abbr = stateAbbr(state);
@@ -643,6 +852,38 @@ async function fetchRentComCityPages(city, state, { kinds = ["apartments", "hous
   }
 }
 
+async function fetchApartmentsComCityPages(city, state, { pages = 1 } = {}) {
+  const cacheKey = `apts|${cityPathSlug(city)}|${stateAbbr(state) || cityPathSlug(state)}|${pages}`;
+  if (rentCityCache.has(cacheKey)) return rentCityCache.get(cacheKey);
+  const work = (async () => {
+    const acc = [];
+    for (let page = 1; page <= pages; page++) {
+      const url = formatApartmentsComCityUrl(city, state, { page });
+      if (!url) break;
+      if (rentFlagCache.has(url)) {
+        acc.push(...rentFlagCache.get(url));
+        if ((rentFlagCache.get(url) || []).length < 12) break;
+        continue;
+      }
+      const pageHit = await fetchHtml(url, 16000, listingBrowserHeaders());
+      const list = parseApartmentsComSearchHtml(pageHit?.html || "");
+      rentFlagCache.set(url, list);
+      acc.push(...list);
+      if (list.length < 12) break;
+    }
+    return mergeRentFlagList([], acc);
+  })();
+  rentCityCache.set(cacheKey, work);
+  try {
+    const rows = await work;
+    rentCityCache.set(cacheKey, Promise.resolve(rows));
+    return rows;
+  } catch {
+    rentCityCache.delete(cacheKey);
+    return [];
+  }
+}
+
 async function fetchZillowCityRentPhones(city, state, { lat, lon, have = [], maxDetails = 6 } = {}) {
   const url = formatZillowCityRentUrl(city, state);
   if (!url) return [];
@@ -706,7 +947,13 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       for (let i = 0; i < names.length; i += chunk) {
         const part = names.slice(i, i + chunk);
         const batches = await Promise.all(
-          part.map((c) => fetchRentComCityPages(c, state || "OK", { kinds, pages }).catch(() => [])),
+          part.map(async (c) => {
+            const [rentRows, aptRows] = await Promise.all([
+              fetchRentComCityPages(c, state || "OK", { kinds, pages }).catch(() => []),
+              fetchApartmentsComCityPages(c, state || "OK", { pages: 1 }).catch(() => []),
+            ]);
+            return mergeRentFlagList(rentRows, aptRows);
+          }),
         );
         for (const rows of batches) emit(rows);
       }

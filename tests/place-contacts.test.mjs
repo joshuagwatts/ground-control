@@ -29,8 +29,10 @@ import {
   isOsmBusinessTags,
   formatZillowCityRentUrl,
   formatRentComCityUrl,
+  formatApartmentsComCityUrl,
   statePathSlug,
   parseRentComSearchJson,
+  parseApartmentsComSearchHtml,
   parseZillowRentSearchJson,
   parseZillowRentDetailPhone,
   isOklahomaLatLon,
@@ -261,6 +263,44 @@ const rentFlags = parseRentComSearchJson(rentNextHtml);
 assert(rentFlags.length === 1 && rentFlags[0].source === "rent-com", "rent.com skips phoneless");
 assert(rentFlags[0].phone.includes("405") && rentFlags[0].name === "Plaza East", "rent.com phone+name");
 assert(rentFlags[0].lat === 35.637553 && /rent\.com\/apartment\//.test(rentFlags[0].listingUrl), "rent.com coord+url");
+
+const aptCityUrl = formatApartmentsComCityUrl("Edmond", "OK");
+assert(aptCityUrl === "https://www.apartments.com/edmond-ok/", `apts city url, got ${aptCityUrl}`);
+assert(
+  formatApartmentsComCityUrl("Edmond", "OK", { page: 2 }) === "https://www.apartments.com/edmond-ok/2/",
+  "apts city page 2",
+);
+const aptHtml = `<script>window.startup = ${JSON.stringify({
+  listing: {
+    placards: [
+      {
+        propertyName: "Covell Creek",
+        phone: "(405) 348-2200",
+        url: "/covell-creek-edmond-ok/abc123/",
+        geography: { latitude: 35.6521, longitude: -97.4611 },
+        addressInfo: { address: "100 N Broadway", city: "Edmond", state: "OK", zip: "73034" },
+      },
+      {
+        propertyName: "No Phone Flats",
+        geography: { latitude: 35.65, longitude: -97.47 },
+        addressInfo: { address: "1 Missing Ave", city: "Edmond", state: "OK" },
+      },
+    ],
+  },
+})};</script>
+<script type="application/ld+json">${JSON.stringify({
+  "@type": "ApartmentComplex",
+  name: "JSON-LD Arms",
+  telephone: "(405) 341-8800",
+  url: "https://www.apartments.com/json-ld-arms-edmond-ok/xyz/",
+  address: { streetAddress: "200 N Boulevard", addressLocality: "Edmond", addressRegion: "OK", postalCode: "73034" },
+  geo: { latitude: 35.66, longitude: -97.48 },
+})}</script>`;
+const aptFlags = parseApartmentsComSearchHtml(aptHtml);
+assert(aptFlags.length === 2, `apts flags count ${aptFlags.length}`);
+assert(aptFlags.some((r) => r.source === "apartments" && /348-2200/.test(r.phone) && r.name === "Covell Creek"), "apts startup placard");
+assert(aptFlags.some((r) => /341-8800/.test(r.phone) && /JSON-LD/.test(r.name)), "apts json-ld");
+assert(!aptFlags.some((r) => /No Phone/i.test(r.name)), "apts skips phoneless");
 
 const zillowHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
   props: {

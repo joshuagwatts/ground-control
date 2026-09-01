@@ -56,7 +56,7 @@ const iHead = listingBrowserHeaders({ ua: iphoneUa, cap: "web" });
 assert(/iPhone/i.test(iHead["User-Agent"]), "apple listing ua is Safari");
 
 const aProf = flagNetProfile({ ua: androidUa, cap: "web" });
-assert(aProf.zillowDetails === 0 && aProf.cityChunk === 4 && aProf.paintMax === 220, "android flag profile");
+assert(aProf.zillowDetails === 2 && aProf.cityChunk === 4 && aProf.paintMax === 220, "android flag profile");
 const iProf = flagNetProfile({ ua: iphoneUa, cap: "web" });
 assert(iProf.zillowDetails === 4 && iProf.cityChunk === 2 && iProf.paintMax === 400, "safari flag profile");
 const dProf = flagNetProfile({ ua: chromeDesktop, cap: "web" });
