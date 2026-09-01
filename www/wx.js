@@ -6824,6 +6824,15 @@ function setFlagKindFilter(kind, on) {
   paintHouseLayer([], houseCache.nums);
 }
 
+export function getFlagKindFilter() {
+  return { rental: flagKindFilter.rental, business: flagKindFilter.business };
+}
+
+export function toggleFlagKindFilter(kind) {
+  if (kind !== "rental" && kind !== "business") return;
+  setFlagKindFilter(kind, !flagKindFilter[kind]);
+}
+
 function borrowPhonesForRentFlags(nums) {
   const donors = (nums || []).filter((n) => housePhoneKind(n) === "rental" && houseHasPhone(n));
   if (!donors.length) return;
@@ -6859,7 +6868,8 @@ function readyFlagList(nums) {
     if (!houseHasFlag(n) || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
     if (flagHiddenKeys.has(flagItemKey(n))) return false;
     const kind = housePhoneKind(n);
-    if (kind === "rental" && !flagKindFilter.rental) return false;
+    const rental = kind !== "business";
+    if (rental && !flagKindFilter.rental) return false;
     if (kind === "business" && !flagKindFilter.business) return false;
     if (b?.isValid?.()) {
       const s = b.getSouth();
@@ -6897,11 +6907,11 @@ function paintFlagDock() {
   const shell = document.getElementById("hs-map-shell");
   if (!shell) return;
   let dock = document.getElementById("hs-flag-dock");
-  const ready = readyFlagList(houseCache.nums);
-  if (!phoneFlagsEnabled() || !ready.length) {
+  if (!phoneFlagsEnabled()) {
     if (dock) dock.hidden = true;
     return;
   }
+  const ready = readyFlagList(houseCache.nums);
   if (!dock) {
     dock = document.createElement("div");
     dock.id = "hs-flag-dock";
@@ -6912,8 +6922,6 @@ function paintFlagDock() {
       if (!btn) return;
       e.preventDefault();
       e.stopPropagation();
-      const list = readyFlagList(houseCache.nums);
-      if (!list.length) return;
       const act = btn.getAttribute("data-flag-act");
       if (act === "rent") {
         setFlagKindFilter("rental", !flagKindFilter.rental);
@@ -6923,6 +6931,8 @@ function paintFlagDock() {
         setFlagKindFilter("business", !flagKindFilter.business);
         return;
       }
+      const list = readyFlagList(houseCache.nums);
+      if (!list.length) return;
       if (act === "hide") {
         const cur = list[Math.max(0, Math.min(list.length - 1, flagDockIdx))];
         hideFlag(cur);
@@ -6935,14 +6945,22 @@ function paintFlagDock() {
       paintFlagDock();
     });
   }
+  dock.hidden = false;
+  const rentOn = flagKindFilter.rental;
+  const bizOn = flagKindFilter.business;
+  const kindToggles = `<button type="button" class="hs-flag-dock-kind ${rentOn ? "on" : ""}" data-flag-act="rent" aria-pressed="${rentOn ? "true" : "false"}" title="Show or hide green for-rent flags">Green</button>
+    <button type="button" class="hs-flag-dock-kind biz ${bizOn ? "on" : ""}" data-flag-act="biz" aria-pressed="${bizOn ? "true" : "false"}" title="Show or hide blue business flags">Biz</button>`;
+  if (!ready.length) {
+    flagDockIdx = 0;
+    dock.innerHTML = `${kindToggles}<span class="hs-flag-dock-empty muted">No ${bizOn && !rentOn ? "business" : rentOn && !bizOn ? "rental" : ""} flags in view</span>`;
+    return;
+  }
   flagDockIdx = ((flagDockIdx % ready.length) + ready.length) % ready.length;
   const cur = ready[flagDockIdx];
   const kind = flagMarkerKind(cur);
   const kindLabel = houseKindLabel(cur);
   const label = [kindLabel, cur.num, cur.street].filter(Boolean).join(" ") || housePhoneFor(cur) || "Flag";
-  dock.hidden = false;
-  dock.innerHTML = `<button type="button" class="hs-flag-dock-kind ${flagKindFilter.rental ? "on" : ""}" data-flag-act="rent" aria-pressed="${flagKindFilter.rental ? "true" : "false"}" title="Show or hide for-rent flags">Rent</button>
-    <button type="button" class="hs-flag-dock-kind ${flagKindFilter.business ? "on" : ""}" data-flag-act="biz" aria-pressed="${flagKindFilter.business ? "true" : "false"}" title="Show or hide business flags">Biz</button>
+  dock.innerHTML = `${kindToggles}
     <button type="button" class="hs-flag-dock-nav" data-flag-act="prev" aria-label="Previous flag">‹</button>
     <button type="button" class="hs-flag-dock-go" data-flag-act="go" title="Zoom to this flag">
       <i class="hs-flag-dock-dot ${kind === "home" ? "home" : "biz"}" aria-hidden="true"></i>
@@ -6963,7 +6981,8 @@ function paintHouseLayer(_rings, nums) {
   }
   const list = readyFlagList(nums);
   const phoneBits = list.map((n) => `${n.num}|${housePhoneFor(n)}|${flagMarkerKind(n)}`).join(";");
-  const sig = `${houseCache.key}|flags:${list.length}|${phoneBits}`;
+  const filterSig = `${flagKindFilter.rental ? 1 : 0}${flagKindFilter.business ? 1 : 0}`;
+  const sig = `${houseCache.key}|flags:${list.length}|f${filterSig}|${phoneBits}`;
   if (sig === housePaintSig && houseLayer?.getLayers?.().length) {
     paintFlagDock();
     return;

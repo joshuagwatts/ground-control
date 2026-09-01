@@ -2736,6 +2736,42 @@ body.wx-map-expanded .hs-field {
 .hs-flag-dock-hide {
   color: var(--text);
 }
+.hs-flag-dock-empty {
+  flex: 1 1 auto;
+  font-size: 11px;
+  padding: 0 0.35rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hs-layers button.hs-flag-kind-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.hs-layers button.hs-flag-kind-toggle .hs-flag-ico {
+  display: inline-block;
+  width: 11px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.hs-layers button.hs-flag-kind-toggle .hs-flag-ico.green {
+  background:
+    linear-gradient(#0b0b0d, #0b0b0d) 1px 0 / 2px 14px no-repeat,
+    linear-gradient(#1dff6e, #1dff6e) 3px 1px / 8px 7px no-repeat;
+}
+.hs-layers button.hs-flag-kind-toggle .hs-flag-ico.blue {
+  width: 10px;
+  height: 10px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: #2a81cb;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65);
+}
+.hs-layers button.hs-flag-kind-toggle:not(.on) .hs-flag-ico {
+  opacity: 0.35;
+  filter: grayscale(0.55);
+}
 .hs-house-pop-actions .hs-flag-hide {
   display: inline-flex;
   align-items: center;
