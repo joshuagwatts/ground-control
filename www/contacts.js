@@ -667,7 +667,7 @@ export function parseZillowRentDetailPhone(html) {
   return "";
 }
 
-/** Oklahoma metro + statewide cities so Flags reach Norman / Tulsa / Lawton, not just 10 km. */
+/** Oklahoma cities for Flags — metro + western / eastern towns Zillow covers. */
 const OK_RENT_CITIES = [
   "Edmond",
   "Oklahoma City",
@@ -700,6 +700,48 @@ const OK_RENT_CITIES = [
   "Altus",
   "Weatherford",
   "El Reno",
+  "Woodward",
+  "Guymon",
+  "Clinton",
+  "Elk City",
+  "Sapulpa",
+  "Sand Springs",
+  "Jenks",
+  "Bixby",
+  "Glenpool",
+  "Coweta",
+  "Pryor",
+  "McAlester",
+  "Ada",
+  "Chickasha",
+  "Durant",
+  "Miami",
+  "Tahlequah",
+  "Okmulgee",
+  "Cushing",
+  "Perry",
+  "Anadarko",
+  "Purcell",
+  "Blanchard",
+  "Harrah",
+  "Warr Acres",
+  "Nichols Hills",
+  "Spencer",
+  "Grove",
+  "Sallisaw",
+  "Idabel",
+  "Poteau",
+  "Vinita",
+  "Holdenville",
+  "Seminole",
+  "Tecumseh",
+  "Pauls Valley",
+  "Sulphur",
+  "Kingfisher",
+  "Watonga",
+  "Alva",
+  "Hobart",
+  "Frederick",
 ];
 
 const rentFlagCache = new Map();
@@ -739,6 +781,48 @@ const OK_RENT_CITY_COORDS = {
   Altus: [34.6381, -99.334],
   Weatherford: [35.5262, -98.7076],
   "El Reno": [35.5323, -97.955],
+  Woodward: [36.4337, -99.3904],
+  Guymon: [36.6828, -101.4816],
+  Clinton: [35.5156, -98.9673],
+  "Elk City": [35.4119, -99.4043],
+  Sapulpa: [35.9987, -96.1142],
+  "Sand Springs": [36.1398, -96.1089],
+  Jenks: [35.9979, -95.9683],
+  Bixby: [35.942, -95.883],
+  Glenpool: [35.9554, -96.005],
+  Coweta: [35.9518, -95.6508],
+  Pryor: [36.3084, -95.3169],
+  McAlester: [34.9334, -95.7697],
+  Ada: [34.7745, -96.6783],
+  Chickasha: [35.0526, -97.9364],
+  Durant: [33.9923, -96.3708],
+  Miami: [36.8745, -94.8775],
+  Tahlequah: [35.9154, -94.9699],
+  Okmulgee: [35.6234, -95.9605],
+  Cushing: [35.9851, -96.767],
+  Perry: [36.2895, -97.2881],
+  Anadarko: [35.0726, -98.2437],
+  Purcell: [35.0134, -97.3611],
+  Blanchard: [35.1578, -97.6581],
+  Harrah: [35.4895, -97.1636],
+  "Warr Acres": [35.5226, -97.6189],
+  "Nichols Hills": [35.5509, -97.5492],
+  Spencer: [35.5228, -97.3703],
+  Grove: [36.5937, -94.7691],
+  Sallisaw: [35.4604, -94.7874],
+  Idabel: [33.8957, -94.8263],
+  Poteau: [35.0537, -94.6236],
+  Vinita: [36.6387, -95.1541],
+  Holdenville: [35.0801, -96.3992],
+  Seminole: [35.2245, -96.6706],
+  Tecumseh: [35.2579, -96.9367],
+  "Pauls Valley": [34.7401, -97.2222],
+  Sulphur: [34.5073, -96.9781],
+  Kingfisher: [35.8614, -97.9317],
+  Watonga: [35.8448, -98.4131],
+  Alva: [36.805, -98.6665],
+  Hobart: [35.0153, -99.0931],
+  Frederick: [34.392, -99.0184],
 };
 
 export function loadPersistedRentFlags() {
@@ -784,24 +868,11 @@ export function isOklahomaLatLon(lat, lon) {
   return Number(lat) >= 33.6 && Number(lat) <= 37.05 && Number(lon) >= -103.05 && Number(lon) <= -94.4;
 }
 
-function inferOkCity(lat, lon) {
-  const hints = [
-    { city: "Edmond", lat: 35.6528, lon: -97.4778, r: 14 },
-    { city: "Norman", lat: 35.2226, lon: -97.4395, r: 12 },
-    { city: "Moore", lat: 35.3395, lon: -97.4867, r: 7 },
-    { city: "Midwest City", lat: 35.4495, lon: -97.3967, r: 8 },
-    { city: "Yukon", lat: 35.5067, lon: -97.7625, r: 8 },
-    { city: "Tulsa", lat: 36.154, lon: -95.9928, r: 16 },
-    { city: "Stillwater", lat: 36.1156, lon: -97.0584, r: 10 },
-    { city: "Lawton", lat: 34.6036, lon: -98.3959, r: 12 },
-    { city: "Oklahoma City", lat: 35.4676, lon: -97.5164, r: 22 },
-  ];
-  let best = null;
-  for (const h of hints) {
-    const d = haversineKm(lat, lon, h.lat, h.lon);
-    if (d <= h.r && (!best || d < best.d)) best = { city: h.city, d };
-  }
-  return best?.city || (isOklahomaLatLon(lat, lon) ? "Oklahoma City" : "");
+/** Nearest city in OK_RENT_CITIES — never fall back to OKC when you're in Woodward. */
+export function inferOkCity(lat, lon) {
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return "";
+  if (!isOklahomaLatLon(lat, lon)) return "";
+  return citiesNearPoint(lat, lon)[0] || "Oklahoma City";
 }
 
 export function mergeRentFlagList(into, rows) {
@@ -938,6 +1009,12 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     return rentSweepInFlight.then(() => acc);
   }
 
+  // Toggle / city retarget must not reuse empty or blocked city-page caches.
+  if (force) {
+    rentCityCache.clear();
+    rentFlagCache.clear();
+  }
+
   const epoch = rentSweepEpoch;
   const work = (async () => {
     if (epoch !== rentSweepEpoch) return acc;
@@ -950,7 +1027,8 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       viewCities.push(name);
     };
     pushCity(city);
-    for (const extra of ordered.slice(0, 2)) pushCity(extra);
+    // Pull several nearest cities so a pan between towns still paints local rentals.
+    for (const extra of ordered.slice(0, 4)) pushCity(extra);
 
     const runCities = async (names, pages, kinds) => {
       const chunk = Math.max(1, profile.cityChunk || 3);
@@ -974,14 +1052,18 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     if (epoch !== rentSweepEpoch) return acc;
 
     if (profile.zillowDetails > 0 && (city || inOk)) {
-      const zCity = city || viewCities[0];
-      const zRows = await fetchZillowCityRentPhones(zCity, state || "OK", {
-        lat,
-        lon,
-        have: acc,
-        maxDetails: profile.zillowDetails,
-      }).catch(() => []);
-      if (zRows.length) emit(zRows);
+      // Detail-fetch phones for the nearest 1–2 cities (Zillow search rarely embeds phones).
+      const zCities = viewCities.slice(0, 2);
+      for (const zCity of zCities) {
+        if (epoch !== rentSweepEpoch) return acc;
+        const zRows = await fetchZillowCityRentPhones(zCity, state || "OK", {
+          lat,
+          lon,
+          have: acc,
+          maxDetails: profile.zillowDetails,
+        }).catch(() => []);
+        if (zRows.length) emit(zRows);
+      }
     }
     if (epoch !== rentSweepEpoch) return acc;
 

@@ -18,6 +18,7 @@ import {
   isOsmBusinessTags,
   lookupViewportRentFlags,
   isOklahomaLatLon,
+  inferOkCity,
   loadPersistedRentFlags,
   persistRentFlags,
 } from "./contacts.js";
@@ -258,6 +259,7 @@ let persistHydrated = false;
 let lastRentSweepAt = 0;
 let lastRentSweepLat = NaN;
 let lastRentSweepLon = NaN;
+let lastRentSweepCity = "";
 let flagPaintTimer = 0;
 let flagPaintQueued = false;
 let flagPaintImmediateDone = false;
@@ -2738,6 +2740,9 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
     toggleStormDateSelection(date);
   } else {
     setStormDateSelection([date], { replace: true });
+  }
+  if (hadSelection && !hasSelectedStormDates()) {
+    emitMapStatus("Hail zones cleared");
   }
   const needDate = requireDate === true || (requireDate !== false && hailScopeMode);
   const hail = hailRows || lastHailRows;
@@ -6557,7 +6562,7 @@ function flagStatusLine(extra = "") {
   if (biz) bits.push(`${biz} business`);
   const ready = bits.length ? `${bits.join(" · ")} ready` : "";
   if (extra && ready) return `${extra} · ${ready}`;
-  return extra || ready || "No rental or business phones yet";
+  return extra || ready || "Loading flags…";
 }
 
 /** Rental / business listing scan — idle, one-at-a-time. Network misses can retry. */
@@ -6944,7 +6949,7 @@ function scheduleFlagLayerPaint(immediate = false) {
     if (!phoneFlagsEnabled() || !map) return;
     housePaintSig = "";
     paintHouseLayer([], houseCache.nums);
-    emitPhoneFlagsStatus(flagStatusLine("Listings"));
+    emitPhoneFlagsStatus(flagStatusLine());
   };
   if (immediate || !flagPaintImmediateDone) {
     flagPaintImmediateDone = true;
@@ -6971,8 +6976,15 @@ function applyRentFlagBatch(flags, _gen) {
 function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   const now = Date.now();
+  const nextCity = String(place?.city || "").trim();
+  const cityKey = (c) =>
+    String(c || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  const cityUpgrade = Boolean(nextCity) && cityKey(nextCity) !== cityKey(lastRentSweepCity);
   const moved =
     force ||
+    cityUpgrade ||
     !Number.isFinite(lastRentSweepLat) ||
     !Number.isFinite(lastRentSweepLon) ||
     haversineKm(lastRentSweepLat, lastRentSweepLon, lat, lon) >= RENT_SWEEP_MOVE_KM;
@@ -6980,8 +6992,14 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
   lastRentSweepAt = now;
   lastRentSweepLat = lat;
   lastRentSweepLon = lon;
+  lastRentSweepCity = nextCity || inferOkCity(lat, lon) || lastRentSweepCity || "";
+  if (moved) {
+    emitPhoneFlagsStatus(
+      lastRentSweepCity ? `Loading flags · ${lastRentSweepCity}…` : "Loading flags…",
+    );
+  }
   void lookupViewportRentFlags(lat, lon, {
-    city: place?.city || "",
+    city: nextCity || lastRentSweepCity || "",
     state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
     force: moved,
     onBatch: (flags) => applyRentFlagBatch(flags, gen),
@@ -7052,7 +7070,9 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   }
   const cachedReady = readyFlagList(houseCache.nums).length;
   emitPhoneFlagsStatus(
-    cachedReady ? flagStatusLine(forceRent ? "Refreshing map view…" : "Cached") : `Loading flags (~${flagSearchKm().toFixed(0)} km)…`,
+    cachedReady
+      ? flagStatusLine(forceRent ? "Refreshing flags…" : "")
+      : "Loading flags…",
   );
   const padB = searchB.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
@@ -7105,9 +7125,9 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   const ready = readyFlagList(nums).length;
   emitPhoneFlagsStatus(
     ready
-      ? flagStatusLine(`Scanning listings…`)
+      ? flagStatusLine()
       : nums.length
-        ? flagStatusLine(`Scanning listings…`)
+        ? "Loading flags…"
         : mapDump
           ? "No rental or business phones near map center"
           : "Flag lookup blocked — turn off VPN / check Wi‑Fi, then tap Flags again",
@@ -7120,8 +7140,18 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
 }
 
 function emitPhoneFlagsStatus(msg) {
+  const text = String(msg || "");
   try {
-    window.dispatchEvent(new CustomEvent("hs-phone-flags", { detail: { msg: String(msg || "") } }));
+    window.dispatchEvent(new CustomEvent("hs-phone-flags", { detail: { msg: text } }));
+  } catch {
+    /* ignore */
+  }
+  emitMapStatus(text);
+}
+
+function emitMapStatus(msg) {
+  try {
+    window.dispatchEvent(new CustomEvent("hs-map-status", { detail: { msg: String(msg || "") } }));
   } catch {
     /* ignore */
   }
@@ -7137,8 +7167,10 @@ export function startPhoneFlagScan() {
   lastRentSweepAt = 0;
   lastRentSweepLat = NaN;
   lastRentSweepLon = NaN;
+  lastRentSweepCity = "";
   houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
   hydratePersistedFlags();
+  emitPhoneFlagsStatus("Loading flags…");
   scheduleFlagLayerPaint(true);
   if (houseTimer) {
     clearTimeout(houseTimer);
@@ -7404,7 +7436,7 @@ export function setFieldOverlay({
     if (nextFlags) startPhoneFlagScan();
     else {
       houseLayer?.clearLayers?.();
-      emitPhoneFlagsStatus("");
+      emitPhoneFlagsStatus("Flags cleared");
       paintFlagDock();
     }
   }
@@ -9072,6 +9104,7 @@ export function clearSelectedStormDate() {
     selectedStormRedrawTimer = 0;
   }
   pendingSelectedStormRows = null;
+  if (hadSelection) emitMapStatus("Hail zones cleared");
   if (hadSelection && !wxPinSelected() && hailScopeMode) {
     mapViewStormForceNext = true;
     scheduleMapViewStormMove(80);

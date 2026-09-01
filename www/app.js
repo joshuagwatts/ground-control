@@ -67,7 +67,7 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   startPhoneFlagScan,
-} from "./wx.js?v=0.2.168";
+} from "./wx.js?v=0.2.169";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -135,6 +135,14 @@ function esc(s) {
 function setStatus(msg) {
   const el = $("#status");
   if (el) el.textContent = msg || "";
+}
+
+if (typeof window !== "undefined" && !window.__hsMapStatusBound) {
+  window.__hsMapStatusBound = true;
+  window.addEventListener("hs-map-status", (ev) => {
+    const msg = String(ev.detail?.msg || "").trim();
+    if (msg) setStatus(msg);
+  });
 }
 
 function isHailTab() {
@@ -1598,16 +1606,23 @@ function paintLayerToggles() {
       db.settings.showMyLocation = !(db.settings.showMyLocation !== false);
       setMyLocationVisible(db.settings.showMyLocation);
     }
-    if (b.dataset.ov === "dots") db.settings.showHailDots = !dotsOn;
+    if (b.dataset.ov === "dots") {
+      db.settings.showHailDots = !dotsOn;
+      persist();
+      paintLayerToggles();
+      paintFieldMap();
+      setStatus(db.settings.showHailDots !== false ? "Hail dots on" : "Hail dots cleared");
+      return;
+    }
     if (b.dataset.ov === "flags") {
       db.settings.showPhoneFlags = !flagsOn;
       persist();
       paintLayerToggles();
       paintFieldMap();
       if (db.settings.showPhoneFlags === true) {
-        setStatus("Loading rental and business flags…");
+        setStatus("Loading flags…");
         startPhoneFlagScan();
-      } else setStatus("");
+      } else setStatus("Flags cleared");
       return;
     }
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
@@ -2100,7 +2115,7 @@ async function onHailViewport() {
   if (sheet) {
     sheet.innerHTML = '<p class="hs-pin hs-pin-ready">Searching visible area…</p><p class="hs-empty">Loading storm history…</p>';
   }
-  setStatus("Searching map view…");
+  setStatus("Loading storms…");
   const onRefetch = async (filters) => {
     if (gen !== hailTapGen) return null;
     const fresh = await viewportDossier(db.settings, filters);
@@ -2128,23 +2143,24 @@ async function onHailViewport() {
           paintedDays = n;
           lastPaintAt = now;
           syncHailScopeView(sheet, partial, esc, { onRefetch, fit: false, revealSheet: true });
-          setStatus(loading ? `Loading storms… ${n} dates` : "");
+          setStatus(loading ? `Loading storms… ${n} dates` : `Storms ready · ${n} dates`);
         }
       },
     });
     if (gen !== hailTapGen || !isHailTab()) return;
     if (!data) {
       if (sheet) sheet.innerHTML = '<p class="hs-empty">Could not load storms for this map view.</p>';
-      setStatus("");
+      setStatus("Storms unavailable");
       return;
     }
     wxState.data = data;
     syncHailScopeView(sheet, data, esc, { onRefetch, fit: false, revealSheet: true });
-    setStatus("");
+    const n = hailScopeDays(data).length;
+    setStatus(n ? `Storms ready · ${n} dates` : "No storms in map view");
   } catch (e) {
     if (gen !== hailTapGen) return;
     if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try again.</p>`;
-    setStatus("");
+    setStatus("Storms unavailable");
   }
 }
 
@@ -2171,7 +2187,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     else addrBox.value = "";
   }
   revealHailStormSheet();
-  setStatus("Finding storms…");
+  setStatus("Loading storms…");
   const onRefetch = async (filters) => {
     if (gen !== hailTapGen) return null;
     const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
@@ -2195,6 +2211,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
         wxState.data = partial;
         if ((partial.hail || []).length) {
           syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: true });
+          setStatus(`Loading storms… ${(partial.hail || []).length} dates`);
         } else {
           patchHailScopePartial($("#hs-sheet"), partial, esc);
         }
@@ -2203,7 +2220,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     if (gen !== hailTapGen || !isHailTab()) return;
     if (!data) {
       if (sheet) sheet.innerHTML = `<p class="hs-empty">Could not load storm data. Try another pin.</p>`;
-      setStatus("");
+      setStatus("Storms unavailable");
       return;
     }
     wxState.address = data.address || "";
@@ -2215,6 +2232,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
         const loading = sheet.querySelector(".hs-empty");
         if (loading) loading.textContent = "Searching a longer hail window…";
       }
+      setStatus("Loading storms… longer window");
       const full = await onRefetch({ days: 730 });
       if (gen !== hailTapGen || !isHailTab()) return;
       if (full) {
@@ -2222,11 +2240,12 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
         syncHailScopeView($("#hs-sheet"), full, esc, { onRefetch, revealSheet: false });
       }
     }
-    setStatus("");
+    const n = hailScopeDays(wxState.data || data).length;
+    setStatus(n ? `Storms ready · ${n} dates` : "No storms at this pin");
   } catch (e) {
     if (gen !== hailTapGen) return;
     if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try another pin.</p>`;
-    setStatus("");
+    setStatus("Storms unavailable");
   }
 }
 
