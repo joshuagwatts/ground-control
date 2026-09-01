@@ -67,7 +67,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.190";
+} from "./wx.js?v=0.2.192";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1235,6 +1235,7 @@ function paintFieldMap() {
       selectedDoneId = h.id;
       const box = $("#hs-addr-q");
       if (box && h.address) box.value = h.address;
+      flyToPin(Number(h.lat), Number(h.lon), 20);
       paintFieldSheet();
       void onHailTap(Number(h.lat), Number(h.lon), { address: h.address || "" });
     },
@@ -1451,7 +1452,7 @@ function paintFieldSheet() {
       <strong>Completed houses</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "None loaded yet"}</span>
     </div>
-    <p class="muted">Paste finished addresses and load yellow markers in the Jobs tab. Tap a yellow pin here to open storm dates for that house. Pin size slider is on the map.</p>
+    <p class="muted">Paste finished addresses and load yellow markers in the Jobs tab. Tap a yellow pin to zoom in and open storm dates for that house. Pin size slider is on the map.</p>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-jobs">Manage in Jobs</button>
       ${selHouse ? `<button type="button" id="hs-done-all-pins">Clear selection</button>` : ""}

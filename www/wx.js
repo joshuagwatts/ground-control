@@ -1613,7 +1613,7 @@ function refreshZoomScaledUi(force = false) {
   }
 }
 
-/** Per-band fill (composited inside pane). Pane opacity caps total map coverage ~50%. */
+/** Per-band fill (composited inside pane). Pane opacity caps total map coverage ~65%. */
 const HAIL_BAND_FILL = 0.72;
 const HAIL_BAND_FILL_SAT = 0.78;
 
@@ -1622,9 +1622,9 @@ function hailZoneOpacityBoost(_base) {
   return activeLayer === "sat" ? HAIL_BAND_FILL_SAT : HAIL_BAND_FILL;
 }
 
-/** Cap stacked hail fills so overlaps never fully block the basemap (~50%). */
+/** Cap stacked hail fills so overlaps never fully block the basemap (~65%). */
 function hailFillPaneOpacity() {
-  return 0.5;
+  return 0.65;
 }
 
 function ensureHailPanes() {
@@ -4813,7 +4813,7 @@ function stackHailBandPolys(subs) {
 }
 
 function hailLayerFillOpacity(sz) {
-  // Relative strength only — hailFills pane opacity (~0.5) caps how much map is blocked.
+  // Relative strength only — hailFills pane opacity (~0.65) caps how much map is blocked.
   const s = Number(sz) || 0;
   if (s <= 0.5) return 0.45;
   if (s < 1) return 0.58;
