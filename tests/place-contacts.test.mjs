@@ -37,6 +37,7 @@ import {
   parseZillowRentDetailPhone,
   isOklahomaLatLon,
   citiesNearPoint,
+  citiesInMapBounds,
   inferOkCity,
   mergeRentFlagList,
   persistRentFlags,
@@ -369,6 +370,27 @@ assert(citiesNearPoint(36.4337, -99.3904)[0] === "Woodward", "viewport nearest W
 // Closer to Edmond than OKC — must not promote OKC via population tie-break.
 assert(citiesNearPoint(35.62, -97.48)[0] === "Edmond", "Edmond beats OKC when nearer");
 assert(inferOkCity(35.62, -97.48) === "Edmond", "inferOkCity Edmond over OKC");
+assert(
+  citiesInMapBounds(
+    { south: 35.6, west: -97.55, north: 35.7, east: -97.4 },
+    { lat: 35.65, lon: -97.48, limit: 3 },
+  )[0] === "Edmond",
+  "map bounds prefer Edmond",
+);
+assert(
+  citiesInMapBounds(
+    { south: 36.4, west: -99.5, north: 36.5, east: -99.3 },
+    { lat: 36.43, lon: -99.39, limit: 3 },
+  )[0] === "Woodward",
+  "map bounds prefer Woodward",
+);
+assert(
+  !citiesInMapBounds(
+    { south: 36.4, west: -99.5, north: 36.5, east: -99.3 },
+    { lat: 36.43, lon: -99.39, limit: 5 },
+  ).includes("Oklahoma City"),
+  "Woodward view excludes OKC",
+);
 assert(citiesNearPoint(36.4337, -99.3904).length >= 150, "statewide OK municipality list");
 assert(inferOkCity(36.4337, -99.3904) === "Woodward", "inferOkCity Woodward not OKC");
 assert(inferOkCity(36.6828, -101.4816) === "Guymon", "inferOkCity Guymon");

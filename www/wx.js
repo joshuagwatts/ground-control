@@ -19,6 +19,7 @@ import {
   lookupViewportRentFlags,
   isOklahomaLatLon,
   inferOkCity,
+  citiesInMapBounds,
   loadPersistedRentFlags,
   persistRentFlags,
 } from "./contacts.js";
@@ -265,10 +266,10 @@ let flagPaintQueued = false;
 let flagPaintImmediateDone = false;
 const BIZ_STORE_KEY = "hs-biz-flags-v1";
 const BIZ_STORE_MAX = 800;
-/** Short cool only — long freezes froze Rent.com / apartments.com retarget when the map moved. */
-const RENT_SWEEP_COOL_MS = 8 * 1000;
+/** Short cool — map-view flags should retarget quickly after a pan. */
+const RENT_SWEEP_COOL_MS = 4 * 1000;
 /** Re-kick rent/city sweep when the map center moves this far (km). */
-const RENT_SWEEP_MOVE_KM = 10;
+const RENT_SWEEP_MOVE_KM = 5;
 /** Session map of house keys → owner phone (drives green house-number labels). */
 const housePhoneByKey = new Map();
 /** Session map of house keys → { phone, name, email } when public info exists. */
@@ -5930,9 +5931,27 @@ function flagSearchKm() {
   return FLAG_SEARCH_KM_MAX;
 }
 
-/** Bounds for Flags OSM pull — center-based so any map zoom works. */
+/** Bounds for Flags — the visible map frame (not a tiny center circle / not OKC). */
 function flagSearchBounds() {
-  if (!map) return null;
+  if (!map || !window.L) return null;
+  const view = map.getBounds?.();
+  if (view?.isValid?.()) {
+    // Slight pad so edge-of-screen listings still load.
+    let b = view.pad(0.1);
+    const c = map.getCenter?.();
+    if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+      // Cap runaway zoom-out so one pan doesn't request half the state.
+      const diag = haversineKm(b.getSouth(), b.getWest(), b.getNorth(), b.getEast());
+      const maxDiag = 48;
+      if (diag > maxDiag) {
+        const km = maxDiag / 2;
+        const dLat = km / 111.32;
+        const dLon = km / (111.32 * Math.max(0.2, Math.cos((c.lat * Math.PI) / 180)));
+        b = window.L.latLngBounds([c.lat - dLat, c.lng - dLon], [c.lat + dLat, c.lng + dLon]);
+      }
+    }
+    return b;
+  }
   const c = map.getCenter?.();
   if (!c) return null;
   const km = flagSearchKm();
@@ -5942,6 +5961,17 @@ function flagSearchBounds() {
     [c.lat - dLat, c.lng - dLon],
     [c.lat + dLat, c.lng + dLon],
   );
+}
+
+function flagViewBoundsPayload() {
+  const b = flagSearchBounds();
+  if (!b?.isValid?.()) return null;
+  return {
+    south: b.getSouth(),
+    west: b.getWest(),
+    north: b.getNorth(),
+    east: b.getEast(),
+  };
 }
 
 function ringCentroid(ring) {
@@ -7019,7 +7049,6 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
     !Number.isFinite(lastRentSweepLat) ||
     !Number.isFinite(lastRentSweepLon) ||
     haversineKm(lastRentSweepLat, lastRentSweepLon, lat, lon) >= RENT_SWEEP_MOVE_KM;
-  // Hard force (toggle / big pan) clears caches. City-name upgrade only retargets.
   const hardForce = force || geoMoved;
   const shouldRun = hardForce || cityUpgrade || !lastRentSweepAt || now - lastRentSweepAt >= RENT_SWEEP_COOL_MS;
   if (!shouldRun) return;
@@ -7027,14 +7056,17 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
   lastRentSweepLat = lat;
   lastRentSweepLon = lon;
   lastRentSweepCity = nextCity || inferOkCity(lat, lon) || lastRentSweepCity || "";
+  const bounds = flagViewBoundsPayload();
   if (hardForce || cityUpgrade) {
     emitPhoneFlagsStatus(
-      lastRentSweepCity ? `Loading flags · ${lastRentSweepCity}…` : "Loading flags…",
+      lastRentSweepCity ? `Loading flags · map view · ${lastRentSweepCity}…` : "Loading flags · map view…",
     );
   }
   void lookupViewportRentFlags(lat, lon, {
     city: nextCity || lastRentSweepCity || "",
     state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
+    bounds,
+    viewportOnly: true,
     force: hardForce,
     retarget: cityUpgrade && !hardForce,
     onBatch: (flags) => applyRentFlagBatch(flags, gen),
@@ -7088,18 +7120,24 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     return;
   }
   const z = map.getZoom?.() ?? 14;
-  const key = `flag|${houseBoundsKey(searchB, z)}|${flagSearchKm().toFixed(1)}`;
-  if (!forceRent && houseCache.key === key && houseCache.nums.length) {
+  const key = `flag|${houseBoundsKey(searchB, z)}`;
+  const center = map.getCenter?.();
+  const bounds = flagViewBoundsPayload();
+  const viewCity =
+    (center && citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 1 })[0]) ||
+    (center && isOklahomaLatLon(center.lat, center.lng) ? inferOkCity(center.lat, center.lng) : "") ||
+    "";
+
+  const frameChanged = houseCache.key !== key;
+  if (!forceRent && !frameChanged && houseCache.nums.length) {
     scheduleFlagLayerPaint();
-    const c0 = map.getCenter?.();
-    // Retarget city rentals when the map has moved far enough — don't wait for an empty cache.
-    if (c0) {
+    if (center) {
       kickRentFlags(
-        c0.lat,
-        c0.lng,
+        center.lat,
+        center.lng,
         {
-          city: isOklahomaLatLon(c0.lat, c0.lng) ? inferOkCity(c0.lat, c0.lng) : "",
-          state: isOklahomaLatLon(c0.lat, c0.lng) ? "OK" : "",
+          city: viewCity,
+          state: isOklahomaLatLon(center.lat, center.lng) ? "OK" : "",
         },
         houseGen,
       );
@@ -7111,63 +7149,64 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     }, 60);
     return;
   }
-  const cachedReady = readyFlagList(houseCache.nums).length;
-  emitPhoneFlagsStatus(
-    cachedReady
-      ? flagStatusLine(forceRent ? "Refreshing flags…" : "")
-      : "Loading flags…",
-  );
+
+  emitPhoneFlagsStatus(viewCity ? `Loading flags · map view · ${viewCity}…` : "Loading flags · map view…");
   const padB = searchB.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
   const west = padB.getWest();
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  const center = map.getCenter?.();
-  const inferredCity =
-    center && isOklahomaLatLon(center.lat, center.lng) ? inferOkCity(center.lat, center.lng) : "";
+
   if (center) {
-    // Start with nearest OK city immediately — don't wait on OSM (that caused empty→OKC→retarget lag).
+    // Always force map-view rent load for the towns inside this frame.
     kickRentFlags(
       center.lat,
       center.lng,
       {
-        city: inferredCity,
+        city: viewCity,
         state: isOklahomaLatLon(center.lat, center.lng) ? "OK" : "",
       },
       gen,
-      { force: forceRent },
+      { force: true },
     );
   }
-  const mapDump = await osmMapJson(south, west, north, east, 18000).catch(() => null);
+
+  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
   const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
   const osmNums = numsFromOsmElements(mapDump?.elements);
   if (!map || !phoneFlagsEnabled()) return;
   const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
   houseCache = { key, rings: [], nums };
   persistBizFlags(nums);
-  scheduleFlagLayerPaint();
+  scheduleFlagLayerPaint(true);
+
   const place = placeFromOsmElements(mapDump?.elements);
-  if (center) {
-    const osmCity = String(place.city || "").trim();
-    const osmKey = osmCity.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const inferredKey = String(inferredCity || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "");
-    // Only retarget when OSM names a different town than the nearest-city guess.
-    if (osmCity && osmKey !== inferredKey) {
-      kickRentFlags(
-        center.lat,
-        center.lng,
-        {
-          city: osmCity,
-          state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
-        },
-        gen,
-        { force: false },
+  const osmCity = String(place.city || "").trim();
+  if (center && osmCity) {
+    const slug = (n) =>
+      String(n || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
+    if (slug(osmCity) !== slug(viewCity)) {
+      const inFrame = citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 8 }).some(
+        (c) => slug(c) === slug(osmCity),
       );
+      if (inFrame || !viewCity) {
+        kickRentFlags(
+          center.lat,
+          center.lng,
+          {
+            city: osmCity,
+            state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
+          },
+          gen,
+          { force: false },
+        );
+      }
     }
   }
+
   void overpassJson(osmPoiQuery(south, west, north, east), 8000)
     .then((overPois) => {
       if (gen !== houseGen || !overPois?.elements?.length) return;
@@ -7176,16 +7215,8 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
       scheduleFlagLayerPaint();
     })
     .catch(() => {});
-  const ready = readyFlagList(nums).length;
-  emitPhoneFlagsStatus(
-    ready
-      ? flagStatusLine()
-      : nums.length
-        ? "Loading flags…"
-        : mapDump
-          ? "No rental or business phones near map center"
-          : "Flag lookup blocked — turn off VPN / check Wi‑Fi, then tap Flags again",
-  );
+
+  emitPhoneFlagsStatus(readyFlagList(nums).length ? flagStatusLine() : "Loading flags · map view…");
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
   houseEnrichTimer = setTimeout(() => {
     houseEnrichTimer = 0;
@@ -7224,7 +7255,7 @@ export function startPhoneFlagScan() {
   lastRentSweepCity = "";
   houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
   hydratePersistedFlags();
-  emitPhoneFlagsStatus("Loading flags…");
+  emitPhoneFlagsStatus("Loading flags · map view…");
   scheduleFlagLayerPaint(true);
   if (houseTimer) {
     clearTimeout(houseTimer);
