@@ -169,6 +169,8 @@ let hailScopeMode = false;
 let hsCalendarOpen = false;
 let hsCalendarYear = null;
 let hsCalendarMonth = null;
+let hsCalendarSheet = null;
+let hsCalendarTrig = null;
 
 function stormDateKey(date) {
   return parseStormDay(date);
@@ -1104,7 +1106,7 @@ async function ensureSwdiForSelectedStormDays() {
   const need = days.filter((d) => {
     const near = pool.filter(
       (h) =>
-        String(h.date || "").slice(0, 10) === d &&
+        stormDayMatches(h.date, d) &&
         isSwdiHail(h) &&
         hailDistKm(h, anchor.lat, anchor.lon) <= km,
     );
@@ -10457,9 +10459,118 @@ export function hailCalendarHighlightDays(data, { viewport = false } = {}) {
   return days;
 }
 
+function hailScopeLiveData(root, fallback) {
+  const box = root?.querySelector?.(".hs-dates");
+  return box?._hsData || fallback || lastDossierDataRef || null;
+}
+
+/** Shared storm-date pick — list rows and calendar both call this. */
+function pickStormDateFromSheet(dateRaw, root, live, esc, { toggle = true, fit = null, closeCalendar = false } = {}) {
+  const date = stormDateKey(dateRaw);
+  if (!date) return false;
+  const dossier = live || hailScopeLiveData(root, null);
+  if (!dossier) return false;
+  if (dossier.hail) lastDossierDataRef = dossier;
+  const hailRows = mapHailRows(dossier, wxFilters);
+  const zoneRows = hailRowsForZones(dossier, wxFilters);
+  const turningOn = !isStormDateSelected(date);
+  const zNow = map?.getZoom?.() ?? 14;
+  const doFit = fit ?? (turningOn && zNow < 11 && !wxPinSelected());
+  lastHailDrawSig = "";
+  try {
+    selectStormDate(date, {
+      fit: doFit,
+      requireDate: true,
+      hailRows,
+      zoneRows,
+      toggle,
+    });
+  } catch (err) {
+    console.warn("pickStormDateFromSheet failed", err);
+    return false;
+  }
+  const pools = resolvedStormDrawPools(hailRows);
+  drawHailMarkers(pools.dotRows, lastWindRows, {
+    fit: doFit,
+    requireDate: true,
+    zoneRows: pools.zoneRows,
+  });
+  syncHazardLayers();
+  paintHailScopeDateSelection(root, dossier, esc);
+  if (closeCalendar) closeHsCalendarSheet();
+  return true;
+}
+
+function ensureHsCalendarSheet() {
+  if (hsCalendarSheet) return hsCalendarSheet;
+  hsCalendarSheet = document.createElement("div");
+  hsCalendarSheet.id = "hs-cal-sheet";
+  hsCalendarSheet.className = "hs-cal-sheet";
+  hsCalendarSheet.hidden = true;
+  hsCalendarSheet.innerHTML = `<button type="button" class="hs-cal-sheet-bg" aria-label="Close calendar"></button>
+    <div class="hs-cal-sheet-panel" id="hs-cal-pop" role="dialog" aria-modal="true" aria-label="Storm calendar"></div>`;
+  document.body.appendChild(hsCalendarSheet);
+  hsCalendarSheet.querySelector(".hs-cal-sheet-bg")?.addEventListener("click", closeHsCalendarSheet);
+  if (!document._hsCalEscBound) {
+    document._hsCalEscBound = true;
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && hsCalendarOpen) closeHsCalendarSheet();
+    });
+  }
+  return hsCalendarSheet;
+}
+
+function placeHsCalendarPopover(trig) {
+  const panel = hsCalendarSheet?.querySelector(".hs-cal-sheet-panel");
+  if (!panel || !trig) return;
+  const r = trig.getBoundingClientRect();
+  const pad = 10;
+  const width = Math.min(292, Math.max(248, window.innerWidth - pad * 2));
+  let left = Math.min(Math.max(pad, r.left), window.innerWidth - width - pad);
+  let top = r.top - 8;
+  panel.style.width = `${Math.round(width)}px`;
+  requestAnimationFrame(() => {
+    const h = panel.offsetHeight || 260;
+    top = r.top - h - 8;
+    if (top < pad) top = Math.min(r.bottom + 8, window.innerHeight - h - pad);
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(Math.max(pad, top))}px`;
+  });
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.top = `${Math.round(top)}px`;
+}
+
+function openHsCalendarSheet(trig) {
+  ensureHsCalendarSheet();
+  hsCalendarTrig = trig;
+  hsCalendarOpen = true;
+  trig?.classList.add("open");
+  trig?.setAttribute("aria-expanded", "true");
+  hsCalendarSheet.hidden = false;
+  requestAnimationFrame(() => {
+    hsCalendarSheet.classList.add("open");
+    placeHsCalendarPopover(trig);
+  });
+}
+
+function closeHsCalendarSheet() {
+  if (!hsCalendarSheet) return;
+  hsCalendarOpen = false;
+  hsCalendarSheet.classList.remove("open");
+  hsCalendarTrig?.classList.remove("open");
+  hsCalendarTrig?.setAttribute("aria-expanded", "false");
+  hsCalendarTrig = null;
+  hsCalendarSheet.hidden = true;
+}
+
 function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
-  const pop = root.querySelector("#hs-cal-pop");
+  ensureHsCalendarSheet();
+  const pop = hsCalendarSheet.querySelector("#hs-cal-pop");
   if (!pop || !data) return;
+  pop._hsData = data;
+  pop._hsEsc = esc;
+  pop._hsRoot = root;
+  pop._hsOnRefetch = onRefetch;
   const viewport = Boolean(data.viewport || data._meta?.viewport);
   const pinMode = wxPinSelected() && !viewport;
   const highlights = hailCalendarHighlightDays(data, { viewport });
@@ -10469,9 +10580,7 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
     hsCalendarYear = def.year;
     hsCalendarMonth = def.month;
   }
-  const subtitle = pinMode
-    ? "Tap a date to overlay · bright yellow = ≥1″ at this address · muted = other storm days"
-    : "Tap a date to overlay · bright yellow = extreme (≥2″) · muted = other storm days";
+  const subtitle = pinMode ? "Bright = ≥1″ at roof · dim = storm day" : "Bright = ≥2″ extreme · dim = storm day";
   pop.innerHTML = renderStormCalendar({
     year: hsCalendarYear,
     month: hsCalendarMonth,
@@ -10484,29 +10593,20 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
   bindStormCalendar(pop, {
     onDay: (iso) => {
       if (!iso) return;
-      const hailRows = mapHailRows(data, wxFilters);
-      const zoneRows = hailRowsForZones(data, wxFilters);
-      const zNow = map?.getZoom?.() ?? 14;
-      const turningOn = !isStormDateSelected(iso);
-      try {
-        selectStormDate(iso, {
-          fit: turningOn && zNow < 11 && !wxPinSelected(),
-          requireDate: true,
-          hailRows,
-          zoneRows,
-          toggle: false,
-        });
-      } catch (err) {
-        console.warn("calendar selectStormDate failed", err);
-      }
+      const live = pop._hsData || hailScopeLiveData(pop._hsRoot, data);
+      const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, { toggle: false, closeCalendar: true });
+      if (!picked) return;
       if (!stormDays.has(iso)) {
-        emitMapStatus(`No hail loaded for ${prettyStormDate(iso)} — widen window or Search storms`);
+        emitMapStatus(`No hail loaded for ${prettyStormDate(iso)} — Search storms or widen window`);
       } else {
         emitMapStatus(`Overlay ${prettyStormDate(iso)}`);
       }
       void ensureSwdiForSelectedStormDays();
-      paintHailScopeDateSelection(root, data, esc);
-      paintHailCalendarPanel(root, data, esc, { onRefetch });
+      if (hsCalendarOpen) {
+        hsCalendarYear = null;
+        hsCalendarMonth = null;
+        paintHailCalendarPanel(pop._hsRoot, live, esc, { onRefetch: pop._hsOnRefetch });
+      }
     },
     onNav: (dir) => {
       let y = hsCalendarYear;
@@ -10521,49 +10621,33 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
       }
       hsCalendarYear = y;
       hsCalendarMonth = m;
-      paintHailCalendarPanel(root, data, esc, { onRefetch });
+      paintHailCalendarPanel(pop._hsRoot, pop._hsData || data, pop._hsEsc || esc, { onRefetch: pop._hsOnRefetch });
     },
   });
 }
 
 function bindHailCalendar(root, data, esc, { onRefetch } = {}) {
   const trig = root.querySelector("#hs-cal-trig");
-  const pop = root.querySelector("#hs-cal-pop");
-  if (!trig || !pop) return;
+  if (!trig) return;
   if (!trig._hsCalBound) {
     trig._hsCalBound = true;
     trig.onclick = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      hsCalendarOpen = !hsCalendarOpen;
-      trig.classList.toggle("open", hsCalendarOpen);
-      trig.setAttribute("aria-expanded", hsCalendarOpen ? "true" : "false");
-      pop.hidden = !hsCalendarOpen;
       if (hsCalendarOpen) {
-        hsCalendarYear = null;
-        hsCalendarMonth = null;
-        paintHailCalendarPanel(root, data, esc, { onRefetch });
+        closeHsCalendarSheet();
+        return;
       }
+      hsCalendarYear = null;
+      hsCalendarMonth = null;
+      openHsCalendarSheet(trig);
+      paintHailCalendarPanel(root, hailScopeLiveData(root, data), esc, { onRefetch });
     };
-    if (!document._hsCalDocBound) {
-      document._hsCalDocBound = true;
-      document.addEventListener(
-        "click",
-        (e) => {
-          if (!hsCalendarOpen) return;
-          if (e.target.closest(".hs-cal-wrap")) return;
-          hsCalendarOpen = false;
-          const t = document.querySelector("#hs-cal-trig");
-          const p = document.querySelector("#hs-cal-pop");
-          t?.classList.remove("open");
-          t?.setAttribute("aria-expanded", "false");
-          if (p) p.hidden = true;
-        },
-        true,
-      );
-    }
   }
-  if (hsCalendarOpen) paintHailCalendarPanel(root, data, esc, { onRefetch });
+  if (hsCalendarOpen && hsCalendarTrig === trig) {
+    paintHailCalendarPanel(root, hailScopeLiveData(root, data), esc, { onRefetch });
+    placeHsCalendarPopover(trig);
+  }
 }
 
 function syncHailStormDateSelection(_data) {
@@ -10763,10 +10847,7 @@ function hailScopeHtml(data, days, esc) {
           ? `<button type="button" id="hs-hail-search" class="hs-hail-search">${esc(searchLab)}</button>`
           : ""
       }
-    </div>
-    <div class="hs-cal-wrap">
-      <button type="button" id="hs-cal-trig" class="hs-cal-trig" aria-expanded="false" aria-controls="hs-cal-pop">View calendar</button>
-      <div id="hs-cal-pop" class="hs-cal-pop" hidden></div>
+      <button type="button" id="hs-cal-trig" class="hs-cal-trig" aria-expanded="false" aria-haspopup="dialog">Calendar</button>
     </div>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
@@ -10824,25 +10905,11 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     const live = box._hsData || data;
     const liveEsc = box._hsEsc || esc;
     const date = row.getAttribute("data-storm-date");
-    const hailRows = mapHailRows(live, wxFilters);
-    const zoneRows = hailRowsForZones(live, wxFilters);
-    // State overview: center the map on the storm being turned on. Zoomed in
-    // (or deselecting) keep the current view.
-    const turningOn = !isStormDateSelected(date);
-    const zNow = map?.getZoom?.() ?? 14;
     try {
-      selectStormDate(date, {
-        fit: turningOn && zNow < 11 && !wxPinSelected(),
-        requireDate: true,
-        hailRows,
-        zoneRows,
-        toggle: true,
-      });
+      pickStormDateFromSheet(date, root, live, liveEsc, { toggle: true });
     } catch (err) {
       console.warn("selectStormDate failed", err);
     }
-    // Toggle classes in place — full list rebuild was dropping taps mid-gesture.
-    paintHailScopeDateSelection(root, live, liveEsc);
   });
 }
 

@@ -89,16 +89,9 @@ export function renderStormCalendar(
           ]
             .filter(Boolean)
             .join(" ");
-          const title = strong
-            ? "Extreme / roof hail — tap to overlay"
-            : storm
-              ? "Storm day — tap to overlay"
-              : pickable
-                ? "Tap to check this date"
-                : "";
           return `<button type="button" class="${cls}" data-cal-day="${esc(c.iso)}"${
             pickable ? "" : " disabled tabindex=\"-1\""
-          } aria-pressed="${on ? "true" : "false"}" title="${esc(title)}">${c.day}</button>`;
+          } aria-pressed="${on ? "true" : "false"}">${c.day}</button>`;
         })
         .join("");
       return `<div class="hs-cal-week">${cells}</div>`;
@@ -110,9 +103,9 @@ export function renderStormCalendar(
       <span class="hs-cal-title">${esc(monthLabel)}</span>
       <button type="button" class="hs-cal-nav" data-cal-nav="next" aria-label="Next month">›</button>
     </header>
-    ${subtitle ? `<p class="hs-cal-sub muted">${esc(subtitle)}</p>` : ""}
     <div class="hs-cal-dows">${head}</div>
     <div class="hs-cal-grid">${rows}</div>
+    ${subtitle ? `<p class="hs-cal-legend muted">${esc(subtitle)}</p>` : ""}
   </div>`;
 }
 
