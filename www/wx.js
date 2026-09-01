@@ -1105,9 +1105,10 @@ async function ensureSwdiForSelectedStormDays() {
   const anchor = stormSwdiAnchor();
   if (!anchor) return;
   const days = selectedStormDateList();
+  const mapBbox = !wxPinSelected() ? mapViewSwdiBbox(0.06) : null;
   const km = wxPinSelected()
     ? hailRadarZoneKm()
-    : Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0);
+    : Math.min(Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0), SWDI_ON_DEMAND_MAX_KM);
   const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
   const need = days.filter((d) => {
     const near = pool.filter(
@@ -1123,17 +1124,22 @@ async function ensureSwdiForSelectedStormDays() {
   const gen = ++pinStormSwdiGen;
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
   const spotBbox = spotterSwdiBbox(need, pool, anchor);
-  let result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, spotBbox ? { bbox: spotBbox } : {});
+  const bboxOpt = mapBbox ? { bbox: mapBbox } : spotBbox ? { bbox: spotBbox } : {};
+  let result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, bboxOpt);
   let swdi = result.rows;
-  if (!swdi.length) {
+  if (!swdi.length && mapBbox) {
+    result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, { bbox: mapBbox });
+    swdi = result.rows;
+  }
+  if (!swdi.length && wxPinSelected()) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need);
     swdi = result.rows;
   }
-  if (!swdi.length && isOklahomaLatLon(anchor.lat, anchor.lon)) {
+  if (!swdi.length && wxPinSelected() && isOklahomaLatLon(anchor.lat, anchor.lon)) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need, { bbox: OK_SWDI_BBOX });
     swdi = result.rows;
   }
-  if (!swdi.length && spotBbox) {
+  if (!swdi.length && spotBbox && wxPinSelected()) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need);
     swdi = result.rows;
   }
@@ -1153,16 +1159,26 @@ async function ensureSwdiForSelectedStormDays() {
     }
     return;
   }
+  swdi = capSwdiRowsForDraw(clipHailToMapView(swdi), SWDI_DRAW_CAP);
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
   lastHailRows = merged;
-  lastZoneHailRows = zoneRowsFromHail(merged);
-  if (lastDossierDataRef) lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], swdi);
+  lastZoneHailRows = stormDrawZoneRows(zoneRowsFromHail(merged));
+  if (lastDossierDataRef) {
+    lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], swdi);
+  }
   cancelScheduledStormRedraw();
   lastHailDrawSig = "";
+  emitMapStatus("Drawing hail zones…");
+  await deferToNextFrame();
+  if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
   const pools = resolvedStormDrawPools();
-  drawHailMarkers(pools.dotRows, lastWindRows, { requireDate: true, zoneRows: pools.zoneRows });
-  emitMapStatus(`Hail radar loaded · ${swdi.length} SWDI sig${swdi.length === 1 ? "" : "s"}`);
+  drawHailMarkers(pools.dotRows, lastWindRows, {
+    requireDate: true,
+    zoneRows: stormDrawZoneRows(pools.zoneRows),
+  });
+  const dayLabel = need.length === 1 ? prettyStormDate(need[0]) : `${need.length} days`;
+  emitMapStatus(`Overlay ${dayLabel} · ${swdi.length} radar sig${swdi.length === 1 ? "" : "s"} in view`);
 }
 
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgress } = {}) {
@@ -3222,9 +3238,7 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, zone
       console.warn("drawHailMarkers failed", err);
     }
   }
-  if (hasSelectedStormDates() && !wxPinSelected()) {
-    scheduleHailMapFill(120);
-  } else if (hadSelection && !wxPinSelected() && hailScopeMode) {
+  if (hadSelection && !hasSelectedStormDates() && !wxPinSelected() && hailScopeMode) {
     // Cleared every storm date — leave list as-is; Search storms refreshes on demand.
   }
   if (hasSelectedStormDates()) {
@@ -3941,6 +3955,66 @@ function clipHailToMapView(rows) {
   return inView.length ? inView : rows;
 }
 
+/** SWDI on-demand fetch/draw caps — statewide pulls freeze the UI. */
+const SWDI_ON_DEMAND_MAX_KM = 72;
+const SWDI_DRAW_CAP = 360;
+const SWDI_MESH_PT_CAP = 140;
+
+function mapViewSwdiBbox(pad = 0.06) {
+  const b = mapViewBounds(pad);
+  if (!b) return null;
+  const sw = b.getSouthWest();
+  const ne = b.getNorthEast();
+  return `${sw.lng.toFixed(4)},${sw.lat.toFixed(4)},${ne.lng.toFixed(4)},${ne.lat.toFixed(4)}`;
+}
+
+function capSwdiRowsForDraw(rows, max = SWDI_DRAW_CAP) {
+  const sorted = [...(rows || [])].sort(
+    (a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0),
+  );
+  const out = [];
+  const seen = new Set();
+  for (const h of sorted) {
+    if (out.length >= max) break;
+    if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
+    const k = `${Number(h.lat).toFixed(3)}|${Number(h.lon).toFixed(3)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(h);
+  }
+  return out;
+}
+
+function capRadarPtsForMesh(pts, max = SWDI_MESH_PT_CAP) {
+  const pool = pts || [];
+  const spots = pool.filter(isSpotterHail);
+  const radar = pool.filter(isRadarHail);
+  if (radar.length <= max) return pool;
+  const top = [...radar]
+    .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
+    .slice(0, max);
+  return mergeHailRows(spots, top);
+}
+
+function stormDrawZoneRows(rows) {
+  let zRows = rows || [];
+  if (hasSelectedStormDates() && !wxPinSelected()) {
+    zRows = clipHailToMapView(zRows);
+    const radar = capSwdiRowsForDraw(zRows.filter(isSwdiHail), SWDI_DRAW_CAP);
+    const spots = zRows.filter(isSpotterHail).slice(0, 120);
+    zRows = mergeHailRows(radar, spots);
+  }
+  return zRows;
+}
+
+async function deferToNextFrame() {
+  const raf =
+    typeof requestAnimationFrame === "function"
+      ? requestAnimationFrame
+      : (fn) => setTimeout(fn, 0);
+  await new Promise((resolve) => raf(() => raf(resolve)));
+}
+
 export function wxPinSelected() {
   return Number.isFinite(pinLat) && Number.isFinite(pinLon);
 }
@@ -4226,16 +4300,22 @@ async function refreshHailMapFill() {
   const q = mapViewHailQuery();
   if (!q) return;
   const gen = ++hailMapFillGen;
-  const days = Number(wxFilters.days) || 730;
-  const km = mapViewFetchKm();
+  const selectedDays = selectedStormDateList();
+  const km = Math.min(mapViewFetchKm(), SWDI_ON_DEMAND_MAX_KM);
+  const bbox = mapViewSwdiBbox(0.06);
   try {
-    const [spc, swdi, lsr] = await Promise.all([
+    const [spc, lsr] = await Promise.all([
       fetchSpcReports(q.lat, q.lon, km, 14),
-      fetchSwdiHail(q.lat, q.lon, km, swdiDaysForRing(km, days)),
-      fetchIemLsrHail(q.lat, q.lon, km, days).catch(() => []),
+      fetchIemLsrHail(q.lat, q.lon, km, Number(wxFilters.days) || 730).catch(() => []),
     ]);
+    let swdi = [];
+    if (bbox && selectedDays.length) {
+      const result = await fetchSwdiHailForDays(q.lat, q.lon, km, selectedDays, { bbox });
+      swdi = result.rows || [];
+    }
     if (gen !== hailMapFillGen || !hasSelectedStormDates()) return;
-    const merged = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
+    swdi = capSwdiRowsForDraw(clipHailToMapView(swdi), SWDI_DRAW_CAP);
+    const merged = mergeHailRows(spc.hail || [], swdi, lsr || []);
     const byKey = new Map();
     for (const h of [...(lastHailRows || []), ...merged]) {
       if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
@@ -4243,7 +4323,7 @@ async function refreshHailMapFill() {
       byKey.set(k, h);
     }
     lastHailDrawSig = "";
-    const mergedRows = [...byKey.values()];
+    const mergedRows = stormDrawZoneRows([...byKey.values()]);
     lastZoneHailRows = mergedRows;
     drawHailMarkers(mergedRows, lastWindRows, { zoneRows: mergedRows });
   } catch {
@@ -5205,7 +5285,7 @@ function zoneHitPool(zone, rawPts) {
 }
 
 function buildDetailedZoneRings(zone, rawPts) {
-  const pool = zoneHitPool(zone, rawPts);
+  const pool = capRadarPtsForMesh(zoneHitPool(zone, rawPts));
   if (!pool.length) {
     return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: 1, confirmed: false }];
   }
@@ -5437,7 +5517,7 @@ function bindHailZoneTap(layer, h, sub) {
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (!map || !window.L) return;
   const dotRows = hailRows || [];
-  const zoneRows = opts.zoneRows || dotRows;
+  const zoneRows = stormDrawZoneRows(opts.zoneRows || dotRows);
   lastHailRows = dotRows;
   lastZoneHailRows = zoneRows;
   lastWindRows = windRows || [];
@@ -10632,7 +10712,6 @@ async function ensureStormOverlayForSelection(root, data, esc, { onRefetch, date
   }
 
   await ensureSwdiForSelectedStormDays();
-  scheduleHailMapFill(120);
 
   live = live || hailScopeLiveData(root, null);
   if (!live || !root) return;
@@ -10640,7 +10719,11 @@ async function ensureStormOverlayForSelection(root, data, esc, { onRefetch, date
   const hailRows = mapHailRows(live, wxFilters, drawCtx);
   const pools = resolvedStormDrawPools(hailRows);
   lastHailDrawSig = "";
-  drawHailMarkers(pools.dotRows, lastWindRows, { requireDate: true, zoneRows: pools.zoneRows });
+  await deferToNextFrame();
+  drawHailMarkers(pools.dotRows, lastWindRows, {
+    requireDate: true,
+    zoneRows: stormDrawZoneRows(pools.zoneRows),
+  });
   paintHailScopeDateSelection(root, live, esc, { scrollTo: date, scrollRow: false });
 }
 
@@ -10680,7 +10763,7 @@ function pickStormDateFromSheet(
   drawHailMarkers(pools.dotRows, lastWindRows, {
     fit: doFit,
     requireDate: true,
-    zoneRows: pools.zoneRows,
+    zoneRows: stormDrawZoneRows(pools.zoneRows),
   });
   syncHazardLayers();
   paintHailScopeDateSelection(root, dossier, esc, {
