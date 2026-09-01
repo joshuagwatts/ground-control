@@ -10418,6 +10418,19 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   return hail.filter((h) => hailDayMatchesQuery(h, q));
 }
 
+/** All loaded storm days for calendar picking (ignores hail-size filter). */
+export function hailCalendarStormDays(data, { viewport = false } = {}) {
+  const filters = { ...wxFilters, hailIn: 0 };
+  const isViewport = viewport || Boolean(data?.viewport || data?._meta?.viewport);
+  const raw = filterHailRaw(data, filters, { forMap: isViewport });
+  const days = new Set();
+  for (const h of collapseHailByDate(raw)) {
+    const day = parseStormDay(h.date);
+    if (day) days.add(day);
+  }
+  return days;
+}
+
 /** Calendar highlights — map view: extreme (≥2″) days; pinned address: ≥1″ at roof. */
 export function hailCalendarHighlightDays(data, { viewport = false } = {}) {
   const filters = { ...wxFilters, hailIn: 0 };
@@ -10450,31 +10463,48 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
   const viewport = Boolean(data.viewport || data._meta?.viewport);
   const pinMode = wxPinSelected() && !viewport;
   const highlights = hailCalendarHighlightDays(data, { viewport });
+  const stormDays = hailCalendarStormDays(data, { viewport });
   if (hsCalendarYear == null || hsCalendarMonth == null) {
-    const def = defaultCalendarMonth(highlights);
+    const def = defaultCalendarMonth(stormDays.size ? stormDays : highlights);
     hsCalendarYear = def.year;
     hsCalendarMonth = def.month;
   }
   const subtitle = pinMode
-    ? "Yellow = ≥1″ hail at this address"
-    : "Yellow = extreme hail (≥2″) in map view";
+    ? "Tap a date to overlay · bright yellow = ≥1″ at this address · muted = other storm days"
+    : "Tap a date to overlay · bright yellow = extreme (≥2″) · muted = other storm days";
   pop.innerHTML = renderStormCalendar({
     year: hsCalendarYear,
     month: hsCalendarMonth,
     highlightDays: highlights,
+    stormDays,
     selectedDays: selectedStormDates,
     subtitle,
     esc,
   });
   bindStormCalendar(pop, {
     onDay: (iso) => {
+      if (!iso) return;
       const hailRows = mapHailRows(data, wxFilters);
       const zoneRows = hailRowsForZones(data, wxFilters);
+      const zNow = map?.getZoom?.() ?? 14;
+      const turningOn = !isStormDateSelected(iso);
       try {
-        selectStormDate(iso, { fit: false, requireDate: true, hailRows, zoneRows, toggle: true });
+        selectStormDate(iso, {
+          fit: turningOn && zNow < 11 && !wxPinSelected(),
+          requireDate: true,
+          hailRows,
+          zoneRows,
+          toggle: false,
+        });
       } catch (err) {
         console.warn("calendar selectStormDate failed", err);
       }
+      if (!stormDays.has(iso)) {
+        emitMapStatus(`No hail loaded for ${prettyStormDate(iso)} — widen window or Search storms`);
+      } else {
+        emitMapStatus(`Overlay ${prettyStormDate(iso)}`);
+      }
+      void ensureSwdiForSelectedStormDays();
       paintHailScopeDateSelection(root, data, esc);
       paintHailCalendarPanel(root, data, esc, { onRefetch });
     },

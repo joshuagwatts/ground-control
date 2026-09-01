@@ -9,6 +9,7 @@ import {
 import {
   collapseHailByDate,
   hailCalendarHighlightDays,
+  hailCalendarStormDays,
   setWxPin,
   clearWxPin,
 } from "../www/wx.js";
@@ -32,10 +33,11 @@ const html = renderStormCalendar({
   year: 2024,
   month: 4,
   highlightDays: new Set(["2024-05-15"]),
+  stormDays: new Set(["2024-05-15", "2024-05-20"]),
   selectedDays: new Set(["2024-05-15"]),
   esc: (s) => String(s),
 });
-assert(/hs-cal-hail/.test(html) && /2024-05-15/.test(html), "render highlights");
+assert(/hs-cal-hail/.test(html) && /hs-cal-pick/.test(html) && !/disabled/.test(html.split("2024-05-20")[1]?.slice(0, 80) || ""), "render pickable storm days");
 
 const def = defaultCalendarMonth(new Set(["2023-08-02", "2024-05-15"]));
 assert(def.year === 2024 && def.month === 4, "default month from latest hail");
@@ -88,6 +90,9 @@ const vpData = {
 const vpDays = hailCalendarHighlightDays(vpData, { viewport: true });
 assert(vpDays.has("2026-05-15"), "map view extreme day");
 assert(!vpDays.has("2026-06-01"), "map view skips sub-extreme");
+
+const allDays = hailCalendarStormDays(vpData, { viewport: true });
+assert(allDays.has("2026-05-15") && allDays.has("2026-06-01"), "storm day set includes all loaded hail");
 
 assert(HAIL_EXTREME_IN === 2 && HAIL_PIN_CALENDAR_IN === 1, "threshold constants");
 

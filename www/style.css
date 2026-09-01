@@ -2658,17 +2658,27 @@ body.wx-map-expanded .hs-field {
 }
 .hs-cal-day.in-month { color: var(--text, #e8e8ea); }
 .hs-cal-day.out-month { opacity: 0.35; }
+.hs-cal-day.hs-cal-pick { cursor: pointer; }
+.hs-cal-day.hs-cal-storm {
+  background: rgba(250, 204, 21, 0.14);
+  color: var(--phos);
+  font-weight: 550;
+}
 .hs-cal-day.hs-cal-hail {
-  background: rgba(250, 204, 21, 0.38);
+  background: rgba(250, 204, 21, 0.42);
   color: #1a1a1a;
   font-weight: 600;
-  cursor: pointer;
+}
+.hs-cal-day.hs-cal-on {
+  box-shadow: inset 0 0 0 2px var(--phos);
 }
 .hs-cal-day.hs-cal-hail.hs-cal-on {
-  box-shadow: inset 0 0 0 2px var(--phos);
-  background: rgba(250, 204, 21, 0.55);
+  background: rgba(250, 204, 21, 0.58);
 }
-.hs-cal-day:disabled { pointer-events: none; opacity: 0.25; }
+.hs-cal-day.hs-cal-storm.hs-cal-on {
+  background: rgba(250, 204, 21, 0.28);
+}
+.hs-cal-day:disabled { pointer-events: none; opacity: 0.22; }
 .hs-date {
   display: grid;
   grid-template-columns: auto 1fr auto;

@@ -52,13 +52,22 @@ export function calendarWeeks(year, monthIndex) {
 }
 
 export function renderStormCalendar(
-  { year, month, highlightDays = new Set(), selectedDays = new Set(), subtitle = "", esc = (s) => String(s ?? "") },
+  {
+    year,
+    month,
+    highlightDays = new Set(),
+    stormDays = new Set(),
+    selectedDays = new Set(),
+    subtitle = "",
+    esc = (s) => String(s ?? ""),
+  },
 ) {
   const y = Number(year);
   const m = Number(month);
   const weeks = calendarWeeks(y, m);
   const monthLabel = new Date(y, m, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const hi = highlightDays instanceof Set ? highlightDays : new Set(highlightDays || []);
+  const storms = stormDays instanceof Set ? stormDays : new Set(stormDays || []);
   const sel = selectedDays instanceof Set ? selectedDays : new Set(selectedDays || []);
   const head = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
     .map((d) => `<span class="hs-cal-dow">${d}</span>`)
@@ -67,17 +76,29 @@ export function renderStormCalendar(
     .map((week) => {
       const cells = week
         .map((c) => {
-          const hail = hi.has(c.iso);
+          const strong = hi.has(c.iso);
+          const storm = storms.has(c.iso);
           const on = sel.has(c.iso);
+          const pickable = c.inMonth;
           const cls = [
             "hs-cal-day",
             c.inMonth ? "in-month" : "out-month",
-            hail ? "hs-cal-hail" : "",
+            strong ? "hs-cal-hail" : storm ? "hs-cal-storm" : "",
             on ? "hs-cal-on" : "",
+            pickable ? "hs-cal-pick" : "",
           ]
             .filter(Boolean)
             .join(" ");
-          return `<button type="button" class="${cls}" data-cal-day="${esc(c.iso)}"${hail ? "" : " disabled"} aria-pressed="${on ? "true" : "false"}">${c.day}</button>`;
+          const title = strong
+            ? "Extreme / roof hail — tap to overlay"
+            : storm
+              ? "Storm day — tap to overlay"
+              : pickable
+                ? "Tap to check this date"
+                : "";
+          return `<button type="button" class="${cls}" data-cal-day="${esc(c.iso)}"${
+            pickable ? "" : " disabled tabindex=\"-1\""
+          } aria-pressed="${on ? "true" : "false"}" title="${esc(title)}">${c.day}</button>`;
         })
         .join("");
       return `<div class="hs-cal-week">${cells}</div>`;
@@ -97,7 +118,7 @@ export function renderStormCalendar(
 
 export function bindStormCalendar(root, { onDay, onNav } = {}) {
   if (!root) return;
-  root.querySelectorAll("[data-cal-day]:not([disabled])").forEach((btn) => {
+  root.querySelectorAll("[data-cal-day].hs-cal-pick").forEach((btn) => {
     btn.onclick = (e) => {
       e.preventDefault();
       e.stopPropagation();
