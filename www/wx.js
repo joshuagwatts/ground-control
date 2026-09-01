@@ -174,6 +174,13 @@ function stormDateKey(date) {
   return parseStormDay(date);
 }
 
+function stormDayMatches(date, target) {
+  const k = parseStormDay(date);
+  if (!k) return false;
+  if (target instanceof Set) return target.has(k);
+  return k === parseStormDay(target);
+}
+
 function hasSelectedStormDates() {
   return selectedStormDates.size > 0;
 }
@@ -4080,7 +4087,7 @@ function selectPinIcon() {
 
 function hailNearPin(rows, day = null, { forZones = false } = {}) {
   let pool = rows || [];
-  if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
+  if (day) pool = pool.filter((h) => stormDayMatches(h.date, day));
   // House pin + storm day: spotters local; radar uses the wide dossier ring for zone fills.
   if (hailStormAtPin()) {
     const spotKm = hailPinPaintKm();
@@ -4107,7 +4114,7 @@ function hailNearPin(rows, day = null, { forZones = false } = {}) {
 
 function windNearPin(rows, day = null) {
   let pool = rows || [];
-  if (day) pool = pool.filter((w) => String(w.date || "").slice(0, 10) === day);
+  if (day) pool = pool.filter((w) => stormDayMatches(w.date, day));
   if (hasSelectedStormDates()) {
     return pool.filter((w) => Number.isFinite(w.lat) && Number.isFinite(w.lon));
   }
@@ -4602,7 +4609,7 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
  * Target look: elongated organic corridors (0.2.121 screenshot) — nested unique
  * contours — NEVER a pile of soft circles or rounded SWDI boxes.
  */
-function buildHailSwathRings(rawPts, zone = {}) {
+export function buildHailSwathRings(rawPts, zone = {}) {
   const pts = (rawPts || []).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   if (!pts.length) return [];
   // One isolated hit is the only case where a soft disk is honest.
@@ -4851,6 +4858,11 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const spotConfirm = kernels.some((k) => k.spot);
   const radarCount = kernels.filter((k) => !k.spot).length;
   const out = [...swdiRings];
+  // SWDI already traced this cluster — mesh thresholds stack a second fake swath on top.
+  if (swdiRings.length > 0) {
+    out.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
+    return ensureRadarInsideBands(out, pts);
+  }
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
   const softField = blurFloatField(field, w, h, 1);
 
@@ -5131,9 +5143,9 @@ function ringAreaApproxM2(ring) {
 }
 
 function zoneHitPool(zone, rawPts) {
-  const day = String(zone.date || "").slice(0, 10);
+  const day = parseStormDay(zone.date);
   const fromRows = (rawPts || []).filter(
-    (p) => String(p.date || "").slice(0, 10) === day && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+    (p) => stormDayMatches(p.date, day) && Number.isFinite(p.lat) && Number.isFinite(p.lon),
   );
   const fromZone = (zone.zone_pts || [])
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
@@ -5187,7 +5199,7 @@ function topoZoneRing(zone, rawPts) {
   const lon = zone.lon;
   const sz = parseFloat(zone.size_in);
   const baseM = Math.max(400, Math.min(2400, (zone.zone_r_km || 1) * 1000));
-  const dayPts = (rawPts || []).filter((p) => String(p.date || "").slice(0, 10) === zone.date);
+  const dayPts = (rawPts || []).filter((p) => stormDayMatches(p.date, zone.date));
   const hull = convexHullLatLon(dayPts);
   if (hull) return padPolygon(hull, Math.max(400, baseM * 0.15));
   return ringPolygon(lat, lon, baseM, sz >= 1.5 ? 8 : 6);
@@ -5385,15 +5397,17 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     ? Math.min(800, Math.max(200, activeDays.size * 80) + (zDraw < 9 ? 160 : 0))
     : 36;
   const zones = collapsed
-    .filter((h) => !day || day.has(h.date))
+    .filter((h) => !day || day.has(parseStormDay(h.date)))
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
     .slice(0, zoneLimit);
   const stormOn = hasSelectedStormDates();
   const wideView = zDraw < 11 && !stormOn;
 
   const fitPts = [];
+  const hailZoneDays = new Set();
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
+    const zoneDay = parseStormDay(h.date);
     const dayHits = zoneHitPool(h, zoneRows);
     const atRoof = dayHits.filter((p) => hitDistKm(p) <= HOUSE_HAIL_KM);
     const pin = pinCoords();
@@ -5430,7 +5444,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     if (!subRings.length && zoneHits.length) {
       const spots = zoneHits.filter(isSpotterHail);
       const radarHits = zoneHits.filter(isRadarHail);
-      if (spots.length) {
+      if (spots.length && radarHits.length) {
+        subRings.push(...buildHailSwathRings(spots, h), ...buildHailSwathRings(radarHits, h));
+      } else if (spots.length) {
         subRings.push({
           ring: topoZoneRing(h, spots),
           maxSize: Math.max(...spots.map((p) => parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0.75),
@@ -5438,8 +5454,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           confirmed: true,
           source: "spotter",
         });
-      }
-      if (radarHits.length) {
+      } else if (radarHits.length) {
         subRings.push({
           ring: topoZoneRing(h, radarHits),
           maxSize: Math.max(...radarHits.map((p) => parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0.75),
@@ -5457,6 +5472,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       return (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0);
     });
     const bands = stackHailBandPolys(subRings);
+    if (bands.length && zoneDay) hailZoneDays.add(zoneDay);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const isMixed = sub.source === "spot+radar";
@@ -5493,43 +5509,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     }
   }
 
-  // Standalone SWDI swaths — radar must not depend on spotter zone clusters.
-  if (day && hailLayer && stormOn) {
-    const swdiPts = hailNearPin(zoneRows, null, { forZones: true }).filter(
-      (p) => isSwdiHail(p) && day.has(String(p.date || "").slice(0, 10)),
-    );
-    if (swdiPts.length) {
-      for (const cluster of clusterPoints(swdiPts, HAIL_LOBE_SPLIT_KM)) {
-        for (const sub of buildHailSwathRings(cluster, {})) {
-          if (!sub.ring?.length) continue;
-          const sz = sub.maxSize || 0.75;
-          const col = hailZoneColor(sz);
-          fitPts.push(...sub.ring);
-          trackHailStroke(
-            window.L.polygon(sub.ring, {
-              color: col.stroke,
-              fillColor: col.fill,
-              fillOpacity: Math.min(0.85, hailLayerFillOpacity(sz) + 0.14),
-              weight: 1.4,
-              opacity: 0.82,
-              stroke: true,
-              smoothFactor: 2.4,
-              pane: "hailRadarFills",
-              renderer: hailRadarFillSvg,
-              interactive: true,
-              bubblingMouseEvents: false,
-              className: "wx-hail-topo",
-            }).addTo(hailLayer),
-            { confirmed: true, size: sz, kind: "fill", radar: true, outer: true },
-          );
-        }
-      }
-    }
-  }
-
   // Dots once per draw — radar uses the wide zone ring, spotters stay local.
   if (day && hailLayer) {
-    const dayFilter = (p) => day.has(String(p.date || "").slice(0, 10));
+    const dayFilter = (p) => stormDayMatches(p.date, day);
     const spots = hailNearPin(dotRows, null).filter(dayFilter).filter(isSpotterHail);
     const radar = hailNearPin(zoneRows, null, { forZones: true }).filter(dayFilter).filter(isSwdiHail);
     const zNow = map?.getZoom?.() || 14;
@@ -5594,8 +5576,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
 
   if (!fitPts.length && day && (zoneRows || []).length && hailLayer) {
     for (const dayKey of day) {
+      if (hailZoneDays.has(dayKey)) continue;
       const rows = (zoneRows || []).filter(
-        (p) => String(p.date || "").slice(0, 10) === dayKey && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+        (p) => stormDayMatches(p.date, dayKey) && Number.isFinite(p.lat) && Number.isFinite(p.lon),
       );
       if (!rows.length) continue;
       const anchor = collapseHailByDate(rows)[0] || {
@@ -5632,14 +5615,19 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const nearWind = windNearPin(windRows || [], null);
   const windDays = new Map();
   for (const w of nearWind) {
-    const wday = String(w.date || "").slice(0, 10);
+    const wday = parseStormDay(w.date);
     if (!wday) continue;
     if (day && !day.has(wday)) continue;
     const mph = Number(w.wind_mph) || 0;
     const prev = windDays.get(wday);
     if (!prev || mph > (Number(prev.wind_mph) || 0)) windDays.set(wday, w);
   }
-  for (const w of [...windDays.values()].slice(0, 24)) {
+  const hailOnSelectedDays =
+    stormOn &&
+    day?.size &&
+    nearForZones.some((p) => stormDayMatches(p.date, day) && (isSpotterHail(p) || isSwdiHail(p)));
+  const windCap = hailOnSelectedDays ? 0 : 24;
+  for (const w of [...windDays.values()].slice(0, windCap)) {
     if (!Number.isFinite(w.lat) || !Number.isFinite(w.lon)) continue;
     const mph = Number(w.wind_mph) || 0;
     const stroke = hailZoneStrokeStyle(false, Math.min(2, mph / 40));
@@ -5666,10 +5654,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     }
   }
   if (stormOn && day?.size) {
-    const spotN = nearForZones.filter((p) => day.has(String(p.date || "").slice(0, 10)) && isSpotterHail(p)).length;
-    const radN = nearForZones.filter((p) => day.has(String(p.date || "").slice(0, 10)) && isSwdiHail(p)).length;
+    const spotN = nearForZones.filter((p) => stormDayMatches(p.date, day) && isSpotterHail(p)).length;
+    const radN = nearForZones.filter((p) => stormDayMatches(p.date, day) && isSwdiHail(p)).length;
+    const dayN = day.size;
     if (spotN || radN) {
-      emitMapStatus(radN ? `Spotter ${spotN} · Radar ${radN}` : `Spotter ${spotN} · loading radar…`);
+      const dayLab = dayN === 1 ? prettyStormDate([...day][0]) : `${dayN} days`;
+      emitMapStatus(radN ? `${dayLab} · Spotter ${spotN} · Radar ${radN}` : `${dayLab} · Spotter ${spotN}`);
     }
   }
   syncHazardLayers();

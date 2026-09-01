@@ -3,8 +3,9 @@
  * Imports wx.js helpers indirectly by exercising draw path math via a tiny inline port check.
  */
 import assert from "node:assert/strict";
+import { buildHailSwathRings } from "../www/wx.js";
 
-// Mirror threshold list used by buildHailSwathRings
+// Morph close should fill a 1-cell gap
 const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.5, 2.0, 2.5];
 assert.ok(HAIL_SWATH_THRESHOLDS.every((t, i) => i === 0 || t > HAIL_SWATH_THRESHOLDS[i - 1]));
 assert.equal(HAIL_SWATH_THRESHOLDS[0], 0.75);
@@ -86,5 +87,32 @@ const inner = [
 assert.equal(pointInLatLonRing(2, 2, outer), true);
 assert.equal(pointInLatLonRing(2, 2, inner), true);
 assert.equal(pointInLatLonRing(0.5, 0.5, inner), false);
+
+const swdiRing = [
+  [35.5, -97.52],
+  [35.53, -97.49],
+  [35.51, -97.46],
+  [35.48, -97.48],
+  [35.49, -97.51],
+  [35.5, -97.52],
+];
+const swdiPts = [
+  {
+    lat: 35.51,
+    lon: -97.49,
+    size_in: "1.25",
+    source: "noaa-swdi-radar",
+    swdi_ring: swdiRing,
+  },
+  {
+    lat: 35.505,
+    lon: -97.495,
+    size_in: "1.00",
+    source: "noaa-swdi-radar",
+  },
+];
+const swdiBands = buildHailSwathRings(swdiPts, {});
+assert.ok(swdiBands.some((b) => b.source === "radar-poly"), "SWDI polygon band");
+assert.ok(!swdiBands.some((b) => b.source === "mesh-swath"), "no stacked mesh on SWDI polygon");
 
 console.log("hail-swath ok");
