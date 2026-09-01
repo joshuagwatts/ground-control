@@ -6261,15 +6261,15 @@ function readyFlagList(nums) {
       const n0 = b.getNorth();
       const w = b.getWest();
       const e = b.getEast();
-      const dLat = Math.max(0.02, (n0 - s) * 0.45);
-      const dLon = Math.max(0.02, (e - w) * 0.45);
+      const dLat = Math.max(0.035, (n0 - s) * 0.75);
+      const dLon = Math.max(0.035, (e - w) * 0.75);
       const inFrame = n.lat >= s - dLat && n.lat <= n0 + dLat && n.lon >= w - dLon && n.lon <= e + dLon;
       if (inFrame) return true;
-      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 2.2, 12)) return true;
+      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 3.2, 18)) return true;
       return false;
     }
     if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
-      const maxKm = Math.max(flagSearchKm() * 2.8, 14);
+      const maxKm = Math.max(flagSearchKm() * 3.2, 18);
       if (haversineKm(c.lat, c.lng, n.lat, n.lon) > maxKm) return false;
     }
     return true;

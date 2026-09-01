@@ -151,7 +151,7 @@ export function flagNetProfile({ ua, cap } = {}) {
   return {
     cityChunk: android && !slowWeb ? 4 : slowWeb ? 2 : 3,
     statewideBatch: android && !slowWeb ? 10 : slowWeb ? 5 : 8,
-    zillowDetails: apple || (!android && !slowWeb) ? 12 : android ? 8 : 0,
+    zillowDetails: apple || (!android && !slowWeb) ? 24 : android ? 16 : 0,
     paintMax: android ? 260 : 450,
   };
 }

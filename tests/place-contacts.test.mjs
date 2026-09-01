@@ -28,6 +28,7 @@ import {
   isBusinessPhoneSource,
   isOsmBusinessTags,
   formatZillowCityRentUrl,
+  formatZillowMapBoundsRentUrl,
   formatRentComCityUrl,
   formatApartmentsComCityUrl,
   statePathSlug,
@@ -222,6 +223,11 @@ assert(parseAiContactJson('{"owner_name":"Bob","owner_phone":"405-555-1212"}').n
 
 assert(statePathSlug("OK") === "oklahoma", "ok state slug");
 assert(formatZillowCityRentUrl("Edmond", "OK") === "https://www.zillow.com/edmond-ok/rentals/", "zillow city rent url");
+{
+  const mapRent = formatZillowMapBoundsRentUrl({ south: 35.6, west: -97.55, north: 35.7, east: -97.4 });
+  assert(/zillow\.com\/homes\/for_rent\/\?searchQueryState=/.test(mapRent), "zillow map-bounds rent url");
+  assert(decodeURIComponent(mapRent).includes('"west":-97.55'), "zillow map-bounds embeds west");
+}
 assert(
   formatRentComCityUrl("Oklahoma City", "OK") === "https://www.rent.com/oklahoma/oklahoma-city-apartments",
   "rent.com city url",
@@ -321,6 +327,23 @@ const zillowHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.st
                 latLong: { latitude: 35.685337, longitude: -97.42201 },
               },
             ],
+            mapResults: [
+              {
+                statusType: "FOR_RENT",
+                buildingName: "Map Pin Flats",
+                addressStreet: "100 N Broadway",
+                addressCity: "Edmond",
+                addressState: "OK",
+                detailUrl: "/apartments/edmond-ok/map-pin-flats/abc123/",
+                latLong: { latitude: 35.6521, longitude: -97.478 },
+                attributionInfo: { agentPhoneNumber: "4053489911" },
+              },
+              {
+                // Map pins often omit statusType — still keep apartment URLs.
+                detailUrl: "/apartments/edmond-ok/quiet-court/xyz789/",
+                latLong: { latitude: 35.66, longitude: -97.47 },
+              },
+            ],
           },
         },
       },
@@ -328,9 +351,22 @@ const zillowHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.st
   },
 })}</script>`;
 const zSearch = parseZillowRentSearchJson(zillowHtml);
-assert(zSearch.length === 1 && zSearch[0].source === "zillow-rent", "zillow city search row");
-assert(!zSearch[0].phone && /zillow\.com\/apartments\//.test(zSearch[0].listingUrl), "zillow search has url, no phone");
+assert(zSearch.length === 3, `zillow list+map rows, got ${zSearch.length}`);
+assert(zSearch.some((r) => /Oaks at Covell/i.test(r.name) && !r.phone), "zillow list row no phone");
+assert(
+  zSearch.some((r) => /Map Pin Flats/i.test(r.name) && /348-9911/.test(r.phone)),
+  "zillow mapResult phone from attribution",
+);
+assert(zSearch.some((r) => /quiet-court/i.test(r.listingUrl)), "zillow map pin without status kept");
 assert(parseZillowRentDetailPhone(`<a href="tel:4052813307">Call</a>`) === "(405) 281-3307", "zillow detail tel");
+assert(
+  parseZillowRentDetailPhone(
+    `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+      props: { pageProps: { propertyPhone: "405-281-3308", property: { name: "X" } } },
+    })}</script>`,
+  ) === "(405) 281-3308",
+  "zillow detail next-data phone",
+);
 
 assert(isRentalPhoneSource("apartments") && !isBusinessPhoneSource("apartments"), "apartments = rental");
 assert(isRentalPhoneSource("rent-com") && !isBusinessPhoneSource("rent-com"), "rent.com = rental");

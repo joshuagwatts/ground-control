@@ -111,9 +111,9 @@ function addressPathSlug(parts) {
 function extractZillowEmbeddedPhones(html) {
   const out = [];
   const re =
-    /"(?:phoneNumber|contactPhone|businessPhone|agentPhoneNumber|phone)"\s*:\s*"([^"]{7,40})"/gi;
+    /"(?:phoneNumber|contactPhone|businessPhone|agentPhoneNumber|brokerPhoneNumber|propertyPhone|managementCompanyPhone|phone|rentalPhone|listingPhone)"\s*:\s*"([^"]{7,40})"/gi;
   let m;
-  while ((m = re.exec(String(html || ""))) && out.length < 8) {
+  while ((m = re.exec(String(html || ""))) && out.length < 12) {
     if (isJunkPhone(m[1])) continue;
     const d = phoneDigits(m[1]);
     if (d && !out.includes(d)) out.push(d);
@@ -513,6 +513,32 @@ export function formatZillowCityRentUrl(city, state) {
   return `https://www.zillow.com/${c}-${st}/rentals/`;
 }
 
+/** Zillow For Rent clipped to the visible map — matches the pins on Zillow's map. */
+export function formatZillowMapBoundsRentUrl(bounds) {
+  const west = Number(bounds?.west);
+  const east = Number(bounds?.east);
+  const south = Number(bounds?.south);
+  const north = Number(bounds?.north);
+  if (![west, east, south, north].every(Number.isFinite)) return "";
+  if (!(east > west) || !(north > south)) return "";
+  const state = {
+    isMapVisible: true,
+    mapBounds: { west, east, south, north },
+    filterState: {
+      fr: { value: true },
+      fsba: { value: false },
+      fsbo: { value: false },
+      nc: { value: false },
+      cmsn: { value: false },
+      auc: { value: false },
+      fore: { value: false },
+      ah: { value: true },
+    },
+    isListVisible: true,
+  };
+  return `https://www.zillow.com/homes/for_rent/?searchQueryState=${encodeURIComponent(JSON.stringify(state))}`;
+}
+
 /**
  * Rent.com city search. `kind` is apartments | houses.
  * Homes-for-rent pages carry leasing phones in __NEXT_DATA__.
@@ -608,51 +634,107 @@ export function parseRentComSearchJson(html) {
   return out;
 }
 
-/** Zillow city rentals — coords + detail URL; phones live on the detail page. */
+/** Zillow city / map rentals — listResults + mapResults; phones often only on detail. */
 export function parseZillowRentSearchJson(html) {
   const data = extractNextDataJson(html);
-  const listings = data?.props?.pageProps?.searchPageState?.cat1?.searchResults?.listResults;
+  const cat1 = data?.props?.pageProps?.searchPageState?.cat1 || {};
+  const searchResults = cat1.searchResults || {};
+  const listResults = Array.isArray(searchResults.listResults) ? searchResults.listResults : [];
+  const mapResults = Array.isArray(searchResults.mapResults) ? searchResults.mapResults : [];
+  // Some Zillow shells stash the list under searchList instead.
+  const altList = Array.isArray(cat1.searchList?.listResults) ? cat1.searchList.listResults : [];
+  const rows = [...listResults, ...mapResults, ...altList];
   const out = [];
-  for (const row of Array.isArray(listings) ? listings : []) {
-    const ll = row?.latLong || {};
-    const status = String(row?.statusType || row?.statusText || "");
-    if (status && !/FOR_RENT|for\s*rent/i.test(status)) continue;
-    const path = String(row?.detailUrl || "").trim();
+  const seen = new Set();
+
+  const pushRow = (row) => {
+    if (!row || typeof row !== "object") return;
+    const ll = row.latLong || row.latLng || {};
+    const lat = Number(ll.latitude ?? ll.lat ?? row.latitude ?? row.lat);
+    const lon = Number(ll.longitude ?? ll.lng ?? ll.lon ?? row.longitude ?? row.lng);
+    const status = String(row.statusType || row.statusText || row.homeStatus || "");
+    if (status && !/FOR_RENT|for\s*rent|RENTAL/i.test(status) && row.isRental !== true) {
+      // Map pins sometimes omit status — keep rows with a rent-ish detail URL.
+      const pathHint = String(row.detailUrl || row.hdpUrl || "");
+      if (!/\/(apartments|b|homedetails|for_rent)\b/i.test(pathHint)) return;
+    }
+    const path = String(row.detailUrl || row.hdpUrl || row.detailUrlPath || "").trim();
     const listingUrl = path
       ? path.startsWith("http")
         ? path
         : `https://www.zillow.com${path.startsWith("/") ? "" : "/"}${path}`
       : "";
+    const attr = row.attributionInfo || row.attribution || {};
+    const home = row.hdpData?.homeInfo || row.homeInfo || {};
+    const phone = listingPhoneFromRaw(
+      row.brokerPhoneNumber,
+      row.phone,
+      row.phoneNumber,
+      row.contactPhone,
+      attr.agentPhoneNumber,
+      attr.brokerPhoneNumber,
+      attr.phoneNumber,
+      home.brokerPhoneNumber,
+      home.phoneNumber,
+    );
+    const street = String(
+      row.addressStreet || row.address || home.streetAddress || home.address || "",
+    ).trim();
+    const key = Number.isFinite(lat) && Number.isFinite(lon)
+      ? `${lat.toFixed(5)}|${lon.toFixed(5)}|${listingUrl}`
+      : listingUrl || street;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+
     const hit = rentFlagRow({
-      name: row?.buildingName || "",
-      street: row?.addressStreet || row?.address || "",
-      city: row?.addressCity || "",
-      state: row?.addressState || "",
-      zip: row?.addressZipcode || "",
-      lat: ll.latitude,
-      lon: ll.longitude,
-      phone: listingPhoneFromRaw(row?.brokerPhoneNumber, row?.phone, row?.phoneNumber),
+      name: row.buildingName || row.buildingNameFull || home.buildingName || "",
+      street,
+      city: row.addressCity || home.city || "",
+      state: row.addressState || home.state || "",
+      zip: row.addressZipcode || home.zipcode || "",
+      lat,
+      lon,
+      phone,
       listingUrl,
       source: "zillow-rent",
     });
-    if (!hit && Number.isFinite(Number(ll.latitude)) && Number.isFinite(Number(ll.longitude)) && listingUrl) {
+    if (hit) {
+      out.push(hit);
+      return;
+    }
+    if (Number.isFinite(lat) && Number.isFinite(lon) && listingUrl) {
       out.push({
-        name: String(row?.buildingName || "").trim(),
-        street: String(row?.addressStreet || row?.address || "").trim(),
-        city: String(row?.addressCity || "").trim(),
-        state: String(row?.addressState || "").trim(),
-        zip: String(row?.addressZipcode || "").trim(),
-        lat: Number(ll.latitude),
-        lon: Number(ll.longitude),
+        name: String(row.buildingName || row.buildingNameFull || home.buildingName || "").trim(),
+        street,
+        city: String(row.addressCity || home.city || "").trim(),
+        state: String(row.addressState || home.state || "").trim(),
+        zip: String(row.addressZipcode || home.zipcode || "").trim(),
+        lat,
+        lon,
         phone: "",
         listingUrl,
         source: "zillow-rent",
         phone_kind: "rental",
         zillow_rent: true,
       });
-      continue;
     }
-    if (hit) out.push(hit);
+  };
+
+  for (const row of rows) pushRow(row);
+
+  // Fallback: scrape map/list cards if __NEXT_DATA__ shape changed.
+  if (!out.length) {
+    const h = String(html || "");
+    const re =
+      /"latLong"\s*:\s*\{\s*"latitude"\s*:\s*(-?\d+\.?\d*)\s*,\s*"longitude"\s*:\s*(-?\d+\.?\d*)\s*\}[\s\S]{0,1200}?"detailUrl"\s*:\s*"([^"]+)"/gi;
+    let m;
+    while ((m = re.exec(h)) && out.length < 40) {
+      pushRow({
+        statusType: "FOR_RENT",
+        latLong: { latitude: Number(m[1]), longitude: Number(m[2]) },
+        detailUrl: m[3].replace(/\\u002F/g, "/"),
+      });
+    }
   }
   return out;
 }
@@ -660,7 +742,13 @@ export function parseZillowRentSearchJson(html) {
 export function parseZillowRentDetailPhone(html) {
   const h = String(html || "");
   if (!h) return "";
-  if (isEmptyOrHardBlock(h) && !/tel:/i.test(h)) return "";
+  if (isEmptyOrHardBlock(h) && !/tel:/i.test(h) && !/phone/i.test(h)) return "";
+  const data = extractNextDataJson(h);
+  if (data) {
+    const blob = JSON.stringify(data);
+    const embedded = extractZillowEmbeddedPhones(blob);
+    if (embedded[0]) return formatPhone(embedded[0]);
+  }
   const embedded = extractZillowEmbeddedPhones(h);
   if (embedded[0]) return formatPhone(embedded[0]);
   const tel = h.match(/tel:(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/i);
@@ -864,14 +952,31 @@ async function fetchZillowCityRentPhones(
   state,
   { lat, lon, have = [], maxDetails = 6, bounds = null, onPartial = null } = {},
 ) {
-  const url = formatZillowCityRentUrl(city, state);
-  if (!url) return [];
-  const page = await fetchHtml(url, 12000, listingBrowserHeaders({ zillow: true }));
-  const found = parseZillowRentSearchJson(page?.html || "");
+  const urls = [];
+  const mapUrl = formatZillowMapBoundsRentUrl(bounds);
+  if (mapUrl) urls.push(mapUrl);
+  const cityUrl = formatZillowCityRentUrl(city, state);
+  if (cityUrl) urls.push(cityUrl);
+  if (!urls.length) return [];
+
+  const found = [];
+  const seenUrl = new Set();
+  for (const url of urls) {
+    const page = await fetchHtml(url, 14000, listingBrowserHeaders({ zillow: true })).catch(() => null);
+    for (const row of parseZillowRentSearchJson(page?.html || "")) {
+      const key = row.listingUrl || `${row.lat}|${row.lon}`;
+      if (seenUrl.has(key)) continue;
+      seenUrl.add(key);
+      found.push(row);
+    }
+    // Map-bounds page usually has the pins the user sees — stop if we got a solid set.
+    if (url === mapUrl && found.length >= 6) break;
+  }
+
   const inArea = (r) => {
     if (!Number.isFinite(r?.lat) || !Number.isFinite(r?.lon)) return false;
     if (bounds) {
-      const pad = 12;
+      const pad = 18;
       const midLat = (Number(bounds.south) + Number(bounds.north)) / 2;
       const dLat = pad / 111.32;
       const dLon = pad / (111.32 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
@@ -885,20 +990,21 @@ async function fetchZillowCityRentPhones(
     return haversineKm(lat, lon, r.lat, r.lon) <= 30;
   };
   const local = found.filter(inArea);
+  // Prefer map-frame hits; if the frame is empty, keep city hits so detail scrape still runs.
   const pool = local.length ? local : found;
   const withPhone = pool.filter((r) => r.phone);
   if (typeof onPartial === "function" && withPhone.length) onPartial(withPhone);
 
+  const detailCap = Math.max(maxDetails, 20);
   const needPhone = pool
     .filter((r) => !r.phone && r.listingUrl)
     .filter((r) => !have.some((h) => haversineKm(h.lat, h.lon, r.lat, r.lon) < 0.08))
     .sort((a, b) => haversineKm(lat, lon, a.lat, a.lon) - haversineKm(lat, lon, b.lat, b.lon))
-    .slice(0, Math.max(maxDetails, 12));
+    .slice(0, detailCap);
 
-  // All detail pages in parallel — chunking made 9 Zillow hits take forever.
   const got = await Promise.all(
     needPhone.map(async (row) => {
-      const deep = await fetchHtml(row.listingUrl, 9000, listingBrowserHeaders({ zillow: true })).catch(() => null);
+      const deep = await fetchHtml(row.listingUrl, 10000, listingBrowserHeaders({ zillow: true })).catch(() => null);
       const phone = parseZillowRentDetailPhone(deep?.html || "");
       if (!phone) return null;
       return { ...row, phone, phone_kind: "rental", zillow_rent: true, source: "zillow-rent" };
@@ -1024,9 +1130,13 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   };
   const paintRows = (rows) => {
     if (!onBatch) return;
-    // Wide pad so a tight zoom still keeps the town's listings.
-    if (bounds) onBatch(rentFlagsInBounds(rows, bounds, 14));
-    else onBatch(rentFlagsNearPoint(rows, lat, lon, 28));
+    // Prefer map frame; if few phones land, widen so nearby complex phones still show.
+    if (bounds) {
+      let hit = rentFlagsInBounds(rows, bounds, 18);
+      if (hit.length < 5) hit = rentFlagsInBounds(rows, bounds, 28);
+      if (hit.length < 5) hit = rentFlagsNearPoint(rows, lat, lon, 22);
+      onBatch(hit);
+    } else onBatch(rentFlagsNearPoint(rows, lat, lon, 28));
   };
   const emitView = (rows) => {
     if (!rows?.length) return;
@@ -1080,8 +1190,8 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
 
     const fetchRentApts = async (c) => {
       const [rentRows, aptRows] = await Promise.all([
-        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages: 1 }).catch(() => []),
-        fetchApartmentsComCityPages(c, state || "OK", { pages: 1 }).catch(() => []),
+        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages: 2 }).catch(() => []),
+        fetchApartmentsComCityPages(c, state || "OK", { pages: 2 }).catch(() => []),
       ]);
       return mergeRentFlagList(rentRows, aptRows);
     };
@@ -1098,18 +1208,19 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     );
     if (epoch !== rentSweepEpoch) return acc;
 
-    // 2) Zillow for primary (+ neighbor) streams phones without blocking rent paint.
-    const zMax = Number(profile.zillowDetails) > 0 ? Math.max(12, Number(profile.zillowDetails)) : 0;
-    if (zMax > 0 && primary) {
-      const zCities = fastCities.slice(0, 2);
+    // 2) Zillow map-bounds + city — stream phones; do not block rent paint.
+    const zMax = Number(profile.zillowDetails) > 0 ? Math.max(20, Number(profile.zillowDetails)) : 0;
+    if (zMax > 0 && (primary || bounds)) {
+      const zCities = (fastCities.length ? fastCities : [primary]).filter(Boolean).slice(0, 2);
+      const targets = zCities.length ? zCities : [inferOkCity(lat, lon) || "Edmond"];
       await Promise.all(
-        zCities.map(async (c, i) => {
+        targets.map(async (c, i) => {
           if (epoch !== rentSweepEpoch) return;
           const rows = await fetchZillowCityRentPhones(c, state || "OK", {
             lat,
             lon,
             have: acc,
-            maxDetails: i === 0 ? zMax : Math.min(6, zMax),
+            maxDetails: i === 0 ? zMax : Math.min(10, zMax),
             bounds,
             onPartial: (part) => {
               if (epoch === rentSweepEpoch) emitView(part);
