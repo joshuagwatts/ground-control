@@ -1,7 +1,7 @@
 {
   "name": "ground-control",
   "private": true,
-  "version": "0.2.187",
+  "version": "0.2.188",
   "description": "Ground Control — HailScope hail zoning, Lens (shingle / damage / field), Super Chat",
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
     "build:ok-cities": "node scripts/build-ok-rent-cities.mjs",
     "build:ok-flags": "node scripts/build-ok-rent-flags.mjs",
     "seed:metros": "node scripts/seed-zillow-metros.mjs",
+    "enrich:phones": "node scripts/enrich-ok-rent-phones.mjs",
     "start": "node scripts/dev-server.mjs",
     "start:static": "python -m http.server 4173 --directory www",
     "test": "node tests/shingle-gate.test.mjs && node tests/damage-marks.test.mjs && node tests/place-contacts.test.mjs && node tests/field-marks.test.mjs && node tests/done-packs.test.mjs && node tests/geocode.test.mjs && node tests/hail-days.test.mjs && node tests/zoom-ui-scale.test.mjs && node tests/hail-swath.test.mjs && node tests/device-ui.test.mjs && node tests/live-window.test.mjs",

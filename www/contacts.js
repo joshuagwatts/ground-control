@@ -1246,7 +1246,19 @@ function rentFlagsInBounds(rows, bounds, padKm = 12) {
 }
 
 /** Match Rent.com seed phones onto nearby Zillow pins before paint. */
-export function borrowPhonesAcrossRentRows(rows, maxKm = 2.2) {
+function rentNameKey(name, city) {
+  const n = String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 32);
+  const c = String(city || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 20);
+  return n.length >= 4 && c ? `${c}|${n}` : "";
+}
+
+export function borrowPhonesAcrossRentRows(rows, maxKm = 12) {
   const list = Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [];
   const donors = list.filter((r) => r?.phone && String(r.phone).trim());
   if (!donors.length) return list;
@@ -1265,12 +1277,54 @@ export function borrowPhonesAcrossRentRows(rows, maxKm = 2.2) {
     row.phone = best.phone;
     if (!row.phone_kind) row.phone_kind = "rental";
   }
+  const byName = new Map();
+  for (const d of donors) {
+    const nk = rentNameKey(d.name, d.city);
+    if (nk && !byName.has(nk)) byName.set(nk, d);
+  }
+  for (const row of list) {
+    if (row.phone && String(row.phone).trim()) continue;
+    const nk = rentNameKey(row.name, row.city);
+    const d = nk ? byName.get(nk) : null;
+    if (d?.phone) {
+      row.phone = d.phone;
+      if (!row.phone_kind) row.phone_kind = "rental";
+    }
+  }
+  return list;
+}
+
+/** Detail-page scrape for phoneless rental rows (Node / Capacitor — not browser CORS). */
+export async function enrichRentFlagPhones(rows, { concurrency = 12, onHit = null, delayMs = 100 } = {}) {
+  const list = borrowPhonesAcrossRentRows(
+    Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [],
+    15,
+  );
+  const need = list.filter((r) => !String(r.phone || "").trim() && String(r.listingUrl || "").trim());
+  if (!need.length) return list;
+  let idx = 0;
+  let hits = 0;
+  const worker = async () => {
+    while (idx < need.length) {
+      const i = idx++;
+      const row = need[i];
+      const phone = await lookupListingRentPhone(row.listingUrl).catch(() => "");
+      if (phone) {
+        row.phone = phone;
+        hits += 1;
+        if (typeof onHit === "function") onHit(row, hits, need.length);
+      }
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  };
+  const workers = Math.max(1, Math.min(Number(concurrency) || 12, 24, need.length));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
   return list;
 }
 
 /** Seed + persisted rent pins for the current map frame (no paint cap here). */
 export function rentFlagsForViewport(bounds, lat, lon, padKm = 56) {
-  const rows = borrowPhonesAcrossRentRows(mergeRentFlagList(loadPersistedRentFlags(), OK_RENT_FLAG_SEED));
+  const rows = borrowPhonesAcrossRentRows(mergeRentFlagList(loadPersistedRentFlags(), OK_RENT_FLAG_SEED), 15);
   if (!rows.length) return [];
   const south = Number(bounds?.south);
   const west = Number(bounds?.west);
@@ -1283,12 +1337,12 @@ export function rentFlagsForViewport(bounds, lat, lon, padKm = 56) {
     if (hit.length < 15 && Number.isFinite(lat) && Number.isFinite(lon)) {
       hit = mergeRentFlagList(hit, rentFlagsNearPoint(rows, lat, lon, Math.max(36, padKm)));
     }
-    return hit;
+    return borrowPhonesAcrossRentRows(hit, 15);
   }
   if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lon))) {
-    return rentFlagsNearPoint(rows, lat, lon, Math.max(36, padKm));
+    return borrowPhonesAcrossRentRows(rentFlagsNearPoint(rows, lat, lon, Math.max(36, padKm)), 15);
   }
-  return rows.filter((r) => r?.phone || r?.listingUrl);
+  return borrowPhonesAcrossRentRows(rows.filter((r) => r?.phone || r?.listingUrl), 15);
 }
 
 function isOklahomaCityName(name) {

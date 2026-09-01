@@ -281,6 +281,8 @@ const houseUsefulByKey = new Map();
 let houseEnrichTimer = 0;
 /** Session keys already scanned for Flags — skip so we don't re-hammer listings. */
 const houseEnrichTried = new Set();
+let listingPumpBusy = false;
+let listingPumpWanted = false;
 let flagDockIdx = 0;
 const flagHiddenKeys = new Set();
 let flagKindFilter = { rental: true, business: true };
@@ -7075,6 +7077,7 @@ function numsFromRentFlags(flags) {
       { num, street: parts.street || r.street, lat: r.lat, lon: r.lon, zillow_url: r.listingUrl, zillow_rent: true },
       { phone: r.phone || "", name: r.name || "", kind: "rental", source: r.source || "rent-com" },
     );
+    if (r.phone) rememberHousePhone({ num, street: parts.street || r.street, lat: r.lat, lon: r.lon }, r.phone);
     out.push({
       num,
       street: parts.street || r.street || "",
@@ -7325,6 +7328,52 @@ function mergeViewportRentFlagsIntoCache() {
   const before = houseCache.nums.length;
   houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(rows));
   if (houseCache.nums.length !== before) scheduleFlagLayerPaint(true);
+  if (listingPumpWanted && !listingPumpBusy) void pumpRentListingPhones(houseGen);
+}
+
+/** Scrape listing pages for every phoneless green flag in the map frame. */
+async function pumpRentListingPhones(gen) {
+  if (!phoneFlagsEnabled() || !map || listingPumpBusy) return;
+  const bounds = flagViewBoundsPayload();
+  const c = map.getCenter?.();
+  if (!bounds && !c) return;
+  const rows = rentFlagsForViewport(bounds, c?.lat, c?.lng, 72).filter(
+    (r) => !String(r.phone || "").trim() && String(r.listingUrl || "").trim(),
+  );
+  if (!rows.length) {
+    listingPumpWanted = false;
+    return;
+  }
+  listingPumpBusy = true;
+  const CONC = 10;
+  let done = 0;
+  try {
+    emitPhoneFlagsStatus(flagStatusLine(`Listing phones 0/${rows.length}`));
+    for (let i = 0; i < rows.length; i += CONC) {
+      if (!phoneFlagsEnabled() || gen !== houseGen) break;
+      const chunk = rows.slice(i, i + CONC);
+      const got = await Promise.all(
+        chunk.map(async (r) => {
+          const phone = await lookupListingRentPhone(r.listingUrl).catch(() => "");
+          if (!phone) return null;
+          return { ...r, phone, source: r.source || (/zillow/i.test(r.listingUrl) ? "zillow-rent" : "rent-com") };
+        }),
+      );
+      const hits = got.filter(Boolean);
+      if (hits.length) {
+        houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(hits));
+        persistRentFlags(hits);
+        scheduleFlagLayerPaint(true);
+      }
+      done += chunk.length;
+      emitPhoneFlagsStatus(flagStatusLine(`Listing phones ${done}/${rows.length}`));
+      await new Promise((r) => setTimeout(r, 120));
+    }
+  } finally {
+    listingPumpBusy = false;
+    listingPumpWanted = false;
+    emitPhoneFlagsStatus(flagStatusLine());
+  }
 }
 
 async function refreshHouseNumbers({ forceRent = false } = {}) {
@@ -7338,6 +7387,8 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   }
   // Toggle / re-tap refresh: wipe pins so the map visibly retargets this frame.
   if (forceRent) {
+    houseEnrichTried.clear();
+    listingPumpWanted = true;
     houseCache = { key: "", rings: [], nums: [] };
     housePaintSig = "";
     try {
@@ -7515,6 +7566,8 @@ export function startPhoneFlagScan() {
   }
 
   // Blank the layer + wipe stale localStorage so toggle-on is a real re-search.
+  houseEnrichTried.clear();
+  listingPumpWanted = true;
   houseCache = { key: "", rings: [], nums: [] };
   clearPersistedRentFlags();
   persistHydrated = true;
