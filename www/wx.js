@@ -145,6 +145,9 @@ let windFieldLayer = null;
 let lastHailRows = [];
 let lastZoneHailRows = [];
 let lastWindRows = [];
+/** Pin dossier hail — merged when on-demand SWDI lands for selected storm days. */
+let lastDossierDataRef = null;
+let pinStormSwdiGen = 0;
 /** Pin dossier fetch radius — used to keep storm zones local when a house is selected. */
 let lastHailFetchedKm = PIN_FETCH_FAST_KM;
 /** ISO dates (YYYY-MM-DD) selected for map overlay — multi-check allowed. */
@@ -853,11 +856,122 @@ function isRadarHail(p) {
   return !isSpotterHail(p);
 }
 
-/** SWDI history window — full 730d on wide ring; fast ring uses recent window so radar lands quickly. */
+/** SWDI history window — pinned houses need deep radar, not a 120-day cap. */
 function swdiDaysForRing(radiusKm, filterDays = 730) {
   const days = Math.min(Math.max(Number(filterDays) || 730, 7), 730);
   if (radiusKm >= PIN_FETCH_WIDE_KM - 1) return days;
+  if (radiusKm >= PIN_FETCH_FAST_KM - 1) return days;
   return Math.min(days, 120);
+}
+
+function ingestSwdiItems(items, lat, lon, km, hits = new Map()) {
+  for (const item of items || []) {
+    const pt = parseSwdiShape(item.SHAPE);
+    if (!pt) continue;
+    let hitLat;
+    let hitLon;
+    let swdiRing = null;
+    if (pt.type === "polygon") {
+      swdiRing = pt.ring;
+      hitLat = pt.ring.reduce((a, c) => a + c[0], 0) / pt.ring.length;
+      hitLon = pt.ring.reduce((a, c) => a + c[1], 0) / pt.ring.length;
+    } else {
+      hitLat = pt.lat;
+      hitLon = pt.lon;
+    }
+    const dist = haversineKm(lat, lon, hitLat, hitLon);
+    if (dist > km) continue;
+    const ztime = String(item.ZTIME || "");
+    const day = ztime.slice(0, 10) || "";
+    if (!day) continue;
+    const sz = parseFloat(item.MAXSIZE);
+    const row = {
+      kind: "hail",
+      date: day,
+      time: ztime.slice(11, 16) || "",
+      lat: hitLat,
+      lon: hitLon,
+      size_in: Number.isNaN(sz) ? "UNK" : sz.toFixed(2),
+      location: item.WSR_ID || "Radar hail",
+      county: "",
+      state: "",
+      comments: `PROB ${item.PROB || "?"}`,
+      source: "noaa-swdi-radar",
+      distance_km: Math.round(dist * 10) / 10,
+      score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
+      swdi_ring: swdiRing,
+    };
+    const key = `${day}|${hitLat.toFixed(3)}|${hitLon.toFixed(3)}|${row.size_in}|r`;
+    const prev = hits.get(key);
+    if (!prev || (parseFloat(row.size_in) || 0) > (parseFloat(prev.size_in) || 0)) hits.set(key, row);
+  }
+  return hits;
+}
+
+/** One SWDI request for exact storm calendar day(s) — Oklahoma radar for the tapped date. */
+async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays) {
+  const days = [...new Set((isoDays || []).map((d) => String(d).slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))];
+  if (!days.length) return [];
+  const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
+  const bbox = bboxForKm(lat, lon, km);
+  const sorted = [...days].sort();
+  const fmt = (iso) => iso.replace(/-/g, "");
+  const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(sorted[0])}:${fmt(sorted[sorted.length - 1])}?bbox=${bbox}`;
+  const slow = isSlowBrowserNet();
+  const timeout = slow ? 14000 : 18000;
+  for (let attempt = 0; attempt < (slow ? 2 : 3); attempt++) {
+    try {
+      const { body } = await httpGet(url, timeout);
+      const data = JSON.parse(body || "{}");
+      return [...ingestSwdiItems(data.result || [], lat, lon, km).values()];
+    } catch {
+      if (attempt >= (slow ? 1 : 2)) break;
+    }
+  }
+  return [];
+}
+
+function pinHailPack(hail) {
+  const pin = pinCoords();
+  return {
+    hail: hail || [],
+    lat: pin?.lat ?? pinLat,
+    lon: pin?.lon ?? pinLon,
+    _meta: { fetchedKm: lastHailFetchedKm },
+  };
+}
+
+function zoneRowsFromHail(hail) {
+  return hailRowsForZones(pinHailPack(hail));
+}
+
+async function ensureSwdiForSelectedStormDays() {
+  if (!wxPinSelected() || !hasSelectedStormDates()) return;
+  const pin = pinCoords();
+  if (!pin) return;
+  const days = selectedStormDateList();
+  const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
+  const need = days.filter((d) => {
+    const dayRows = pool.filter((h) => String(h.date || "").slice(0, 10) === d);
+    return dayRows.some(isSpotterHail) && !dayRows.some(isRadarHail);
+  });
+  if (!need.length) return;
+  const gen = ++pinStormSwdiGen;
+  const km = hailRadarZoneKm();
+  emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
+  const swdi = await fetchSwdiHailForDays(pin.lat, pin.lon, km, need);
+  if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
+  if (!swdi.length) {
+    emitMapStatus(`No SWDI radar in ${Math.round(km)} km for selected day${need.length === 1 ? "" : "s"}`);
+    return;
+  }
+  const merged = mergeHailRows(lastHailRows, swdi);
+  lastHailRows = merged;
+  lastZoneHailRows = zoneRowsFromHail(merged);
+  if (lastDossierDataRef) lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], swdi);
+  lastHailDrawSig = "";
+  drawHailMarkers(lastHailRows, lastWindRows, { requireDate: true, zoneRows: lastZoneHailRows });
+  emitMapStatus(`Hail radar loaded · ${swdi.length} SWDI sig${swdi.length === 1 ? "" : "s"}`);
 }
 
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgress } = {}) {
@@ -916,46 +1030,7 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgres
       }),
     );
     for (const rows of part) {
-      for (const item of rows) {
-        const pt = parseSwdiShape(item.SHAPE);
-        if (!pt) continue;
-        let hitLat;
-        let hitLon;
-        let swdiRing = null;
-        if (pt.type === "polygon") {
-          swdiRing = pt.ring;
-          hitLat = pt.ring.reduce((a, c) => a + c[0], 0) / pt.ring.length;
-          hitLon = pt.ring.reduce((a, c) => a + c[1], 0) / pt.ring.length;
-        } else {
-          hitLat = pt.lat;
-          hitLon = pt.lon;
-        }
-        const dist = haversineKm(lat, lon, hitLat, hitLon);
-        if (dist > km) continue;
-        const ztime = String(item.ZTIME || "");
-        const day = ztime.slice(0, 10) || "";
-        if (!day) continue;
-        const sz = parseFloat(item.MAXSIZE);
-        const row = {
-          kind: "hail",
-          date: day,
-          time: ztime.slice(11, 16) || "",
-          lat: hitLat,
-          lon: hitLon,
-          size_in: Number.isNaN(sz) ? "UNK" : sz.toFixed(2),
-          location: item.WSR_ID || "Radar hail",
-          county: "",
-          state: "",
-          comments: `PROB ${item.PROB || "?"}`,
-          source: "noaa-swdi-radar",
-          distance_km: Math.round(dist * 10) / 10,
-          score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
-          swdi_ring: swdiRing,
-        };
-        const key = `${day}|${hitLat.toFixed(3)}|${hitLon.toFixed(3)}|${row.size_in}`;
-        const prev = hits.get(key);
-        if (!prev || (parseFloat(row.size_in) || 0) > (parseFloat(prev.size_in) || 0)) hits.set(key, row);
-      }
+      ingestSwdiItems(rows, lat, lon, km, hits);
     }
     if (onProgress && hits.size) onProgress([...hits.values()], { chunk: i / batch + 1, total: Math.ceil(chunks.length / batch) });
   }
@@ -2921,6 +2996,9 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, zone
   } else if (hadSelection && !wxPinSelected() && hailScopeMode) {
     // Cleared every storm date — leave list as-is; Search storms refreshes on demand.
   }
+  if (hasSelectedStormDates() && wxPinSelected()) {
+    void ensureSwdiForSelectedStormDays();
+  }
   if (hasSelectedStormDates() && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
   }
@@ -3632,6 +3710,8 @@ export function wxPinSelected() {
 export function clearWxPin() {
   pinLat = null;
   pinLon = null;
+  lastDossierDataRef = null;
+  pinStormSwdiGen++;
   clearStormDateSelection();
   applyContextStormFilters("map");
   lastHailDrawSig = "";
@@ -3806,12 +3886,18 @@ function selectPinIcon() {
   });
 }
 
-function hailNearPin(rows, day = null) {
+function hailNearPin(rows, day = null, { forZones = false } = {}) {
   let pool = rows || [];
   if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
-  // House pin + storm day: paint hail near this roof only (not statewide for that date).
+  // House pin + storm day: spotters local; radar uses the wide dossier ring for zone fills.
   if (hailStormAtPin()) {
-    return hailRowsNearCoords(pool, pinLat, pinLon, hailPinPaintKm());
+    const spotKm = hailPinPaintKm();
+    const radarKm = forZones ? hailRadarZoneKm() : spotKm;
+    return pool.filter((h) => {
+      if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
+      const cap = isRadarHail(h) ? radarKm : spotKm;
+      return hailDistKm(h, pinLat, pinLon) <= cap;
+    });
   }
   // Map-view storm overlay: full fetched footprint so zones don't morph while panning.
   if (hasSelectedStormDates()) {
@@ -5008,7 +5094,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   lastZoneHailRows = zoneRows;
   lastWindRows = windRows || [];
   const requireDate = opts.requireDate === true || (opts.requireDate !== false && hailScopeMode);
-  const nearForZones = hailNearPin(zoneRows, null);
+  const nearForZones = hailNearPin(zoneRows, null, { forZones: true });
   const collapsed = collapseHailByDate(nearForZones);
   const activeDays = selectedStormDates;
   const pin = pinCoords();
@@ -9713,7 +9799,10 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
           if (fresh) {
             renderWxPanels(fresh, esc, onResearch, onRefetch);
             const f = filterDossier(fresh, wxFilters);
-            drawHailMarkers(mapHailRows(fresh, wxFilters), f.wind, { fit: false });
+            drawHailMarkers(mapHailRows(fresh, wxFilters), f.wind, {
+              fit: false,
+              zoneRows: hailRowsForZones(fresh, wxFilters),
+            });
             return;
           }
         } catch {
@@ -9722,7 +9811,10 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
       }
       renderRoofDossier(root, data, esc, onResearch, onRefetch);
       const f = filterDossier(data, wxFilters);
-      drawHailMarkers(mapHailRows(data, wxFilters), f.wind, { fit: false });
+      drawHailMarkers(mapHailRows(data, wxFilters), f.wind, {
+        fit: false,
+        zoneRows: hailRowsForZones(data, wxFilters),
+      });
     };
   };
   bind("#wx-f-km", "km", Number);
@@ -9884,6 +9976,7 @@ function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
   if (Number(data._meta?.fetchedKm) > 0) lastHailFetchedKm = Number(data._meta.fetchedKm);
+  if (wxPinSelected()) lastDossierDataRef = data;
   syncHailStormDateSelection(data);
   const hailRows = mapHailRows(data, wxFilters);
   const zoneRows = hailRowsForZones(data, wxFilters);
@@ -9899,6 +9992,7 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
     if (hailGrew || fit || !hailLayer || !map?.hasLayer?.(hailLayer)) {
       scheduleSelectedStormZoneRedraw(hailRows, [], zoneRows);
     }
+    if (wxPinSelected()) void ensureSwdiForSelectedStormDays();
     if (root.dataset.hsFilterSig !== filterSig || !root.querySelector(".hs-dates")) {
       root.dataset.hsFilterSig = filterSig;
       renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
@@ -10182,7 +10276,10 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
       }
       syncHailStormDateSelection(data);
       renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
-      drawHailMarkers(mapHailRows(data, wxFilters), [], { requireDate: true });
+      drawHailMarkers(mapHailRows(data, wxFilters), [], {
+        requireDate: true,
+        zoneRows: hailRowsForZones(data, wxFilters),
+      });
     };
   };
   bind("#hs-f-km", "km", Number);
@@ -10257,7 +10354,10 @@ export function renderHailScopeSheet(root, data, esc, { onRefetch, drawMap = tru
   // Never prune checked dates from progressive loads / filter churn.
   root.innerHTML = hailScopeHtml(data, days, esc);
   bindHailScopeSheet(root, data, esc, { onRefetch });
-  if (drawMap) drawHailMarkers(mapHailRows(data, wxFilters), [], { requireDate: true });
+  if (drawMap) {
+    const rows = mapHailRows(data, wxFilters);
+    drawHailMarkers(rows, [], { requireDate: true, zoneRows: hailRowsForZones(data, wxFilters) });
+  }
 }
 
 export function baseLayerButtons(config, esc) {

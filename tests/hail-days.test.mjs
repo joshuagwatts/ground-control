@@ -2,7 +2,10 @@ import {
   collapseHailByDate,
   filterDossier,
   filterHailRaw,
+  hailRowsForZones,
   mergeHailRows,
+  selectStormDate,
+  setWxPin,
   stormPassesSizeFilter,
   HOUSE_HAIL_KM,
   PIN_FETCH_FAST_KM,
@@ -133,6 +136,33 @@ assert(
   filterHailRaw(pinSmall, { km: 10, hailIn: 0.75, days: 730, year: "all" }, { forMap: true }).length === 1,
   "map paint keeps SWDI radar below sheet hailMin",
 );
+
+setWxPin(35.467, -97.516);
+selectStormDate("2025-06-01", { requireDate: true, hailRows: [], toggle: false });
+const spotNear = {
+  date: "2025-06-01",
+  lat: 35.467,
+  lon: -97.516,
+  size_in: "1.00",
+  source: "iem-lsr",
+  distance_km: 0.4,
+};
+const radarFar = {
+  date: "2025-06-01",
+  lat: 35.55,
+  lon: -97.516,
+  size_in: "1.25",
+  source: "noaa-swdi-radar",
+  distance_km: 55,
+};
+const zonePack = {
+  lat: 35.467,
+  lon: -97.516,
+  hail: [spotNear, radarFar],
+  _meta: { fetchedKm: PIN_FETCH_WIDE_KM },
+};
+const zoneRows = hailRowsForZones(zonePack, { km: 16, hailIn: 0.75, days: 730, year: "all" });
+assert(zoneRows.some((h) => h.source === "noaa-swdi-radar"), "zone paint keeps SWDI beyond NEAR km when storm day is on");
 
 assert(spcLookbackDays(90) <= 16, "SPC never walks 90 daily CSVs");
 assert(spcLookbackDays(90) === 16, "desktop/Android keep a 16-day SPC walk");
