@@ -1333,7 +1333,9 @@ body.hs-tab .leaflet-container,
   -webkit-overflow-scrolling: touch;
 }
 .wx-roof-blurb { font-size: 9px; margin: 0.35rem 0 0.45rem; letter-spacing: 0.04em; }
-.wx-hail-confirmed { filter: none; }
+.wx-hail-isolated path {
+  stroke-dasharray: 5 4;
+}
 .wx-hail-spotter-zone { filter: drop-shadow(0 0 2px rgba(229, 57, 53, 0.25)); }
 .wx-hail-topo.wx-hail-spotter-zone path {
   stroke: #ff5252;

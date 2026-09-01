@@ -5295,6 +5295,47 @@ function pointInLatLonRing(lat, lon, ring) {
  * Each hail-size threshold keeps its own full region (HailTrace / TV-radar style).
  * Layers stack as translucent fills — no hole cutouts, no shared wire mesh.
  */
+function isIsolatedHailBand(sub) {
+  if (!sub) return false;
+  const src = String(sub.source || "");
+  if (!/mesh|radar|swdi/i.test(src)) return false;
+  const hits = Number(sub.hits) || 0;
+  if (hits <= 1) return true;
+  if (!sub.confirmed) return true;
+  return false;
+}
+
+function ensureHailHatchPattern(svgRoot) {
+  if (!svgRoot || svgRoot.querySelector("#gc-hail-hatch")) return;
+  const defs =
+    svgRoot.querySelector("defs") ||
+    (() => {
+      const d = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+      svgRoot.insertBefore(d, svgRoot.firstChild);
+      return d;
+    })();
+  const pattern = document.createElementNS("http://www.w3.org/2000/svg", "pattern");
+  pattern.setAttribute("id", "gc-hail-hatch");
+  pattern.setAttribute("patternUnits", "userSpaceOnUse");
+  pattern.setAttribute("width", "10");
+  pattern.setAttribute("height", "10");
+  pattern.setAttribute("patternTransform", "rotate(45)");
+  const base = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  base.setAttribute("width", "10");
+  base.setAttribute("height", "10");
+  base.setAttribute("fill", "rgba(255, 255, 255, 0.42)");
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", "0");
+  line.setAttribute("y1", "0");
+  line.setAttribute("x2", "0");
+  line.setAttribute("y2", "10");
+  line.setAttribute("stroke", "rgba(160, 160, 160, 0.55)");
+  line.setAttribute("stroke-width", "2");
+  pattern.appendChild(base);
+  pattern.appendChild(line);
+  defs.appendChild(pattern);
+}
+
 function stackHailBandPolys(subs) {
   return (subs || [])
     .filter((s) => Array.isArray(s?.ring) && s.ring.length >= 3)
@@ -5524,24 +5565,33 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const col = isSpotZone ? hailSpotterZoneColor(sz) : isSwdiZone ? hailRadarBandColor(sz) : hailZoneColor(sz);
       const fillPane = isSwdiZone ? "hailRadarFills" : isSpotZone ? "hailSpotFills" : "hailFills";
       const fillRenderer = isSwdiZone ? hailRadarFillSvg : isSpotZone ? hailSpotFillSvg : hailFillSvg;
-      const fillOpacity = isSwdiZone ? hailMeshBandOpacity(sz) : hailLayerFillOpacity(sz);
+      const isIsolated = isSwdiZone && isIsolatedHailBand(sub);
+      const fillOpacity = isSwdiZone
+        ? hailMeshBandOpacity(sz) * (isIsolated ? 0.55 : 1)
+        : hailLayerFillOpacity(sz);
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
-        fillColor: col.fill,
-        fillOpacity,
+        fillColor: isIsolated ? "url(#gc-hail-hatch)" : col.fill,
+        fillOpacity: isIsolated ? 0.92 : fillOpacity,
         weight: isSwdiZone ? 0.9 : 1.2,
-        opacity: isSwdiZone ? 0.55 : 0.7,
+        opacity: isIsolated ? 0.72 : isSwdiZone ? 0.55 : 0.7,
+        dashArray: isIsolated ? "5 4" : null,
         stroke: true,
         smoothFactor: 2.4,
         pane: fillPane,
         renderer: fillRenderer,
         interactive: true,
         bubblingMouseEvents: false,
-        className: isConfirm
-          ? "wx-hail-topo wx-hail-confirmed wx-hail-spotter-zone"
-          : "wx-hail-topo",
+        className: [
+          isConfirm ? "wx-hail-topo wx-hail-confirmed wx-hail-spotter-zone" : "wx-hail-topo",
+          isIsolated ? "wx-hail-isolated" : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
       }).addTo(hailLayer);
+      const hatchSvg = fillRenderer?._container;
+      if (isIsolated && hatchSvg) ensureHailHatchPattern(hatchSvg);
       trackHailStroke(bindHailZoneTap(poly, h, sub), {
         confirmed: isConfirm,
         size: sz,
