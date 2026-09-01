@@ -10693,9 +10693,31 @@ function closeHsFilterSheet() {
   hsFilterSheetSelect?._hsFilterTrig?.classList.remove("open");
   hsFilterSheetSelect?._hsFilterTrig?.setAttribute("aria-expanded", "false");
   hsFilterSheetSelect = null;
-  window.setTimeout(() => {
-    if (hsFilterSheet && !hsFilterSheet.classList.contains("open")) hsFilterSheet.hidden = true;
-  }, 280);
+  hsFilterSheet.hidden = true;
+}
+
+function placeHsFilterPopover(trig) {
+  const panel = hsFilterSheet?.querySelector(".hs-filter-sheet-panel");
+  if (!panel || !trig) return;
+  const r = trig.getBoundingClientRect();
+  const pad = 8;
+  const width = Math.max(168, Math.min(240, r.width + 24));
+  let left = r.left;
+  let top = r.bottom + 6;
+  if (left + width > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - width - pad);
+  if (left < pad) left = pad;
+  panel.style.width = `${Math.round(width)}px`;
+  panel.style.maxHeight = `${Math.min(280, Math.max(140, window.innerHeight - top - pad))}px`;
+  requestAnimationFrame(() => {
+    const h = panel.offsetHeight || 180;
+    if (top + h > window.innerHeight - pad && r.top - 6 - h > pad) {
+      top = Math.max(pad, r.top - 6 - h);
+    }
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+  });
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.top = `${Math.round(top)}px`;
 }
 
 function ensureHsFilterSheet() {
@@ -10705,19 +10727,11 @@ function ensureHsFilterSheet() {
   hsFilterSheet.className = "hs-filter-sheet";
   hsFilterSheet.hidden = true;
   hsFilterSheet.innerHTML = `<button type="button" class="hs-filter-sheet-bg" aria-label="Close filter picker"></button>
-    <div class="hs-filter-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="hs-filter-sheet-title">
-      <header class="hs-filter-sheet-head">
-        <div>
-          <div class="hs-filter-sheet-kicker">Storm filter</div>
-          <div class="hs-filter-sheet-title" id="hs-filter-sheet-title"></div>
-        </div>
-        <button type="button" class="hs-filter-sheet-close">Done</button>
-      </header>
-      <div class="hs-filter-sheet-list" role="listbox"></div>
+    <div class="hs-filter-sheet-panel" role="listbox">
+      <div class="hs-filter-sheet-list"></div>
     </div>`;
   document.body.appendChild(hsFilterSheet);
   hsFilterSheet.querySelector(".hs-filter-sheet-bg")?.addEventListener("click", closeHsFilterSheet);
-  hsFilterSheet.querySelector(".hs-filter-sheet-close")?.addEventListener("click", closeHsFilterSheet);
   if (!document._hsFilterEscBound) {
     document._hsFilterEscBound = true;
     document.addEventListener("keydown", (e) => {
@@ -10729,15 +10743,14 @@ function ensureHsFilterSheet() {
 
 function openHsFilterSheet(select) {
   if (!select) return;
+  const trig = select._hsFilterTrig;
+  if (hsFilterSheet?.classList.contains("open") && hsFilterSheetSelect === select) {
+    closeHsFilterSheet();
+    return;
+  }
   const sheet = ensureHsFilterSheet();
   hsFilterSheetSelect = select;
-  const title = sheet.querySelector(".hs-filter-sheet-title");
   const list = sheet.querySelector(".hs-filter-sheet-list");
-  const lab =
-    select.closest(".hs-select")?.querySelector(".hs-select-lab")?.textContent?.trim() ||
-    select.getAttribute("aria-label") ||
-    "Filter";
-  if (title) title.textContent = lab;
   if (list) {
     list.innerHTML = [...select.options]
       .map((opt) => {
@@ -10759,9 +10772,10 @@ function openHsFilterSheet(select) {
       };
     });
   }
-  select._hsFilterTrig?.classList.add("open");
-  select._hsFilterTrig?.setAttribute("aria-expanded", "true");
+  trig?.classList.add("open");
+  trig?.setAttribute("aria-expanded", "true");
   sheet.hidden = false;
+  placeHsFilterPopover(trig);
   requestAnimationFrame(() => sheet.classList.add("open"));
 }
 
