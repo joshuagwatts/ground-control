@@ -6202,12 +6202,17 @@ function setFlagKindFilter(kind, on) {
 
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
+  // Only paint pins near the current map view — statewide persist stays in memory/storage.
+  const maxKm = Math.max(flagSearchKm() * 2.8, 14);
   const list = (nums || []).filter((n) => {
     if (!houseHasFlag(n) || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
     if (flagHiddenKeys.has(flagItemKey(n))) return false;
     const kind = housePhoneKind(n);
     if (kind === "rental" && !flagKindFilter.rental) return false;
     if (kind === "business" && !flagKindFilter.business) return false;
+    if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+      if (haversineKm(c.lat, c.lng, n.lat, n.lon) > maxKm) return false;
+    }
     return true;
   });
   const rentals = list.filter((n) => housePhoneKind(n) === "rental");
@@ -6963,10 +6968,11 @@ function applyRentFlagBatch(flags, _gen) {
   scheduleFlagLayerPaint();
 }
 
-function kickRentFlags(lat, lon, place, gen) {
+function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   const now = Date.now();
   const moved =
+    force ||
     !Number.isFinite(lastRentSweepLat) ||
     !Number.isFinite(lastRentSweepLon) ||
     haversineKm(lastRentSweepLat, lastRentSweepLon, lat, lon) >= RENT_SWEEP_MOVE_KM;
@@ -7012,7 +7018,7 @@ async function fetchOsmHouseNums(south, west, north, east) {
   return numsFromOsmElements(mapDump?.elements);
 }
 
-async function refreshHouseNumbers() {
+async function refreshHouseNumbers({ forceRent = false } = {}) {
   if (!map || !window.L) return;
   ensureHousePane();
   if (!phoneFlagsEnabled()) {
@@ -7030,7 +7036,7 @@ async function refreshHouseNumbers() {
   }
   const z = map.getZoom?.() ?? 14;
   const key = `flag|${houseBoundsKey(searchB, z)}|${flagSearchKm().toFixed(1)}`;
-  if (houseCache.key === key && houseCache.nums.length) {
+  if (!forceRent && houseCache.key === key && houseCache.nums.length) {
     scheduleFlagLayerPaint();
     const c0 = map.getCenter?.();
     // Retarget city rentals when the map has moved far enough — don't wait for an empty cache.
@@ -7046,7 +7052,7 @@ async function refreshHouseNumbers() {
   }
   const cachedReady = readyFlagList(houseCache.nums).length;
   emitPhoneFlagsStatus(
-    cachedReady ? flagStatusLine("Cached") : `Loading flags (~${flagSearchKm().toFixed(0)} km)…`,
+    cachedReady ? flagStatusLine(forceRent ? "Refreshing map view…" : "Cached") : `Loading flags (~${flagSearchKm().toFixed(0)} km)…`,
   );
   const padB = searchB.pad(HOUSE_FETCH_PAD);
   const south = padB.getSouth();
@@ -7056,10 +7062,16 @@ async function refreshHouseNumbers() {
   const gen = ++houseGen;
   const center = map.getCenter?.();
   if (center) {
-    kickRentFlags(center.lat, center.lng, {
-      city: "",
-      state: isOklahomaLatLon(center.lat, center.lng) ? "OK" : "",
-    }, gen);
+    kickRentFlags(
+      center.lat,
+      center.lng,
+      {
+        city: "",
+        state: isOklahomaLatLon(center.lat, center.lng) ? "OK" : "",
+      },
+      gen,
+      { force: forceRent },
+    );
   }
   const mapDump = await osmMapJson(south, west, north, east, 22000).catch(() => null);
   const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
@@ -7071,10 +7083,16 @@ async function refreshHouseNumbers() {
   scheduleFlagLayerPaint();
   const place = placeFromOsmElements(mapDump?.elements);
   if (center) {
-    kickRentFlags(center.lat, center.lng, {
-      city: place.city || "",
-      state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
-    }, gen);
+    kickRentFlags(
+      center.lat,
+      center.lng,
+      {
+        city: place.city || "",
+        state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
+      },
+      gen,
+      { force: forceRent },
+    );
   }
   void overpassJson(osmPoiQuery(south, west, north, east), 8000)
     .then((overPois) => {
@@ -7109,13 +7127,19 @@ function emitPhoneFlagsStatus(msg) {
   }
 }
 
-/** Kick off Flags scan immediately (toggle / map settle). */
+/** Kick off Flags scan immediately (toggle / map settle). Toggle-on forces map-view refresh. */
 export function startPhoneFlagScan() {
   if (!phoneFlagsEnabled()) return;
   houseHoldUntil = 0;
   housePaintSig = "";
+  houseGen += 1;
+  // Bypass rent cool-down and cancel any stale statewide crawl.
+  lastRentSweepAt = 0;
+  lastRentSweepLat = NaN;
+  lastRentSweepLon = NaN;
   houseCache = { key: "", rings: [], nums: houseCache.nums || [] };
   hydratePersistedFlags();
+  scheduleFlagLayerPaint(true);
   if (houseTimer) {
     clearTimeout(houseTimer);
     houseTimer = 0;
@@ -7124,7 +7148,7 @@ export function startPhoneFlagScan() {
     clearTimeout(houseEnrichTimer);
     houseEnrichTimer = 0;
   }
-  void refreshHouseNumbers();
+  void refreshHouseNumbers({ forceRent: true });
 }
 
 function stopFieldOverlay() {
