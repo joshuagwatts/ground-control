@@ -1408,6 +1408,30 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
+/** Radar / MESH swath bands — pale fringe → yellow cores (HailTrace-style). */
+function hailRadarBandColor(sizeIn) {
+  const sz = parseFloat(sizeIn);
+  if (Number.isNaN(sz)) return { stroke: "#e8e8e8", fill: "#f7f7f7", core: "#ffffff" };
+  if (sz >= 2.5) return { stroke: "#ff8f00", fill: "#ffb74d", core: "#ffe0b2" };
+  if (sz >= 2) return { stroke: "#ffa726", fill: "#ffcc80", core: "#fff3e0" };
+  if (sz >= 1.5) return { stroke: "#ffca28", fill: "#ffe082", core: "#fff9c4" };
+  if (sz >= 1) return { stroke: "#fdd835", fill: "#fff176", core: "#fffde7" };
+  if (sz >= 0.75) return { stroke: "#fff59d", fill: "#fff9c4", core: "#fffde7" };
+  if (sz >= 0.5) return { stroke: "#f5f5f5", fill: "#ffffff", core: "#ffffff" };
+  return { stroke: "#fafafa", fill: "#ffffff", core: "#ffffff" };
+}
+
+/** Outer mesh bands stay visible; inner cores stay translucent so fringe reads pale. */
+function hailMeshBandOpacity(sizeIn) {
+  const sz = Number(sizeIn) || 0;
+  if (sz <= 0.5) return 0.52;
+  if (sz < 0.75) return 0.44;
+  if (sz < 1) return 0.38;
+  if (sz < 1.5) return 0.32;
+  if (sz < 2) return 0.26;
+  return 0.22;
+}
+
 /** Spotter-confirmed hail zones — warm red/orange. */
 function hailSpotterZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
@@ -4318,7 +4342,7 @@ function hailFootprintM(sizeIn, source) {
  */
 const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.5, 2.0, 2.5];
 /** Light morphological close only — wide closes were gluing every core into one blob. */
-const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 3.2 : thr <= 0.75 ? 2.4 : thr <= 1 ? 1.6 : thr <= 1.5 ? 1.1 : 0.75);
+const HAIL_CLOSE_KM = (thr) => (thr <= 0.5 ? 4.2 : thr <= 0.75 ? 3.0 : thr <= 1 ? 2.0 : thr <= 1.5 ? 1.4 : 0.85);
 /** Hits farther than this become separate overlapping zones (not one mega-corridor). */
 const HAIL_LOBE_SPLIT_KM = 11;
 
@@ -4702,7 +4726,7 @@ function softCircleBands(lat, lon, sizeIn, p) {
   const bands = [];
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     if (sz + 0.01 < thr) continue;
-    const scale = thr <= 0.5 ? 1.45 : thr <= 0.75 ? 1.15 : thr <= 1 ? 0.92 : thr <= 1.5 ? 0.7 : 0.48;
+    const scale = thr <= 0.5 ? 1.75 : thr <= 0.75 ? 1.35 : thr <= 1 ? 1.05 : thr <= 1.5 ? 0.78 : 0.52;
     bands.push({
       ring: relaxRing(chaikinSmoothRing(ringPolygon(lat, lon, baseM * scale, 36), 3), 2),
       maxSize: thr,
@@ -4767,9 +4791,8 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   const kernels = pts.map((p) => {
     const raw = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
     const spot = isSpotterHail(p);
-    // Radar greens always count — never treat UNK/tiny SWDI as invisible.
-    const sz = spot ? raw : Math.max(raw, 0.85);
-    const rKm = (hailFootprintM(sz, p.source) / 1000) * (spot ? 0.9 : 1.28);
+    const sz = spot ? raw : Math.max(raw, 0.5);
+    const rKm = (hailFootprintM(sz, p.source) / 1000) * (spot ? 0.9 : 1.45);
     const { x, y } = toXY(p.lat, p.lon);
     minX = Math.min(minX, x - rKm * 1.6);
     maxX = Math.max(maxX, x + rKm * 1.6);
@@ -4839,7 +4862,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     const gx1 = Math.min(w - 1, Math.ceil((k.x + reach - minX) / cellKm));
     const gy0 = Math.max(0, Math.floor((k.y - reach - minY) / cellKm));
     const gy1 = Math.min(h - 1, Math.ceil((k.y + reach - minY) / cellKm));
-    const radarBoost = k.spot ? 1 : 2.35;
+    const radarBoost = k.spot ? 1 : 1.05;
     for (let gy = gy0; gy <= gy1; gy++) {
       for (let gx = gx0; gx <= gx1; gx++) {
         const cx = minX + (gx + 0.5) * cellKm;
@@ -4866,7 +4889,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     return ensureRadarInsideBands(out, pts);
   }
   const xyCell = (xKm, yKm) => xyToLatLon(minX + xKm, minY + yKm);
-  const softField = blurFloatField(field, w, h, 1);
+  const softField = blurFloatField(field, w, h, 2);
 
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     const binary = new Uint8Array(w * h);
@@ -4898,7 +4921,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
       const meshConfirmed =
         (spotConfirm && thr >= 1) || (radarCount >= 1 && thr >= 0.5) || (radarCount >= 2 && thr >= 0.75);
       out.push({
-        ring: padPolygon(smooth, 48),
+        ring: padPolygon(smooth, thr <= 0.5 ? 140 : thr <= 0.75 ? 90 : 48),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
@@ -4970,7 +4993,7 @@ function ensureRadarInsideBands(bands, pts) {
       if (!env || env.length < 4) {
         // Single green (or envelope fail) → soft radar disk so the hit still counts.
         for (const p of cluster) {
-          const sz = Math.max(parseFloat(p.size_in) || 0.85, 0.85);
+          const sz = Math.max(parseFloat(p.size_in) || 0.5, 0.5);
           const ring = relaxRing(
             chaikinSmoothRing(ringPolygon(p.lat, p.lon, hailFootprintM(sz, "noaa-swdi-radar") * 1.15, 28), 2),
             2,
@@ -5481,16 +5504,17 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const isSwdiZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
       const isSpotZone = sub.source === "spotter";
       const isConfirm = isMixed || isSpotZone || (Boolean(sub.confirmed) && !isSwdiZone);
-      const col = isSpotZone ? hailSpotterZoneColor(sz) : hailZoneColor(sz);
+      const col = isSpotZone ? hailSpotterZoneColor(sz) : isSwdiZone ? hailRadarBandColor(sz) : hailZoneColor(sz);
       const fillPane = isSwdiZone ? "hailRadarFills" : isSpotZone ? "hailSpotFills" : "hailFills";
       const fillRenderer = isSwdiZone ? hailRadarFillSvg : isSpotZone ? hailSpotFillSvg : hailFillSvg;
+      const fillOpacity = isSwdiZone ? hailMeshBandOpacity(sz) : hailLayerFillOpacity(sz);
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: isSwdiZone ? Math.min(0.82, hailLayerFillOpacity(sz) + 0.12) : hailLayerFillOpacity(sz),
-        weight: isSwdiZone ? 1.35 : 1.2,
-        opacity: isSwdiZone ? 0.78 : 0.7,
+        fillOpacity,
+        weight: isSwdiZone ? 0.9 : 1.2,
+        opacity: isSwdiZone ? 0.55 : 0.7,
         stroke: true,
         smoothFactor: 2.4,
         pane: fillPane,
@@ -5542,7 +5566,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
       const pSz = parseFloat(p.size_in) || 0.75;
-      const rCol = hailZoneColor(pSz);
+      const rCol = isSwdiHail(p) ? hailRadarBandColor(pSz) : hailZoneColor(pSz);
       const baseR = isSpot ? 7 : 8.5;
       const mark = window.L.circleMarker([p.lat, p.lon], {
         radius: Math.max(isSpot ? 1.4 : 1.1, baseR * dotUi),
@@ -5593,14 +5617,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       if (!ring || ring.length < 3) continue;
       const sz = parseFloat(anchor.size_in) || parseFloat(rows[0]?.size_in) || 0.75;
       const hasRadar = rows.some(isRadarHail);
-      const col = hailZoneColor(sz);
+      const col = isRadarHail(h) ? hailRadarBandColor(sz) : hailZoneColor(sz);
       fitPts.push(...ring);
       window.L.polygon(ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: hasRadar
-          ? Math.min(0.78, hailLayerFillOpacity(sz) + 0.1)
-          : Math.min(0.75, hailLayerFillOpacity(sz) + 0.15),
+        fillOpacity: isRadarHail(h) ? hailMeshBandOpacity(sz) : Math.min(0.75, hailLayerFillOpacity(sz) + 0.15),
         weight: 1.4,
         opacity: 0.82,
         stroke: true,
