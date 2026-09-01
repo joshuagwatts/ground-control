@@ -13,7 +13,7 @@ const LAYERS = [
     url: "https://services8.arcgis.com/euhkr1dAJeQBIjV0/arcgis/rest/services/TaxParcelsPublics_view/FeatureServer/0/query",
     situsField: "location",
     outFields:
-      "name1,name2,name3,mailingaddress1,city,state,zipcode,location,locationcity,accountno,propertyid",
+      "name1,name2,name3,mailingaddress1,city,state,zipcode,location,locationcity,accountno,propertyid,saledate,SalePrice,legal,landvalue,currentmarket,currentassessed,subname",
     href: (row) => {
       const id = attr(row, "propertyid");
       return id
@@ -44,7 +44,7 @@ const LAYERS = [
     url: "https://map11.incog.org/arcgis11wa/rest/services/Parcels_TulsaCo/FeatureServer/0/query",
     situsField: "PropertyAddress",
     outFields:
-      "Owner,Name1,Name2,PropertyAddress,PropertyCity,Address1,Address2,City,State,ZIPCode,HomesteadExemption",
+      "Owner,Name1,Name2,PropertyAddress,PropertyCity,Address1,Address2,City,State,ZIPCode,HomesteadExemption,YearBuilt,YearRemodeled,BuiltAsSF,Baths,SaleDate,SalePrice,TotalImpValue,TotalLandValue,TotalAcctValue",
     href: () => "https://www.assessor.tulsacounty.org/",
   },
   {
@@ -158,6 +158,188 @@ export function parcelMatchesPin(pinAddress, situs) {
   return sameHouse(pin, site);
 }
 
+function numVal(raw) {
+  const n = Number(String(raw ?? "").replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function yearVal(raw) {
+  const n = numVal(raw);
+  if (n >= 1800 && n <= 2100) return Math.round(n);
+  const m = String(raw || "").match(/\b(19|20)\d{2}\b/);
+  return m ? Number(m[0]) : 0;
+}
+
+function moneyVal(raw) {
+  const n = numVal(raw);
+  return n >= 100 ? n : 0;
+}
+
+/** GIS row → building / sale / valuation facts (public assessor record). */
+export function pickBuildingFacts(row = {}) {
+  const yearBuilt = yearVal(
+    attr(row, "YearBuilt", "Year_Built", "YEAR_BUILT", "yearbuilt", "BuiltYear"),
+  );
+  const yearRemodel = yearVal(
+    attr(row, "YearRemodeled", "Year_Remodel", "YEAR_REMODELED", "yearremodeled"),
+  );
+  const sqft = numVal(
+    attr(row, "BuiltAsSF", "Gross_SqFt", "SQFT", "LIVING_AREA", "Floor_SqFt", "GrossSqFt"),
+  );
+  const beds = numVal(attr(row, "Bed_Count", "Bedrooms", "Beds"));
+  const baths = numVal(attr(row, "Bath_Count", "Baths", "Bathrooms"));
+  const saleDate = attr(row, "SaleDate", "saledate", "Sale_Date", "RecordedDate");
+  const salePrice = moneyVal(attr(row, "SalePrice", "saleprice", "Sale_Price"));
+  const marketValue = moneyVal(
+    attr(row, "currentmarket", "Market_Value", "TotalAcctValue", "TotalAcctValue"),
+  );
+  const assessedValue = moneyVal(
+    attr(row, "currentassessed", "Assessed_Value", "TaxableValue", "NetAssessed"),
+  );
+  const landValue = moneyVal(attr(row, "landvalue", "TotalLandValue", "Land_Value"));
+  const impValue = moneyVal(attr(row, "TotalImpValue", "Improvement_Value", "COUNTY_BUILDING_VALUE"));
+  const legal = attr(row, "legal", "Legal_Desc", "LEGAL");
+  const subdivision = attr(row, "subname", "Subdivision");
+  const construction = attr(row, "Construction_Type", "BuiltAsOccCode", "OCCDesc", "CLUDesc");
+  return {
+    year_built: yearBuilt,
+    year_remodel: yearRemodel,
+    sqft,
+    beds,
+    baths,
+    sale_date: saleDate,
+    sale_price: salePrice,
+    market_value: marketValue,
+    assessed_value: assessedValue,
+    land_value: landValue,
+    improvement_value: impValue,
+    legal,
+    subdivision,
+    construction,
+  };
+}
+
+/** Human-readable one-liner for pin UI. */
+export function formatAssessorRecordLine(assessor = {}) {
+  const b = assessor.building || {};
+  const parts = [];
+  if (b.year_built) parts.push(`Built ${b.year_built}`);
+  if (b.year_remodel && b.year_remodel !== b.year_built) parts.push(`Remodeled ${b.year_remodel}`);
+  if (b.sqft) parts.push(`${b.sqft.toLocaleString()} sf`);
+  if (b.beds) parts.push(`${b.beds} bed`);
+  if (b.baths) parts.push(`${b.baths} bath`);
+  if (b.construction) parts.push(String(b.construction).replace(/\s+/g, " ").trim());
+  if (b.sale_date || b.sale_price) {
+    const saleBits = [];
+    if (b.sale_date) saleBits.push(String(b.sale_date).trim());
+    if (b.sale_price) saleBits.push(`$${Math.round(b.sale_price).toLocaleString()}`);
+    parts.push(`Sale ${saleBits.join(" · ")}`);
+  }
+  if (b.market_value) parts.push(`Market $${Math.round(b.market_value).toLocaleString()}`);
+  if (Array.isArray(assessor.permits) && assessor.permits.length) {
+    const p = assessor.permits[0];
+    const plab = [p.date, p.number, p.description].filter(Boolean).join(" ");
+    if (plab) parts.push(`Permit ${plab}`);
+  }
+  if (b.subdivision && parts.length < 4) parts.push(b.subdivision);
+  return parts.slice(0, 6).join(" · ");
+}
+
+/** Parse Oklahoma County assessor card HTML — buildings + permit history. */
+export function parseOkCountyAssessorHtml(html = "") {
+  const blob = String(html || "");
+  const buildings = [];
+  const permits = [];
+  const cells = [...blob.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
+    .map((m) => m[1].replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  for (let i = 0; i < cells.length - 3; i++) {
+    if (!/^(Vacant|Improved)$/i.test(cells[i])) continue;
+    const status = cells[i];
+    let description = "";
+    let year = 0;
+    let sqft = 0;
+    let stories = 0;
+    for (let j = i + 1; j < Math.min(i + 8, cells.length); j++) {
+      const c = cells[j];
+      if (/^(19|20)\d{2}$/.test(c)) {
+        year = Number(c);
+        continue;
+      }
+      if (/^\d{1,3}$/.test(c) && !sqft && year) {
+        sqft = Number(c);
+        continue;
+      }
+      if (/^\d+\s*Stories?$/i.test(c)) {
+        stories = Number(c) || 0;
+        break;
+      }
+      if (!description && c.length > 3 && !/^(Vacant|Improved|\d+)$/.test(c)) description = c;
+    }
+    if (year || sqft) {
+      buildings.push({ status, description, year_built: year, sqft, stories });
+    }
+  }
+  for (let i = 0; i < cells.length - 2; i++) {
+    if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(cells[i])) continue;
+    const number = cells[i + 1] || "";
+    if (!/^[A-Z0-9-]{4,}$/i.test(number)) continue;
+    let description = cells[i + 2] || "";
+    let costIdx = i + 3;
+    if (/^\d{1,2}$/.test(description)) {
+      description = cells[i + 3] || "";
+      costIdx = i + 4;
+    }
+    if (/^(Inactive|Active|Issued|Permit|EDMOND|Commercial)$/i.test(description)) continue;
+    permits.push({
+      date: cells[i],
+      number,
+      description,
+      cost: numVal(String(cells[costIdx] || "").replace(/,/g, "")),
+      status: String(cells[costIdx + 1] || "").trim(),
+    });
+  }
+  return { buildings, permits };
+}
+
+function mergeBuildingFacts(base = {}, extra = {}) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v == null || v === "" || v === 0) continue;
+    if (!out[k] || out[k] === 0) out[k] = v;
+  }
+  return out;
+}
+
+/** Fetch OK County assessor card for building + permit tables. */
+export async function enrichAssessorPublicRecord(assessor) {
+  if (!assessor?.url || !/oklahomacounty\.org/i.test(assessor.url)) return assessor;
+  try {
+    const { body } = await httpGet(assessor.url, 12000);
+    const parsed = parseOkCountyAssessorHtml(body || "");
+    const building = mergeBuildingFacts(assessor.building || {}, {});
+    const top = parsed.buildings[0];
+    if (top) {
+      if (top.year_built) building.year_built = top.year_built;
+      if (top.sqft) building.sqft = top.sqft;
+      if (top.stories) building.stories = top.stories;
+      if (top.description) building.construction = top.description;
+    }
+    const permits = parsed.permits.length ? parsed.permits.slice(0, 4) : assessor.permits || [];
+    const next = { ...assessor, building, permits };
+    next.record_line = formatAssessorRecordLine(next);
+    next.public_text = [
+      formatAssessorRecordLine(next),
+      permits.map((p) => [p.date, p.number, p.description, p.cost ? `$${p.cost}` : ""].filter(Boolean).join(" ")).join("\n"),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    return next;
+  } catch {
+    return assessor;
+  }
+}
+
 export function pickParcel(row, layer = {}) {
   const cs = splitCityState(attr(row, "citystate"));
   const name = formatOwnerName(
@@ -218,14 +400,19 @@ export function pickParcel(row, layer = {}) {
   }
   const occ = attr(row, "Owner_Occ", "HomesteadExemption", "homestead", "Homestead");
   const href = typeof layer.href === "function" ? layer.href(row) : "";
-  return {
+  const building = pickBuildingFacts(row);
+  const base = {
     name,
     situs,
     mail,
     url: /^https?:\/\//i.test(href) ? href : String(layer.fallbackUrl || href || ""),
     source: layer.source || "",
     homestead: /^(y|yes|1|true|o|owner|h|homestead)$/i.test(occ) || (Number(occ) > 0 && Number(occ) < 9),
+    building,
+    permits: [],
+    record_line: formatAssessorRecordLine({ building, permits: [] }),
   };
+  return base;
 }
 
 function inBbox(lat, lon, layer) {
@@ -286,5 +473,12 @@ export async function lookupAssessorParcel(lat, lon, address = "") {
   const layers = LAYERS.filter((l) => inBbox(y, x, l));
   if (!layers.length) return null;
   const hits = await Promise.all(layers.map((l) => queryLayer(l, y, x, pin).catch(() => null)));
-  return hits.find(Boolean) || null;
+  let hit = hits.find(Boolean) || null;
+  if (!hit) return null;
+  if (hit.url && /oklahomacounty\.org/i.test(hit.url)) {
+    hit = await enrichAssessorPublicRecord(hit);
+  } else if (!hit.record_line) {
+    hit.record_line = formatAssessorRecordLine(hit);
+  }
+  return hit;
 }

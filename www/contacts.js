@@ -2582,6 +2582,10 @@ export async function lookupFlagPhone(lat, lon, address = "") {
     const osm = await overpassContacts(lat, lon, parts).catch(() => null);
     if (osm?.phone && classifyFlagPhone(osm) === "business") hit = mergeContacts(hit, osm);
   }
+  if (!hit.phone && isOklahomaAddress(address, parts)) {
+    const book = await oklahomaPhoneBookContacts(address, parts).catch(() => null);
+    if (book) hit = mergeContacts(hit, book);
+  }
   const phoneKind = classifyFlagPhone(hit);
   if (!phoneKind) {
     return { ...blank, owner_name: hit.name || "", owner_email: hit.email || "", zillow_url: hit.zillow_url || "" };
@@ -2710,6 +2714,8 @@ export async function fillContactGapsWithChat(settings, { address, assessor = nu
   const haveName = Boolean(assessor?.name || contacts.owner_name || contacts.name);
   if (havePhone && haveEmail && haveName) return null;
   const chunks = [publicText || contacts._public_text || ""];
+  if (assessor?.public_text) chunks.push(assessor.public_text);
+  else if (assessor?.record_line) chunks.push(assessor.record_line);
   if (assessor?.url) {
     const snip = await assessorPublicText(assessor.url).catch(() => "");
     if (snip) chunks.push(snip);

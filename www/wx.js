@@ -429,6 +429,7 @@ function ownerFields(people = {}, assessor = null) {
     owner_mail: (assessor && assessor.mail) || "",
     assessor_url: (assessor && assessor.url) || "",
     assessor_source: (assessor && assessor.source) || "",
+    assessor_record: (assessor && assessor.record_line) || "",
     homestead: Boolean(assessor && assessor.homestead),
     facebook_url: people.facebook || people.facebook_url || "",
     instagram_url: people.instagram || people.instagram_url || "",
@@ -443,9 +444,11 @@ function placeContactHtml(data, esc) {
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
   const homestead = Boolean(data.homestead);
+  const record = String(data.assessor_record || "").trim();
   const e164 = phoneDigits(phone);
   const assessorUrl = String(data.assessor_url || "").trim();
   const bits = [];
+  if (record) bits.push(`<span class="hs-record">${esc(record)}</span>`);
   if (zurl) bits.push(`<a class="hs-zillow" href="${zurl}" target="_blank" rel="noopener noreferrer">Zillow</a>`);
   if (assessorUrl) {
     const lab = data.assessor_source ? `${esc(data.assessor_source)} assessor` : "Assessor";

@@ -2395,6 +2395,12 @@ body.wx-map-expanded .hs-field {
   border: 1px solid #2f6f4e;
   background: rgba(47, 111, 78, 0.18);
 }
+.hs-record {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+}
 .hs-fb { color: #d6e4ff !important; border-color: #3b5bdb !important; }
 .hs-ig { color: #ffd6e8 !important; border-color: #c2255c !important; }
 .hs-tel, .hs-sms { color: var(--text); }

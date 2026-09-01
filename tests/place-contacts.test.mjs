@@ -47,7 +47,7 @@ import {
   persistedRentFlagsAt,
 } from "../www/contacts.js";
 import { parseOsmXmlNodes } from "../www/net.js";
-import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel } from "../www/assessor.js";
+import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel, pickBuildingFacts, formatAssessorRecordLine, parseOkCountyAssessorHtml } from "../www/assessor.js";
 
 function assert(ok, msg) {
   if (!ok) throw new Error(msg);
@@ -184,6 +184,21 @@ const crk = pickParcel({
 });
 assert(/Sapulpa/i.test(crk.name), "creek name");
 assert(/Sapulpa/i.test(crk.mail), "creek citystate mail");
+
+const bld = pickBuildingFacts({ YearBuilt: 1998, BuiltAsSF: 2100, SaleDate: "05-28-1996", SalePrice: 185000, TotalImpValue: 120000 });
+assert(bld.year_built === 1998 && bld.sqft === 2100, "building facts");
+const line = formatAssessorRecordLine({
+  building: bld,
+  permits: [{ date: "1/3/2024", number: "B23-00923", description: "Remodeled" }],
+});
+assert(/Built 1998/.test(line) && /Permit/.test(line), "assessor record line");
+
+const okParsed = parseOkCountyAssessorHtml(
+  '<table><tr><td>Improved</td><td>Restroom Building</td><td>1990</td><td>264</td><td>1 Stories</td></tr>' +
+    '<tr><td>1/3/2024</td><td>B23-00923</td><td>Remodeled</td><td>4,700</td><td>Inactive</td></tr></table>',
+);
+assert(okParsed.buildings[0]?.year_built === 1990, "ok county html building");
+assert(okParsed.permits[0]?.number === "B23-00923", "ok county html permit");
 
 const pin = "2521 Tredington Way, Edmond, OK 73034";
 const keep = listingForPin({ address: pin, phone: "918-582-0001", name: "Shop" }, pin);
