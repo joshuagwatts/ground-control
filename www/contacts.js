@@ -308,7 +308,9 @@ export function parseApartmentsComSearchHtml(html) {
   const seen = new Set();
   const push = (raw) => {
     if (!raw) return;
-    const key = `${phoneDigits(raw.phone)}|${Number(raw.lat).toFixed(5)}|${Number(raw.lon).toFixed(5)}`;
+    const key = raw.phone
+      ? `${phoneDigits(raw.phone)}|${Number(raw.lat).toFixed(5)}|${Number(raw.lon).toFixed(5)}`
+      : `pin|${Number(raw.lat).toFixed(5)}|${Number(raw.lon).toFixed(5)}|${raw.listingUrl || ""}`;
     if (seen.has(key)) return;
     seen.add(key);
     out.push(raw);
@@ -608,7 +610,11 @@ function listingPhoneFromRaw(...raws) {
 function rentFlagRow({ name, street, city, state, zip, lat, lon, phone, listingUrl, source }) {
   const la = Number(lat);
   const lo = Number(lon);
-  if (!phone || !Number.isFinite(la) || !Number.isFinite(lo)) return null;
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return null;
+  const ph = String(phone || "").trim();
+  const url = String(listingUrl || "").trim();
+  // Keep map pins even before a leasing phone lands (matches Zillow's pin set).
+  if (!ph && !url) return null;
   return {
     name: String(name || "").trim(),
     street: String(street || "").trim(),
@@ -617,11 +623,11 @@ function rentFlagRow({ name, street, city, state, zip, lat, lon, phone, listingU
     zip: String(zip || "").trim(),
     lat: la,
     lon: lo,
-    phone,
-    listingUrl: String(listingUrl || "").trim(),
+    phone: ph,
+    listingUrl: url,
     source,
     phone_kind: "rental",
-    zillow_rent: source === "zillow-rent",
+    zillow_rent: source === "zillow-rent" || Boolean(url),
   };
 }
 
@@ -659,7 +665,9 @@ export function parseRentComSearchJson(html) {
       source: "rent-com",
     });
     if (!hit) continue;
-    const key = `${phoneDigits(hit.phone)}|${hit.lat.toFixed(5)}|${hit.lon.toFixed(5)}`;
+    const key = hit.phone
+      ? `${phoneDigits(hit.phone)}|${hit.lat.toFixed(5)}|${hit.lon.toFixed(5)}`
+      : `pin|${hit.lat.toFixed(5)}|${hit.lon.toFixed(5)}|${hit.listingUrl}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(hit);
@@ -761,7 +769,7 @@ export function parseZillowRentSearchJson(html) {
     const re =
       /"latLong"\s*:\s*\{\s*"latitude"\s*:\s*(-?\d+\.?\d*)\s*,\s*"longitude"\s*:\s*(-?\d+\.?\d*)\s*\}[\s\S]{0,1200}?"detailUrl"\s*:\s*"([^"]+)"/gi;
     let m;
-    while ((m = re.exec(h)) && out.length < 40) {
+    while ((m = re.exec(h)) && out.length < 100) {
       pushRow({
         statusType: "FOR_RENT",
         latLong: { latitude: Number(m[1]), longitude: Number(m[2]) },
@@ -1033,22 +1041,23 @@ async function fetchZillowCityRentPhones(
 
   const found = [];
   const seenUrl = new Set();
-  for (const url of urls) {
-    const page = await fetchHtml(url, 14000, listingBrowserHeaders({ zillow: true })).catch(() => null);
+  // Map + city pages in parallel — take every pin, don't stop at a handful.
+  const pages = await Promise.all(
+    urls.map((url) => fetchHtml(url, 12000, listingBrowserHeaders({ zillow: true })).catch(() => null)),
+  );
+  for (const page of pages) {
     for (const row of parseZillowRentSearchJson(page?.html || "")) {
       const key = row.listingUrl || `${row.lat}|${row.lon}`;
       if (seenUrl.has(key)) continue;
       seenUrl.add(key);
       found.push(row);
     }
-    // Map-bounds page usually has the pins the user sees — stop if we got a solid set.
-    if (url === mapUrl && found.length >= 6) break;
   }
 
   const inArea = (r) => {
     if (!Number.isFinite(r?.lat) || !Number.isFinite(r?.lon)) return false;
     if (bounds) {
-      const pad = 18;
+      const pad = 22;
       const midLat = (Number(bounds.south) + Number(bounds.north)) / 2;
       const dLat = pad / 111.32;
       const dLon = pad / (111.32 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
@@ -1101,7 +1110,9 @@ async function fetchZillowCityRentPhones(
   const seeded = mergeRentFlagList(withPhone, borrowed);
   if (typeof onPartial === "function" && seeded.length) onPartial(seeded);
 
-  const detailCap = Math.max(maxDetails, 20);
+  const detailCap = Math.max(0, Number(maxDetails) || 0);
+  if (!detailCap) return mergeRentFlagList(seeded, pool);
+
   const needPhone = pool
     .filter((r) => !r.phone && r.listingUrl)
     .filter((r) => !seeded.some((h) => haversineKm(h.lat, h.lon, r.lat, r.lon) < 0.08))
@@ -1111,7 +1122,7 @@ async function fetchZillowCityRentPhones(
 
   const got = await Promise.all(
     needPhone.map(async (row) => {
-      const deep = await fetchHtml(row.listingUrl, 10000, listingBrowserHeaders({ zillow: true })).catch(() => null);
+      const deep = await fetchHtml(row.listingUrl, 9000, listingBrowserHeaders({ zillow: true })).catch(() => null);
       const phone = parseZillowRentDetailPhone(deep?.html || "");
       if (!phone) return null;
       return { ...row, phone, phone_kind: "rental", zillow_rent: true, source: "zillow-rent" };
@@ -1216,10 +1227,10 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const retarget = opts.retarget === true;
   const viewportOnly = opts.viewportOnly !== false;
   const bounds = opts.bounds && typeof opts.bounds === "object" ? opts.bounds : null;
-  const ordered = citiesInMapBounds(bounds, { lat, lon, limit: 4 });
+  const ordered = citiesInMapBounds(bounds, { lat, lon, limit: 6 });
   const fallbackOrdered =
     !ordered.length && (isOklahomaLatLon(lat, lon) || stateAbbr(opts.state || "") === "ok")
-      ? citiesNearPoint(lat, lon).slice(0, 2)
+      ? citiesNearPoint(lat, lon).slice(0, 3)
       : [];
   const viewCities = ordered.length ? ordered : fallbackOrdered;
   const city = String(opts.city || viewCities[0] || inferOkCity(lat, lon) || "").trim();
@@ -1237,13 +1248,13 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   };
   const paintRows = (rows) => {
     if (!onBatch) return;
-    // Prefer map frame; if few phones land, widen so nearby complex phones still show.
+    // Generous pad so city-search pins near the frame still land on the map.
     if (bounds) {
-      let hit = rentFlagsInBounds(rows, bounds, 18);
-      if (hit.length < 5) hit = rentFlagsInBounds(rows, bounds, 28);
-      if (hit.length < 5) hit = rentFlagsNearPoint(rows, lat, lon, 22);
+      let hit = rentFlagsInBounds(rows, bounds, 32);
+      if (hit.length < 10) hit = rentFlagsInBounds(rows, bounds, 48);
+      if (hit.length < 10) hit = rentFlagsNearPoint(rows, lat, lon, 30);
       onBatch(hit);
-    } else onBatch(rentFlagsNearPoint(rows, lat, lon, 28));
+    } else onBatch(rentFlagsNearPoint(rows, lat, lon, 32));
   };
   const emitView = (rows) => {
     if (!rows?.length) return;
@@ -1315,55 +1326,78 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
           okc.lon <= Number(bounds.east)
         );
       })
-      .slice(0, 3);
+      .slice(0, 6);
 
-    const fetchRentApts = async (c) => {
+    const fetchRentApts = async (c, pages = 1) => {
       const [rentRows, aptRows] = await Promise.all([
-        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages: 1 }).catch(() => []),
-        fetchApartmentsComCityPages(c, state || "OK", { pages: 1 }).catch(() => []),
+        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages }).catch(() => []),
+        fetchApartmentsComCityPages(c, state || "OK", { pages }).catch(() => []),
       ]);
       return mergeRentFlagList(rentRows, aptRows);
     };
 
-    // 1) Rent.com + apartments.com for EVERY view city in parallel — paint ASAP.
-    // One page each keeps the first wave under ~proxy timeout instead of serial page 2 hangs.
-    await Promise.all(
-      fastCities.map(async (c) => {
+    const zMax = Number(profile.zillowDetails) > 0 ? Math.max(16, Number(profile.zillowDetails)) : 0;
+    const zCity = primary || viewCities[0] || inferOkCity(lat, lon) || "";
+
+    // 1) Zillow map pins + Rent.com + apartments — all at once for this frame.
+    await Promise.all([
+      ...(zMax > 0 && (zCity || bounds)
+        ? [
+            fetchZillowCityRentPhones(zCity || "Oklahoma City", state || "OK", {
+              lat,
+              lon,
+              have: acc,
+              maxDetails: 0,
+              bounds,
+              onPartial: (part) => {
+                if (epoch === rentSweepEpoch) emitView(part);
+              },
+            })
+              .then((rows) => {
+                if (epoch === rentSweepEpoch) emitView(rows);
+              })
+              .catch(() => {}),
+          ]
+        : []),
+      ...fastCities.map(async (c) => {
         if (epoch !== rentSweepEpoch) return;
-        const rows = await fetchRentApts(c);
+        const rows = await fetchRentApts(c, 1);
         if (epoch !== rentSweepEpoch) return;
         emitView(rows);
         markRentCitiesSwept([c]);
       }),
-    );
+    ]);
     if (epoch !== rentSweepEpoch) return acc;
 
-    // 2) Zillow streams in the background — do not block Flags "ready" / busy pulse.
-    const zMax = Number(profile.zillowDetails) > 0 ? Math.max(12, Number(profile.zillowDetails)) : 0;
-    if (zMax > 0 && (primary || bounds)) {
-      const zCities = (fastCities.length ? fastCities : [primary]).filter(Boolean).slice(0, 2);
-      const targets = (
-        zCities.length ? zCities : [inferOkCity(lat, lon) || (bounds ? "Oklahoma City" : "")]
-      ).filter(Boolean);
-      void Promise.all(
-        targets.slice(0, 2).map(async (c, i) => {
+    // 2) Background: more Rent/apts pages, extra cities, Zillow detail phones.
+    void (async () => {
+      if (epoch !== rentSweepEpoch) return;
+      await Promise.all(
+        fastCities.map(async (c) => {
           if (epoch !== rentSweepEpoch) return;
-          const rows = await fetchZillowCityRentPhones(c, state || "OK", {
-            lat,
-            lon,
-            have: acc,
-            maxDetails: i === 0 ? Math.min(16, zMax) : Math.min(8, zMax),
-            bounds,
-            onPartial: (part) => {
-              if (epoch === rentSweepEpoch) emitView(part);
-            },
-          }).catch(() => []);
-          if (epoch === rentSweepEpoch) emitView(rows);
+          const rows = await fetchRentApts(c, 2);
+          if (epoch === rentSweepEpoch) {
+            emitView(rows);
+            markRentCitiesSwept([c]);
+          }
         }),
-      ).then(() => {
-        if (epoch === rentSweepEpoch) persistRentFlags(acc);
-      });
-    }
+      );
+      if (epoch !== rentSweepEpoch) return;
+      if (zMax > 0 && (zCity || bounds)) {
+        const rows = await fetchZillowCityRentPhones(zCity || "Oklahoma City", state || "OK", {
+          lat,
+          lon,
+          have: acc,
+          maxDetails: Math.min(28, zMax),
+          bounds,
+          onPartial: (part) => {
+            if (epoch === rentSweepEpoch) emitView(part);
+          },
+        }).catch(() => []);
+        if (epoch === rentSweepEpoch) emitView(rows);
+      }
+      if (epoch === rentSweepEpoch) persistRentFlags(acc);
+    })();
 
     if (inOk && !viewportOnly) {
       const swept = loadSweptRentCities();
@@ -1377,7 +1411,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
           await Promise.all(
             batch.map(async (c) => {
               if (epoch !== rentSweepEpoch) return;
-              const rows = await fetchRentApts(c);
+              const rows = await fetchRentApts(c, 1);
               if (epoch === rentSweepEpoch) {
                 emitView(rows);
                 markRentCitiesSwept([c]);

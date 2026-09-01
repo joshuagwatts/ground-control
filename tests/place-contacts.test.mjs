@@ -260,6 +260,12 @@ const rentNextHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.
                 address: "1 Missing Ave",
                 location: { lat: 35.65, lng: -97.48, city: "Edmond", stateAbbr: "OK" },
               },
+              {
+                name: "URL Only Flats",
+                address: "9 Listing Ln",
+                urlPathname: "/apartment/url-only-flats-edmond-ok-lc999",
+                location: { lat: 35.64, lng: -97.47, city: "Edmond", stateAbbr: "OK" },
+              },
             ],
           },
         },
@@ -268,9 +274,14 @@ const rentNextHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.
   },
 })}</script>`;
 const rentFlags = parseRentComSearchJson(rentNextHtml);
-assert(rentFlags.length === 1 && rentFlags[0].source === "rent-com", "rent.com skips phoneless");
+assert(rentFlags.length >= 2 && rentFlags[0].source === "rent-com", "rent.com parses listings");
 assert(rentFlags[0].phone.includes("405") && rentFlags[0].name === "Plaza East", "rent.com phone+name");
 assert(rentFlags[0].lat === 35.637553 && /rent\.com\/apartment\//.test(rentFlags[0].listingUrl), "rent.com coord+url");
+assert(!rentFlags.some((r) => /Missing Ave/i.test(r.street || "")), "rent.com skips phoneless without URL");
+assert(
+  rentFlags.some((r) => /url-only-flats/i.test(r.listingUrl) && !r.phone),
+  "rent.com keeps phoneless listing pins",
+);
 
 const aptCityUrl = formatApartmentsComCityUrl("Edmond", "OK");
 assert(aptCityUrl === "https://www.apartments.com/edmond-ok/", `apts city url, got ${aptCityUrl}`);
