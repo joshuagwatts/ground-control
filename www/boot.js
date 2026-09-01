@@ -3,14 +3,26 @@ import { APP_VERSION, CACHE_BUST } from "./version.js";
 const ver = document.getElementById("app-version");
 if (ver) ver.textContent = `v${APP_VERSION}`;
 
-if ("serviceWorker" in navigator && !window.Capacitor?.isNativePlatform?.()) {
+async function registerWebProxy() {
+  if (!("serviceWorker" in navigator) || window.Capacitor?.isNativePlatform?.()) return true;
+  const swUrl = new URL(`./sw.js?v=${CACHE_BUST}`, import.meta.url);
+  const scope = new URL("./", import.meta.url);
   try {
-    await navigator.serviceWorker.register(new URL("./sw.js", import.meta.url), { scope: "./" });
+    const reg = await navigator.serviceWorker.register(swUrl, { scope: scope.href, updateViaCache: "none" });
+    await reg.update().catch(() => {});
+    if (reg.waiting && navigator.serviceWorker.controller) {
+      reg.waiting.postMessage({ type: "GC_SKIP_WAITING" });
+    }
     await navigator.serviceWorker.ready;
-  } catch {
-    /* SW optional — dev-server /proxy or native HTTP still work */
+    await new Promise((r) => setTimeout(r, 250));
+    return Boolean(navigator.serviceWorker.controller);
+  } catch (err) {
+    console.warn("service worker registration failed", err);
+    return false;
   }
 }
+
+window.__gcWebProxy = await registerWebProxy();
 
 await import(`./app.js?v=${CACHE_BUST}`).catch((err) => {
   const root = document.getElementById("view");

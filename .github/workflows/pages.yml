@@ -24,6 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Stage site
         run: |
+          if [ -n "${{ secrets.TEAM_SWDI_PROXY_URL }}" ]; then
+            echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > www/proxy-config.js
+          fi
           mkdir -p _site
           cp -a www/. _site/
           touch _site/.nojekyll

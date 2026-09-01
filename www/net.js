@@ -1,4 +1,5 @@
 import { withLanBypass } from "./proton.js";
+import { TEAM_SWDI_PROXY } from "./proxy-config.js";
 
 const UA =
   "Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
@@ -12,6 +13,88 @@ function nativeHttp() {
 
 export function hasNativeHttp() {
   return Boolean(nativeHttp());
+}
+
+/** True when the GitHub Pages service worker is controlling this tab. */
+export function webProxyActive() {
+  return typeof navigator !== "undefined" && Boolean(navigator.serviceWorker?.controller);
+}
+
+/** Wait for the on-device / GitHub Pages SWDI proxy (web only). */
+export async function ensureWebProxyReady(timeoutMs = 12000) {
+  if (hasNativeHttp()) return true;
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return false;
+  if (navigator.serviceWorker.controller) return true;
+  try {
+    await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs)),
+    ]);
+    await new Promise((r) => setTimeout(r, 150));
+  } catch {
+    /* ignore */
+  }
+  return Boolean(navigator.serviceWorker.controller);
+}
+
+function sameOriginProxyUrl(target) {
+  try {
+    if (typeof location === "undefined") return null;
+    const proxy = new URL("proxy", location.href);
+    proxy.searchParams.set("url", target);
+    return proxy.toString();
+  } catch {
+    return null;
+  }
+}
+
+function teamProxyUrl(target) {
+  const base = String(TEAM_SWDI_PROXY || "").trim().replace(/\/+$/, "");
+  if (!base) return null;
+  return `${base}/?url=${encodeURIComponent(target)}`;
+}
+
+async function httpGetViaServiceWorkerMessage(url, timeoutMs) {
+  const reg = await navigator.serviceWorker.ready;
+  const worker = reg.active || reg.waiting || reg.installing;
+  if (!worker) throw new Error("no service worker");
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+    const channel = new MessageChannel();
+    channel.port1.onmessage = (ev) => {
+      clearTimeout(timer);
+      const msg = ev.data || {};
+      if (msg.ok && validProxyBody(msg.body)) {
+        resolve({ url, status: Number(msg.status) || 200, body: unwrapProxyBody(msg.body) });
+      } else {
+        reject(new Error(msg.err || "proxy empty"));
+      }
+    };
+    worker.postMessage({ type: "GC_PROXY_GET", url }, [channel.port2]);
+  });
+}
+
+async function httpGetViaSameOriginProxy(url, timeoutMs) {
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    try {
+      await ensureWebProxyReady(Math.min(timeoutMs, 10000));
+      return await httpGetViaServiceWorkerMessage(url, timeoutMs);
+    } catch {
+      /* fall through to fetch /proxy */
+    }
+  }
+  const proxyUrl = sameOriginProxyUrl(url);
+  if (!proxyUrl) throw new Error("no same-origin proxy");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(proxyUrl, { signal: ctrl.signal, redirect: "follow" });
+    const body = unwrapProxyBody(await res.text());
+    if (!res.ok || !validProxyBody(body)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    return { url, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function httpDiag() {
@@ -283,15 +366,14 @@ function needsBrowserCorsProxy(url) {
 function corsProxyCandidates(url) {
   const enc = encodeURIComponent(url);
   const local = [];
+  const team = teamProxyUrl(url);
+  if (team) local.push(team);
   try {
     if (typeof location !== "undefined") {
-      // Service worker on GitHub Pages / static host — bypass broken public CORS proxies.
-      const same = new URL("proxy", location.href);
-      same.searchParams.set("url", url);
-      local.push(same.toString());
+      const same = sameOriginProxyUrl(url);
+      if (same) local.push(same);
     }
     if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
-      // Same-origin first when using scripts/dev-server.mjs (serves www + /proxy).
       local.push(`${location.protocol}//${location.host}/proxy?url=${enc}`);
       local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
       local.push(`http://127.0.0.1:4175/proxy?url=${enc}`);
@@ -299,11 +381,7 @@ function corsProxyCandidates(url) {
   } catch {
     /* ignore */
   }
-  return [
-    ...local,
-    `https://api.allorigins.win/raw?url=${enc}`,
-    `https://api.allorigins.win/get?url=${enc}`,
-  ];
+  return [...local, `https://api.allorigins.win/raw?url=${enc}`, `https://api.allorigins.win/get?url=${enc}`];
 }
 
 function validProxyBody(body) {
@@ -335,10 +413,36 @@ function unwrapProxyBody(body) {
 }
 
 async function httpGetViaCorsProxy(url, timeoutMs) {
-  const proxies = corsProxyCandidates(url);
-  if (!proxies.length) throw new Error("cors proxy failed");
-  const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 12000), 28000);
+  const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 14000), 32000);
   let lastErr = "cors proxy failed";
+
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator && needsBrowserCorsProxy(url)) {
+    try {
+      return await httpGetViaSameOriginProxy(url, perMs);
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  const team = teamProxyUrl(url);
+  if (team) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), perMs);
+    try {
+      const res = await fetch(team, { signal: ctrl.signal, redirect: "follow" });
+      const body = unwrapProxyBody(await res.text());
+      if (res.ok && validProxyBody(body)) {
+        clearTimeout(timer);
+        return { url, status: res.status, body };
+      }
+      throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  const proxies = corsProxyCandidates(url).filter((p) => p !== team && p !== sameOriginProxyUrl(url));
   for (const proxy of proxies) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), perMs);

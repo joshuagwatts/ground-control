@@ -36,6 +36,22 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+self.addEventListener("message", (event) => {
+  const msg = event.data || {};
+  if (msg.type === "GC_SKIP_WAITING") {
+    self.skipWaiting();
+    return;
+  }
+  if (msg.type !== "GC_PROXY_GET" || !msg.url || !event.ports?.[0]) return;
+  proxyFetch(msg.url)
+    .then(async (res) => {
+      event.ports[0].postMessage({ ok: res.ok, body: await res.text(), status: res.status });
+    })
+    .catch((e) => {
+      event.ports[0].postMessage({ ok: false, err: String(e?.message || e) });
+    });
+});
+
 self.addEventListener("fetch", (event) => {
   try {
     const u = new URL(event.request.url);

@@ -50,4 +50,16 @@ Every push to `main` also deploys the app to **GitHub Pages** — no PC required
 
 **https://joshuagwatts.github.io/ground-control/**
 
-Open that link on any phone browser. Add to Home Screen for an app-like icon. LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.
+Open that link on any phone browser. Add to Home Screen for an app-like icon. **First open:** wait for the page to finish loading (radar proxy installs automatically). If blue hail radar does not appear on the first storm-date tap, refresh once.
+
+LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.
+
+### Optional team SWDI proxy (Cloudflare)
+
+Public CORS proxies cannot carry NOAA’s large radar JSON. The web app uses a **service worker** on GitHub Pages; for extra reliability you can also deploy a free Cloudflare Worker:
+
+1. Create a [Cloudflare API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with Workers edit permission.
+2. Add repo secret `CLOUDFLARE_API_TOKEN` — the **SWDI proxy** workflow deploys `ground-control-swdi`.
+3. Copy the worker URL (e.g. `https://ground-control-swdi.<your-subdomain>.workers.dev`) into repo secret `TEAM_SWDI_PROXY_URL` — Pages builds pick it up automatically.
+
+Android/iOS builds use native HTTP and do not need this.
