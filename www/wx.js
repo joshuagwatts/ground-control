@@ -961,6 +961,41 @@ function zoneRowsFromHail(hail) {
   return hailRowsForZones(pinHailPack(hail));
 }
 
+function swdiRowsCached() {
+  return mergeHailRows(
+    (lastHailRows || []).filter(isSwdiHail),
+    (lastZoneHailRows || []).filter(isSwdiHail),
+    (lastDossierDataRef?.hail || []).filter(isSwdiHail),
+  );
+}
+
+function stormHailPack(extraHail = []) {
+  const pin = pinCoords();
+  return {
+    hail: mergeHailRows(extraHail, lastDossierDataRef?.hail || [], lastHailRows || [], swdiRowsCached()),
+    lat: pin?.lat ?? pinLat ?? lastDossierDataRef?.lat,
+    lon: pin?.lon ?? pinLon ?? lastDossierDataRef?.lon,
+    _meta: { fetchedKm: Math.max(lastHailFetchedKm, PIN_FETCH_WIDE_KM) },
+    viewport: lastDossierDataRef?.viewport,
+  };
+}
+
+/** Map draw pools — always keep on-demand SWDI even when sheet partials lag behind. */
+export function resolvedStormDrawPools(explicitHail = null) {
+  const pack = stormHailPack(explicitHail || []);
+  const dotRows = mapHailRows(pack, wxFilters);
+  const zoneRows = hailRowsForZones(pack, wxFilters);
+  return { dotRows, zoneRows };
+}
+
+function cancelScheduledStormRedraw() {
+  if (selectedStormRedrawTimer) {
+    clearTimeout(selectedStormRedrawTimer);
+    selectedStormRedrawTimer = 0;
+  }
+  pendingSelectedStormRows = null;
+}
+
 async function ensureSwdiForSelectedStormDays() {
   if (!hasSelectedStormDates()) return;
   const anchor = stormSwdiAnchor();
@@ -972,6 +1007,7 @@ async function ensureSwdiForSelectedStormDays() {
     return dayRows.filter(isSwdiHail).length === 0;
   });
   if (!need.length) return;
+  cancelScheduledStormRedraw();
   const gen = ++pinStormSwdiGen;
   const km = hailRadarZoneKm();
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
@@ -981,12 +1017,15 @@ async function ensureSwdiForSelectedStormDays() {
     emitMapStatus(`No SWDI radar in ${Math.round(km)} km for selected day${need.length === 1 ? "" : "s"}`);
     return;
   }
+  lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
   lastHailRows = merged;
   lastZoneHailRows = zoneRowsFromHail(merged);
   if (lastDossierDataRef) lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], swdi);
+  cancelScheduledStormRedraw();
   lastHailDrawSig = "";
-  drawHailMarkers(lastHailRows, lastWindRows, { requireDate: true, zoneRows: lastZoneHailRows });
+  const pools = resolvedStormDrawPools();
+  drawHailMarkers(pools.dotRows, lastWindRows, { requireDate: true, zoneRows: pools.zoneRows });
   emitMapStatus(`Hail radar loaded · ${swdi.length} SWDI sig${swdi.length === 1 ? "" : "s"}`);
 }
 
@@ -2996,13 +3035,15 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, zone
     emitMapStatus("Hail zones cleared");
   }
   const needDate = requireDate === true || (requireDate !== false && hailScopeMode);
-  const hail = hailRows || lastHailRows;
   const wind = windRows || lastWindRows;
   clearPinRadius();
-  if (hail.length || wind.length) {
+  if (hasSelectedStormDates() || (hailRows || lastHailRows).length || wind.length) {
+    const pools = hasSelectedStormDates()
+      ? resolvedStormDrawPools(hailRows || [])
+      : { dotRows: hailRows || lastHailRows, zoneRows: zoneRows || hailRows || lastHailRows };
     lastHailDrawSig = "";
     try {
-      drawHailMarkers(hail, wind, { fit, requireDate: needDate, zoneRows: zoneRows || hail });
+      drawHailMarkers(pools.dotRows, wind, { fit, requireDate: needDate, zoneRows: pools.zoneRows });
     } catch (err) {
       console.warn("drawHailMarkers failed", err);
     }
@@ -5279,6 +5320,40 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         radar: isSwdiZone,
         outer: true,
       });
+    }
+  }
+
+  // Standalone SWDI swaths — radar must not depend on spotter zone clusters.
+  if (day && hailLayer && stormOn) {
+    const swdiPts = hailNearPin(zoneRows, null, { forZones: true }).filter(
+      (p) => isSwdiHail(p) && day.has(String(p.date || "").slice(0, 10)),
+    );
+    if (swdiPts.length) {
+      for (const cluster of clusterPoints(swdiPts, HAIL_LOBE_SPLIT_KM)) {
+        for (const sub of buildHailSwathRings(cluster, {})) {
+          if (!sub.ring?.length) continue;
+          const sz = sub.maxSize || 0.75;
+          const col = hailSwdiZoneColor(sz);
+          fitPts.push(...sub.ring);
+          trackHailStroke(
+            window.L.polygon(sub.ring, {
+              color: col.stroke,
+              fillColor: col.fill,
+              fillOpacity: Math.min(0.85, hailLayerFillOpacity(sz) + 0.14),
+              weight: 1.4,
+              opacity: 0.82,
+              stroke: true,
+              smoothFactor: 2.4,
+              pane: "hailRadarFills",
+              renderer: hailRadarFillSvg,
+              interactive: true,
+              bubblingMouseEvents: false,
+              className: "wx-hail-topo wx-hail-swath-sig",
+            }).addTo(hailLayer),
+            { confirmed: true, size: sz, kind: "fill", radar: true, outer: true },
+          );
+        }
+      }
     }
   }
 
@@ -9965,10 +10040,12 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = nul
     const pending = pendingSelectedStormRows;
     pendingSelectedStormRows = null;
     if (!pending || !hasSelectedStormDates()) return;
+    // Recompute at fire time — partial sheet updates must not wipe SWDI loaded on-demand.
+    const pools = resolvedStormDrawPools(pending.hailRows || []);
     lastHailDrawSig = "";
-    drawHailMarkers(pending.hailRows, pending.windRows, {
+    drawHailMarkers(pools.dotRows, lastWindRows, {
       requireDate: true,
-      zoneRows: pending.zoneRows || pending.hailRows,
+      zoneRows: pools.zoneRows,
     });
   }, 280);
 }
@@ -10002,7 +10079,7 @@ function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
   if (Number(data._meta?.fetchedKm) > 0) lastHailFetchedKm = Number(data._meta.fetchedKm);
-  if (wxPinSelected()) lastDossierDataRef = data;
+  if (data?.hail) lastDossierDataRef = data;
   syncHailStormDateSelection(data);
   const hailRows = mapHailRows(data, wxFilters);
   const zoneRows = hailRowsForZones(data, wxFilters);

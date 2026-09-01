@@ -217,6 +217,15 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
     return { url: native.url || target, status, body: bodyToText(native.data) };
   }
 
+  // Browser: NOAA/IEM block CORS — go straight to proxies instead of a doomed direct fetch.
+  if (typeof window !== "undefined" && needsBrowserCorsProxy(target)) {
+    try {
+      return await httpGetViaCorsProxy(target, timeoutMs);
+    } catch {
+      /* fall through to direct attempt */
+    }
+  }
+
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -286,7 +295,7 @@ function corsProxyCandidates(url) {
   }
   return [
     ...local,
-    `https://corsproxy.io/?${enc}`,
+    `https://corsproxy.io/?url=${enc}`,
     `https://api.allorigins.win/raw?url=${enc}`,
     `https://api.allorigins.win/get?url=${enc}`,
   ];

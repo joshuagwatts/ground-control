@@ -3,7 +3,9 @@ import {
   filterDossier,
   filterHailRaw,
   hailRowsForZones,
+  mapHailRows,
   mergeHailRows,
+  resolvedStormDrawPools,
   selectStormDate,
   setWxPin,
   stormPassesSizeFilter,
@@ -167,5 +169,32 @@ assert(zoneRows.some((h) => h.source === "noaa-swdi-radar"), "zone paint keeps S
 assert(spcLookbackDays(90) <= 16, "SPC never walks 90 daily CSVs");
 assert(spcLookbackDays(90) === 16, "desktop/Android keep a 16-day SPC walk");
 assert(lsrFirstDays(730) === 400, "first LSR window is wider off Safari");
+
+setWxPin(35.467, -97.516);
+selectStormDate("2026-04-02", { requireDate: true, toggle: false });
+const spotOnly = {
+  date: "2026-04-02",
+  lat: 35.467,
+  lon: -97.516,
+  size_in: "1.00",
+  source: "iem-lsr",
+  distance_km: 0.3,
+};
+const partial = { lat: 35.467, lon: -97.516, hail: [spotOnly], _meta: { fetchedKm: PIN_FETCH_WIDE_KM } };
+let pools = resolvedStormDrawPools(mapHailRows(partial, { km: 16, hailIn: 1, days: 730, year: "all" }));
+assert(!pools.zoneRows.some((h) => h.source === "noaa-swdi-radar"), "partial without SWDI has no radar rows");
+const swdiHit = {
+  date: "2026-04-02",
+  lat: 35.52,
+  lon: -97.516,
+  size_in: "1.25",
+  source: "noaa-swdi-radar",
+  distance_km: 48,
+};
+pools = resolvedStormDrawPools([...partial.hail, swdiHit]);
+assert(
+  pools.zoneRows.some((h) => h.source === "noaa-swdi-radar"),
+  "cached SWDI survives when sheet passes spotter-only rows",
+);
 
 console.log("hail-days ok");
