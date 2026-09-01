@@ -1338,11 +1338,7 @@ body.hs-tab .leaflet-container,
 .wx-hail-topo.wx-hail-spotter-zone path {
   stroke: #ff5252;
 }
-.wx-hail-swath-sig { filter: drop-shadow(0 0 4px rgba(74, 158, 255, 0.5)); }
-.wx-hail-topo.wx-hail-swath-sig path {
-  stroke: #4a9eff;
-}
-.wx-hail-sig-radar { filter: drop-shadow(0 0 4px rgba(74, 158, 255, 0.65)); }
+.wx-hail-sig-radar { filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.35)); }
 .leaflet-popup.hs-zone-popup .leaflet-popup-content-wrapper {
   background: rgba(18, 18, 20, 0.96);
   color: var(--text, #eee);
@@ -1977,7 +1973,7 @@ body.wx-map-expanded .hs-sheet {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 .hs-layers button.hs-dots-toggle .hs-dot-b {
-  background: #2a81cb;
+  background: #ef6c00;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 .hs-layers button.hs-dots-toggle:not(.on) .hs-dot-r,
@@ -2314,7 +2310,7 @@ body.wx-map-expanded .hs-field {
   border-radius: 50%; margin-right: 0.22rem; vertical-align: -1px;
 }
 .hs-dot-spot { background: #ff2d2d; box-shadow: 0 0 0 1px #fff, 0 0 4px rgba(255,45,45,0.65); }
-.hs-dot-radar { background: #0088ff; box-shadow: 0 0 0 1px #0d3d6b; }
+.hs-dot-radar { background: #ef6c00; box-shadow: 0 0 0 1px #fff, 0 0 4px rgba(239,108,0,0.55); }
 .hs-dot-done { background: #ffcc00; }
 .hs-dot-ping { background: #fb923c; }
 .hs-place {

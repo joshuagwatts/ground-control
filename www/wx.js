@@ -1372,7 +1372,7 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
-/** Spotter-confirmed hail zones — warm red/orange (distinct from blue radar). */
+/** Spotter-confirmed hail zones — warm red/orange. */
 function hailSpotterZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
   if (Number.isNaN(sz)) return { stroke: "#ff5252", fill: "#e53935", core: "#ff8a80" };
@@ -1382,17 +1382,6 @@ function hailSpotterZoneColor(sizeIn) {
   if (sz >= 0.75) return { stroke: "#ff6b6b", fill: "#ef5350", core: "#ffcdd2" };
   if (sz >= 0.5) return { stroke: "#ff8a80", fill: "#ff7043", core: "#ffe0b2" };
   return { stroke: "#ffab91", fill: "#ff8a65", core: "#ffe0b2" };
-}
-
-/** NOAA SWDI hail-radar signatures — blue (distinct from green rental flags). */
-function hailSwdiZoneColor(sizeIn) {
-  const sz = parseFloat(sizeIn);
-  if (Number.isNaN(sz)) return { stroke: "#4a9eff", fill: "#2a81cb", core: "#b8e0ff" };
-  if (sz >= 2) return { stroke: "#3d8fd9", fill: "#1e6bb8", core: "#8ec8ff" };
-  if (sz >= 1.5) return { stroke: "#4a9eff", fill: "#2a81cb", core: "#a8d4ff" };
-  if (sz >= 1) return { stroke: "#5eb0ff", fill: "#3580d4", core: "#b8e0ff" };
-  if (sz >= 0.75) return { stroke: "#6eb8ff", fill: "#4a9eff", core: "#c8e8ff" };
-  return { stroke: "#8ec8ff", fill: "#5aa8e8", core: "#d8eeff" };
 }
 
 export function mergeHailRows(...groups) {
@@ -5123,7 +5112,7 @@ function buildDetailedZoneRings(zone, rawPts) {
     ];
   }
 
-  // Separate swaths — spotter (red) and radar (blue) layers stack instead of one blended mesh.
+  // Separate swaths — spotter and radar layers stack instead of one blended mesh.
   const out = [];
   if (radar.length) out.push(...buildHailSwathRings(radar, zone));
   if (spots.length) out.push(...buildHailSwathRings(spots, zone));
@@ -5387,7 +5376,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const isSwdiZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
       const isSpotZone = sub.source === "spotter";
       const isConfirm = isMixed || isSpotZone || (Boolean(sub.confirmed) && !isSwdiZone);
-      const col = isSwdiZone ? hailSwdiZoneColor(sz) : isSpotZone ? hailSpotterZoneColor(sz) : hailZoneColor(sz);
+      const col = isSpotZone ? hailSpotterZoneColor(sz) : hailZoneColor(sz);
       const fillPane = isSwdiZone ? "hailRadarFills" : isSpotZone ? "hailSpotFills" : "hailFills";
       const fillRenderer = isSwdiZone ? hailRadarFillSvg : isSpotZone ? hailSpotFillSvg : hailFillSvg;
       fitPts.push(...sub.ring);
@@ -5405,9 +5394,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         bubblingMouseEvents: false,
         className: isConfirm
           ? "wx-hail-topo wx-hail-confirmed wx-hail-spotter-zone"
-          : isSwdiZone
-            ? "wx-hail-topo wx-hail-swath-sig"
-            : "wx-hail-topo",
+          : "wx-hail-topo",
       }).addTo(hailLayer);
       trackHailStroke(bindHailZoneTap(poly, h, sub), {
         confirmed: isConfirm,
@@ -5429,7 +5416,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         for (const sub of buildHailSwathRings(cluster, {})) {
           if (!sub.ring?.length) continue;
           const sz = sub.maxSize || 0.75;
-          const col = hailSwdiZoneColor(sz);
+          const col = hailZoneColor(sz);
           fitPts.push(...sub.ring);
           trackHailStroke(
             window.L.polygon(sub.ring, {
@@ -5444,7 +5431,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
               renderer: hailRadarFillSvg,
               interactive: true,
               bubblingMouseEvents: false,
-              className: "wx-hail-topo wx-hail-swath-sig",
+              className: "wx-hail-topo",
             }).addTo(hailLayer),
             { confirmed: true, size: sz, kind: "fill", radar: true, outer: true },
           );
@@ -5483,11 +5470,13 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const dotUi = hailDotZoomScale(zNow);
     for (const p of toDraw) {
       const isSpot = isSpotterHail(p);
+      const pSz = parseFloat(p.size_in) || 0.75;
+      const rCol = hailZoneColor(pSz);
       const baseR = isSpot ? 7 : 8.5;
       const mark = window.L.circleMarker([p.lat, p.lon], {
         radius: Math.max(isSpot ? 1.4 : 1.1, baseR * dotUi),
-        color: isSpot ? "#ffffff" : "#ffffff",
-        fillColor: isSpot ? "#ff2d2d" : "#0088ff",
+        color: "#ffffff",
+        fillColor: isSpot ? "#ff2d2d" : rCol.fill,
         fillOpacity: isSpot ? 0.95 : 0.92,
         weight: isSpot ? 1.6 : 2.2,
         pane: "hailDots",
@@ -5498,11 +5487,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       mark.options.baseRadius = baseR;
       hailDotMarkers.push(mark);
       if (!isSpot && showRadarHalos && dotUi >= 0.55) {
-        const pSz = parseFloat(p.size_in) || 0.75;
         window.L.circle([p.lat, p.lon], {
           radius: Math.max(48, Math.min(140, 52 + pSz * 38)),
-          color: "#4a9eff",
-          fillColor: "#0088ff",
+          color: rCol.stroke,
+          fillColor: rCol.fill,
           fillOpacity: 0.32 + Math.min(0.16, pSz * 0.06),
           weight: 1.2,
           pane: "hailDots",
@@ -5531,7 +5519,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       if (!ring || ring.length < 3) continue;
       const sz = parseFloat(anchor.size_in) || parseFloat(rows[0]?.size_in) || 0.75;
       const hasRadar = rows.some(isRadarHail);
-      const col = hasRadar ? hailSwdiZoneColor(sz) : hailZoneColor(sz);
+      const col = hailZoneColor(sz);
       fitPts.push(...ring);
       window.L.polygon(ring, {
         color: col.stroke,
@@ -5547,7 +5535,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         renderer: hailFillSvg,
         interactive: true,
         bubblingMouseEvents: false,
-        className: hasRadar ? "wx-hail-topo wx-hail-swath-sig" : "wx-hail-topo",
+        className: "wx-hail-topo",
       }).addTo(hailLayer);
     }
   }
@@ -9892,7 +9880,7 @@ function roofDossierHtml(data, esc, onResearch) {
           </select></label>
         </div>
         <h4>HAIL TRACE · ${hail.length} DAYS${hasSelectedStormDates() ? ` · MAP ${esc(selectedStormDateSig())}` : ""}</h4>
-        <div class="wx-hail-legend muted">Tap dates → overlay zones · red = spotter · blue = radar · size = this roof, not the farthest cell</div>
+        <div class="wx-hail-legend muted">Tap dates → overlay zones · red = spotter · color = hail size · size = this roof, not the farthest cell</div>
         <div class="wx-hail">${
           hail.length
             ? hail
