@@ -265,10 +265,10 @@ let flagPaintQueued = false;
 let flagPaintImmediateDone = false;
 const BIZ_STORE_KEY = "hs-biz-flags-v1";
 const BIZ_STORE_MAX = 800;
-/** Short cool only — 25m froze Rent.com / apartments.com retarget when the map moved. */
-const RENT_SWEEP_COOL_MS = 12 * 1000;
+/** Short cool only — long freezes froze Rent.com / apartments.com retarget when the map moved. */
+const RENT_SWEEP_COOL_MS = 8 * 1000;
 /** Re-kick rent/city sweep when the map center moves this far (km). */
-const RENT_SWEEP_MOVE_KM = 14;
+const RENT_SWEEP_MOVE_KM = 10;
 /** Session map of house keys → owner phone (drives green house-number labels). */
 const housePhoneByKey = new Map();
 /** Session map of house keys → { phone, name, email } when public info exists. */
@@ -1453,7 +1453,7 @@ const MAP_MIN_ZOOM = 3;
 const MAP_HAIL_MAX_KM = 450;
 /** Search radius (km) around map center for OSM business flags. */
 const FLAG_SEARCH_KM_MIN = 2.2;
-const FLAG_SEARCH_KM_MAX = 10;
+const FLAG_SEARCH_KM_MAX = 14;
 /** Painted flag cap — rentals are never dropped to make room for businesses. */
 function flagPaintMax() {
   return Number(flagNetProfile()?.paintMax) || (isAndroid() ? 220 : 400);
@@ -1694,12 +1694,13 @@ function ensureRadarLayer(url) {
   return radarLayers[radarActiveSlot];
 }
 
-function setRadarTilePath(path, { crossfade = false } = {}) {
+function setRadarTilePath(path, { crossfade = false, play = false } = {}) {
   if (!map || !window.L || !path) return Promise.resolve();
   const url = rainTileUrl(radarHost, path, radarColor);
   const wantOn = wantPrecipRadarTiles();
 
-  if (!crossfade) {
+  // PLAY path: instant URL swap — no dual-layer fade wait (that made 24h crawl).
+  if (play || !crossfade) {
     const layer = ensureRadarLayer(url) || overlays.precip;
     if (layer) {
       if (layer._url !== url) layer.setUrl(url);
@@ -1742,8 +1743,8 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
       backLayer.off("tileload", onTile);
       const frontEl = frontLayer.getContainer?.();
       const backEl = backLayer.getContainer?.();
-      if (frontEl) frontEl.style.transition = "opacity 0.55s ease";
-      if (backEl) backEl.style.transition = "opacity 0.55s ease";
+      if (frontEl) frontEl.style.transition = "opacity 0.28s ease";
+      if (backEl) backEl.style.transition = "opacity 0.28s ease";
       backLayer.setOpacity(0.72);
       frontLayer.setOpacity(0);
       window.setTimeout(() => {
@@ -1764,12 +1765,12 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
         overlays.precip = backLayer;
         overlays.radar = backLayer;
         resolve();
-      }, 560);
+      }, 300);
     };
     const onReady = () => finish();
     const onTile = () => {
       tilesHit += 1;
-      if (tilesHit >= 4) finish();
+      if (tilesHit >= 3) finish();
     };
 
     backLayer.setOpacity(0);
@@ -1777,8 +1778,7 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
     if (wantOn && !map.hasLayer(backLayer)) backLayer.addTo(map);
     backLayer.on("load", onReady);
     backLayer.on("tileload", onTile);
-    // Wait for tiles — old 160ms cutover flashed empty frames mid-playback.
-    window.setTimeout(finish, 1100);
+    window.setTimeout(finish, 420);
   });
 }
 
@@ -1858,12 +1858,12 @@ export function bindWxTimelineFilters(root = document, onChange) {
   });
 }
 
-export function setRadarFrame(idx, { crossfade = false } = {}) {
+export function setRadarFrame(idx, { crossfade = false, play = false } = {}) {
   if (!radarFrames.length) return Promise.resolve();
   const i = Math.max(0, Math.min(radarFrames.length - 1, Number(idx) || 0));
   radarFrameIdx = i;
   const frame = radarFrames[i];
-  const paint = frame?.path ? setRadarTilePath(frame.path, { crossfade }) : Promise.resolve();
+  const paint = frame?.path ? setRadarTilePath(frame.path, { crossfade, play }) : Promise.resolve();
   const label = document.getElementById("wx-radar-label");
   if (label && frame?.time) {
     const d = new Date(frame.time * 1000);
@@ -1952,8 +1952,9 @@ export function setLiveWindowHrs(h) {
 export function liveWindowStepSec(hrs = liveWindowHrs) {
   if (hrs <= 2) return 600;
   if (hrs <= 6) return 900;
-  if (hrs <= 12) return 1200;
-  return 1800;
+  if (hrs <= 12) return 1500;
+  // ±24h: fewer steps so PLAY can finish a full pass quickly.
+  return 2400;
 }
 
 export function liveWindowBounds(nowSec, hrs = liveWindowHrs) {
@@ -1982,11 +1983,18 @@ function hailScopeLiveTimeWindow() {
   return liveWindowBounds(Date.now() / 1000, liveWindowHrs);
 }
 
+/** PLAY cadence — keep the scrubber snappy; do not await tile fades. */
 function livePlayTickMs() {
-  if (liveWindowHrs >= 24) return 140;
-  if (liveWindowHrs >= 12) return 180;
-  if (liveWindowHrs >= 6) return 220;
-  return 280;
+  if (liveWindowHrs >= 24) return 70;
+  if (liveWindowHrs >= 12) return 85;
+  if (liveWindowHrs >= 6) return 100;
+  return 120;
+}
+
+function livePlayStride() {
+  if (liveWindowHrs >= 24) return 2;
+  if (liveWindowHrs >= 12) return 1;
+  return 1;
 }
 
 function hailScopeLiveTimeline() {
@@ -2046,7 +2054,7 @@ function updateHailScopeLiveLabel(timeSec) {
   label.textContent = `${when}${mph}${forecast}`;
 }
 
-export function setHailScopeLiveFrame(idx, { crossfade = false } = {}) {
+export function setHailScopeLiveFrame(idx, { crossfade = false, play = false } = {}) {
   const steps = hailScopeLiveTimeline();
   if (!steps.length) return Promise.resolve();
   const i = Math.max(0, Math.min(steps.length - 1, Number(idx) || 0));
@@ -2054,13 +2062,14 @@ export function setHailScopeLiveFrame(idx, { crossfade = false } = {}) {
   const t = steps[i].time;
   const jobs = [];
   if (hailScopeRadarFilters.precip && radarFrames.length) {
-    jobs.push(setRadarFrame(nearestFrameIdx(radarFrames, t), { crossfade }));
+    jobs.push(setRadarFrame(nearestFrameIdx(radarFrames, t), { crossfade, play }));
   }
   if (hailScopeRadarFilters.wind && windFrames.length) {
     const wi = nearestFrameIdx(windFrames, t);
-    // During precip play, only repaint wind every other step — full field redraw
-    // every frame made playback feel like a constant refresh.
-    const skipWindPaint = crossfade && radarPlaying && i % 2 === 1 && wi === windFrameIdx;
+    // During play, only repaint wind every few steps — full field redraw every frame tanks FPS.
+    const skipWindPaint = play
+      ? i % 3 !== 0 && wi === windFrameIdx
+      : crossfade && radarPlaying && i % 2 === 1 && wi === windFrameIdx;
     windFrameIdx = wi;
     if (!skipWindPaint) paintWindFieldFromFrame(windFrames[wi]);
   }
@@ -2147,14 +2156,19 @@ function bindHailScopeLiveScrubber(root = document) {
       play.textContent = "PAUSE";
       play.classList.add("on");
       radarPlaying = true;
-      const tick = async () => {
+      const tick = () => {
         if (!radarPlaying) return;
-        const next = (liveTlIdx + 1) % hailScopeLiveTimeline().length;
-        await setHailScopeLiveFrame(next, { crossfade: true });
-        if (!radarPlaying) return;
+        const len = hailScopeLiveTimeline().length;
+        if (len < 2) {
+          stopRadarPlay();
+          return;
+        }
+        const next = (liveTlIdx + livePlayStride()) % len;
+        // Fire-and-forget — awaiting tile crossfade made PLAY feel stuck.
+        void setHailScopeLiveFrame(next, { play: true });
         radarPlayRaf = window.setTimeout(tick, livePlayTickMs());
       };
-      void tick();
+      tick();
     };
   }
 }
@@ -2438,14 +2452,13 @@ export function bindRadarScrubber(root = document) {
       play.textContent = "PAUSE";
       play.classList.add("on");
       radarPlaying = true;
-      const tick = async () => {
+      const tick = () => {
         if (!radarPlaying) return;
         const next = (radarFrameIdx + 1) % radarFrames.length;
-        await setRadarFrame(next, { crossfade: true });
-        if (!radarPlaying) return;
-        radarPlayRaf = window.setTimeout(tick, 280);
+        void setRadarFrame(next, { play: true });
+        radarPlayRaf = window.setTimeout(tick, 110);
       };
-      void tick();
+      tick();
     };
   }
 }
@@ -5847,7 +5860,7 @@ function scheduleHouseNumbers() {
     houseTimer = 0;
     if (Date.now() < houseHoldUntil || mapBusy > 0) return;
     refreshHouseNumbers();
-  }, 750);
+  }, 380);
 }
 
 function holdHouseOutlines(ms = 1500) {
@@ -6207,8 +6220,16 @@ function setFlagKindFilter(kind, on) {
 
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
-  // Only paint pins near the current map view — statewide persist stays in memory/storage.
-  const maxKm = Math.max(flagSearchKm() * 2.8, 14);
+  const b = map?.getBounds?.();
+  // City bulk rentals sit at listing coords — paint far enough to cover the nearest town,
+  // not just a tight circle that drops flags the user just fetched for this view.
+  let rentKm = Math.max(flagSearchKm() * 4.2, 36);
+  let bizKm = Math.max(flagSearchKm() * 2.6, 14);
+  if (b?.isValid?.()) {
+    const diag = haversineKm(b.getSouth(), b.getWest(), b.getNorth(), b.getEast());
+    rentKm = Math.max(rentKm, diag * 0.7 + 10);
+    bizKm = Math.max(bizKm, Math.min(diag * 0.55 + 6, 28));
+  }
   const list = (nums || []).filter((n) => {
     if (!houseHasFlag(n) || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
     if (flagHiddenKeys.has(flagItemKey(n))) return false;
@@ -6216,6 +6237,7 @@ function readyFlagList(nums) {
     if (kind === "rental" && !flagKindFilter.rental) return false;
     if (kind === "business" && !flagKindFilter.business) return false;
     if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+      const maxKm = kind === "rental" ? rentKm : bizKm;
       if (haversineKm(c.lat, c.lng, n.lat, n.lon) > maxKm) return false;
     }
     return true;
@@ -6962,13 +6984,18 @@ function scheduleFlagLayerPaint(immediate = false) {
   }
   if (flagPaintQueued) return;
   flagPaintQueued = true;
-  const delay = isAndroid() ? 320 : 220;
+  const delay = isAndroid() ? 180 : 120;
   flagPaintTimer = setTimeout(paint, delay);
 }
 
 function applyRentFlagBatch(flags, _gen) {
   if (!phoneFlagsEnabled() || !map || !flags?.length) return;
+  const before = houseCache.nums.length;
   houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(flags));
+  if (houseCache.nums.length === before) {
+    scheduleFlagLayerPaint();
+    return;
+  }
   persistRentFlags(flags);
   scheduleFlagLayerPaint();
 }
@@ -6982,18 +7009,19 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "");
   const cityUpgrade = Boolean(nextCity) && cityKey(nextCity) !== cityKey(lastRentSweepCity);
-  const moved =
-    force ||
-    cityUpgrade ||
+  const geoMoved =
     !Number.isFinite(lastRentSweepLat) ||
     !Number.isFinite(lastRentSweepLon) ||
     haversineKm(lastRentSweepLat, lastRentSweepLon, lat, lon) >= RENT_SWEEP_MOVE_KM;
-  if (!moved && lastRentSweepAt && now - lastRentSweepAt < RENT_SWEEP_COOL_MS) return;
+  // Hard force (toggle / big pan) clears caches. City-name upgrade only retargets.
+  const hardForce = force || geoMoved;
+  const shouldRun = hardForce || cityUpgrade || !lastRentSweepAt || now - lastRentSweepAt >= RENT_SWEEP_COOL_MS;
+  if (!shouldRun) return;
   lastRentSweepAt = now;
   lastRentSweepLat = lat;
   lastRentSweepLon = lon;
   lastRentSweepCity = nextCity || inferOkCity(lat, lon) || lastRentSweepCity || "";
-  if (moved) {
+  if (hardForce || cityUpgrade) {
     emitPhoneFlagsStatus(
       lastRentSweepCity ? `Loading flags · ${lastRentSweepCity}…` : "Loading flags…",
     );
@@ -7001,7 +7029,8 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
   void lookupViewportRentFlags(lat, lon, {
     city: nextCity || lastRentSweepCity || "",
     state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
-    force: moved,
+    force: hardForce,
+    retarget: cityUpgrade && !hardForce,
     onBatch: (flags) => applyRentFlagBatch(flags, gen),
   })
     .then((flags) => applyRentFlagBatch(flags, gen))
@@ -7059,7 +7088,15 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     const c0 = map.getCenter?.();
     // Retarget city rentals when the map has moved far enough — don't wait for an empty cache.
     if (c0) {
-      kickRentFlags(c0.lat, c0.lng, { city: "", state: "" }, houseGen);
+      kickRentFlags(
+        c0.lat,
+        c0.lng,
+        {
+          city: isOklahomaLatLon(c0.lat, c0.lng) ? inferOkCity(c0.lat, c0.lng) : "",
+          state: isOklahomaLatLon(c0.lat, c0.lng) ? "OK" : "",
+        },
+        houseGen,
+      );
     }
     if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
     houseEnrichTimer = setTimeout(() => {
@@ -7081,19 +7118,22 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   const east = padB.getEast();
   const gen = ++houseGen;
   const center = map.getCenter?.();
+  const inferredCity =
+    center && isOklahomaLatLon(center.lat, center.lng) ? inferOkCity(center.lat, center.lng) : "";
   if (center) {
+    // Start with nearest OK city immediately — don't wait on OSM (that caused empty→OKC→retarget lag).
     kickRentFlags(
       center.lat,
       center.lng,
       {
-        city: "",
+        city: inferredCity,
         state: isOklahomaLatLon(center.lat, center.lng) ? "OK" : "",
       },
       gen,
       { force: forceRent },
     );
   }
-  const mapDump = await osmMapJson(south, west, north, east, 22000).catch(() => null);
+  const mapDump = await osmMapJson(south, west, north, east, 18000).catch(() => null);
   const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
   const osmNums = numsFromOsmElements(mapDump?.elements);
   if (!map || !phoneFlagsEnabled()) return;
@@ -7103,16 +7143,24 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   scheduleFlagLayerPaint();
   const place = placeFromOsmElements(mapDump?.elements);
   if (center) {
-    kickRentFlags(
-      center.lat,
-      center.lng,
-      {
-        city: place.city || "",
-        state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
-      },
-      gen,
-      { force: forceRent },
-    );
+    const osmCity = String(place.city || "").trim();
+    const osmKey = osmCity.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const inferredKey = String(inferredCity || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+    // Only retarget when OSM names a different town than the nearest-city guess.
+    if (osmCity && osmKey !== inferredKey) {
+      kickRentFlags(
+        center.lat,
+        center.lng,
+        {
+          city: osmCity,
+          state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
+        },
+        gen,
+        { force: false },
+      );
+    }
   }
   void overpassJson(osmPoiQuery(south, west, north, east), 8000)
     .then((overPois) => {

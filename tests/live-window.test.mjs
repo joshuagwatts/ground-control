@@ -21,8 +21,8 @@ assert(setLiveWindowHrs(99) === 6, "invalid window falls back to 6");
 assert(setLiveWindowHrs(24) === 24, "set 24");
 assert(liveWindowStepSec(2) === 600, "2h step");
 assert(liveWindowStepSec(6) === 900, "6h step");
-assert(liveWindowStepSec(12) === 1200, "12h step");
-assert(liveWindowStepSec(24) === 1800, "24h step");
+assert(liveWindowStepSec(12) === 1500, "12h step");
+assert(liveWindowStepSec(24) === 2400, "24h step");
 
 const { t0, t1 } = liveWindowBounds(1_000_000, 6);
 assert(t1 - t0 === 12 * 3600, `6h window span ${t1 - t0}`);

@@ -886,29 +886,35 @@ const RENT_SWEEP_FRESH_MS = 25 * 60 * 1000;
 export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const onBatch = typeof opts.onBatch === "function" ? opts.onBatch : null;
   const force = opts.force === true;
+  const retarget = opts.retarget === true;
   const city = String(opts.city || inferOkCity(lat, lon) || "").trim();
   const state = String(opts.state || (isOklahomaLatLon(lat, lon) ? "OK" : "")).trim();
   const inOk = isOklahomaLatLon(lat, lon) || stateAbbr(state) === "ok";
   const profile = flagNetProfile();
   let acc = [];
+  let persistTimer = 0;
   const emit = (rows) => {
     acc = mergeRentFlagList(acc, rows);
-    persistRentFlags(acc);
+    // Throttle localStorage writes — every batch used to stall the UI thread.
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = 0;
+      persistRentFlags(acc);
+    }, 280);
     if (onBatch) onBatch(acc.slice());
   };
 
   const cached = loadPersistedRentFlags();
   if (cached.length) emit(cached);
 
-  // A big map move supersedes an in-flight Edmond→statewide crawl so the new city paints.
-  if (force && rentSweepInFlight) {
+  // Cancel an in-flight crawl when the map retargets — but only wipe caches on hard force.
+  if ((force || retarget) && rentSweepInFlight) {
     rentSweepEpoch += 1;
     rentSweepInFlight = null;
   } else if (rentSweepInFlight) {
     return rentSweepInFlight.then(() => acc);
   }
 
-  // Toggle / city retarget must not reuse empty or blocked city-page caches.
   if (force) {
     rentCityCache.clear();
     rentFlagCache.clear();
@@ -927,8 +933,8 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       viewCities.push(name);
     };
     pushCity(city);
-    // Pull several nearest cities so a pan between towns still paints local rentals.
-    for (const extra of ordered.slice(0, 5)) pushCity(extra);
+    // Nearest towns for this map center — enough to cover the viewport.
+    for (const extra of ordered.slice(0, 6)) pushCity(extra);
 
     const runCities = async (names, pages, kinds) => {
       const chunk = Math.max(1, profile.cityChunk || 3);
@@ -953,7 +959,6 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     if (epoch !== rentSweepEpoch) return acc;
 
     if (profile.zillowDetails > 0 && (city || inOk)) {
-      // Detail-fetch phones for the nearest 1–2 cities (Zillow search rarely embeds phones).
       const zCities = viewCities.slice(0, 2);
       for (const zCity of zCities) {
         if (epoch !== rentSweepEpoch) return acc;
@@ -968,7 +973,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     }
     if (epoch !== rentSweepEpoch) return acc;
 
-    // Keep filling Oklahoma in the background until every place has been swept.
+    // Background statewide fill — do not block the view-city result.
     if (inOk) {
       const swept = loadSweptRentCities();
       const now = Date.now();
@@ -979,9 +984,17 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       const batchSize = Math.max(6, Number(profile.statewideBatch) || 10);
       const batch = rest.slice(0, batchSize);
       if (batch.length) {
-        await runCities(batch, 1, ["apartments", "houses"]);
-        markRentCitiesSwept(batch);
+        void (async () => {
+          if (epoch !== rentSweepEpoch) return;
+          await runCities(batch, 1, ["apartments", "houses"]);
+          if (epoch === rentSweepEpoch) markRentCitiesSwept(batch);
+        })();
       }
+    }
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = 0;
+      persistRentFlags(acc);
     }
     return acc;
   })();
