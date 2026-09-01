@@ -10044,7 +10044,7 @@ function cutoffDate(days) {
   return d.toISOString().slice(0, 10);
 }
 
-export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}) {
+export function filterHailRaw(data, filters = wxFilters, { forMap = false, stormDraw = false } = {}) {
   const since = cutoffDate(filters.days);
   const km = filterKm(filters);
   const hailMin = Number(filters.hailIn) || 0;
@@ -10052,8 +10052,9 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
   const pinLatN = Number(data.lat ?? data._meta?.lat);
   const pinLonN = Number(data.lon ?? data._meta?.lon);
   const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const mapViewDraw = viewport || hasSelectedStormDates() || stormDraw;
   // Map-view storm overlay: visible frame. Pin + storm day: map view, not pin ring.
-  const skipDist = forMap && (viewport || hasSelectedStormDates());
+  const skipDist = forMap && mapViewDraw;
   const paintKm = forMap
     ? Math.max(km, Number(data._meta?.fetchedKm) || 0, PIN_FETCH_WIDE_KM, mapViewFetchKm())
     : km;
@@ -10076,16 +10077,16 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
     const sz = parseFloat(h.size_in);
     return Number.isNaN(sz) || sz >= hailMin;
   });
-  if (forMap && (viewport || hasSelectedStormDates())) {
+  if (forMap && mapViewDraw) {
     return clipHailToMapView(filtered);
   }
   return filtered;
 }
 
 /** Hail rows for zone fills — spotters local, radar uses wide dossier ring at pinned houses. */
-export function hailRowsForZones(data, filters = wxFilters) {
-  if (hasSelectedStormDates() || Boolean(data?.viewport || data?._meta?.viewport)) {
-    return mapHailRows(data, filters);
+export function hailRowsForZones(data, filters = wxFilters, { stormDraw = false } = {}) {
+  if (stormDraw || hasSelectedStormDates() || Boolean(data?.viewport || data?._meta?.viewport)) {
+    return mapHailRows(data, filters, { stormDraw });
   }
   if (!wxPinSelected()) return mapHailRows(data, filters);
   const spots = filterHailRaw(data, filters, { forMap: true });
@@ -10108,8 +10109,8 @@ export function hailRowsForZones(data, filters = wxFilters) {
 }
 
 /** Hail rows for map paint — wider than the sheet NEAR filter when a storm day is on. */
-export function mapHailRows(data, filters = wxFilters) {
-  return filterHailRaw(data, filters, { forMap: true });
+export function mapHailRows(data, filters = wxFilters, { stormDraw = false } = {}) {
+  return filterHailRaw(data, filters, { forMap: true, stormDraw });
 }
 
 export function filterDossier(data, filters = wxFilters) {
@@ -10472,7 +10473,7 @@ export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
 /** Rows for calendar — loaded hail clipped to the visible map frame. */
 function hailCalendarBaseRows(data) {
   const filters = { ...wxFilters, hailIn: 0 };
-  const raw = filterHailRaw(data, filters, { forMap: true });
+  const raw = filterHailRaw(data, filters, { forMap: true, stormDraw: true });
   return clipHailToMapView(raw);
 }
 
@@ -10527,8 +10528,9 @@ function pickStormDateFromSheet(dateRaw, root, live, esc, { toggle = true, fit =
   const dossier = live || hailScopeLiveData(root, null);
   if (!dossier) return false;
   if (dossier.hail) lastDossierDataRef = dossier;
-  const hailRows = mapHailRows(dossier, wxFilters);
-  const zoneRows = hailRowsForZones(dossier, wxFilters);
+  const drawCtx = { stormDraw: true };
+  const hailRows = mapHailRows(dossier, wxFilters, drawCtx);
+  const zoneRows = hailRowsForZones(dossier, wxFilters, drawCtx);
   const turningOn = !isStormDateSelected(date);
   const zNow = map?.getZoom?.() ?? 14;
   const doFit = fit ?? (turningOn && zNow < 11 && !wxPinSelected());
