@@ -366,9 +366,11 @@ assert(citiesNearPoint(35.6528, -97.4778)[0] === "Edmond", "viewport nearest Edm
 assert(citiesNearPoint(35.2226, -97.4395)[0] === "Norman", "viewport nearest Norman");
 assert(citiesNearPoint(36.154, -95.9928)[0] === "Tulsa", "viewport nearest Tulsa");
 assert(citiesNearPoint(36.4337, -99.3904)[0] === "Woodward", "viewport nearest Woodward");
+assert(citiesNearPoint(36.4337, -99.3904).length >= 150, "statewide OK municipality list");
 assert(inferOkCity(36.4337, -99.3904) === "Woodward", "inferOkCity Woodward not OKC");
 assert(inferOkCity(36.6828, -101.4816) === "Guymon", "inferOkCity Guymon");
 assert(inferOkCity(35.6528, -97.4778) === "Edmond", "inferOkCity Edmond");
+assert(!/oklahoma\s*city/i.test(inferOkCity(36.8, -102.5)), "panhandle not forced to OKC");
 
 const store = new Map();
 globalThis.localStorage = {

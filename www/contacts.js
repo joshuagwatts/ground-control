@@ -1,10 +1,11 @@
 /** High-confidence listing for a pinned house — OSM/Nominatim at this address only. */
 import { httpGet, overpassJson } from "./net.js";
 import { flagNetProfile, listingBrowserHeaders } from "./device.js";
+import { OK_RENT_CITY_ROWS } from "./ok-rent-cities.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
 const RENT_STORE_KEY = "hs-rent-flags-v1";
-const RENT_STORE_MAX = 1400;
+const RENT_STORE_MAX = 2800;
 const US_STATES = {
   alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
   colorado: "co", connecticut: "ct", delaware: "de", "district of columbia": "dc",
@@ -667,163 +668,60 @@ export function parseZillowRentDetailPhone(html) {
   return "";
 }
 
-/** Oklahoma cities for Flags — metro + western / eastern towns Zillow covers. */
-const OK_RENT_CITIES = [
-  "Edmond",
-  "Oklahoma City",
-  "Norman",
-  "Moore",
-  "Midwest City",
-  "Yukon",
-  "The Village",
-  "Bethany",
-  "Del City",
-  "Mustang",
-  "Newcastle",
-  "Noble",
-  "Tulsa",
-  "Broken Arrow",
-  "Stillwater",
-  "Lawton",
-  "Shawnee",
-  "Enid",
-  "Owasso",
-  "Guthrie",
-  "Choctaw",
-  "Piedmont",
-  "Claremore",
-  "Bartlesville",
-  "Muskogee",
-  "Ponca City",
-  "Ardmore",
-  "Duncan",
-  "Altus",
-  "Weatherford",
-  "El Reno",
-  "Woodward",
-  "Guymon",
-  "Clinton",
-  "Elk City",
-  "Sapulpa",
-  "Sand Springs",
-  "Jenks",
-  "Bixby",
-  "Glenpool",
-  "Coweta",
-  "Pryor",
-  "McAlester",
-  "Ada",
-  "Chickasha",
-  "Durant",
-  "Miami",
-  "Tahlequah",
-  "Okmulgee",
-  "Cushing",
-  "Perry",
-  "Anadarko",
-  "Purcell",
-  "Blanchard",
-  "Harrah",
-  "Warr Acres",
-  "Nichols Hills",
-  "Spencer",
-  "Grove",
-  "Sallisaw",
-  "Idabel",
-  "Poteau",
-  "Vinita",
-  "Holdenville",
-  "Seminole",
-  "Tecumseh",
-  "Pauls Valley",
-  "Sulphur",
-  "Kingfisher",
-  "Watonga",
-  "Alva",
-  "Hobart",
-  "Frederick",
-];
-
+/** All Oklahoma municipalities (pop ≥ 1000) — generated list + sweep progress for statewide Flags. */
 const rentFlagCache = new Map();
 const rentCityCache = new Map();
 let rentSweepInFlight = null;
 let rentSweepEpoch = 0;
 
-const OK_RENT_CITY_COORDS = {
-  Edmond: [35.6528, -97.4778],
-  "Oklahoma City": [35.4676, -97.5164],
-  Norman: [35.2226, -97.4395],
-  Moore: [35.3395, -97.4867],
-  "Midwest City": [35.4495, -97.3967],
-  Yukon: [35.5067, -97.7625],
-  "The Village": [35.5595, -97.5564],
-  Bethany: [35.5184, -97.6323],
-  "Del City": [35.442, -97.4409],
-  Mustang: [35.3842, -97.7245],
-  Newcastle: [35.2473, -97.5997],
-  Noble: [35.139, -97.3947],
-  Tulsa: [36.154, -95.9928],
-  "Broken Arrow": [36.0365, -95.797],
-  Stillwater: [36.1156, -97.0584],
-  Lawton: [34.6036, -98.3959],
-  Shawnee: [35.3273, -96.9253],
-  Enid: [36.3956, -97.8784],
-  Owasso: [36.2695, -95.8547],
-  Guthrie: [35.8789, -97.4253],
-  Choctaw: [35.4976, -97.2689],
-  Piedmont: [35.642, -97.7487],
-  Claremore: [36.3126, -95.6161],
-  Bartlesville: [36.7473, -95.9808],
-  Muskogee: [35.7479, -95.3697],
-  "Ponca City": [36.707, -97.0856],
-  Ardmore: [34.1743, -97.1436],
-  Duncan: [34.5023, -97.9578],
-  Altus: [34.6381, -99.334],
-  Weatherford: [35.5262, -98.7076],
-  "El Reno": [35.5323, -97.955],
-  Woodward: [36.4337, -99.3904],
-  Guymon: [36.6828, -101.4816],
-  Clinton: [35.5156, -98.9673],
-  "Elk City": [35.4119, -99.4043],
-  Sapulpa: [35.9987, -96.1142],
-  "Sand Springs": [36.1398, -96.1089],
-  Jenks: [35.9979, -95.9683],
-  Bixby: [35.942, -95.883],
-  Glenpool: [35.9554, -96.005],
-  Coweta: [35.9518, -95.6508],
-  Pryor: [36.3084, -95.3169],
-  McAlester: [34.9334, -95.7697],
-  Ada: [34.7745, -96.6783],
-  Chickasha: [35.0526, -97.9364],
-  Durant: [33.9923, -96.3708],
-  Miami: [36.8745, -94.8775],
-  Tahlequah: [35.9154, -94.9699],
-  Okmulgee: [35.6234, -95.9605],
-  Cushing: [35.9851, -96.767],
-  Perry: [36.2895, -97.2881],
-  Anadarko: [35.0726, -98.2437],
-  Purcell: [35.0134, -97.3611],
-  Blanchard: [35.1578, -97.6581],
-  Harrah: [35.4895, -97.1636],
-  "Warr Acres": [35.5226, -97.6189],
-  "Nichols Hills": [35.5509, -97.5492],
-  Spencer: [35.5228, -97.3703],
-  Grove: [36.5937, -94.7691],
-  Sallisaw: [35.4604, -94.7874],
-  Idabel: [33.8957, -94.8263],
-  Poteau: [35.0537, -94.6236],
-  Vinita: [36.6387, -95.1541],
-  Holdenville: [35.0801, -96.3992],
-  Seminole: [35.2245, -96.6706],
-  Tecumseh: [35.2579, -96.9367],
-  "Pauls Valley": [34.7401, -97.2222],
-  Sulphur: [34.5073, -96.9781],
-  Kingfisher: [35.8614, -97.9317],
-  Watonga: [35.8448, -98.4131],
-  Alva: [36.805, -98.6665],
-  Hobart: [35.0153, -99.0931],
-  Frederick: [34.392, -99.0184],
-};
+const RENT_CITY_SWEPT_KEY = "hs-rent-cities-swept-v1";
+
+function loadSweptRentCities() {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const j = JSON.parse(localStorage.getItem(RENT_CITY_SWEPT_KEY) || "null");
+    return j && typeof j === "object" && !Array.isArray(j) ? j : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSweptRentCities(map) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(RENT_CITY_SWEPT_KEY, JSON.stringify(map));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function markRentCitiesSwept(names, at = Date.now()) {
+  const cur = loadSweptRentCities();
+  for (const n of names || []) {
+    const k = cityPathSlug(n);
+    if (k) cur[k] = at;
+  }
+  saveSweptRentCities(cur);
+}
+
+function clearSweptRentCitiesNear(lat, lon, km = 45) {
+  const cur = loadSweptRentCities();
+  let changed = false;
+  for (const row of OK_RENT_CITY_ROWS) {
+    if (haversineKm(lat, lon, row.lat, row.lon) > km) continue;
+    const k = cityPathSlug(row.name);
+    if (k && cur[k]) {
+      delete cur[k];
+      changed = true;
+    }
+  }
+  if (changed) saveSweptRentCities(cur);
+}
+
+function rentCityNeedsSweep(name, swept, now = Date.now()) {
+  const at = Number(swept[cityPathSlug(name)]) || 0;
+  return !at || now - at > RENT_SWEEP_FRESH_MS;
+}
 
 export function loadPersistedRentFlags() {
   try {
@@ -857,18 +755,21 @@ export function persistRentFlags(rows) {
 }
 
 export function citiesNearPoint(lat, lon) {
-  return OK_RENT_CITIES.slice().sort((a, b) => {
-    const A = OK_RENT_CITY_COORDS[a] || [lat, lon];
-    const B = OK_RENT_CITY_COORDS[b] || [lat, lon];
-    return haversineKm(lat, lon, A[0], A[1]) - haversineKm(lat, lon, B[0], B[1]);
-  });
+  return OK_RENT_CITY_ROWS.slice()
+    .sort((a, b) => {
+      const da = haversineKm(lat, lon, a.lat, a.lon);
+      const db = haversineKm(lat, lon, b.lat, b.lon);
+      if (Math.abs(da - db) < 6) return (b.pop || 0) - (a.pop || 0);
+      return da - db;
+    })
+    .map((r) => r.name);
 }
 
 export function isOklahomaLatLon(lat, lon) {
   return Number(lat) >= 33.6 && Number(lat) <= 37.05 && Number(lon) >= -103.05 && Number(lon) <= -94.4;
 }
 
-/** Nearest city in OK_RENT_CITIES — never fall back to OKC when you're in Woodward. */
+/** Nearest Oklahoma municipality — panhandle / west OK never forced to OKC. */
 export function inferOkCity(lat, lon) {
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return "";
   if (!isOklahomaLatLon(lat, lon)) return "";
@@ -990,8 +891,6 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const inOk = isOklahomaLatLon(lat, lon) || stateAbbr(state) === "ok";
   const profile = flagNetProfile();
   let acc = [];
-  const persistAt = persistedRentFlagsAt();
-  const persistCount = loadPersistedRentFlags().length;
   const emit = (rows) => {
     acc = mergeRentFlagList(acc, rows);
     persistRentFlags(acc);
@@ -1013,6 +912,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   if (force) {
     rentCityCache.clear();
     rentFlagCache.clear();
+    if (inOk) clearSweptRentCitiesNear(lat, lon, 50);
   }
 
   const epoch = rentSweepEpoch;
@@ -1028,7 +928,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     };
     pushCity(city);
     // Pull several nearest cities so a pan between towns still paints local rentals.
-    for (const extra of ordered.slice(0, 4)) pushCity(extra);
+    for (const extra of ordered.slice(0, 5)) pushCity(extra);
 
     const runCities = async (names, pages, kinds) => {
       const chunk = Math.max(1, profile.cityChunk || 3);
@@ -1049,6 +949,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     };
 
     await runCities(viewCities, 1, ["apartments", "houses"]);
+    markRentCitiesSwept(viewCities);
     if (epoch !== rentSweepEpoch) return acc;
 
     if (profile.zillowDetails > 0 && (city || inOk)) {
@@ -1067,10 +968,20 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     }
     if (epoch !== rentSweepEpoch) return acc;
 
-    const statewideDue = inOk && (persistCount < 80 || Date.now() - persistAt > RENT_SWEEP_FRESH_MS);
-    if (statewideDue) {
-      const rest = ordered.filter((c) => !viewCities.some((x) => cityPathSlug(x) === cityPathSlug(c)));
-      await runCities(rest, 1, ["apartments", "houses"]);
+    // Keep filling Oklahoma in the background until every place has been swept.
+    if (inOk) {
+      const swept = loadSweptRentCities();
+      const now = Date.now();
+      const rest = ordered.filter(
+        (c) =>
+          !viewCities.some((x) => cityPathSlug(x) === cityPathSlug(c)) && rentCityNeedsSweep(c, swept, now),
+      );
+      const batchSize = Math.max(6, Number(profile.statewideBatch) || 10);
+      const batch = rest.slice(0, batchSize);
+      if (batch.length) {
+        await runCities(batch, 1, ["apartments", "houses"]);
+        markRentCitiesSwept(batch);
+      }
     }
     return acc;
   })();

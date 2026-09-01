@@ -1,11 +1,12 @@
 {
   "name": "ground-control",
   "private": true,
-  "version": "0.2.169",
+  "version": "0.2.170",
   "description": "Ground Control — HailScope hail zoning, Lens (shingle / damage / field), Super Chat",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.mjs",
+    "build:ok-cities": "node scripts/build-ok-rent-cities.mjs",
     "start": "python -m http.server 4173 --directory www",
     "test": "node tests/shingle-gate.test.mjs && node tests/damage-marks.test.mjs && node tests/place-contacts.test.mjs && node tests/field-marks.test.mjs && node tests/done-packs.test.mjs && node tests/geocode.test.mjs && node tests/hail-days.test.mjs && node tests/zoom-ui-scale.test.mjs && node tests/hail-swath.test.mjs && node tests/device-ui.test.mjs && node tests/live-window.test.mjs",
     "check": "node --check www/boot.js && node --check www/app.js && node --check www/wx.js && node --check www/desktop.js && node --check www/device.js && node --check www/vision.js && node --check www/share.js && node --check www/geo.js && node --check www/geocode.js && node --check www/marks.js && node --check www/done.js && node --check www/acculynx.js && node --check www/contacts.js && node --check www/assessor.js && node --check www/catalog.js && node --check www/shingle.js && node --check www/damage.js && node --input-type=module -e \"import './www/catalog.js'; import './www/shingle.js'; import './www/damage.js'; import './www/contacts.js'; import './www/assessor.js'; import './www/geo.js'; import './www/geocode.js'; import './www/marks.js'; import './www/done.js'; import './www/acculynx.js'; import './www/desktop.js'; import './www/device.js'; console.log('modules ok')\"",
