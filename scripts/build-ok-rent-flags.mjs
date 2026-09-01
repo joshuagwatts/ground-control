@@ -34,7 +34,7 @@ function slimRow(r) {
     zip: r.zip || "",
     lat: r.lat,
     lon: r.lon,
-    phone: r.phone,
+    phone: r.phone || "",
     listingUrl: r.listingUrl || "",
     source: r.source || "rent-com",
     phone_kind: "rental",
@@ -68,15 +68,23 @@ function saveProgress(done, flags) {
 }
 
 function writeSeed(flags) {
+  let existing = [];
+  try {
+    existing = JSON.parse(fs.readFileSync(outJson, "utf8"));
+    if (!Array.isArray(existing)) existing = [];
+  } catch {
+    existing = [];
+  }
   const okCities = new Set(OK_RENT_CITY_ROWS.map((r) => String(r.name || "").toLowerCase()));
-  const slim = mergeRentFlagList([], flags)
+  // Merge into existing metro/Zillow seed — never shrink by overwriting with a thin Rent.com pass.
+  const slim = mergeRentFlagList(existing, flags)
     .filter((r) => {
       if (!isOklahomaLatLon(r.lat, r.lon)) return false;
+      if (!r.phone && !r.listingUrl) return false;
       const st = String(r.state || "").toUpperCase();
       if (st && st !== "OK") return false;
       const city = String(r.city || "").toLowerCase();
       if (city && okCities.has(city)) return true;
-      // Keep if labeled OK / empty state and inside the state box.
       return !st || st === "OK";
     })
     .map(slimRow);
