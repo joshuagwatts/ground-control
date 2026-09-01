@@ -144,6 +144,8 @@ let windLayer = null;
 let windFieldLayer = null;
 let lastHailRows = [];
 let lastWindRows = [];
+/** Pin dossier fetch radius — used to keep storm zones local when a house is selected. */
+let lastHailFetchedKm = PIN_FETCH_FAST_KM;
 /** ISO dates (YYYY-MM-DD) selected for map overlay — multi-check allowed. */
 let selectedStormDates = new Set();
 /** HailScope: never auto-pick a storm date; zones wait for a tap. */
@@ -762,6 +764,32 @@ function hitDistKm(p) {
 function pinCoords() {
   if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) return { lat: pinLat, lon: pinLon };
   return null;
+}
+
+function hailStormAtPin() {
+  return wxPinSelected() && hasSelectedStormDates();
+}
+
+function hailDistKm(h, lat, lon) {
+  const d = Number(h?.distance_km);
+  if (Number.isFinite(d) && d < 900) return d;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return 999;
+  if (!Number.isFinite(h?.lat) || !Number.isFinite(h?.lon)) return 999;
+  return haversineKm(lat, lon, h.lat, h.lon);
+}
+
+function hailPinPaintKm(filters = wxFilters) {
+  const km = filterKm(filters);
+  return Math.max(km, Number(lastHailFetchedKm) || 0, PIN_FETCH_FAST_KM);
+}
+
+function hailRowsNearCoords(rows, lat, lon, km, day = null) {
+  let pool = rows || [];
+  if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
+  return pool.filter((h) => {
+    if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
+    return hailDistKm(h, lat, lon) <= km;
+  });
 }
 
 function parseSwdiShape(shape) {
@@ -2790,7 +2818,7 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
       console.warn("drawHailMarkers failed", err);
     }
   }
-  if (hasSelectedStormDates()) {
+  if (hasSelectedStormDates() && !wxPinSelected()) {
     scheduleHailMapFill(120);
   } else if (hadSelection && !wxPinSelected() && hailScopeMode) {
     // Cleared every storm date — leave list as-is; Search storms refreshes on demand.
@@ -3683,8 +3711,11 @@ function selectPinIcon() {
 function hailNearPin(rows, day = null) {
   let pool = rows || [];
   if (day) pool = pool.filter((h) => String(h.date || "").slice(0, 10) === day);
-  // Selected storm date(s): use the full cached footprint so zones don't morph
-  // as the phone pans (never rebuild from only on-screen dots).
+  // House pin + storm day: paint hail near this roof only (not statewide for that date).
+  if (hailStormAtPin()) {
+    return hailRowsNearCoords(pool, pinLat, pinLon, hailPinPaintKm());
+  }
+  // Map-view storm overlay: full fetched footprint so zones don't morph while panning.
   if (hasSelectedStormDates()) {
     return pool.filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon));
   }
@@ -3755,7 +3786,7 @@ let hailMapFillTimer = 0;
 
 /** When a storm date is on, keep the visible map stocked with hail (not a pin circle). */
 async function refreshHailMapFill() {
-  if (!hasSelectedStormDates() || !map) return;
+  if (!hasSelectedStormDates() || !map || wxPinSelected()) return;
   const q = mapViewHailQuery();
   if (!q) return;
   const gen = ++hailMapFillGen;
@@ -3783,7 +3814,7 @@ async function refreshHailMapFill() {
 }
 
 function scheduleHailMapFill(ms = 280) {
-  if (!hasSelectedStormDates()) return;
+  if (!hasSelectedStormDates() || wxPinSelected()) return;
   if (hailMapFillTimer) clearTimeout(hailMapFillTimer);
   hailMapFillTimer = setTimeout(() => {
     hailMapFillTimer = 0;
@@ -4464,7 +4495,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: meshConfirmed,
-        source: spotConfirm && radarCount ? "spot+radar" : radarCount ? "mesh-swath" : "spotter",
+        source: radarCount ? "mesh-swath" : "spotter",
       });
     }
   }
@@ -5150,19 +5181,31 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   scheduleZoomUiRefresh(true);
   if (opts.fit && map) {
     const pts = [];
-    if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) pts.push([pinLat, pinLon]);
-    for (const h of nearHail.filter((p) => !day || day.has(String(p.date || "").slice(0, 10)))) {
-      if (Number.isFinite(h.lat) && Number.isFinite(h.lon)) pts.push([h.lat, h.lon]);
+    const pinFitKm = hailStormAtPin() ? Math.max(HOUSE_HAIL_KM * 8, hailPinPaintKm()) : null;
+    if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) {
+      pts.push([pinLat, pinLon]);
+      for (const h of nearHail.filter((p) => !day || day.has(String(p.date || "").slice(0, 10)))) {
+        if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
+        if (pinFitKm != null && hailDistKm(h, pinLat, pinLon) > pinFitKm) continue;
+        pts.push([h.lat, h.lon]);
+      }
+    } else if (day) {
+      for (const h of nearHail.filter((p) => day.has(String(p.date || "").slice(0, 10)))) {
+        if (Number.isFinite(h.lat) && Number.isFinite(h.lon)) pts.push([h.lat, h.lon]);
+      }
     }
     try {
       if (pts.length >= 1) {
         const bounds = window.L.latLngBounds(pts);
         if (bounds.isValid()) {
-          map.fitBounds(bounds.pad(pts.length === 1 ? 0.08 : 0.35), { maxZoom: 14, animate: true });
+          map.fitBounds(bounds.pad(pts.length === 1 ? 0.12 : pinFitKm != null ? 0.18 : 0.35), {
+            maxZoom: pinFitKm != null ? 17 : 14,
+            animate: true,
+          });
           return;
         }
       }
-      if (fitPts.length) {
+      if (fitPts.length && !wxPinSelected()) {
         const bounds = window.L.latLngBounds(fitPts);
         if (bounds.isValid()) map.fitBounds(bounds.pad(0.3), { maxZoom: 12, animate: true });
       }
@@ -9216,8 +9259,8 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
   const pinLatN = Number(data.lat ?? data._meta?.lat);
   const pinLonN = Number(data.lon ?? data._meta?.lon);
   const viewport = Boolean(data.viewport || data._meta?.viewport);
-  // Selected storm overlay: paint the full fetched footprint (not the NEAR list radius).
-  const skipDist = forMap && (viewport || hasSelectedStormDates());
+  // Map-view storm overlay: full footprint. Pin + storm day: stay within dossier radius.
+  const skipDist = forMap && (viewport || hasSelectedStormDates()) && !hailStormAtPin();
   const paintKm = forMap
     ? Math.max(km, Number(data._meta?.fetchedKm) || 0, PIN_FETCH_WIDE_KM, mapViewFetchKm())
     : km;
@@ -9672,6 +9715,7 @@ function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 /** One coordinated map + sheet refresh after dossier data arrives. */
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
+  if (Number(data._meta?.fetchedKm) > 0) lastHailFetchedKm = Number(data._meta.fetchedKm);
   syncHailStormDateSelection(data);
   const hailRows = mapHailRows(data, wxFilters);
   const radarN = hailRows.filter((h) => !isSpotterHail(h)).length;
@@ -9828,7 +9872,12 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     const turningOn = !isStormDateSelected(date);
     const zNow = map?.getZoom?.() ?? 14;
     try {
-      selectStormDate(date, { fit: turningOn && zNow < 11, requireDate: true, hailRows, toggle: true });
+      selectStormDate(date, {
+        fit: turningOn && zNow < 11 && !wxPinSelected(),
+        requireDate: true,
+        hailRows,
+        toggle: true,
+      });
     } catch (err) {
       console.warn("selectStormDate failed", err);
     }
