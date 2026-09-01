@@ -1997,6 +1997,14 @@ body.wx-map-expanded .hs-sheet {
   color: #1dff6e;
   border-color: rgba(29, 255, 110, 0.45);
 }
+.hs-layers button.hs-flags-toggle.busy {
+  box-shadow: 0 0 0 1px rgba(29, 255, 110, 0.55);
+  animation: hs-flags-pulse 0.9s ease-in-out infinite;
+}
+@keyframes hs-flags-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
 .hs-radar-top {
   position: absolute;
   z-index: 500;

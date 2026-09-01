@@ -67,8 +67,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-  startPhoneFlagScan,
-} from "./wx.js?v=0.2.179";
+} from "./wx.js?v=0.2.180";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1621,12 +1620,12 @@ function paintLayerToggles() {
       db.settings.showPhoneFlags = !flagsOn;
       persist();
       paintLayerToggles();
-      paintFieldMap();
       if (db.settings.showPhoneFlags === true) {
         cancelWarmMapViewStorms();
-        setStatus("Loading flags…");
-        startPhoneFlagScan();
+        setStatus("Loading flags · map view…");
       } else setStatus("Flags cleared");
+      // paintFieldMap → setFieldOverlay rising-edge starts the scan once
+      paintFieldMap();
       return;
     }
     if (b.dataset.ov === "done") db.settings.showDone = !doneOn;

@@ -795,6 +795,12 @@ const rentCityCache = new Map();
 let rentSweepInFlight = null;
 let rentSweepEpoch = 0;
 
+/** Cancel in-flight rent sweeps (Flags toggle / map retarget). */
+export function cancelRentFlagSweep() {
+  rentSweepEpoch += 1;
+  rentSweepInFlight = null;
+}
+
 const RENT_CITY_SWEPT_KEY = "hs-rent-cities-swept-v1";
 
 function loadSweptRentCities() {
