@@ -286,6 +286,7 @@ function corsProxyCandidates(url) {
   }
   return [
     ...local,
+    `https://corsproxy.io/?${enc}`,
     `https://api.allorigins.win/raw?url=${enc}`,
     `https://api.allorigins.win/get?url=${enc}`,
   ];

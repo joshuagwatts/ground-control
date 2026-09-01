@@ -2314,7 +2314,7 @@ body.wx-map-expanded .hs-field {
   border-radius: 50%; margin-right: 0.22rem; vertical-align: -1px;
 }
 .hs-dot-spot { background: #ff2d2d; box-shadow: 0 0 0 1px #fff, 0 0 4px rgba(255,45,45,0.65); }
-.hs-dot-radar { background: #2a81cb; box-shadow: 0 0 0 1px #0d3d6b; }
+.hs-dot-radar { background: #0088ff; box-shadow: 0 0 0 1px #0d3d6b; }
 .hs-dot-done { background: #ffcc00; }
 .hs-dot-ping { background: #fb923c; }
 .hs-place {
