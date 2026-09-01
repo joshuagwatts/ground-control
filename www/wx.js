@@ -143,6 +143,7 @@ let activeOverlays = new Set(["precip"]);
 let windLayer = null;
 let windFieldLayer = null;
 let lastHailRows = [];
+let lastZoneHailRows = [];
 let lastWindRows = [];
 /** Pin dossier fetch radius — used to keep storm zones local when a house is selected. */
 let lastHailFetchedKm = PIN_FETCH_FAST_KM;
@@ -330,6 +331,9 @@ function wantPrecipRadarTiles() {
 }
 let radarFrames = [];
 let radarFrameIdx = 0;
+let radarFramesFetchedAt = 0;
+let radarFramesRefreshTimer = 0;
+const RADAR_FRAMES_REFRESH_MS = 90_000;
 let radarPlayRaf = null;
 let radarPlaying = false;
 let hourPlayTimer = null;
@@ -781,6 +785,11 @@ function hailDistKm(h, lat, lon) {
 function hailPinPaintKm(filters = wxFilters) {
   const km = filterKm(filters);
   return Math.max(km, Number(lastHailFetchedKm) || 0, PIN_FETCH_FAST_KM);
+}
+
+/** Wider ring for SWDI zone paint when a house pin is active — spotters stay local. */
+function hailRadarZoneKm(filters = wxFilters) {
+  return Math.max(hailPinPaintKm(filters), PIN_FETCH_WIDE_KM, Number(lastHailFetchedKm) || 0);
 }
 
 function hailRowsNearCoords(rows, lat, lon, km, day = null) {
@@ -1669,6 +1678,14 @@ function hailFillPaneOpacity() {
 
 function ensureHailPanes() {
   if (!map) return;
+  if (!map.getPane("hailSpotFills")) {
+    map.createPane("hailSpotFills");
+    map.getPane("hailSpotFills").style.zIndex = 638;
+  }
+  if (!map.getPane("hailRadarFills")) {
+    map.createPane("hailRadarFills");
+    map.getPane("hailRadarFills").style.zIndex = 644;
+  }
   if (!map.getPane("hailFills")) {
     map.createPane("hailFills");
     map.getPane("hailFills").style.zIndex = 640;
@@ -1681,8 +1698,13 @@ function ensureHailPanes() {
     map.createPane("hailVectors");
     map.getPane("hailVectors").style.zIndex = 650;
   }
-  const fills = map.getPane("hailFills");
-  if (fills) fills.style.opacity = String(hailFillPaneOpacity());
+  const paneOpacity = String(hailFillPaneOpacity());
+  const spotFills = map.getPane("hailSpotFills");
+  const radarFills = map.getPane("hailRadarFills");
+  const legacyFills = map.getPane("hailFills");
+  if (spotFills) spotFills.style.opacity = paneOpacity;
+  if (radarFills) radarFills.style.opacity = paneOpacity;
+  if (legacyFills) legacyFills.style.opacity = paneOpacity;
 }
 
 const HOUSE_NUM_MAX = 400;
@@ -1871,6 +1893,8 @@ export function applyWxTimelineFilters() {
   }
   applyOverlays();
   syncHazardLayers();
+  if (wantPrecip) scheduleRadarFramesRefresh();
+  else stopRadarFramesRefresh();
   document.querySelectorAll("[data-wx-fl]").forEach((btn) => {
     const k = btn.dataset.wxFl;
     if (k === "all" || k === "none") return;
@@ -2013,9 +2037,9 @@ export function setLiveWindowHrs(h) {
 export function liveWindowStepSec(hrs = liveWindowHrs) {
   if (hrs <= 2) return 600;
   if (hrs <= 6) return 900;
-  if (hrs <= 12) return 1500;
-  // ±24h: fewer steps so PLAY can finish a full pass quickly.
-  return 2400;
+  if (hrs <= 12) return 1200;
+  // ±24h: finer steps so precip scrubs feel live (RainViewer still ~10 min native).
+  return 1800;
 }
 
 export function liveWindowBounds(nowSec, hrs = liveWindowHrs) {
@@ -2064,11 +2088,37 @@ function hailScopeLiveTimeline() {
   const { t0, t1 } = hailScopeLiveTimeWindow();
   const radar = f.precip && radarFrames.length >= 2 ? radarFrames : [];
   const wind = f.wind && windFrames.length ? windFrames : [];
+  const now = Date.now() / 1000;
   // 2h precip-only: ride the native 10-min RainViewer frames.
   if (f.precip && !f.wind && liveWindowHrs <= 2 && radar.length >= 2) {
     const inWin = radar.filter((fr) => Number(fr.time) >= t0 - 1 && Number(fr.time) <= t1 + 1);
     if (inWin.length >= 2) {
       return inWin.map((fr) => ({ time: fr.time, radarIdx: nearestFrameIdx(radarFrames, fr.time) }));
+    }
+  }
+  // 6–24h: native precip frames for the last ~3h, hourly-ish steps for the rest.
+  if (f.precip && liveWindowHrs >= 6 && radar.length >= 2) {
+    const recentCut = now - Math.min(3 * 3600, liveWindowHrs * 3600 * 0.25);
+    const recentRadar = radar.filter((fr) => Number(fr.time) >= recentCut - 30 && Number(fr.time) <= t1 + 60);
+    const coarse = buildLiveTimelineSteps({
+      t0,
+      t1,
+      dt: liveWindowStepSec(liveWindowHrs),
+      radar,
+      wind,
+    });
+    if (recentRadar.length >= 2 && coarse.length >= 2) {
+      const merged = new Map();
+      for (const fr of recentRadar) {
+        const t = Number(fr.time);
+        if (!Number.isFinite(t) || t < t0 - 1 || t > t1 + 1) continue;
+        merged.set(t, { time: t, radarIdx: nearestFrameIdx(radarFrames, t), windIdx: coarse[0]?.windIdx });
+      }
+      for (const step of coarse) {
+        if (!merged.has(step.time)) merged.set(step.time, step);
+      }
+      const out = [...merged.values()].sort((a, b) => Number(a.time) - Number(b.time));
+      if (out.length >= 2) return out;
     }
   }
   const steps = buildLiveTimelineSteps({
@@ -2320,18 +2370,52 @@ function upgradeMapFromConfig(config) {
   }
 }
 
-async function fetchRainViewerFrames() {
-  if (radarFrames.length) return;
+async function fetchRainViewerFrames({ force = false } = {}) {
+  if (radarFrames.length && !force) return;
   try {
     const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 2500);
     const rv = JSON.parse(body || "{}");
     radarHost = rv.host || "https://tilecache.rainviewer.com";
     const assembled = assembleRainViewerRadarFrames((rv.radar || {}).past, (rv.radar || {}).nowcast);
+    const keepTime = radarFrames[radarFrameIdx]?.time || Date.now() / 1000;
     radarFrames = assembled.frames;
-    radarFrameIdx = assembled.presentIdx;
+    radarFrameIdx = assembled.frames.length
+      ? nearestFrameIdx(radarFrames, keepTime)
+      : assembled.presentIdx;
+    radarFramesFetchedAt = Date.now();
   } catch {
     /* optional */
   }
+}
+
+function stopRadarFramesRefresh() {
+  if (radarFramesRefreshTimer) {
+    clearTimeout(radarFramesRefreshTimer);
+    radarFramesRefreshTimer = 0;
+  }
+}
+
+function scheduleRadarFramesRefresh() {
+  stopRadarFramesRefresh();
+  if (!wantPrecipRadarTiles()) return;
+  radarFramesRefreshTimer = window.setTimeout(async () => {
+    radarFramesRefreshTimer = 0;
+    if (!wantPrecipRadarTiles()) return;
+    const keepTime =
+      hailScopeLiveTimeline()[liveTlIdx]?.time ||
+      radarFrames[radarFrameIdx]?.time ||
+      Date.now() / 1000;
+    await fetchRainViewerFrames({ force: true });
+    if (radarFrames.length) {
+      radarFrameIdx = nearestFrameIdx(radarFrames, keepTime);
+      if (hailScopeRadarActive()) {
+        void setRadarFrame(radarFrameIdx, { play: radarPlaying });
+      } else if (wxTimelineFilters.precip) {
+        void setRadarFrame(radarFrameIdx);
+      }
+    }
+    scheduleRadarFramesRefresh();
+  }, RADAR_FRAMES_REFRESH_MS);
 }
 
 export async function ensureHailScopeRadarLayers(settings) {
@@ -2355,6 +2439,7 @@ export async function ensureHailScopeRadarLayers(settings) {
     }
   }
   syncHailScopeRadarLayers();
+  if (hailScopeRadarFilters.precip) scheduleRadarFramesRefresh();
   const shell = document.getElementById("hs-map-shell");
   const bar = document.getElementById("hs-radar-bar");
   if (shell && bar && hailScopeRadarActive()) {
@@ -2411,6 +2496,7 @@ export function syncHailScopeRadar(settings) {
   if (!hailScopeRadarActive()) {
     stopRadarPlay();
     stopWindPlay();
+    stopRadarFramesRefresh();
     clearWindFieldLayer();
     syncHailScopeRadarLayers();
     return;
@@ -2806,7 +2892,7 @@ export function bindStormGraph(root, onPick) {
   });
 }
 
-export function selectStormDate(date, { fit = false, requireDate, hailRows, windRows, toggle = false } = {}) {
+export function selectStormDate(date, { fit = false, requireDate, hailRows, zoneRows, windRows, toggle = false } = {}) {
   const hadSelection = hasSelectedStormDates();
   if (!date) {
     clearStormDateSelection();
@@ -2825,7 +2911,7 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
   if (hail.length || wind.length) {
     lastHailDrawSig = "";
     try {
-      drawHailMarkers(hail, wind, { fit, requireDate: needDate });
+      drawHailMarkers(hail, wind, { fit, requireDate: needDate, zoneRows: zoneRows || hail });
     } catch (err) {
       console.warn("drawHailMarkers failed", err);
     }
@@ -3766,7 +3852,9 @@ export function setWxPin(lat, lon) {
   placeSelectPin([lat, lon]);
   clearPinRadius();
   if (lastHailRows.length || lastWindRows.length) {
-    drawHailMarkers(lastHailRows, lastWindRows);
+    drawHailMarkers(lastHailRows, lastWindRows, {
+      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+    });
   }
 }
 
@@ -4501,7 +4589,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
         smooth = relaxRing(chaikinSmoothRing(ring, 5), 3);
       }
       const meshConfirmed =
-        (spotConfirm && thr >= 1) || (radarCount >= 2 && thr >= 0.5) || (radarCount >= 1 && thr >= 0.75);
+        (spotConfirm && thr >= 1) || (radarCount >= 1 && thr >= 0.5) || (radarCount >= 2 && thr >= 0.75);
       out.push({
         ring: padPolygon(smooth, 48),
         maxSize: thr,
@@ -4914,20 +5002,20 @@ function bindHailZoneTap(layer, h, sub) {
 
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (!map || !window.L) return;
-  lastHailRows = hailRows || [];
+  const dotRows = hailRows || [];
+  const zoneRows = opts.zoneRows || dotRows;
+  lastHailRows = dotRows;
+  lastZoneHailRows = zoneRows;
   lastWindRows = windRows || [];
   const requireDate = opts.requireDate === true || (opts.requireDate !== false && hailScopeMode);
-  // Do not prune selection from map-visible hits — that cleared taps when a day's
-  // points were off-screen or still loading. Filters/sheet own pruning.
-  const nearHail = hailNearPin(hailRows || [], null);
-  const collapsed = collapseHailByDate(nearHail);
+  const nearForZones = hailNearPin(zoneRows, null);
+  const collapsed = collapseHailByDate(nearForZones);
   const activeDays = selectedStormDates;
   const pin = pinCoords();
-  const radarN = (hailRows || []).filter(isRadarHail).length;
+  const radarN = zoneRows.filter(isRadarHail).length;
   const zDraw = map?.getZoom?.() ?? 14;
   const zBucket = zDraw < 9 ? 0 : zDraw < 11 ? 1 : zDraw < 13 ? 2 : 3;
-  // Geometry is lat/lon — do not key the draw cache on map bounds or zones morph while panning.
-  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}|r${radarN}|z${zBucket}`;
+  const drawSig = `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${zoneRows.length}|r${radarN}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}|z${zBucket}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
     syncHazardLayers();
     scheduleZoomUiRefresh();
@@ -4974,6 +5062,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   hailLayer = window.L.layerGroup();
   windLayer = window.L.layerGroup();
   ensureHailPanes();
+  const hailSpotFillSvg = window.L.svg({ pane: "hailSpotFills", padding: 0.8 });
+  const hailRadarFillSvg = window.L.svg({ pane: "hailRadarFills", padding: 0.8 });
   const hailFillSvg = window.L.svg({ pane: "hailFills", padding: 0.8 });
   const hailDotSvg = window.L.svg({ pane: "hailDots", padding: 0.6 });
 
@@ -4992,7 +5082,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const fitPts = [];
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
-    const dayHits = zoneHitPool(h, hailRows || []);
+    const dayHits = zoneHitPool(h, zoneRows);
     const atRoof = dayHits.filter((p) => hitDistKm(p) <= HOUSE_HAIL_KM);
     const pin = pinCoords();
     const roofHit = (h.near_hits || 0) > 0 || atRoof.length > 0;
@@ -5042,8 +5132,13 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         });
       }
     }
-    // Weak → strong: each size layer is its own full region (overlapping translucent fills).
-    subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
+    // Spotter underlay first, radar on top — both visible when overlapping.
+    subRings.sort((a, b) => {
+      const aRad = /radar|mesh|swdi/i.test(String(a.source || "")) ? 1 : 0;
+      const bRad = /radar|mesh|swdi/i.test(String(b.source || "")) ? 1 : 0;
+      if (aRad !== bRad) return aRad - bRad;
+      return (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0);
+    });
     const bands = stackHailBandPolys(subRings);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
@@ -5052,17 +5147,19 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const isSpotZone = sub.source === "spotter";
       const isConfirm = isMixed || isSpotZone || (Boolean(sub.confirmed) && !isSwdiZone);
       const col = isSwdiZone ? hailSwdiZoneColor(sz) : isSpotZone ? hailSpotterZoneColor(sz) : hailZoneColor(sz);
+      const fillPane = isSwdiZone ? "hailRadarFills" : isSpotZone ? "hailSpotFills" : "hailFills";
+      const fillRenderer = isSwdiZone ? hailRadarFillSvg : isSpotZone ? hailSpotFillSvg : hailFillSvg;
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: isSwdiZone ? Math.min(0.78, hailLayerFillOpacity(sz) + 0.1) : hailLayerFillOpacity(sz),
-        weight: 1.2,
-        opacity: 0.7,
+        fillOpacity: isSwdiZone ? Math.min(0.82, hailLayerFillOpacity(sz) + 0.12) : hailLayerFillOpacity(sz),
+        weight: isSwdiZone ? 1.35 : 1.2,
+        opacity: isSwdiZone ? 0.78 : 0.7,
         stroke: true,
         smoothFactor: 2.4,
-        pane: "hailFills",
-        renderer: hailFillSvg,
+        pane: fillPane,
+        renderer: fillRenderer,
         interactive: true,
         bubblingMouseEvents: false,
         className: isConfirm
@@ -5079,8 +5176,11 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         outer: true,
       });
     }
-    const spots = dayHits.filter(isSpotterHail);
-    const radar = dayHits.filter(isRadarHail);
+    const dotPool = hailNearPin(dotRows, null).filter(
+      (p) => !day || day.has(String(p.date || "").slice(0, 10)),
+    );
+    const spots = dotPool.filter(isSpotterHail);
+    const radar = dotPool.filter(isRadarHail);
     const zNow = map?.getZoom?.() || 14;
     const dotsAllowed = fieldOverlay.showHailDots !== false && !wideView;
     const showRadarDots = dotsAllowed && (stormOn || zNow >= 11);
@@ -5140,9 +5240,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     }
   }
 
-  if (!fitPts.length && day && (hailRows || []).length && hailLayer) {
+  if (!fitPts.length && day && (zoneRows || []).length && hailLayer) {
     for (const dayKey of day) {
-      const rows = (hailRows || []).filter(
+      const rows = (zoneRows || []).filter(
         (p) => String(p.date || "").slice(0, 10) === dayKey && Number.isFinite(p.lat) && Number.isFinite(p.lon),
       );
       if (!rows.length) continue;
@@ -5220,7 +5320,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const pinFitKm = hailStormAtPin() ? Math.max(HOUSE_HAIL_KM * 8, hailPinPaintKm()) : null;
     if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) {
       pts.push([pinLat, pinLon]);
-      for (const h of nearHail.filter((p) => !day || day.has(String(p.date || "").slice(0, 10)))) {
+      for (const h of nearForZones.filter((p) => !day || day.has(String(p.date || "").slice(0, 10)))) {
         if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
         if (pinFitKm != null && hailDistKm(h, pinLat, pinLon) > pinFitKm) continue;
         pts.push([h.lat, h.lon]);
@@ -7970,6 +8070,7 @@ export function setFieldOverlay({
     lastHailDrawSig = "";
     drawHailMarkers(lastHailRows, lastWindRows, {
       requireDate: hailScopeMode ? hasSelectedStormDates() : false,
+      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
     });
   }
   if (prevFlags !== nextFlags) {
@@ -8385,7 +8486,9 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     // Dot visibility flips with zoom; geometry itself is zoom-invariant.
     if (hasSelectedStormDates() && (lastHailRows.length || lastWindRows.length)) {
       lastHailDrawSig = "";
-      drawHailMarkers(lastHailRows, lastWindRows);
+      drawHailMarkers(lastHailRows, lastWindRows, {
+      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+    });
     }
   });
   map.on("moveend zoomend", () => {
@@ -8434,7 +8537,9 @@ export function setMapLayer(id) {
     applyOverlays();
     // Hail product focuses the map on zones; redraw if we already have rows.
     if (id === "hail" && (lastHailRows.length || lastWindRows.length)) {
-      drawHailMarkers(lastHailRows, lastWindRows);
+      drawHailMarkers(lastHailRows, lastWindRows, {
+      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+    });
     }
     return;
   }
@@ -8449,7 +8554,9 @@ export function setMapLayer(id) {
   scheduleHouseNumbers();
   if (hasSelectedStormDates() && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";
-    drawHailMarkers(lastHailRows, lastWindRows);
+    drawHailMarkers(lastHailRows, lastWindRows, {
+      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+    });
   }
 }
 
@@ -9321,6 +9428,28 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false } = {}
   });
 }
 
+/** Hail rows for zone fills — spotters local, radar uses wide dossier ring at pinned houses. */
+export function hailRowsForZones(data, filters = wxFilters) {
+  if (!wxPinSelected() || !hasSelectedStormDates()) return mapHailRows(data, filters);
+  const spots = filterHailRaw(data, filters, { forMap: true });
+  const since = cutoffDate(filters.days);
+  const year = String(filters.year || "all");
+  const pin = pinCoords();
+  if (!pin) return spots;
+  const radarKm = hailRadarZoneKm(filters);
+  const radar = (data.hail || []).filter((h) => {
+    if (!isRadarHail(h)) return false;
+    if (year !== "all") {
+      if (!h.date || !String(h.date).startsWith(year)) return false;
+    } else if (h.date && h.date < since) {
+      return false;
+    }
+    if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
+    return hailDistKm(h, pin.lat, pin.lon) <= radarKm;
+  });
+  return mergeHailRows(spots, radar);
+}
+
 /** Hail rows for map paint — wider than the sheet NEAR filter when a storm day is on. */
 export function mapHailRows(data, filters = wxFilters) {
   return filterHailRaw(data, filters, { forMap: true });
@@ -9710,8 +9839,8 @@ let lastSyncRadarN = 0;
 let selectedStormRedrawTimer = 0;
 let pendingSelectedStormRows = null;
 
-function scheduleSelectedStormZoneRedraw(hailRows, windRows = []) {
-  pendingSelectedStormRows = { hailRows, windRows };
+function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = null) {
+  pendingSelectedStormRows = { hailRows, windRows, zoneRows };
   if (selectedStormRedrawTimer) return;
   selectedStormRedrawTimer = window.setTimeout(() => {
     selectedStormRedrawTimer = 0;
@@ -9719,7 +9848,10 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = []) {
     pendingSelectedStormRows = null;
     if (!pending || !hasSelectedStormDates()) return;
     lastHailDrawSig = "";
-    drawHailMarkers(pending.hailRows, pending.windRows, { requireDate: true });
+    drawHailMarkers(pending.hailRows, pending.windRows, {
+      requireDate: true,
+      zoneRows: pending.zoneRows || pending.hailRows,
+    });
   }, 280);
 }
 
@@ -9754,7 +9886,8 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
   if (Number(data._meta?.fetchedKm) > 0) lastHailFetchedKm = Number(data._meta.fetchedKm);
   syncHailStormDateSelection(data);
   const hailRows = mapHailRows(data, wxFilters);
-  const radarN = hailRows.filter((h) => !isSpotterHail(h)).length;
+  const zoneRows = hailRowsForZones(data, wxFilters);
+  const radarN = zoneRows.filter((h) => !isSpotterHail(h)).length;
   const locked = hasSelectedStormDates();
   const hailGrew = hailRows.length !== lastSyncHailN || radarN !== lastSyncRadarN;
   lastSyncHailN = hailRows.length;
@@ -9764,7 +9897,7 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
   if (locked) {
     // Keep selection; debounce zone rebuilds so SWDI batches don't thrash the map.
     if (hailGrew || fit || !hailLayer || !map?.hasLayer?.(hailLayer)) {
-      scheduleSelectedStormZoneRedraw(hailRows, []);
+      scheduleSelectedStormZoneRedraw(hailRows, [], zoneRows);
     }
     if (root.dataset.hsFilterSig !== filterSig || !root.querySelector(".hs-dates")) {
       root.dataset.hsFilterSig = filterSig;
@@ -9903,6 +10036,7 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
     const liveEsc = box._hsEsc || esc;
     const date = row.getAttribute("data-storm-date");
     const hailRows = mapHailRows(live, wxFilters);
+    const zoneRows = hailRowsForZones(live, wxFilters);
     // State overview: center the map on the storm being turned on. Zoomed in
     // (or deselecting) keep the current view.
     const turningOn = !isStormDateSelected(date);
@@ -9912,6 +10046,7 @@ function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
         fit: turningOn && zNow < 11 && !wxPinSelected(),
         requireDate: true,
         hailRows,
+        zoneRows,
         toggle: true,
       });
     } catch (err) {
