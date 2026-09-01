@@ -4,6 +4,7 @@ import { locateDevice, watchGps } from "./geo.js";
 import {
   lookupPlaceContacts,
   lookupFlagPhone,
+  lookupListingRentPhone,
   formatPhone,
   phoneDigits,
   isJunkPhone,
@@ -1464,8 +1465,8 @@ function flagBizPaintMax() {
 }
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
-const HOUSE_ENRICH_MAX = 10;
-const HOUSE_ENRICH_GAP_MS = 420;
+const HOUSE_ENRICH_MAX = 20;
+const HOUSE_ENRICH_GAP_MS = 380;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -1548,8 +1549,10 @@ function applyHailStrokeZoomStyles(force = false) {
               const s = hailZoneStrokeStyle(false, size, z);
               return { weight: Math.min(1.4, s.weight), opacity: Math.min(0.65, s.opacity), dashArray: s.dashArray };
             })()
-          : kind === "zone"
-            ? { weight: 1.35, opacity: 0.72, stroke: true, dashArray: null }
+          : kind === "fill"
+            ? hailZoneStrokeStyle(confirmed, size, z, { radar: entry.radar })
+            : kind === "zone"
+              ? { weight: 1.35, opacity: 0.72, stroke: true, dashArray: null }
             : hailZoneStrokeStyle(confirmed, size, z);
     try {
       layer.setStyle(style);
@@ -4905,7 +4908,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     .filter((h) => !day || day.has(h.date))
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
     .slice(0, zoneLimit);
-  const wideView = zDraw < 11;
+  const stormOn = hasSelectedStormDates();
+  const wideView = zDraw < 11 && !stormOn;
 
   const fitPts = [];
   for (const h of zones) {
@@ -4939,12 +4943,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const zoneHits = dayHits;
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
     if (!subRings.length && dayHits.length) {
+      const hasSpot = dayHits.some(isSpotterHail);
+      const hasRadar = dayHits.some(isRadarHail);
       subRings.push({
         ring: topoZoneRing(h, zoneHits),
         maxSize: parseFloat(h.size_in) || parseFloat(dayHits[0]?.size_in) || 0.75,
         hits: dayHits.length,
-        confirmed: dayHits.some(isSpotterHail),
-        source: dayHits.some((p) => !isSpotterHail(p)) ? "spot+radar" : "spotter",
+        confirmed: hasSpot || hasRadar,
+        source: hasSpot && hasRadar ? "spot+radar" : hasSpot ? "spotter" : hasRadar ? "radar-merge" : "spotter",
       });
     }
     // Weak → strong: each size layer is its own full region (overlapping translucent fills).
@@ -4953,8 +4959,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
-      const isRadarZone = /radar|mesh|swdi/i.test(String(sub.source || ""));
-      const isConfirm = Boolean(sub.confirmed) || sub.source === "spot+radar" || isRadarZone;
+      const isMixed = sub.source === "spot+radar";
+      const isRadarZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
+      const isConfirm = isMixed || (Boolean(sub.confirmed) && !isRadarZone);
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
@@ -4977,15 +4984,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       trackHailStroke(bindHailZoneTap(poly, h, sub), {
         confirmed: isConfirm,
         size: sz,
-        kind: "zone",
+        kind: "fill",
+        radar: isRadarZone,
         outer: true,
       });
     }
     const spots = dayHits.filter(isSpotterHail);
-    const radar = dayHits.filter((p) => !isSpotterHail(p));
+    const radar = dayHits.filter(isRadarHail);
     const zNow = map?.getZoom?.() || 14;
-    // Zoomed-out storm view: continuous swaths only — dots read as bubble clutter.
-    const stormOn = hasSelectedStormDates();
     const dotsAllowed = fieldOverlay.showHailDots !== false && !wideView;
     const showRadarDots = dotsAllowed && (stormOn || zNow >= 11);
     const showSpotDots = dotsAllowed && (stormOn || zNow >= 10);
@@ -6265,9 +6271,36 @@ function setFlagKindFilter(kind, on) {
   paintHouseLayer([], houseCache.nums);
 }
 
+function borrowPhonesForRentFlags(nums) {
+  const donors = (nums || []).filter((n) => housePhoneKind(n) === "rental" && houseHasPhone(n));
+  if (!donors.length) return;
+  for (const n of nums || []) {
+    if (housePhoneKind(n) !== "rental" || houseHasPhone(n)) continue;
+    let best = null;
+    let bestD = 1.6;
+    for (const d of donors) {
+      const dist = haversineKm(n.lat, n.lon, d.lat, d.lon);
+      if (dist <= bestD) {
+        bestD = dist;
+        best = d;
+      }
+    }
+    if (!best) continue;
+    const ph = housePhoneFor(best);
+    if (!ph) continue;
+    n.phone = ph;
+    rememberHouseUseful(n, {
+      phone: ph,
+      kind: "rental",
+      source: n.source || best.source || "rent-com",
+    });
+  }
+}
+
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
   const b = map?.getBounds?.();
+  borrowPhonesForRentFlags(nums);
   // Show rentals in / near the map frame (generous pad — city search hits sit across town).
   const list = (nums || []).filter((n) => {
     if (!houseHasFlag(n) || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
@@ -6650,7 +6683,20 @@ async function enrichVisibleHouseInfo(nums, gen) {
   if (!phoneFlagsEnabled() || !map || !nums?.length) return;
   const c = map.getCenter?.();
   if (!c) return;
-  const queue = nums
+  const listingQueue = nums
+    .filter((n) => {
+      if (housePhoneKind(n) !== "rental") return false;
+      if (houseHasPhone(n)) return false;
+      const url = String(n.zillow_url || "").trim();
+      if (!url) return false;
+      const k = `list|@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
+      return !houseEnrichTried.has(k);
+    })
+    .map((n) => ({ n, d: haversineKm(c.lat, c.lng, n.lat, n.lon) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, HOUSE_ENRICH_MAX)
+    .map((x) => x.n);
+  const addrQueue = nums
     .filter((n) => {
       if (houseHasFlag(n)) return false;
       if (n.phone_kind === "business" || n.source === "osm-business") return false;
@@ -6658,13 +6704,36 @@ async function enrichVisibleHouseInfo(nums, gen) {
       const k = housePhoneKey(n) || `@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
       return k && !houseEnrichTried.has(k);
     })
-    .map((n) => ({
-      n,
-      d: haversineKm(c.lat, c.lng, n.lat, n.lon),
-    }))
+    .map((n) => ({ n, d: haversineKm(c.lat, c.lng, n.lat, n.lon) }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, HOUSE_ENRICH_MAX)
+    .slice(0, Math.max(4, HOUSE_ENRICH_MAX - listingQueue.length))
     .map((x) => x.n);
+  const runListing = async (n) => {
+    if (!map || !phoneFlagsEnabled()) return;
+    if (mapBusy > 0) return "busy";
+    const key = `list|@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}`;
+    if (!key || houseEnrichTried.has(key)) return;
+    const url = String(n.zillow_url || "").trim();
+    if (!url) {
+      houseEnrichTried.add(key);
+      return;
+    }
+    try {
+      const phone = await lookupListingRentPhone(url);
+      houseEnrichTried.add(key);
+      if (!phone) return;
+      n.phone = phone;
+      n.phone_kind = "rental";
+      n.zillow_rent = true;
+      if (!n.source) n.source = /zillow/i.test(url) ? "zillow-rent" : "rent-com";
+      rememberHouseUseful(n, { phone, kind: "rental", source: n.source });
+      housePaintSig = "";
+      paintHouseLayer([], houseCache.nums);
+    } catch (e) {
+      const msg = String(e?.message || e || "");
+      if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
+    }
+  };
   const runOne = async (n) => {
     if (!map || !phoneFlagsEnabled()) return;
     if (mapBusy > 0) return "busy";
@@ -6702,12 +6771,14 @@ async function enrichVisibleHouseInfo(nums, gen) {
       if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
     }
   };
-  if (!queue.length) {
+  if (!listingQueue.length && !addrQueue.length) {
     emitPhoneFlagsStatus(flagStatusLine());
     return;
   }
-  emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… 0/${queue.length}`));
-  for (let i = 0; i < queue.length; i++) {
+  const total = listingQueue.length + addrQueue.length;
+  emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… 0/${total}`));
+  let step = 0;
+  for (const n of listingQueue) {
     if (!map || !phoneFlagsEnabled()) return;
     if (gen !== houseGen && houseCache.nums !== nums) {
       /* map moved — still finish this house, then stop starting new ones */
@@ -6716,8 +6787,24 @@ async function enrichVisibleHouseInfo(nums, gen) {
       emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
       return;
     }
-    await runOne(queue[i]);
-    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${i + 1}/${queue.length}`));
+    await runListing(n);
+    step += 1;
+    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
+    await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
+    if (gen !== houseGen) return;
+  }
+  for (let i = 0; i < addrQueue.length; i++) {
+    if (!map || !phoneFlagsEnabled()) return;
+    if (gen !== houseGen && houseCache.nums !== nums) {
+      /* map moved — still finish this house, then stop starting new ones */
+    }
+    if (mapBusy > 0) {
+      emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
+      return;
+    }
+    await runOne(addrQueue[i]);
+    step += 1;
+    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
     await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
     if (gen !== houseGen) return;
   }

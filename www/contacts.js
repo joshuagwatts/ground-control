@@ -797,6 +797,51 @@ export function parseZillowRentDetailPhone(html) {
   return "";
 }
 
+function parseGenericListingPhone(html) {
+  const h = String(html || "");
+  const tel = h.match(/href=["']tel:([^"'+\s]+)/i);
+  if (tel && !isJunkPhone(tel[1])) return formatPhone(tel[1]);
+  const embedded = extractZillowEmbeddedPhones(h);
+  if (embedded[0]) return formatPhone(embedded[0]);
+  return "";
+}
+
+function parseRentComDetailPhone(html) {
+  const data = extractNextDataJson(html);
+  if (data) {
+    const listing =
+      data?.props?.pageProps?.pageData?.listing ||
+      data?.props?.pageProps?.listingDetails ||
+      data?.props?.pageProps?.pageData?.location?.listing;
+    if (listing) {
+      const ph = listingPhoneFromRaw(
+        listing.phoneMobile,
+        listing.phoneDesktop,
+        listing.phoneMobileText,
+        listing.phoneDesktopText,
+        listing.mitsPhone?.raw,
+        listing.mitsPhone?.formatted,
+      );
+      if (ph) return ph;
+    }
+  }
+  return parseGenericListingPhone(html);
+}
+
+/** Scrape a public rental listing page for a leasing office phone. */
+export async function lookupListingRentPhone(listingUrl) {
+  const url = String(listingUrl || "").trim();
+  if (!url) return "";
+  const zillow = /zillow\.com/i.test(url);
+  const rent = /rent\.com/i.test(url);
+  const page = await fetchHtml(url, 10000, listingBrowserHeaders({ zillow })).catch(() => null);
+  const html = page?.html || "";
+  if (!html) return "";
+  if (zillow) return parseZillowRentDetailPhone(html);
+  if (rent) return parseRentComDetailPhone(html);
+  return parseGenericListingPhone(html);
+}
+
 /** All Oklahoma municipalities (pop ≥ 1000) — generated list + sweep progress for statewide Flags. */
 const rentFlagCache = new Map();
 const rentCityCache = new Map();
@@ -958,7 +1003,12 @@ export function mergeRentFlagList(into, rows) {
     if (seen.has(key)) continue;
     // Prefer a phoned row over a phoneless pin at the same spot.
     if (r.phone) {
-      const pinKeyPrefix = `pin|${r.lat.toFixed(4)}|${r.lon.toFixed(4)}|`;
+      for (let i = 0; i < out.length; i++) {
+        const o = out[i];
+        if (o.phone) continue;
+        if (haversineKm(o.lat, o.lon, r.lat, r.lon) > 0.18) continue;
+        out[i] = { ...o, phone: r.phone, phone_kind: o.phone_kind || "rental" };
+      }
       for (let i = out.length - 1; i >= 0; i--) {
         const o = out[i];
         if (o.phone) continue;
@@ -1102,13 +1152,15 @@ async function fetchZillowCityRentPhones(
   const withPhone = pool.filter((r) => r.phone);
 
   // Borrow leasing phones from Rent.com / apartments already in this view (Zillow search has none).
-  const donors = (have || []).filter((h) => h?.phone && Number.isFinite(h.lat) && Number.isFinite(h.lon));
+  const donors = [...(have || []), ...withPhone].filter(
+    (h) => h?.phone && Number.isFinite(h.lat) && Number.isFinite(h.lon),
+  );
   const borrowed = [];
   const borrowedKeys = new Set();
   for (const row of pool) {
     if (row.phone) continue;
     let best = null;
-    let bestD = 0.45;
+    let bestD = 1.6;
     for (const d of donors) {
       const dist = haversineKm(row.lat, row.lon, d.lat, d.lon);
       if (dist <= bestD) {
@@ -1434,7 +1486,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
           lat,
           lon,
           have: acc,
-          maxDetails: Math.min(28, zMax),
+          maxDetails: Math.min(48, zMax),
           bounds,
           onPartial: (part) => {
             if (epoch === rentSweepEpoch) emitView(part);

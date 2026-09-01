@@ -56,10 +56,10 @@ const iHead = listingBrowserHeaders({ ua: iphoneUa, cap: "web" });
 assert(/iPhone/i.test(iHead["User-Agent"]), "apple listing ua is Safari");
 
 const aProf = flagNetProfile({ ua: androidUa, cap: "web" });
-assert(aProf.zillowDetails === 16 && aProf.cityChunk === 4 && aProf.paintMax === 260, "android flag profile");
+assert(aProf.zillowDetails === 22 && aProf.cityChunk === 4 && aProf.paintMax === 260, "android flag profile");
 const iProf = flagNetProfile({ ua: iphoneUa, cap: "web" });
-assert(iProf.zillowDetails === 24 && iProf.cityChunk === 2 && iProf.paintMax === 450, "safari flag profile");
+assert(iProf.zillowDetails === 14 && iProf.cityChunk === 2 && iProf.paintMax === 450, "safari flag profile");
 const dProf = flagNetProfile({ ua: chromeDesktop, cap: "web" });
-assert(dProf.zillowDetails === 24 && dProf.cityChunk === 3 && dProf.paintMax === 450, "desktop flag profile");
+assert(dProf.zillowDetails === 36 && dProf.cityChunk === 3 && dProf.paintMax === 450, "desktop flag profile");
 
 console.log("device-ui ok");
