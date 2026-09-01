@@ -310,6 +310,34 @@ assert(aptFlags.some((r) => r.source === "apartments" && /348-2200/.test(r.phone
 assert(aptFlags.some((r) => /341-8800/.test(r.phone) && /JSON-LD/.test(r.name)), "apts json-ld");
 assert(!aptFlags.some((r) => /No Phone/i.test(r.name)), "apts skips phoneless");
 
+const aptItemListHtml = JSON.stringify({
+  mainEntity: {
+    "@type": "ItemList",
+    numberOfItems: 1,
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        item: {
+          "@type": ["Product", "RealEstateListing"],
+          telephone: "405-920-3538",
+          name: "The Campbell",
+          url: "https://www.apartments.com/the-campbell-edmond-ok/75h355w/",
+          mainEntity: {
+            "@type": "ApartmentComplex",
+            name: "The Campbell",
+            geo: { "@type": "GeoCoordinates", latitude: 35.65725, longitude: -97.47718 },
+          },
+        },
+      },
+    ],
+  },
+}).replace(/"/g, '\\"');
+const aptItemFlags = parseApartmentsComSearchHtml(`<script>window.__NUXT__="${aptItemListHtml}";</script>`);
+assert(
+  aptItemFlags.some((r) => /920-3538/.test(r.phone) && /Campbell/i.test(r.name) && r.lat === 35.65725),
+  "apts ItemList RealEstateListing phone+geo",
+);
+
 const zillowHtml = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
   props: {
     pageProps: {

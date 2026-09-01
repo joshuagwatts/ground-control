@@ -472,6 +472,38 @@ export function parseApartmentsComSearchHtml(html) {
     }
   }
 
+  // Current apartments.com city pages embed ItemList + RealEstateListing (often escaped in a blob).
+  if (out.length < 8) {
+    const blob = h.replace(/\\"/g, '"').replace(/\\u002F/g, "/");
+    const telRe = /"telephone"\s*:\s*"([^"]+)"/gi;
+    let tm;
+    while ((tm = telRe.exec(blob)) && out.length < 80) {
+      const phone = listingPhoneFromRaw(tm[1]);
+      if (!phone) continue;
+      const win = blob.slice(tm.index, tm.index + 2400);
+      if (!/RealEstateListing|ApartmentComplex|apartments\.com\//i.test(win)) continue;
+      const name = (win.match(/"name"\s*:\s*"([^"]{2,80})"/) || [])[1] || "";
+      const listingUrl = (win.match(/"(https:\/\/www\.apartments\.com\/[^"#?]+)/) || [])[1] || "";
+      const lat = Number((win.match(/"latitude"\s*:\s*(-?\d+\.?\d*)/) || [])[1]);
+      const lon = Number((win.match(/"longitude"\s*:\s*(-?\d+\.?\d*)/) || [])[1]);
+      if (!listingUrl || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      push(
+        rentFlagRow({
+          name,
+          street: "",
+          city: "",
+          state: "",
+          zip: "",
+          lat,
+          lon,
+          phone,
+          listingUrl,
+          source: "apartments",
+        }),
+      );
+    }
+  }
+
   // Placard cards: tel: + nearby lat/lng in data attrs or JSON crumbs.
   if (!out.length) {
     const cardRe =
@@ -891,13 +923,15 @@ async function fetchRentComCityPages(city, state, { kinds = ["apartments", "hous
         const url = formatRentComCityUrl(city, state, { kind, page });
         if (!url) break;
         if (rentFlagCache.has(url)) {
-          acc.push(...rentFlagCache.get(url));
-          if ((rentFlagCache.get(url) || []).length < 20) break;
+          const cached = rentFlagCache.get(url) || [];
+          acc.push(...cached);
+          if (cached.length < 20) break;
           continue;
         }
-        const pageHit = await fetchHtml(url, 16000, listingBrowserHeaders());
+        const pageHit = await fetchHtml(url, 18000, listingBrowserHeaders());
         const list = parseRentComSearchJson(pageHit?.html || "");
-        rentFlagCache.set(url, list);
+        // Never cache empty — a blocked/proxy page would poison the town forever.
+        if (list.length) rentFlagCache.set(url, list);
         acc.push(...list);
         if (list.length < 20) break;
       }
@@ -907,6 +941,10 @@ async function fetchRentComCityPages(city, state, { kinds = ["apartments", "hous
   rentCityCache.set(cacheKey, work);
   try {
     const rows = await work;
+    if (!rows.length) {
+      rentCityCache.delete(cacheKey);
+      return [];
+    }
     rentCityCache.set(cacheKey, Promise.resolve(rows));
     return rows;
   } catch {
@@ -924,13 +962,14 @@ async function fetchApartmentsComCityPages(city, state, { pages = 1 } = {}) {
       const url = formatApartmentsComCityUrl(city, state, { page });
       if (!url) break;
       if (rentFlagCache.has(url)) {
-        acc.push(...rentFlagCache.get(url));
-        if ((rentFlagCache.get(url) || []).length < 12) break;
+        const cached = rentFlagCache.get(url) || [];
+        acc.push(...cached);
+        if (cached.length < 12) break;
         continue;
       }
-      const pageHit = await fetchHtml(url, 16000, listingBrowserHeaders());
+      const pageHit = await fetchHtml(url, 18000, listingBrowserHeaders());
       const list = parseApartmentsComSearchHtml(pageHit?.html || "");
-      rentFlagCache.set(url, list);
+      if (list.length) rentFlagCache.set(url, list);
       acc.push(...list);
       if (list.length < 12) break;
     }
@@ -939,6 +978,10 @@ async function fetchApartmentsComCityPages(city, state, { pages = 1 } = {}) {
   rentCityCache.set(cacheKey, work);
   try {
     const rows = await work;
+    if (!rows.length) {
+      rentCityCache.delete(cacheKey);
+      return [];
+    }
     rentCityCache.set(cacheKey, Promise.resolve(rows));
     return rows;
   } catch {
@@ -993,11 +1036,42 @@ async function fetchZillowCityRentPhones(
   // Prefer map-frame hits; if the frame is empty, keep city hits so detail scrape still runs.
   const pool = local.length ? local : found;
   const withPhone = pool.filter((r) => r.phone);
-  if (typeof onPartial === "function" && withPhone.length) onPartial(withPhone);
+
+  // Borrow leasing phones from Rent.com / apartments already in this view (Zillow search has none).
+  const donors = (have || []).filter((h) => h?.phone && Number.isFinite(h.lat) && Number.isFinite(h.lon));
+  const borrowed = [];
+  const borrowedKeys = new Set();
+  for (const row of pool) {
+    if (row.phone) continue;
+    let best = null;
+    let bestD = 0.45;
+    for (const d of donors) {
+      const dist = haversineKm(row.lat, row.lon, d.lat, d.lon);
+      if (dist <= bestD) {
+        bestD = dist;
+        best = d;
+      }
+    }
+    if (!best) continue;
+    const key = `${row.lat.toFixed(5)}|${row.lon.toFixed(5)}`;
+    if (borrowedKeys.has(key)) continue;
+    borrowedKeys.add(key);
+    borrowed.push({
+      ...row,
+      phone: best.phone,
+      phone_kind: "rental",
+      zillow_rent: true,
+      source: "zillow-rent",
+    });
+  }
+
+  const seeded = mergeRentFlagList(withPhone, borrowed);
+  if (typeof onPartial === "function" && seeded.length) onPartial(seeded);
 
   const detailCap = Math.max(maxDetails, 20);
   const needPhone = pool
     .filter((r) => !r.phone && r.listingUrl)
+    .filter((r) => !seeded.some((h) => haversineKm(h.lat, h.lon, r.lat, r.lon) < 0.08))
     .filter((r) => !have.some((h) => haversineKm(h.lat, h.lon, r.lat, r.lon) < 0.08))
     .sort((a, b) => haversineKm(lat, lon, a.lat, a.lon) - haversineKm(lat, lon, b.lat, b.lon))
     .slice(0, detailCap);
@@ -1012,7 +1086,7 @@ async function fetchZillowCityRentPhones(
   );
   const details = got.filter(Boolean);
   if (typeof onPartial === "function" && details.length) onPartial(details);
-  return mergeRentFlagList(withPhone, details);
+  return mergeRentFlagList(seeded, details);
 }
 
 function rentFlagsNearPoint(rows, lat, lon, km = 28) {
@@ -1159,8 +1233,9 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   }
 
   if (force) {
-    // Keep rentFlagCache (parsed HTML) so revisiting a town is instant.
+    // Drop poisoned empty page caches so Rent.com / apts retry after a blocked pass.
     rentCityCache.clear();
+    rentFlagCache.clear();
     if (inOk) clearSweptRentCitiesNear(lat, lon, 40);
   }
 
