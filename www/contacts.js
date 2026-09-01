@@ -705,6 +705,7 @@ const OK_RENT_CITIES = [
 const rentFlagCache = new Map();
 const rentCityCache = new Map();
 let rentSweepInFlight = null;
+let rentSweepEpoch = 0;
 
 const OK_RENT_CITY_COORDS = {
   Edmond: [35.6528, -97.4778],
@@ -912,6 +913,7 @@ const RENT_SWEEP_FRESH_MS = 25 * 60 * 1000;
 
 export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const onBatch = typeof opts.onBatch === "function" ? opts.onBatch : null;
+  const force = opts.force === true;
   const city = String(opts.city || inferOkCity(lat, lon) || "").trim();
   const state = String(opts.state || (isOklahomaLatLon(lat, lon) ? "OK" : "")).trim();
   const inOk = isOklahomaLatLon(lat, lon) || stateAbbr(state) === "ok";
@@ -928,9 +930,17 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const cached = loadPersistedRentFlags();
   if (cached.length) emit(cached);
 
-  if (rentSweepInFlight) return rentSweepInFlight.then(() => acc);
+  // A big map move supersedes an in-flight Edmond→statewide crawl so the new city paints.
+  if (force && rentSweepInFlight) {
+    rentSweepEpoch += 1;
+    rentSweepInFlight = null;
+  } else if (rentSweepInFlight) {
+    return rentSweepInFlight.then(() => acc);
+  }
 
+  const epoch = rentSweepEpoch;
   const work = (async () => {
+    if (epoch !== rentSweepEpoch) return acc;
     const ordered = inOk ? citiesNearPoint(lat, lon) : city ? [city] : [];
     const viewCities = [];
     const pushCity = (c) => {
@@ -945,6 +955,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     const runCities = async (names, pages, kinds) => {
       const chunk = Math.max(1, profile.cityChunk || 3);
       for (let i = 0; i < names.length; i += chunk) {
+        if (epoch !== rentSweepEpoch) return;
         const part = names.slice(i, i + chunk);
         const batches = await Promise.all(
           part.map(async (c) => {
@@ -960,6 +971,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     };
 
     await runCities(viewCities, 1, ["apartments", "houses"]);
+    if (epoch !== rentSweepEpoch) return acc;
 
     if (profile.zillowDetails > 0 && (city || inOk)) {
       const zCity = city || viewCities[0];
@@ -971,6 +983,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       }).catch(() => []);
       if (zRows.length) emit(zRows);
     }
+    if (epoch !== rentSweepEpoch) return acc;
 
     const statewideDue = inOk && (persistCount < 80 || Date.now() - persistAt > RENT_SWEEP_FRESH_MS);
     if (statewideDue) {
@@ -981,7 +994,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   })();
 
   rentSweepInFlight = work.finally(() => {
-    rentSweepInFlight = null;
+    if (epoch === rentSweepEpoch) rentSweepInFlight = null;
   });
   return work;
 }

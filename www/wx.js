@@ -256,12 +256,17 @@ let houseCache = { key: "", rings: [], nums: [] };
 let housePaintSig = "";
 let persistHydrated = false;
 let lastRentSweepAt = 0;
+let lastRentSweepLat = NaN;
+let lastRentSweepLon = NaN;
 let flagPaintTimer = 0;
 let flagPaintQueued = false;
 let flagPaintImmediateDone = false;
 const BIZ_STORE_KEY = "hs-biz-flags-v1";
 const BIZ_STORE_MAX = 800;
-const RENT_SWEEP_COOL_MS = 25 * 60 * 1000;
+/** Short cool only — 25m froze Rent.com / apartments.com retarget when the map moved. */
+const RENT_SWEEP_COOL_MS = 12 * 1000;
+/** Re-kick rent/city sweep when the map center moves this far (km). */
+const RENT_SWEEP_MOVE_KM = 14;
 /** Session map of house keys → owner phone (drives green house-number labels). */
 const housePhoneByKey = new Map();
 /** Session map of house keys → { phone, name, email } when public info exists. */
@@ -5802,6 +5807,7 @@ function stopHouseNumbers() {
     houseTimer = 0;
   }
   houseGen += 1;
+  persistHydrated = false;
   houseCache = { key: "", rings: [], nums: [] };
   housePaintSig = "";
   if (houseLayer) {
@@ -6871,7 +6877,7 @@ function loadPersistedBizFlags() {
 function persistBizFlags(nums) {
   try {
     if (typeof localStorage === "undefined") return;
-    const rows = (nums || [])
+    const incoming = (nums || [])
       .filter((n) => n?.phone && (n.phone_kind === "business" || n.source === "osm-business"))
       .map((n) => ({
         num: n.num || n.owner_name || "",
@@ -6884,10 +6890,25 @@ function persistBizFlags(nums) {
         owner_name: n.owner_name || "",
         phone_kind: "business",
         source: n.source || "osm-business",
-      }))
-      .slice(0, BIZ_STORE_MAX);
-    if (!rows.length) return;
-    localStorage.setItem(BIZ_STORE_KEY, JSON.stringify({ at: Date.now(), flags: rows }));
+      }));
+    if (!incoming.length) return;
+    const prev = loadPersistedBizFlags();
+    const merged = [];
+    const seen = new Set();
+    const push = (n) => {
+      if (!n?.phone || !Number.isFinite(Number(n.lat)) || !Number.isFinite(Number(n.lon))) return;
+      const key = `${phoneDigits(n.phone)}|${Number(n.lat).toFixed(4)}|${Number(n.lon).toFixed(4)}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      merged.push(n);
+    };
+    // Prefer freshly scanned biz near the current view, then keep older statewide pins.
+    for (const n of incoming) push(n);
+    for (const n of prev) push(n);
+    localStorage.setItem(
+      BIZ_STORE_KEY,
+      JSON.stringify({ at: Date.now(), flags: merged.slice(0, BIZ_STORE_MAX) }),
+    );
   } catch {
     /* quota / private mode */
   }
@@ -6943,12 +6964,20 @@ function applyRentFlagBatch(flags, _gen) {
 }
 
 function kickRentFlags(lat, lon, place, gen) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   const now = Date.now();
-  if (lastRentSweepAt && now - lastRentSweepAt < RENT_SWEEP_COOL_MS) return;
+  const moved =
+    !Number.isFinite(lastRentSweepLat) ||
+    !Number.isFinite(lastRentSweepLon) ||
+    haversineKm(lastRentSweepLat, lastRentSweepLon, lat, lon) >= RENT_SWEEP_MOVE_KM;
+  if (!moved && lastRentSweepAt && now - lastRentSweepAt < RENT_SWEEP_COOL_MS) return;
   lastRentSweepAt = now;
+  lastRentSweepLat = lat;
+  lastRentSweepLon = lon;
   void lookupViewportRentFlags(lat, lon, {
     city: place?.city || "",
     state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
+    force: moved,
     onBatch: (flags) => applyRentFlagBatch(flags, gen),
   })
     .then((flags) => applyRentFlagBatch(flags, gen))
@@ -7004,7 +7033,8 @@ async function refreshHouseNumbers() {
   if (houseCache.key === key && houseCache.nums.length) {
     scheduleFlagLayerPaint();
     const c0 = map.getCenter?.();
-    if (c0 && !houseCache.nums.some((n) => n.phone_kind === "rental")) {
+    // Retarget city rentals when the map has moved far enough — don't wait for an empty cache.
+    if (c0) {
       kickRentFlags(c0.lat, c0.lng, { city: "", state: "" }, houseGen);
     }
     if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
@@ -7041,9 +7071,10 @@ async function refreshHouseNumbers() {
   scheduleFlagLayerPaint();
   const place = placeFromOsmElements(mapDump?.elements);
   if (center) {
-    if (!place.city && isOklahomaLatLon(center.lat, center.lng)) place.city = "Edmond";
-    if (!place.state && isOklahomaLatLon(center.lat, center.lng)) place.state = "OK";
-    kickRentFlags(center.lat, center.lng, place, gen);
+    kickRentFlags(center.lat, center.lng, {
+      city: place.city || "",
+      state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
+    }, gen);
   }
   void overpassJson(osmPoiQuery(south, west, north, east), 8000)
     .then((overPois) => {
