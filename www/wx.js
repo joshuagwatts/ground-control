@@ -1137,6 +1137,18 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
+/** Spotter-confirmed hail zones — warm red/orange (distinct from blue radar). */
+function hailSpotterZoneColor(sizeIn) {
+  const sz = parseFloat(sizeIn);
+  if (Number.isNaN(sz)) return { stroke: "#ff5252", fill: "#e53935", core: "#ff8a80" };
+  if (sz >= 2) return { stroke: "#ff1744", fill: "#c62828", core: "#ff8a80" };
+  if (sz >= 1.5) return { stroke: "#ff1744", fill: "#d32f2f", core: "#ff8a80" };
+  if (sz >= 1) return { stroke: "#ff5722", fill: "#ef6c00", core: "#ffab40" };
+  if (sz >= 0.75) return { stroke: "#ff6b6b", fill: "#ef5350", core: "#ffcdd2" };
+  if (sz >= 0.5) return { stroke: "#ff8a80", fill: "#ff7043", core: "#ffe0b2" };
+  return { stroke: "#ffab91", fill: "#ff8a65", core: "#ffe0b2" };
+}
+
 /** NOAA SWDI hail-radar signatures — blue (distinct from green rental flags). */
 function hailSwdiZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
@@ -4760,21 +4772,33 @@ function buildDetailedZoneRings(zone, rawPts) {
   if (!pool.length) {
     return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: 1, confirmed: false }];
   }
-  const radarN = pool.filter(isRadarHail).length;
-  if (radarN || pool.length >= 2 || pool.some((p) => p.swdi_ring?.length >= 3) || hasSelectedStormDates()) {
-    return buildHailSwathRings(pool, zone);
+  const spots = pool.filter(isSpotterHail);
+  const radar = pool.filter(isRadarHail);
+  const useSwath =
+    radar.length ||
+    pool.length >= 2 ||
+    pool.some((p) => p.swdi_ring?.length >= 3) ||
+    hasSelectedStormDates();
+
+  if (!useSwath) {
+    const p = pool[0];
+    const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
+    return [
+      {
+        ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source) * 1.25, 16),
+        maxSize: sz,
+        hits: 1,
+        confirmed: isSpotterHail(p),
+        source: isSpotterHail(p) ? "spotter" : "radar-merge",
+      },
+    ];
   }
-  const p = pool[0];
-  const sz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75;
-  return [
-    {
-      ring: ringPolygon(p.lat, p.lon, hailFootprintM(sz, p.source) * 1.25, 16),
-      maxSize: sz,
-      hits: 1,
-      confirmed: isSpotterHail(p),
-      source: isSpotterHail(p) ? "spotter" : "radar-merge",
-    },
-  ];
+
+  // Separate swaths — spotter (red) and radar (blue) layers stack instead of one blended mesh.
+  const out = [];
+  if (radar.length) out.push(...buildHailSwathRings(radar, zone));
+  if (spots.length) out.push(...buildHailSwathRings(spots, zone));
+  return out.length ? out : buildHailSwathRings(pool, zone);
 }
 
 function topoZoneRing(zone, rawPts) {
@@ -4997,15 +5021,26 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const subRings = [];
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
     if (!subRings.length && dayHits.length) {
-      const hasSpot = dayHits.some(isSpotterHail);
-      const hasRadar = dayHits.some(isRadarHail);
-      subRings.push({
-        ring: topoZoneRing(h, zoneHits),
-        maxSize: parseFloat(h.size_in) || parseFloat(dayHits[0]?.size_in) || 0.75,
-        hits: dayHits.length,
-        confirmed: hasSpot || hasRadar,
-        source: hasSpot && hasRadar ? "spot+radar" : hasSpot ? "spotter" : hasRadar ? "radar-merge" : "spotter",
-      });
+      const spots = dayHits.filter(isSpotterHail);
+      const radarHits = dayHits.filter(isRadarHail);
+      if (spots.length) {
+        subRings.push({
+          ring: topoZoneRing(h, spots),
+          maxSize: Math.max(...spots.map((p) => parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0.75),
+          hits: spots.length,
+          confirmed: true,
+          source: "spotter",
+        });
+      }
+      if (radarHits.length) {
+        subRings.push({
+          ring: topoZoneRing(h, radarHits),
+          maxSize: Math.max(...radarHits.map((p) => parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0.75),
+          hits: radarHits.length,
+          confirmed: true,
+          source: "radar-merge",
+        });
+      }
     }
     // Weak → strong: each size layer is its own full region (overlapping translucent fills).
     subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
@@ -5014,8 +5049,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const isMixed = sub.source === "spot+radar";
       const isSwdiZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
-      const isConfirm = isMixed || (Boolean(sub.confirmed) && !isSwdiZone);
-      const col = isSwdiZone ? hailSwdiZoneColor(sz) : hailZoneColor(sz);
+      const isSpotZone = sub.source === "spotter";
+      const isConfirm = isMixed || isSpotZone || (Boolean(sub.confirmed) && !isSwdiZone);
+      const col = isSwdiZone ? hailSwdiZoneColor(sz) : isSpotZone ? hailSpotterZoneColor(sz) : hailZoneColor(sz);
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
@@ -5030,7 +5066,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         interactive: true,
         bubblingMouseEvents: false,
         className: isConfirm
-          ? "wx-hail-topo wx-hail-confirmed"
+          ? "wx-hail-topo wx-hail-confirmed wx-hail-spotter-zone"
           : isSwdiZone
             ? "wx-hail-topo wx-hail-swath-sig"
             : "wx-hail-topo",
@@ -9444,7 +9480,7 @@ function roofDossierHtml(data, esc, onResearch) {
           </select></label>
         </div>
         <h4>HAIL TRACE · ${hail.length} DAYS${hasSelectedStormDates() ? ` · MAP ${esc(selectedStormDateSig())}` : ""}</h4>
-        <div class="wx-hail-legend muted">Tap dates → overlay zones · red = spotter · green = radar · size = this roof, not the farthest cell</div>
+        <div class="wx-hail-legend muted">Tap dates → overlay zones · red = spotter · blue = radar · size = this roof, not the farthest cell</div>
         <div class="wx-hail">${
           hail.length
             ? hail

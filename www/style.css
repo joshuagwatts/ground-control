@@ -1334,6 +1334,10 @@ body.hs-tab .leaflet-container,
 }
 .wx-roof-blurb { font-size: 9px; margin: 0.35rem 0 0.45rem; letter-spacing: 0.04em; }
 .wx-hail-confirmed { filter: none; }
+.wx-hail-spotter-zone { filter: drop-shadow(0 0 4px rgba(229, 57, 53, 0.45)); }
+.wx-hail-topo.wx-hail-spotter-zone path {
+  stroke: #ff5252;
+}
 .wx-hail-swath-sig { filter: drop-shadow(0 0 4px rgba(74, 158, 255, 0.5)); }
 .wx-hail-topo.wx-hail-swath-sig path {
   stroke: #4a9eff;
