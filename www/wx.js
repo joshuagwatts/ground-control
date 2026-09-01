@@ -3993,7 +3993,9 @@ async function refreshHailMapFill() {
       byKey.set(k, h);
     }
     lastHailDrawSig = "";
-    drawHailMarkers([...byKey.values()], lastWindRows);
+    const mergedRows = [...byKey.values()];
+    lastZoneHailRows = mergedRows;
+    drawHailMarkers(mergedRows, lastWindRows, { zoneRows: mergedRows });
   } catch {
     /* keep whatever is already on the map */
   }
@@ -10004,7 +10006,7 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
     softUpdateHailScopeSheet(root, data, esc, { onRefetch });
   } else {
     if (hailGrew) lastHailDrawSig = "";
-    drawHailMarkers(hailRows, [], { fit, requireDate: true, hailRows });
+    drawHailMarkers(hailRows, [], { fit, requireDate: true, zoneRows });
     root.dataset.hsFilterSig = filterSig;
     renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   }
