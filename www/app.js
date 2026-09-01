@@ -69,7 +69,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.210";
+} from "./wx.js?v=0.2.211";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -2127,16 +2127,35 @@ async function onHailViewport() {
 
 async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   const gen = ++hailTapGen;
+  const samePin =
+    Number.isFinite(wxState.lat) &&
+    Number.isFinite(wxState.lon) &&
+    Math.abs(wxState.lat - lat) < 1e-5 &&
+    Math.abs(wxState.lon - lon) < 1e-5;
   // Keep checked storm dates — accidental house taps should not wipe the overlay.
   wxState.lat = lat;
   wxState.lon = lon;
   wxState.viewport = false;
-  wxState.data = null;
-  // Map taps must not reuse the previous house address — reverse-geocode the new pin.
   const knownAddr = String(prefAddr || "").trim();
-  wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : "";
+  wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : wxState.address || "";
   setWxPin(lat, lon);
   const sheet = $("#hs-sheet");
+  const onRefetch = async (filters) => {
+    if (gen !== hailTapGen) return null;
+    const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
+    if (gen !== hailTapGen) return null;
+    wxState.data = fresh;
+    return fresh;
+  };
+  if (samePin && wxState.data && isHailTab()) {
+    revealHailStormSheet({ interactive: true, scroll: false });
+    syncHailScopeView(sheet, wxState.data, esc, { onRefetch, revealSheet: false });
+    setStatus(`Storms ready · ${hailScopeDays(wxState.data).length} dates`);
+    return;
+  }
+  wxState.data = null;
+  // Map taps must not reuse the previous house address — reverse-geocode the new pin.
+  if (!samePin) wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : "";
   const addr0 = wxState.address || "Dropped pin";
   if (sheet) {
     sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
@@ -2149,13 +2168,6 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   }
   revealHailStormSheet();
   setStatus("Loading storms…");
-  const onRefetch = async (filters) => {
-    if (gen !== hailTapGen) return null;
-    const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
-    if (gen !== hailTapGen) return null;
-    wxState.data = fresh;
-    return fresh;
-  };
   try {
     const data = await pinDossier(db.settings, lat, lon, {
       address: wxState.address,

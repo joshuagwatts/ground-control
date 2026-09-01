@@ -4108,8 +4108,16 @@ function windNearPin(rows, day = null) {
 }
 
 export function setWxPin(lat, lon) {
-  pinLat = Number(lat);
-  pinLon = Number(lon);
+  const nextLat = Number(lat);
+  const nextLon = Number(lon);
+  const moved =
+    !Number.isFinite(pinLat) ||
+    !Number.isFinite(pinLon) ||
+    Math.abs(pinLat - nextLat) > 1e-5 ||
+    Math.abs(pinLon - nextLon) > 1e-5;
+  pinLat = nextLat;
+  pinLon = nextLon;
+  if (!moved) return;
   pinStormSwdiGen++;
   applyContextStormFilters("pin");
   placeSelectPin([lat, lon]);
@@ -5234,6 +5242,50 @@ function hailLayerFillOpacity(sz) {
   return 0.85;
 }
 
+function escHailPop(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+function hailDotPopupHtml(p) {
+  const isSpot = isSpotterHail(p);
+  const sz = parseFloat(p.size_in) || 0.75;
+  const when = prettyStormDate(p.date);
+  const time = String(p.time || "").trim();
+  const loc = String(p.location || p.county || "").trim();
+  const state = String(p.state || "").trim();
+  const comments = String(p.comments || "").trim();
+  const dist = hitDistKm(p);
+  const distTxt = Number.isFinite(dist) && dist < 900 ? formatDistance(dist) : "";
+  const kind = isSpot ? "Spotter report" : "Hail radar (SWDI)";
+  const src = hailSourceLabel(p);
+  return `<div class="hs-zone-pop hs-dot-pop">
+    <strong>${escHailPop(when)}${time ? ` · ${escHailPop(time)}` : ""}</strong>
+    <span class="hs-zone-size">${Number(sz).toFixed(2)}″ · ${hailSeverityLabel(sz)}</span>
+    <span class="hs-zone-meta">${escHailPop(kind)} · ${escHailPop(src)}</span>
+    ${loc ? `<span class="hs-zone-meta">${escHailPop([loc, state].filter(Boolean).join(", "))}</span>` : ""}
+    ${distTxt ? `<span class="hs-zone-meta">${escHailPop(distTxt)} from pin</span>` : ""}
+    ${comments ? `<span class="hs-zone-meta">${escHailPop(comments)}</span>` : ""}
+  </div>`;
+}
+
+function bindHailDotTap(layer, p) {
+  if (!layer || !window.L) return layer;
+  layer.on("click", (e) => {
+    window.L.DomEvent.stopPropagation(e);
+    window.L.DomEvent.preventDefault(e);
+    const latlng = e.latlng || layer.getLatLng?.();
+    if (!latlng || !map) return;
+    window.L.popup({ className: "hs-zone-popup hs-dot-popup", closeButton: true, maxWidth: 280 })
+      .setLatLng(latlng)
+      .setContent(hailDotPopupHtml(p))
+      .openOn(map);
+  });
+  return layer;
+}
+
 function hailZonePopupHtml(h, sub) {
   const sz = sub.maxSize || parseFloat(h.size_in) || 0;
   const srcKey =
@@ -5296,42 +5348,16 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   hailStrokeLayers.length = 0;
   applyHailStrokeZoomStyles._bucket = -1;
   if (requireDate && !activeDays.size) {
-    if (hailLayer) {
-      try {
-        hailLayer.remove();
-      } catch {
-        /* ignore */
-      }
-    }
-    if (windLayer) {
-      try {
-        windLayer.remove();
-      } catch {
-        /* ignore */
-      }
-    }
-    hailLayer = null;
-    windLayer = null;
+    if (hailLayer) hailLayer.clearLayers();
+    if (windLayer) windLayer.clearLayers();
     syncHazardLayers();
     return;
   }
-  if (hailLayer) {
-    try {
-      hailLayer.remove();
-    } catch {
-      /* ignore */
-    }
-  }
-  if (windLayer) {
-    try {
-      windLayer.remove();
-    } catch {
-      /* ignore */
-    }
-  }
-  hailLayer = window.L.layerGroup();
-  windLayer = window.L.layerGroup();
   ensureHailPanes();
+  if (!hailLayer) hailLayer = window.L.layerGroup();
+  else hailLayer.clearLayers();
+  if (!windLayer) windLayer = window.L.layerGroup();
+  else windLayer.clearLayers();
   const hailSpotFillSvg = window.L.svg({ pane: "hailSpotFills", padding: 0.8 });
   const hailRadarFillSvg = window.L.svg({ pane: "hailRadarFills", padding: 0.8 });
   const hailFillSvg = window.L.svg({ pane: "hailFills", padding: 0.8 });
@@ -5526,10 +5552,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         weight: isSpot ? 1.6 : 2.2,
         pane: "hailDots",
         renderer: hailDotSvg,
-        interactive: false,
-        className: isSpot ? "wx-hail-spot" : "wx-hail-sig-radar",
+        interactive: true,
+        bubblingMouseEvents: false,
+        className: isSpot ? "wx-hail-spot wx-hail-dot-hit" : "wx-hail-sig-radar wx-hail-dot-hit",
       });
       mark.options.baseRadius = baseR;
+      bindHailDotTap(mark, p);
       hailDotMarkers.push(mark);
       if (!isSpot && showRadarHalos && dotUi >= 0.55) {
         window.L.circle([p.lat, p.lon], {
