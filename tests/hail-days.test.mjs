@@ -216,4 +216,29 @@ const stormBbox = spotterSwdiBbox(
 assert(stormBbox && /-9[67]\.\d/.test(stormBbox) && /36\.\d/.test(stormBbox), "spotter storm bbox spans the footprint");
 assert(OK_SWDI_BBOX.includes("-103"), "OK fallback bbox");
 
+setWxPin(35.467, -97.516);
+const staleFar = {
+  date: "2026-05-06",
+  lat: 35.72,
+  lon: -97.48,
+  size_in: "2.00",
+  source: "noaa-swdi-radar",
+  distance_km: 0.4,
+};
+const [staleZone] = collapseHailByDate([staleFar]);
+assert(staleZone.near_hits === 0, "stale distance_km must not fake roof hits");
+assert(Math.abs(staleZone.lat - 35.72) < 0.01, "far-only zone stays on the actual hit");
+
+const trulyNear = {
+  date: "2026-05-06",
+  lat: 35.468,
+  lon: -97.516,
+  size_in: "1.00",
+  source: "noaa-swdi-radar",
+  distance_km: 99,
+};
+const [roofZone] = collapseHailByDate([trulyNear]);
+assert(roofZone.near_hits === 1, "pin distance recompute finds roof hail");
+assert(Math.abs(roofZone.lat - 35.467) < 0.001, "roof zone anchors on the selected pin");
+
 console.log("hail-days ok");

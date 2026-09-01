@@ -759,12 +759,12 @@ function isSpotterHail(p) {
 }
 
 function hitDistKm(p) {
-  const d = Number(p?.distance_km);
-  if (Number.isFinite(d) && d < 900) return d;
   const pin = pinCoords();
   if (pin && Number.isFinite(p?.lat) && Number.isFinite(p?.lon)) {
     return haversineKm(pin.lat, pin.lon, p.lat, p.lon);
   }
+  const d = Number(p?.distance_km);
+  if (Number.isFinite(d) && d < 900) return d;
   return 999;
 }
 
@@ -789,11 +789,12 @@ function hailStormAtPin() {
 }
 
 function hailDistKm(h, lat, lon) {
+  if (Number.isFinite(lat) && Number.isFinite(lon) && Number.isFinite(h?.lat) && Number.isFinite(h?.lon)) {
+    return haversineKm(lat, lon, h.lat, h.lon);
+  }
   const d = Number(h?.distance_km);
   if (Number.isFinite(d) && d < 900) return d;
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return 999;
-  if (!Number.isFinite(h?.lat) || !Number.isFinite(h?.lon)) return 999;
-  return haversineKm(lat, lon, h.lat, h.lon);
+  return 999;
 }
 
 function hailPinPaintKm(filters = wxFilters) {
@@ -995,8 +996,6 @@ async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOve
   const { start, end, days } = range;
   const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
   const bbox = bboxOverride || bboxForKm(lat, lon, km);
-  const center = bboxOverride ? bboxCenter(bbox) : { lat, lon };
-  const ingestKm = bboxOverride ? ingestKmForBbox(center, bbox) : km;
   const fmt = (iso) => iso.replace(/-/g, "");
   const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
   const daySet = new Set(days);
@@ -1008,7 +1007,7 @@ async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOve
       const { body } = await httpGet(url, timeout);
       const data = JSON.parse(body || "{}");
       const raw = Array.isArray(data.result) ? data.result : [];
-      const rows = [...ingestSwdiItems(raw, center.lat, center.lon, ingestKm).values()].filter((h) =>
+      const rows = [...ingestSwdiItems(raw, lat, lon, km).values()].filter((h) =>
         daySet.has(String(h.date || "").slice(0, 10)),
       );
       return { rows, raw: raw.length, err: rows.length ? "" : raw.length ? "filtered" : "empty" };
@@ -1074,19 +1073,28 @@ async function ensureSwdiForSelectedStormDays() {
   const anchor = stormSwdiAnchor();
   if (!anchor) return;
   const days = selectedStormDateList();
+  const km = hailRadarZoneKm();
   const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
   const need = days.filter((d) => {
-    const dayRows = pool.filter((h) => String(h.date || "").slice(0, 10) === d);
-    return dayRows.filter(isSwdiHail).length === 0;
+    const near = pool.filter(
+      (h) =>
+        String(h.date || "").slice(0, 10) === d &&
+        isSwdiHail(h) &&
+        hailDistKm(h, anchor.lat, anchor.lon) <= km,
+    );
+    return near.length === 0;
   });
   if (!need.length) return;
   cancelScheduledStormRedraw();
   const gen = ++pinStormSwdiGen;
-  const km = hailRadarZoneKm();
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
   const spotBbox = spotterSwdiBbox(need, pool, anchor);
   let result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, spotBbox ? { bbox: spotBbox } : {});
   let swdi = result.rows;
+  if (!swdi.length) {
+    result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need);
+    swdi = result.rows;
+  }
   if (!swdi.length && isOklahomaLatLon(anchor.lat, anchor.lon)) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need, { bbox: OK_SWDI_BBOX });
     swdi = result.rows;
@@ -1415,13 +1423,20 @@ export function mergeHailRows(...groups) {
  */
 export function collapseHailByDate(rows) {
   const byDate = new Map();
+  const pin = pinCoords();
+  const rowDistKm = (h) => {
+    if (pin && Number.isFinite(h?.lat) && Number.isFinite(h?.lon)) {
+      return Math.round(haversineKm(pin.lat, pin.lon, h.lat, h.lon) * 10) / 10;
+    }
+    const dist = Number(h?.distance_km);
+    return Number.isFinite(dist) && dist < 900 ? dist : 999;
+  };
   for (const h of rows || []) {
     const day = String(h.date || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
     const sz = parseFloat(h.size_in);
     const size = Number.isNaN(sz) ? 0 : sz;
-    const dist = Number(h.distance_km);
-    const distN = Number.isFinite(dist) ? dist : 999;
+    const distN = rowDistKm(h);
     const prev = byDate.get(day);
     const pt =
       Number.isFinite(h.lat) && Number.isFinite(h.lon)
@@ -1483,7 +1498,15 @@ export function collapseHailByDate(rows) {
     const use = near.length ? near : nearest ? [nearest] : pts;
     let zone_lat = row.lat;
     let zone_lon = row.lon;
-    if (use.length) {
+    if (near.length) {
+      if (pin) {
+        zone_lat = pin.lat;
+        zone_lon = pin.lon;
+      } else {
+        zone_lat = use.reduce((a, p) => a + p.lat, 0) / use.length;
+        zone_lon = use.reduce((a, p) => a + p.lon, 0) / use.length;
+      }
+    } else if (use.length) {
       zone_lat = use.reduce((a, p) => a + p.lat, 0) / use.length;
       zone_lon = use.reduce((a, p) => a + p.lon, 0) / use.length;
     }
@@ -4051,8 +4074,7 @@ function hailNearPin(rows, day = null, { forZones = false } = {}) {
   const km = filterKm();
   return pool.filter((h) => {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
-    const dist = Number.isFinite(h.distance_km) ? h.distance_km : haversineKm(pinLat, pinLon, h.lat, h.lon);
-    return dist <= km;
+    return hailDistKm(h, pinLat, pinLon) <= km;
   });
 }
 
@@ -4076,14 +4098,19 @@ function windNearPin(rows, day = null) {
 export function setWxPin(lat, lon) {
   pinLat = Number(lat);
   pinLon = Number(lon);
+  pinStormSwdiGen++;
   applyContextStormFilters("pin");
   placeSelectPin([lat, lon]);
   clearPinRadius();
-  if (lastHailRows.length || lastWindRows.length) {
-    drawHailMarkers(lastHailRows, lastWindRows, {
-      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+  lastHailDrawSig = "";
+  if (lastHailRows.length || lastWindRows.length || hasSelectedStormDates()) {
+    const pools = resolvedStormDrawPools();
+    drawHailMarkers(pools.dotRows, lastWindRows, {
+      requireDate: hasSelectedStormDates(),
+      zoneRows: pools.zoneRows,
     });
   }
+  if (hasSelectedStormDates()) void ensureSwdiForSelectedStormDays();
 }
 
 /** Switch automatic hail filters for pin vs map-view (user can still change them after). */
@@ -5337,12 +5364,17 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         { maxSize: sz, hits: atRoof.length || 1, source: "spot+radar" },
       );
     }
-    const zoneHits = dayHits;
+    const zoneHits =
+      pin && hailStormAtPin()
+        ? dayHits.filter((p) => hitDistKm(p) <= HOUSE_ZONE_KM).length
+          ? dayHits.filter((p) => hitDistKm(p) <= HOUSE_ZONE_KM)
+          : dayHits
+        : dayHits;
     const subRings = [];
     for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
-    if (!subRings.length && dayHits.length) {
-      const spots = dayHits.filter(isSpotterHail);
-      const radarHits = dayHits.filter(isRadarHail);
+    if (!subRings.length && zoneHits.length) {
+      const spots = zoneHits.filter(isSpotterHail);
+      const radarHits = zoneHits.filter(isRadarHail);
       if (spots.length) {
         subRings.push({
           ring: topoZoneRing(h, spots),
@@ -5587,7 +5619,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   scheduleZoomUiRefresh(true);
   if (opts.fit && map) {
     const pts = [];
-    const pinFitKm = hailStormAtPin() ? Math.max(HOUSE_HAIL_KM * 8, hailPinPaintKm()) : null;
+    const pinFitKm = hailStormAtPin() ? Math.max(HOUSE_ZONE_KM, filterKm()) : null;
     if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) {
       pts.push([pinLat, pinLon]);
       for (const h of nearForZones.filter((p) => !day || day.has(String(p.date || "").slice(0, 10)))) {
