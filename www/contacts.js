@@ -2472,6 +2472,48 @@ export async function lookupFlagPhone(lat, lon, address = "") {
   };
 }
 
+/** Commercial POI phone hunt — YP/chamber by business name when street address is missing. */
+export async function lookupCommercialFlagPhone(
+  lat,
+  lon,
+  { name = "", street = "", city = "", state = "OK", zip = "" } = {},
+) {
+  const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "", source: "", phone_kind: "" };
+  const cityState = [city, state].filter(Boolean).join(", ");
+  const addrLine = [street, cityState, zip].filter(Boolean).join(", ");
+  if (addrLine && parseStreetAddress(addrLine).house) {
+    const hit = await lookupFlagPhone(lat, lon, addrLine);
+    if (hit.phone_kind === "business" && hit.owner_phone) return hit;
+  }
+  const bizName = String(name || "").trim();
+  if (!bizName) return blank;
+  const parts = { house: "1", street: bizName, city: city || "", state: state || "OK", zip: zip || "" };
+  const searchAddr = cityState ? `${bizName}, ${cityState}` : bizName;
+  let hit = { name: bizName, phone: "", email: "", source: "" };
+  const batch = await Promise.all([
+    yellowPagesBusinessContacts(searchAddr, parts).catch(() => null),
+    isOklahomaAddress(searchAddr, parts) ? okChamberBusinessContacts(searchAddr, parts).catch(() => null) : null,
+  ]);
+  for (const part of batch) {
+    if (part) hit = mergeContacts(hit, part);
+  }
+  if (!hit.phone && Number.isFinite(lat) && Number.isFinite(lon)) {
+    const osm = await overpassContacts(lat, lon, parts).catch(() => null);
+    if (osm?.phone && classifyFlagPhone(osm) === "business") hit = mergeContacts(hit, osm);
+  }
+  const phoneKind = classifyFlagPhone(hit);
+  if (phoneKind !== "business" || !hit.phone) {
+    return { ...blank, owner_name: hit.name || bizName };
+  }
+  return {
+    owner_name: hit.name || bizName,
+    owner_phone: hit.phone || "",
+    owner_email: hit.email || "",
+    source: hit.source || "commercial-lookup",
+    phone_kind: "business",
+  };
+}
+
 export async function lookupPlaceContacts(lat, lon, address = "", seed = {}, settings = null) {
   const parts = parseStreetAddress(address);
   const blank = {

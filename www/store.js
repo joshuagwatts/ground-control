@@ -20,6 +20,8 @@ function blank() {
       showHailDots: true,
       showRadar: false,
       showPhoneFlags: false,
+      showFlagResidential: false,
+      showFlagCommercial: false,
       done_pin_scale: 1,
       humor: 40,
       honesty: 98,

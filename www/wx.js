@@ -4,6 +4,8 @@ import { locateDevice, watchGps } from "./geo.js";
 import {
   lookupPlaceContacts,
   lookupFlagPhone,
+  lookupCommercialFlagPhone,
+  lookupRentFlagPhone,
   lookupListingRentPhone,
   formatPhone,
   phoneDigits,
@@ -16,6 +18,7 @@ import {
   isUsableZillowUrl,
   fillContactGapsWithChat,
   classifyFlagPhone,
+  isBusinessPhoneSource,
   isOsmBusinessTags,
   lookupViewportRentFlags,
   isOklahomaLatLon,
@@ -293,7 +296,7 @@ let listingPumpBusy = false;
 let listingPumpWanted = false;
 let flagDockIdx = 0;
 const flagHiddenKeys = new Set();
-let flagKindFilter = { rental: true, business: true };
+let flagKindFilter = { rental: false, business: false };
 try {
   const raw = sessionStorage.getItem("hs-flag-hidden");
   for (const k of JSON.parse(raw || "[]")) flagHiddenKeys.add(String(k));
@@ -1770,7 +1773,7 @@ const FLAG_SEARCH_KM_MIN = 2.2;
 const FLAG_SEARCH_KM_MAX = 14;
 /** Painted flag cap — business POIs only; rentals in view are never dropped. */
 function flagBizPaintMax() {
-  return Math.min(Number(flagNetProfile()?.paintMax) || (isAndroid() ? 260 : 450), 150);
+  return Number(flagNetProfile()?.paintMax) || (isAndroid() ? 260 : 450);
 }
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
@@ -6603,6 +6606,10 @@ function houseHasFlag(n) {
   if ((kind === "rental" || kind === "business") && houseHasPhone(n)) return true;
   // Zillow / listing map pin — show in-frame even before a public leasing phone lands.
   if (kind === "rental" && String(n.zillow_url || "").trim()) return true;
+  // OSM commercial POI — blue pin even before YP/chamber phone lookup lands.
+  if (kind === "business" && (n.source === "osm-business" || String(n.owner_name || n.num || "").trim())) {
+    return true;
+  }
   return false;
 }
 
@@ -6655,13 +6662,20 @@ function housePhoneKind(n) {
   ) {
     return "rental";
   }
+  if (
+    n?.phone_kind === "business" ||
+    n?.source === "osm-business" ||
+    isBusinessPhoneSource(n?.source || u?.source || "")
+  ) {
+    return "business";
+  }
   return "";
 }
 
 function houseKindLabel(n) {
   const kind = housePhoneKind(n);
-  if (kind === "business") return "Business";
-  if (kind === "rental") return "For rent";
+  if (kind === "business") return "Commercial";
+  if (kind === "rental") return "Residential";
   return "";
 }
 
@@ -6816,12 +6830,26 @@ function hideFlag(n) {
 
 function setFlagKindFilter(kind, on) {
   if (kind !== "rental" && kind !== "business") return;
-  flagKindFilter[kind] = on !== false;
-  if (!flagKindFilter.rental && !flagKindFilter.business) {
-    flagKindFilter[kind === "rental" ? "business" : "rental"] = true;
-  }
+  flagKindFilter[kind] = on === true;
   housePaintSig = "";
   paintHouseLayer([], houseCache.nums);
+  try {
+    window.dispatchEvent(
+      new CustomEvent("hs-flag-kind-filter", {
+        detail: { rental: flagKindFilter.rental, business: flagKindFilter.business },
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+export function applyFlagKindFilters({ residential, commercial } = {}) {
+  if (typeof residential === "boolean") flagKindFilter.rental = residential;
+  if (typeof commercial === "boolean") flagKindFilter.business = commercial;
+  housePaintSig = "";
+  if (phoneFlagsEnabled()) paintHouseLayer([], houseCache.nums);
+  else paintFlagDock();
 }
 
 export function getFlagKindFilter() {
@@ -6948,11 +6976,19 @@ function paintFlagDock() {
   dock.hidden = false;
   const rentOn = flagKindFilter.rental;
   const bizOn = flagKindFilter.business;
-  const kindToggles = `<button type="button" class="hs-flag-dock-kind ${rentOn ? "on" : ""}" data-flag-act="rent" aria-pressed="${rentOn ? "true" : "false"}" aria-label="Green rental flags" title="Show or hide green for-rent flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
-    <button type="button" class="hs-flag-dock-kind biz ${bizOn ? "on" : ""}" data-flag-act="biz" aria-pressed="${bizOn ? "true" : "false"}" aria-label="Blue business flags" title="Show or hide blue business flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>`;
+  const kindToggles = `<button type="button" class="hs-flag-dock-kind ${rentOn ? "on" : ""}" data-flag-act="rent" aria-pressed="${rentOn ? "true" : "false"}" aria-label="Green residential flags" title="Show or hide green residential flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
+    <button type="button" class="hs-flag-dock-kind biz ${bizOn ? "on" : ""}" data-flag-act="biz" aria-pressed="${bizOn ? "true" : "false"}" aria-label="Blue commercial flags" title="Show or hide blue commercial flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>`;
   if (!ready.length) {
     flagDockIdx = 0;
-    dock.innerHTML = `${kindToggles}<span class="hs-flag-dock-empty muted">No ${bizOn && !rentOn ? "business" : rentOn && !bizOn ? "rental" : ""} flags in view</span>`;
+    const filterHint =
+      !rentOn && !bizOn
+        ? "Residential and commercial hidden"
+        : bizOn && !rentOn
+          ? "commercial"
+          : rentOn && !bizOn
+            ? "residential"
+            : "";
+    dock.innerHTML = `${kindToggles}<span class="hs-flag-dock-empty muted">${filterHint ? `No ${filterHint} flags in view` : "No flags in view"}</span>`;
     return;
   }
   flagDockIdx = ((flagDockIdx % ready.length) + ready.length) % ready.length;
@@ -7277,8 +7313,8 @@ function flagStatusLine(extra = "") {
   const rentPhone = list.filter((n) => housePhoneKind(n) === "rental" && houseHasPhone(n)).length;
   const biz = list.filter((n) => housePhoneKind(n) === "business").length;
   const bits = [];
-  if (rent) bits.push(rentPhone && rentPhone < rent ? `${rent} for rent (${rentPhone} w/ phone)` : `${rent} for rent`);
-  if (biz) bits.push(`${biz} business`);
+  if (rent) bits.push(rentPhone && rentPhone < rent ? `${rent} residential (${rentPhone} w/ phone)` : `${rent} residential`);
+  if (biz) bits.push(`${biz} commercial`);
   const ready = bits.length ? `${bits.join(" · ")} ready` : "";
   if (extra && ready) return `${extra} · ${ready}`;
   return extra || ready || "Loading flags…";
@@ -7313,6 +7349,19 @@ async function enrichVisibleHouseInfo(nums, gen) {
     .map((n) => ({ n, d: haversineKm(c.lat, c.lng, n.lat, n.lon) }))
     .sort((a, b) => a.d - b.d)
     .slice(0, Math.max(4, HOUSE_ENRICH_MAX - listingQueue.length))
+    .map((x) => x.n);
+  const commercialQueue = nums
+    .filter((n) => {
+      if (housePhoneKind(n) !== "business") return false;
+      if (houseHasPhone(n)) return false;
+      const name = String(n.owner_name || n.num || "").trim();
+      if (!name) return false;
+      const k = `biz|@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}|${name.slice(0, 48)}`;
+      return !houseEnrichTried.has(k);
+    })
+    .map((n) => ({ n, d: haversineKm(c.lat, c.lng, n.lat, n.lon) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, Math.max(6, Math.floor(HOUSE_ENRICH_MAX / 2)))
     .map((x) => x.n);
   const runListing = async (n) => {
     if (!map || !phoneFlagsEnabled()) return;
@@ -7377,11 +7426,45 @@ async function enrichVisibleHouseInfo(nums, gen) {
       if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
     }
   };
-  if (!listingQueue.length && !addrQueue.length) {
+  const runCommercial = async (n) => {
+    if (!map || !phoneFlagsEnabled()) return;
+    if (mapBusy > 0) return "busy";
+    const name = String(n.owner_name || n.num || "").trim();
+    const key = `biz|@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}|${name.slice(0, 48)}`;
+    if (!key || houseEnrichTried.has(key)) return;
+    try {
+      const contacts = await lookupCommercialFlagPhone(n.lat, n.lon, {
+        name,
+        street: n.street || "",
+        city: n.city || "",
+        state: isOklahomaLatLon(n.lat, n.lon) ? "OK" : "",
+        zip: n.zip || "",
+      });
+      houseEnrichTried.add(key);
+      const phone = contacts?.owner_phone || "";
+      if (!phone) return;
+      n.phone = phone;
+      n.owner_name = contacts.owner_name || n.owner_name || name;
+      n.phone_kind = "business";
+      n.source = contacts.source || n.source || "commercial-lookup";
+      rememberHouseUseful(n, {
+        phone,
+        name: n.owner_name,
+        kind: "business",
+        source: n.source,
+      });
+      housePaintSig = "";
+      paintHouseLayer([], houseCache.nums);
+    } catch (e) {
+      const msg = String(e?.message || e || "");
+      if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
+    }
+  };
+  if (!listingQueue.length && !addrQueue.length && !commercialQueue.length) {
     emitPhoneFlagsStatus(flagStatusLine());
     return;
   }
-  const total = listingQueue.length + addrQueue.length;
+  const total = listingQueue.length + addrQueue.length + commercialQueue.length;
   emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… 0/${total}`));
   let step = 0;
   for (let i = 0; i < listingQueue.length; i += LISTING_ENRICH_BATCH) {
@@ -7407,6 +7490,18 @@ async function enrichVisibleHouseInfo(nums, gen) {
       return;
     }
     await runOne(addrQueue[i]);
+    step += 1;
+    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
+    await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
+    if (gen !== houseGen) return;
+  }
+  for (let i = 0; i < commercialQueue.length; i++) {
+    if (!map || !phoneFlagsEnabled()) return;
+    if (mapBusy > 0) {
+      emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
+      return;
+    }
+    await runCommercial(commercialQueue[i]);
     step += 1;
     emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
     await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
@@ -7557,7 +7652,7 @@ async function fetchOsmHouseData(south, west, north, east) {
   return { rings, nums };
 }
 
-function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false } = {}) {
+function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false, requireBusinessTag = false } = {}) {
   const tags = el.tags || {};
   const lat = Number(el.lat ?? el.center?.lat);
   const lon = Number(el.lon ?? el.center?.lon);
@@ -7568,17 +7663,34 @@ function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false } = {}) {
   const phoneRaw = firstTagPhone(tags);
   const phone = phoneRaw && !isJunkPhone(phoneRaw) ? formatPhone(phoneRaw) || phoneRaw : "";
   const biz = isOsmBusinessTags(tags);
+  if (requireBusinessTag && !biz) return;
   if (requireBusinessPhone && !(phone && biz)) return;
   if (!num && !name && !phone) return;
   const key = `${num || name}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
   if (seen.has(key) || nums.length >= HOUSE_NUM_MAX) return;
   seen.add(key);
-  if (phone && biz) {
-    rememberHouseUseful(
-      { num: num || name, street, lat, lon },
-      { phone, name, kind: "business", source: "osm-business" },
-    );
+  if (biz) {
+    if (phone) {
+      rememberHouseUseful(
+        { num: num || name, street, lat, lon },
+        { phone, name, kind: "business", source: "osm-business" },
+      );
+    }
+    nums.push({
+      num: num || name,
+      lat,
+      lon,
+      street,
+      city: String(tags["addr:city"] || "").trim(),
+      zip: String(tags["addr:postcode"] || "").trim(),
+      phone: phone || "",
+      owner_name: name,
+      phone_kind: "business",
+      source: "osm-business",
+    });
+    return;
   }
+  if (requireBusinessTag || requireBusinessPhone) return;
   nums.push({
     num: num || name,
     lat,
@@ -7586,10 +7698,10 @@ function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false } = {}) {
     street,
     city: String(tags["addr:city"] || "").trim(),
     zip: String(tags["addr:postcode"] || "").trim(),
-    phone: phone && biz ? phone : "",
+    phone: "",
     owner_name: name,
-    phone_kind: phone && biz ? "business" : "",
-    source: phone && biz ? "osm-business" : "",
+    phone_kind: "",
+    source: "",
   });
 }
 
@@ -7821,6 +7933,27 @@ function osmPoiQuery(south, west, north, east) {
   );out tags center;`;
 }
 
+/** Named commercial POIs — phone optional; blue flags paint before YP/chamber lookup. */
+function osmCommercialPoiQuery(south, west, north, east) {
+  return `[out:json][timeout:10][bbox:${south},${west},${north},${east}];(
+    node["amenity"]["name"];
+    node["shop"]["name"];
+    node["office"]["name"];
+    node["craft"]["name"];
+    node["healthcare"]["name"];
+    node["tourism"]["name"];
+    node["leisure"]["name"];
+    node["company"]["name"];
+    node["amenity"]["operator"];
+    way["amenity"]["name"];
+    way["shop"]["name"];
+    way["office"]["name"];
+    way["craft"]["name"];
+    way["healthcare"]["name"];
+    way["tourism"]["name"];
+  );out tags center;`;
+}
+
 function osmHouseQuery(south, west, north, east) {
   return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
 }
@@ -8027,12 +8160,27 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     })
     .catch(() => {});
 
+  // Named commercial POIs — blue pins even without an OSM phone tag.
+  void overpassJson(osmCommercialPoiQuery(south, west, north, east), 12000)
+    .then((overBiz) => {
+      if (gen !== houseGen || !phoneFlagsEnabled()) return;
+      const pois = numsFromOsmElements(overBiz?.elements, { requireBusinessTag: true });
+      if (!pois.length) return;
+      houseCache.nums = mergeHouseNums(houseCache.nums, pois);
+      persistBizFlags(houseCache.nums);
+      scheduleFlagLayerPaint(true);
+      emitPhoneFlagsStatus(flagStatusLine());
+    })
+    .catch(() => {});
+
   // Secondary OSM dump for any extra tagged phones — background only.
   void osmMapJson(south, west, north, east, 14000)
     .then((mapDump) => {
       if (gen !== houseGen || !phoneFlagsEnabled() || !mapDump?.elements?.length) return;
       const pois = numsFromOsmElements(mapDump.elements, { requireBusinessPhone: true });
       houseCache.nums = mergeHouseNums(houseCache.nums, pois);
+      const namedBiz = numsFromOsmElements(mapDump.elements, { requireBusinessTag: true });
+      houseCache.nums = mergeHouseNums(houseCache.nums, namedBiz);
       persistBizFlags(houseCache.nums);
       scheduleFlagLayerPaint();
       const place = placeFromOsmElements(mapDump.elements);

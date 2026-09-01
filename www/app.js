@@ -68,8 +68,8 @@ import {
   syncHailScopeRadar,
   applyLoadedMapConfig,
   getFlagKindFilter,
-  toggleFlagKindFilter,
-} from "./wx.js?v=0.2.209";
+  applyFlagKindFilters,
+} from "./wx.js?v=0.2.210";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1231,6 +1231,10 @@ function wirePinSizeSlider() {
 }
 
 function paintFieldMap() {
+  applyFlagKindFilters({
+    residential: db.settings.showFlagResidential === true,
+    commercial: db.settings.showFlagCommercial === true,
+  });
   setFieldOverlay({
     marks: fieldMarks(),
     done: doneHouses(),
@@ -1595,14 +1599,10 @@ function syncLayerToggleStates(el) {
   el.querySelector('[data-ov="me"]')?.classList.toggle("on", db.settings.showMyLocation !== false);
   el.querySelector('[data-ov="dots"]')?.classList.toggle("on", db.settings.showHailDots !== false);
   el.querySelector('[data-ov="flags"]')?.classList.toggle("on", flagsOn);
-  el.querySelector('[data-ov="rent-flags"]')?.classList.toggle("on", flagsOn && ff.rental);
-  el.querySelector('[data-ov="biz-flags"]')?.classList.toggle("on", flagsOn && ff.business);
+  el.querySelector('[data-ov="rent-flags"]')?.classList.toggle("on", ff.rental);
+  el.querySelector('[data-ov="biz-flags"]')?.classList.toggle("on", ff.business);
   el.querySelector('[data-ov="done"]')?.classList.toggle("on", db.settings.showDone !== false);
   el.querySelector('[data-ov="marks"]')?.classList.toggle("on", db.settings.showMarks !== false);
-  for (const ov of ["rent-flags", "biz-flags"]) {
-    const btn = el.querySelector(`[data-ov="${ov}"]`);
-    if (btn) btn.hidden = !flagsOn;
-  }
 }
 
 function paintLayerToggles() {
@@ -1613,9 +1613,9 @@ function paintLayerToggles() {
     el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="dots" class="hs-dots-toggle" aria-label="Hail signature dots" title="Spotter (red) and SWDI radar (size-colored) dots — not weather radar or rental flags"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-b"></i></span>Dots</button>
-    <button type="button" data-ov="flags" class="hs-flags-toggle" aria-label="Phone flags" title="Phone flags on map — tap Green or Biz to filter"><span class="hs-flag-ico gradient" aria-hidden="true"></span>Flags</button>
-    <button type="button" data-ov="rent-flags" class="hs-flag-kind-toggle" hidden aria-label="Green rental flags" title="Show or hide green for-rent flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
-    <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" hidden aria-label="Blue business flags" title="Show or hide blue business flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle" aria-label="Phone flags" title="Phone flags on map — green residential, blue commercial"><span class="hs-flag-ico gradient" aria-hidden="true"></span>Flags</button>
+    <button type="button" data-ov="rent-flags" class="hs-flag-kind-toggle" aria-label="Green residential flags" title="Show or hide green residential flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
+    <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" aria-label="Blue commercial flags" title="Show or hide blue commercial flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>
     <button type="button" data-ov="done">Done</button>
     <button type="button" data-ov="marks">Marks</button>`;
     if (!el._hsFlagsStatusBound) {
@@ -1626,9 +1626,15 @@ function paintLayerToggles() {
         if (btn) {
           btn.title =
             msg ||
-            "Green flags = for-rent listings. Blue pins = businesses with a phone. Tap off to clear, tap on to search this map view.";
+            "Green = residential. Blue = commercial. Master Flags loads the map view; green/blue toggles filter what you see.";
         }
         if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
+      });
+      window.addEventListener("hs-flag-kind-filter", (ev) => {
+        db.settings.showFlagResidential = ev.detail?.rental === true;
+        db.settings.showFlagCommercial = ev.detail?.business === true;
+        persist();
+        syncLayerToggleStates(el);
       });
     }
     el.onclick = (e) => {
@@ -1662,17 +1668,19 @@ function paintLayerToggles() {
         return;
       }
       if (b.dataset.ov === "rent-flags") {
-        toggleFlagKindFilter("rental");
+        db.settings.showFlagResidential = !(db.settings.showFlagResidential === true);
+        applyFlagKindFilters({ residential: db.settings.showFlagResidential === true });
+        persist();
         syncLayerToggleStates(el);
-        const ff = getFlagKindFilter();
-        setStatus(ff.rental ? "Green rental flags on" : "Green rental flags hidden");
+        setStatus(db.settings.showFlagResidential ? "Green residential flags on" : "Green residential flags off");
         return;
       }
       if (b.dataset.ov === "biz-flags") {
-        toggleFlagKindFilter("business");
+        db.settings.showFlagCommercial = !(db.settings.showFlagCommercial === true);
+        applyFlagKindFilters({ commercial: db.settings.showFlagCommercial === true });
+        persist();
         syncLayerToggleStates(el);
-        const ff = getFlagKindFilter();
-        setStatus(ff.business ? "Blue business flags on" : "Blue business flags hidden");
+        setStatus(db.settings.showFlagCommercial ? "Blue commercial flags on" : "Blue commercial flags off");
         return;
       }
       if (b.dataset.ov === "done") db.settings.showDone = !(db.settings.showDone !== false);
