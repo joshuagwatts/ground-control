@@ -12,6 +12,8 @@ import {
   hailCalendarStormDays,
   setWxPin,
   clearWxPin,
+  selectStormDate,
+  filterRowsToSelectedStormDays,
 } from "../www/wx.js";
 
 function assert(ok, msg) {
@@ -95,5 +97,14 @@ const allDays = hailCalendarStormDays(vpData, { viewport: true });
 assert(allDays.has("2026-05-15") && allDays.has("2026-06-01"), "storm day set includes all loaded hail");
 
 assert(HAIL_EXTREME_IN === 2 && HAIL_PIN_CALENDAR_IN === 1, "threshold constants");
+
+selectStormDate("2024-07-05", { toggle: false });
+const mixedRows = [
+  { date: "2024-07-05", lat: 35.47, lon: -97.52, size_in: "0.5", source: "iem-lsr" },
+  { date: "2024-06-01", lat: 35.47, lon: -97.52, size_in: "3.0", source: "noaa-swdi-radar" },
+];
+const pickedOnly = filterRowsToSelectedStormDays(mixedRows);
+assert(pickedOnly.length === 1 && pickedOnly[0].date === "2024-07-05", "storm draw keeps selected day only");
+selectStormDate(null);
 
 console.log("hail-calendar ok");

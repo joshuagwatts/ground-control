@@ -1111,13 +1111,20 @@ async function ensureSwdiForSelectedStormDays() {
     ? hailRadarZoneKm()
     : Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0);
   const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
+  const spotters = await ensureSpottersForSelectedStormDays(anchor, days, km, pool);
+  let livePool = pool;
+  if (spotters.length) {
+    lastHailRows = mergeHailRows(lastHailRows, spotters);
+    if (lastDossierDataRef) {
+      lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], spotters);
+    }
+    livePool = mergeHailRows(pool, spotters);
+  }
   const need = days.filter((d) => {
     if (!wxPinSelected()) {
-      return !pool.some(
-        (h) => stormDayMatches(h.date, d) && isSwdiHail(h) && hailRowInMapView(h),
-      );
+      return swdiSigsInMapView(livePool, d) < SWDI_DAY_MIN_SIGS;
     }
-    const near = pool.filter(
+    const near = livePool.filter(
       (h) =>
         stormDayMatches(h.date, d) &&
         isSwdiHail(h) &&
@@ -1125,11 +1132,21 @@ async function ensureSwdiForSelectedStormDays() {
     );
     return near.length === 0;
   });
-  if (!need.length) return;
+  if (!need.length) {
+    if (!wxPinSelected()) {
+      lastHailDrawSig = "";
+      const pools = resolvedStormDrawPools();
+      drawHailMarkers(pools.dotRows, lastWindRows, {
+        requireDate: true,
+        zoneRows: stormDrawZoneRows(pools.zoneRows),
+      });
+    }
+    return;
+  }
   cancelScheduledStormRedraw();
   const gen = ++pinStormSwdiGen;
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
-  const spotBbox = spotterSwdiBbox(need, pool, anchor);
+  const spotBbox = spotterSwdiBbox(need, livePool, anchor);
   const bboxOpt = mapBbox ? { bbox: mapBbox } : spotBbox ? { bbox: spotBbox } : {};
   let result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, bboxOpt);
   let swdi = result.rows;
@@ -1151,7 +1168,7 @@ async function ensureSwdiForSelectedStormDays() {
   }
   if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
   if (!swdi.length) {
-    const spotN = pool.filter(
+    const spotN = livePool.filter(
       (h) => need.includes(String(h.date || "").slice(0, 10)) && isSpotterHail(h),
     ).length;
     if (result.err && /fetch|proxy|timeout|cors/i.test(result.err)) {
@@ -1166,7 +1183,7 @@ async function ensureSwdiForSelectedStormDays() {
     }
     return;
   }
-  swdi = capSwdiRowsForDraw(clipHailToMapView(swdi), SWDI_DRAW_CAP);
+  swdi = capSwdiRowsForDraw(clipHailToMapView(filterRowsToSelectedStormDays(swdi)), SWDI_DRAW_CAP);
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
   lastHailRows = merged;
@@ -3971,6 +3988,33 @@ function clipHailToMapView(rows) {
 /** SWDI draw caps — large statewide pulls are OK to fetch; mesh build must stay bounded. */
 const SWDI_DRAW_CAP = 360;
 const SWDI_MESH_PT_CAP = 140;
+/** Refetch day-specific SWDI when the map frame has fewer sigs (partial search loads). */
+const SWDI_DAY_MIN_SIGS = 10;
+
+export function filterRowsToSelectedStormDays(rows) {
+  if (!hasSelectedStormDates()) return rows || [];
+  return (rows || []).filter((h) => selectedStormDates.has(parseStormDay(h.date)));
+}
+
+function swdiSigsInMapView(pool, day) {
+  return pool.filter(
+    (h) => stormDayMatches(h.date, day) && isSwdiHail(h) && hailRowInMapView(h),
+  ).length;
+}
+
+function spotterHitsInMapView(pool, day) {
+  return pool.some(
+    (h) => stormDayMatches(h.date, day) && isSpotterHail(h) && hailRowInMapView(h),
+  );
+}
+
+async function ensureSpottersForSelectedStormDays(anchor, days, km, pool) {
+  const need = days.filter((d) => !spotterHitsInMapView(pool, d));
+  if (!need.length) return [];
+  const lsr = await fetchIemLsrHail(anchor.lat, anchor.lon, km, Number(wxFilters.days) || 730).catch(() => []);
+  const daySet = new Set(need);
+  return clipHailToMapView(lsr.filter((h) => daySet.has(parseStormDay(h.date))));
+}
 
 function mapViewSwdiBbox(pad = 0.06) {
   const b = mapViewBounds(pad);
@@ -4011,6 +4055,7 @@ function capRadarPtsForMesh(pts, max = SWDI_MESH_PT_CAP) {
 function stormDrawZoneRows(rows) {
   let zRows = rows || [];
   if (hasSelectedStormDates() && !wxPinSelected()) {
+    zRows = filterRowsToSelectedStormDays(zRows);
     zRows = clipHailToMapView(zRows);
     const radar = capSwdiRowsForDraw(zRows.filter(isSwdiHail), SWDI_DRAW_CAP);
     const spots = zRows.filter(isSpotterHail).slice(0, 120);
@@ -4326,7 +4371,10 @@ async function refreshHailMapFill() {
       swdi = result.rows || [];
     }
     if (gen !== hailMapFillGen || !hasSelectedStormDates()) return;
-    swdi = capSwdiRowsForDraw(clipHailToMapView(swdi), SWDI_DRAW_CAP);
+    swdi = capSwdiRowsForDraw(
+      clipHailToMapView(filterRowsToSelectedStormDays(swdi)),
+      SWDI_DRAW_CAP,
+    );
     const merged = mergeHailRows(spc.hail || [], swdi, lsr || []);
     const byKey = new Map();
     for (const h of [...(lastHailRows || []), ...merged]) {
@@ -10216,6 +10264,10 @@ export function filterHailRaw(data, filters = wxFilters, { forMap = false, storm
       }
       if (dist != null && dist > paintKm) return false;
     }
+    if (forMap && hasSelectedStormDates()) {
+      const day = parseStormDay(h.date);
+      if (day && selectedStormDates.has(day)) return true;
+    }
     // Map zones/dots: never drop NOAA SWDI radar fringe — sheet hailMin still applies to spotters.
     if (forMap && isRadarHail(h)) return true;
     const sz = parseFloat(h.size_in);
@@ -10700,11 +10752,15 @@ async function ensureStormOverlayForSelection(root, data, esc, { onRefetch, date
   let live = data || hailScopeLiveData(root, null);
   const idle = Boolean(live?._meta?.idle);
   const empty = !(live?.hail?.length);
+  const selectedMissing = selectedStormDateList().some(
+    (d) => !(live?.hail || []).some((h) => stormDayMatches(h.date, d)),
+  );
+  const stormFetchFilters = { ...wxFilters, hailIn: 0, year: "all" };
 
-  if ((idle || empty) && onRefetch) {
+  if ((idle || empty || selectedMissing) && onRefetch) {
     emitMapStatus("Loading hail for this map view…");
     try {
-      const fresh = await onRefetch({ ...wxFilters });
+      const fresh = await onRefetch(stormFetchFilters);
       if (fresh) {
         fresh.viewport = true;
         fresh._meta = { ...fresh._meta, viewport: true, idle: false };
