@@ -6037,22 +6037,29 @@ function houseHasUseful(n) {
 }
 
 function houseHasFlag(n) {
-  if (!houseHasPhone(n)) return false;
+  if (!n || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
   const kind = housePhoneKind(n);
-  return kind === "rental" || kind === "business";
+  if ((kind === "rental" || kind === "business") && houseHasPhone(n)) return true;
+  // Zillow / listing map pin — show in-frame even before a public leasing phone lands.
+  if (kind === "rental" && String(n.zillow_url || "").trim()) return true;
+  return false;
 }
 
 function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "", source = "" } = {}) {
   const key = housePhoneKey(info);
   if (!key) return;
   const prev = houseUsefulByKey.get(key) || {};
-  const nextKind = classifyFlagPhone({
-    phone: phone || prev.phone || "",
-    source: source || kind || prev.source || "",
-    phone_kind: kind || prev.kind || "",
-    zillow_url: info?.zillow_url || "",
-    zillow_rent: info?.zillow_rent === true,
-  });
+  const nextKind =
+    classifyFlagPhone({
+      phone: phone || prev.phone || "",
+      source: source || kind || prev.source || "",
+      phone_kind: kind || prev.kind || "",
+      zillow_url: info?.zillow_url || "",
+      zillow_rent: info?.zillow_rent === true,
+    }) ||
+    (info?.zillow_rent || /zillow-rent|rent-com|apartments/i.test(String(source || kind || ""))
+      ? "rental"
+      : "");
   if (!nextKind) return;
   const next = {
     phone: phone || prev.phone || "",
@@ -6061,9 +6068,9 @@ function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "
     kind: nextKind,
     source: source || prev.source || "",
   };
-  if (!next.phone) return;
+  if (!next.phone && !(info?.zillow_rent && info?.zillow_url)) return;
   houseUsefulByKey.set(key, next);
-  rememberHousePhone(info, next.phone);
+  if (next.phone) rememberHousePhone(info, next.phone);
   if (Number.isFinite(info?.lat) && Number.isFinite(info?.lon)) {
     houseUsefulByKey.set(housePhoneKey({ lat: info.lat, lon: info.lon }), next);
   }
@@ -6072,13 +6079,22 @@ function rememberHouseUseful(info, { phone = "", name = "", email = "", kind = "
 function housePhoneKind(n) {
   const key = housePhoneKey(n);
   const u = key ? houseUsefulByKey.get(key) : null;
-  return classifyFlagPhone({
+  const classified = classifyFlagPhone({
     phone: housePhoneFor(n) || n?.phone || u?.phone || "",
     source: n?.source || u?.source || "",
     phone_kind: n?.phone_kind || u?.kind || "",
     zillow_url: n?.zillow_url || "",
     zillow_rent: n?.zillow_rent === true,
   });
+  if (classified) return classified;
+  if (
+    n?.zillow_rent === true ||
+    n?.phone_kind === "rental" ||
+    /zillow-rent|rent-com|apartments/i.test(String(n?.source || u?.source || ""))
+  ) {
+    return "rental";
+  }
+  return "";
 }
 
 function houseKindLabel(n) {
@@ -6398,11 +6414,18 @@ function housePhonePopupHtml(n) {
   const street = [n.num, n.street].filter(Boolean).join(" ");
   const kindLabel = houseKindLabel(n);
   const biz = housePhoneKind(n) === "business";
+  const listUrl = String(n.zillow_url || "").trim();
+  const listLink = listUrl
+    ? `<a class="hs-list" href="${escHousePop(listUrl)}" target="_blank" rel="noopener">Open listing</a>`
+    : "";
   if (!e164) {
     return `<div class="hs-house-pop${biz ? " biz" : ""}">
       <strong class="hs-house-pop-num">${escHousePop(street || n.num || name)}</strong>
       ${kindLabel || name ? `<span class="hs-house-pop-who">${escHousePop([name, kindLabel].filter(Boolean).join(" · "))}</span>` : ""}
-      <span class="hs-place-miss">No phone yet</span>
+      <div class="hs-house-pop-actions">
+        ${listLink || `<span class="hs-place-miss">No phone yet</span>`}
+        <button type="button" class="hs-flag-hide" data-flag-hide="1">Hide</button>
+      </div>
     </div>`;
   }
   return `<div class="hs-house-pop${biz ? " biz" : ""}">
@@ -6411,6 +6434,7 @@ function housePhonePopupHtml(n) {
     <div class="hs-house-pop-actions">
       <a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(pretty)}</a>
       <a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>
+      ${listLink}
       <button type="button" class="hs-flag-hide" data-flag-hide="1">Hide</button>
     </div>
     <span class="hs-house-pop-hint">${useDesktopChrome() ? "Right-click or long-press to copy" : "Hold flag to copy"}</span>
@@ -6610,9 +6634,10 @@ function mergeHouseNums(into, nums) {
 function flagStatusLine(extra = "") {
   const list = readyFlagList(houseCache.nums);
   const rent = list.filter((n) => housePhoneKind(n) === "rental").length;
+  const rentPhone = list.filter((n) => housePhoneKind(n) === "rental" && houseHasPhone(n)).length;
   const biz = list.filter((n) => housePhoneKind(n) === "business").length;
   const bits = [];
-  if (rent) bits.push(`${rent} for rent`);
+  if (rent) bits.push(rentPhone && rentPhone < rent ? `${rent} for rent (${rentPhone} w/ phone)` : `${rent} for rent`);
   if (biz) bits.push(`${biz} business`);
   const ready = bits.length ? `${bits.join(" · ")} ready` : "";
   if (extra && ready) return `${extra} · ${ready}`;
@@ -6901,13 +6926,14 @@ function placeFromOsmElements(elements) {
 function numsFromRentFlags(flags) {
   const out = [];
   for (const r of flags || []) {
-    if (!r?.phone || !Number.isFinite(r.lat) || !Number.isFinite(r.lon)) continue;
+    if (!Number.isFinite(r?.lat) || !Number.isFinite(r?.lon)) continue;
+    if (!r.phone && !r.listingUrl) continue;
     const addr = [r.street, r.city, r.state, r.zip].filter(Boolean).join(", ");
     const parts = parseStreetAddress(addr);
     const num = parts.house || r.name || r.street || "For rent";
     rememberHouseUseful(
       { num, street: parts.street || r.street, lat: r.lat, lon: r.lon, zillow_url: r.listingUrl, zillow_rent: true },
-      { phone: r.phone, name: r.name || "", kind: "rental", source: r.source || "rent-com" },
+      { phone: r.phone || "", name: r.name || "", kind: "rental", source: r.source || "rent-com" },
     );
     out.push({
       num,
@@ -6916,7 +6942,7 @@ function numsFromRentFlags(flags) {
       zip: r.zip || "",
       lat: r.lat,
       lon: r.lon,
-      phone: r.phone,
+      phone: r.phone || "",
       owner_name: r.name || "",
       phone_kind: "rental",
       source: r.source || "rent-com",

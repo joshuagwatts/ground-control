@@ -2,6 +2,7 @@
 import { httpGet, overpassJson } from "./net.js";
 import { flagNetProfile, listingBrowserHeaders } from "./device.js";
 import { OK_RENT_CITY_ROWS } from "./ok-rent-cities.js";
+import { OK_RENT_FLAG_SEED } from "./ok-rent-flags.js";
 
 const NOM_UA = { "User-Agent": "GroundControl/1.0 (joshuagwatts)", "Accept-Language": "en" };
 const RENT_STORE_KEY = "hs-rent-flags-v1";
@@ -848,7 +849,12 @@ export function loadPersistedRentFlags() {
     if (typeof localStorage === "undefined") return [];
     const j = JSON.parse(localStorage.getItem(RENT_STORE_KEY) || "null");
     if (!j || !Array.isArray(j.flags)) return [];
-    return j.flags.filter((r) => r?.phone && Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lon)));
+    return j.flags.filter(
+      (r) =>
+        (r?.phone || r?.listingUrl) &&
+        Number.isFinite(Number(r.lat)) &&
+        Number.isFinite(Number(r.lon)),
+    );
   } catch {
     return [];
   }
@@ -901,12 +907,29 @@ export function inferOkCity(lat, lon) {
 export function mergeRentFlagList(into, rows) {
   const out = Array.isArray(into) ? into.slice() : [];
   const seen = new Set(
-    out.map((r) => `${phoneDigits(r.phone)}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}`),
+    out.map((r) =>
+      r?.phone
+        ? `${phoneDigits(r.phone)}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}`
+        : `pin|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${String(r.listingUrl || "").slice(-40)}`,
+    ),
   );
   for (const r of rows || []) {
-    if (!r?.phone || !Number.isFinite(r.lat) || !Number.isFinite(r.lon)) continue;
-    const key = `${phoneDigits(r.phone)}|${r.lat.toFixed(4)}|${r.lon.toFixed(4)}`;
+    if (!Number.isFinite(r?.lat) || !Number.isFinite(r?.lon)) continue;
+    if (!r.phone && !r.listingUrl) continue;
+    const key = r.phone
+      ? `${phoneDigits(r.phone)}|${r.lat.toFixed(4)}|${r.lon.toFixed(4)}`
+      : `pin|${r.lat.toFixed(4)}|${r.lon.toFixed(4)}|${String(r.listingUrl || "").slice(-40)}`;
     if (seen.has(key)) continue;
+    // Prefer a phoned row over a phoneless pin at the same spot.
+    if (r.phone) {
+      const pinKeyPrefix = `pin|${r.lat.toFixed(4)}|${r.lon.toFixed(4)}|`;
+      for (let i = out.length - 1; i >= 0; i--) {
+        const o = out[i];
+        if (o.phone) continue;
+        if (Math.abs(o.lat - r.lat) > 0.0003 || Math.abs(o.lon - r.lon) > 0.0003) continue;
+        out.splice(i, 1);
+      }
+    }
     seen.add(key);
     out.push(r);
   }
@@ -1035,6 +1058,10 @@ async function fetchZillowCityRentPhones(
   const local = found.filter(inArea);
   // Prefer map-frame hits; if the frame is empty, keep city hits so detail scrape still runs.
   const pool = local.length ? local : found;
+
+  // Paint every pin in the frame immediately (matches Zillow's map) — phones fill in next.
+  if (typeof onPartial === "function" && pool.length) onPartial(pool);
+
   const withPhone = pool.filter((r) => r.phone);
 
   // Borrow leasing phones from Rent.com / apartments already in this view (Zillow search has none).
@@ -1092,7 +1119,7 @@ async function fetchZillowCityRentPhones(
 function rentFlagsNearPoint(rows, lat, lon, km = 28) {
   return (rows || []).filter(
     (r) =>
-      r?.phone &&
+      (r?.phone || r?.listingUrl) &&
       Number.isFinite(Number(r.lat)) &&
       Number.isFinite(Number(r.lon)) &&
       haversineKm(lat, lon, Number(r.lat), Number(r.lon)) <= km,
@@ -1100,13 +1127,13 @@ function rentFlagsNearPoint(rows, lat, lon, km = 28) {
 }
 
 function rentFlagsInBounds(rows, bounds, padKm = 12) {
-  if (!bounds) return Array.isArray(rows) ? rows.filter((r) => r?.phone) : [];
+  if (!bounds) return Array.isArray(rows) ? rows.filter((r) => r?.phone || r?.listingUrl) : [];
   const south = Number(bounds.south);
   const west = Number(bounds.west);
   const north = Number(bounds.north);
   const east = Number(bounds.east);
   if (![south, west, north, east].every(Number.isFinite)) {
-    return Array.isArray(rows) ? rows.filter((r) => r?.phone) : [];
+    return Array.isArray(rows) ? rows.filter((r) => r?.phone || r?.listingUrl) : [];
   }
   const midLat = (south + north) / 2;
   const dLat = padKm / 111.32;
@@ -1117,7 +1144,7 @@ function rentFlagsInBounds(rows, bounds, padKm = 12) {
   const e = east + dLon;
   return (rows || []).filter(
     (r) =>
-      r?.phone &&
+      (r?.phone || r?.listingUrl) &&
       Number.isFinite(Number(r.lat)) &&
       Number.isFinite(Number(r.lon)) &&
       Number(r.lat) >= s &&
@@ -1222,14 +1249,24 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const cached = loadPersistedRentFlags();
   if (cached.length) {
     acc = mergeRentFlagList(acc, cached);
-    paintRows(cached);
+    paintRows(acc);
+  }
+  // Same-origin seed — works even when Rent.com is blocked in the app/CORS.
+  if (Array.isArray(OK_RENT_FLAG_SEED) && OK_RENT_FLAG_SEED.length) {
+    acc = mergeRentFlagList(acc, OK_RENT_FLAG_SEED);
+    paintRows(acc);
   }
 
   if ((force || retarget) && rentSweepInFlight) {
     rentSweepEpoch += 1;
     rentSweepInFlight = null;
   } else if (rentSweepInFlight) {
-    return rentSweepInFlight.then(() => acc);
+    const flight = rentSweepInFlight;
+    return flight.then((rows) => {
+      const merged = mergeRentFlagList(acc, Array.isArray(rows) ? rows : []);
+      paintRows(merged);
+      return merged;
+    });
   }
 
   if (force) {

@@ -90,7 +90,7 @@ function bodyToText(data) {
   }
 }
 
-async function nativeRequest(method, url, headers, body, timeoutMs) {
+async function nativeRequest(method, url, headers, body, timeoutMs, { responseType = "text" } = {}) {
   const http = nativeHttp();
   if (!http) return null;
   const req = {
@@ -100,6 +100,8 @@ async function nativeRequest(method, url, headers, body, timeoutMs) {
     connectTimeout: timeoutMs,
     readTimeout: timeoutMs,
     disableRedirects: false,
+    // Listing pages are HTML — without this, some bridges try JSON and drop the body.
+    responseType,
   };
   if (body !== undefined) {
     req.data = typeof body === "string" ? body : JSON.stringify(body);
