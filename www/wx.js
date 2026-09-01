@@ -6864,7 +6864,7 @@ function setFlagKindFilter(kind, on) {
   flagKindFilter[kind] = on === true;
   housePaintSig = "";
   paintHouseLayer([], houseCache.nums);
-  if (turningBizOn && phoneFlagsEnabled()) void kickCommercialOsm(houseGen);
+  if (turningBizOn && phoneFlagsEnabled()) void kickCommercialOsm(houseGen, { force: true });
   try {
     window.dispatchEvent(
       new CustomEvent("hs-flag-kind-filter", {
@@ -6883,7 +6883,7 @@ export function applyFlagKindFilters({ residential, commercial } = {}) {
   housePaintSig = "";
   if (phoneFlagsEnabled()) {
     paintHouseLayer([], houseCache.nums);
-    if (flagKindFilter.business && !prevBiz) void kickCommercialOsm(houseGen);
+    if (flagKindFilter.business && !prevBiz) void kickCommercialOsm(houseGen, { force: true });
   } else paintFlagDock();
 }
 
@@ -8017,24 +8017,44 @@ function ingestCommercialPois(pois, gen) {
   if (gen != null && gen !== houseGen) return 0;
   if (!phoneFlagsEnabled() || !pois?.length) return 0;
   const before = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
+  const beforeLen = houseCache.nums.length;
   houseCache.nums = mergeHouseNums(houseCache.nums, pois);
-  persistBizFlags(houseCache.nums);
-  scheduleFlagLayerPaint(true);
   const after = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
   const added = after - before;
+  if (added <= 0 && houseCache.nums.length === beforeLen) return 0;
+  persistBizFlags(houseCache.nums);
+  scheduleFlagLayerPaint(true);
   if (added > 0) {
     emitPhoneFlagsStatus(
       flagKindFilter.business
-        ? flagStatusLine(`${added} commercial loaded`)
+        ? flagStatusLine()
         : `${after} commercial ready · tap the blue flag to show them`,
     );
   }
   return added;
 }
 
+const COMMERCIAL_SWEEP_COOL_MS = 14_000;
+const COMMERCIAL_SWEEP_MOVE_KM = 1.6;
 let commercialFetchGen = 0;
-async function kickCommercialOsm(gen) {
-  if (!phoneFlagsEnabled() || !map) return [];
+let commercialBusy = false;
+let lastCommercialSweepAt = 0;
+let lastCommercialSweepLat = NaN;
+let lastCommercialSweepLon = NaN;
+
+async function kickCommercialOsm(gen, { force = false } = {}) {
+  if (!phoneFlagsEnabled() || !map || commercialBusy) return [];
+  const c = map.getCenter?.();
+  if (!c) return [];
+  const now = Date.now();
+  const moved =
+    !Number.isFinite(lastCommercialSweepLat) ||
+    !Number.isFinite(lastCommercialSweepLon) ||
+    haversineKm(lastCommercialSweepLat, lastCommercialSweepLon, c.lat, c.lng) >= COMMERCIAL_SWEEP_MOVE_KM;
+  const cooled = !lastCommercialSweepAt || now - lastCommercialSweepAt >= COMMERCIAL_SWEEP_COOL_MS;
+  const bizN = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
+  if (!force && !moved && bizN > 0) return [];
+  if (!force && !cooled && bizN >= 4) return [];
   const b = commercialSearchBounds();
   if (!b?.isValid?.()) return [];
   const south = b.getSouth();
@@ -8042,19 +8062,25 @@ async function kickCommercialOsm(gen) {
   const north = b.getNorth();
   const east = b.getEast();
   const myGen = ++commercialFetchGen;
-  emitPhoneFlagsStatus(flagStatusLine("Loading commercial…"));
+  commercialBusy = true;
+  lastCommercialSweepAt = now;
+  lastCommercialSweepLat = c.lat;
+  lastCommercialSweepLon = c.lng;
+  if (!bizN || force) emitPhoneFlagsStatus(flagStatusLine("Loading commercial…"));
   try {
     const pois = await fetchOsmFlagPois(south, west, north, east);
     if (myGen !== commercialFetchGen) return pois || [];
     if (!pois?.length) {
-      emitPhoneFlagsStatus(flagStatusLine("No commercial POIs in this view"));
+      if (!bizN) emitPhoneFlagsStatus(flagStatusLine("No commercial POIs in this view"));
       return [];
     }
     ingestCommercialPois(pois, gen);
     return pois;
   } catch {
-    emitPhoneFlagsStatus(flagStatusLine("Commercial lookup failed"));
+    if (!bizN) emitPhoneFlagsStatus(flagStatusLine("Commercial lookup failed"));
     return [];
+  } finally {
+    if (myGen === commercialFetchGen) commercialBusy = false;
   }
 }
 
@@ -8196,7 +8222,6 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   mergeViewportRentFlagsIntoCache();
 
   const frameChanged = houseCache.key !== key;
-  const bizN = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
   if (!forceRent && !frameChanged && houseCache.nums.length) {
     mergeViewportRentFlagsIntoCache();
     scheduleFlagLayerPaint();
@@ -8211,7 +8236,8 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
         houseGen,
       );
     }
-    if (bizN < 8) void kickCommercialOsm(houseGen);
+    // Soft top-up only — kickCommercialOsm itself throttles by move/cooldown.
+    void kickCommercialOsm(houseGen);
     if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
     houseEnrichTimer = setTimeout(() => {
       houseEnrichTimer = 0;
@@ -8245,7 +8271,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   }
 
   // Commercial first — shops/offices paint without waiting on rental crawl or phone hunt.
-  void kickCommercialOsm(gen);
+  void kickCommercialOsm(gen, { force: forceRent });
 
   scheduleFlagLayerPaint(true);
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
@@ -8305,6 +8331,9 @@ export function startPhoneFlagScan() {
   clearPersistedRentFlags();
   persistHydrated = false;
   hydratePersistedFlags();
+  lastCommercialSweepAt = 0;
+  lastCommercialSweepLat = NaN;
+  lastCommercialSweepLon = NaN;
   try {
     houseLayer?.clearLayers?.();
   } catch {
