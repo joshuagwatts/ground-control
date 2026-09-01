@@ -10518,7 +10518,7 @@ function pickStormDateFromSheet(dateRaw, root, live, esc, { toggle = true, fit =
     zoneRows: pools.zoneRows,
   });
   syncHazardLayers();
-  paintHailScopeDateSelection(root, dossier, esc);
+  paintHailScopeDateSelection(root, dossier, esc, { scrollTo: date });
   if (closeCalendar) closeHsCalendarSheet();
   return true;
 }
@@ -10602,7 +10602,9 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
     hsCalendarYear = def.year;
     hsCalendarMonth = def.month;
   }
-  const subtitle = pinMode ? "Bright = ≥1″ at roof · dim = storm day" : "Bright = ≥2″ extreme · dim = storm day";
+  const subtitle = pinMode
+    ? "Tap to toggle · bright = ≥1″ at roof"
+    : "Tap to toggle · bright = ≥2″ extreme";
   pop.innerHTML = renderStormCalendar({
     year: hsCalendarYear,
     month: hsCalendarMonth,
@@ -10616,19 +10618,21 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
     onDay: (iso) => {
       if (!iso) return;
       const live = pop._hsData || hailScopeLiveData(pop._hsRoot, data);
-      const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, { toggle: false, closeCalendar: true });
+      const turningOn = !isStormDateSelected(iso);
+      const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, { toggle: true, closeCalendar: false });
       if (!picked) return;
-      if (!stormDays.has(iso)) {
+      const n = selectedStormDates.size;
+      if (!stormDays.has(iso) && turningOn) {
         emitMapStatus(`No hail loaded for ${prettyStormDate(iso)} — Search storms or widen window`);
+      } else if (n === 0) {
+        emitMapStatus("Storm overlays cleared");
+      } else if (n === 1) {
+        emitMapStatus(`Overlay ${prettyStormDate([...selectedStormDates][0])}`);
       } else {
-        emitMapStatus(`Overlay ${prettyStormDate(iso)}`);
+        emitMapStatus(`${n} storm days on map`);
       }
       void ensureSwdiForSelectedStormDays();
-      if (hsCalendarOpen) {
-        hsCalendarYear = null;
-        hsCalendarMonth = null;
-        paintHailCalendarPanel(pop._hsRoot, live, esc, { onRefetch: pop._hsOnRefetch });
-      }
+      if (hsCalendarOpen) paintHailCalendarPanel(pop._hsRoot, live, esc, { onRefetch: pop._hsOnRefetch });
     },
     onNav: (dir) => {
       let y = hsCalendarYear;
@@ -10874,7 +10878,7 @@ function hailScopeHtml(data, days, esc) {
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
 
-function paintHailScopeDateSelection(root, data, esc) {
+function paintHailScopeDateSelection(root, data, esc, { scrollTo = null } = {}) {
   if (!root) return;
   const pinEl = root.querySelector(".hs-pin");
   if (pinEl) {
@@ -10884,18 +10888,33 @@ function paintHailScopeDateSelection(root, data, esc) {
     if (next) pinEl.replaceWith(next);
   }
   const box = root.querySelector(".hs-dates");
-  if (box && wxPinSelected()) {
-    const viewport = Boolean(data.viewport || data._meta?.viewport);
-    box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
-    box._hsData = data;
-    box._hsEsc = esc;
-    return;
+  if (!box) return;
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const days = hailScopeDays(data);
+  const jumpKey = scrollTo ? stormDateKey(scrollTo) : "";
+  if (jumpKey && days.length) {
+    const idx = days.findIndex((h) => stormDateKey(h.date) === jumpKey);
+    if (idx >= 0) {
+      const wantPage = Math.floor(idx / STORM_LIST_PAGE_SIZE);
+      if (wantPage !== hailStormPage) {
+        hailStormPage = wantPage;
+        box.innerHTML = hailScopeDateRows(days, esc, { viewport, data });
+      }
+    }
+  } else if (wxPinSelected() && !box.querySelector(".hs-date")) {
+    box.innerHTML = hailScopeDateRows(days, esc, { viewport, data });
   }
-  root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
+  box._hsData = data;
+  box._hsEsc = esc;
+  box.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
     const on = isStormDateSelected(row.getAttribute("data-storm-date"));
     row.classList.toggle("on", on);
     row.setAttribute("aria-pressed", on ? "true" : "false");
   });
+  if (jumpKey) {
+    const row = box.querySelector(`.hs-date[data-storm-date="${jumpKey}"]`);
+    if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
 }
 
 function bindHailScopeDates(root, data, esc, { onRefetch } = {}) {
