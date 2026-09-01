@@ -7,6 +7,7 @@ import {
   parseRentComSearchJson,
   parseApartmentsComSearchHtml,
   mergeRentFlagList,
+  isOklahomaLatLon,
 } from "../www/contacts.js";
 import { OK_RENT_CITY_ROWS } from "../www/ok-rent-cities.js";
 import { listingBrowserHeaders } from "../www/device.js";
@@ -67,7 +68,18 @@ function saveProgress(done, flags) {
 }
 
 function writeSeed(flags) {
-  const slim = mergeRentFlagList([], flags).map(slimRow);
+  const okCities = new Set(OK_RENT_CITY_ROWS.map((r) => String(r.name || "").toLowerCase()));
+  const slim = mergeRentFlagList([], flags)
+    .filter((r) => {
+      if (!isOklahomaLatLon(r.lat, r.lon)) return false;
+      const st = String(r.state || "").toUpperCase();
+      if (st && st !== "OK") return false;
+      const city = String(r.city || "").toLowerCase();
+      if (city && okCities.has(city)) return true;
+      // Keep if labeled OK / empty state and inside the state box.
+      return !st || st === "OK";
+    })
+    .map(slimRow);
   fs.mkdirSync(path.dirname(outJson), { recursive: true });
   fs.writeFileSync(outJson, JSON.stringify(slim));
   fs.writeFileSync(
