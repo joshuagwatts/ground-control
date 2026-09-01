@@ -924,22 +924,39 @@ function ingestSwdiItems(items, lat, lon, km, hits = new Map()) {
   return hits;
 }
 
+/** SWDI nx3hail end date is exclusive — same-day range returns zero rows. */
+function addIsoDay(iso, days = 1) {
+  const d = new Date(`${String(iso).slice(0, 10)}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** @param {string[]} isoDays sorted YYYY-MM-DD */
+export function swdiApiDateRange(isoDays) {
+  const days = [...new Set((isoDays || []).map((d) => String(d).slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
+  if (!days.length) return null;
+  return { start: days[0], end: addIsoDay(days[days.length - 1], 1), days };
+}
+
 /** One SWDI request for exact storm calendar day(s) — Oklahoma radar for the tapped date. */
 async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays) {
-  const days = [...new Set((isoDays || []).map((d) => String(d).slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))];
-  if (!days.length) return [];
+  const range = swdiApiDateRange(isoDays);
+  if (!range) return [];
+  const { start, end, days } = range;
   const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
   const bbox = bboxForKm(lat, lon, km);
-  const sorted = [...days].sort();
   const fmt = (iso) => iso.replace(/-/g, "");
-  const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(sorted[0])}:${fmt(sorted[sorted.length - 1])}?bbox=${bbox}`;
+  const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
+  const daySet = new Set(days);
   const slow = isSlowBrowserNet();
   const timeout = slow ? 14000 : 18000;
   for (let attempt = 0; attempt < (slow ? 2 : 3); attempt++) {
     try {
       const { body } = await httpGet(url, timeout);
       const data = JSON.parse(body || "{}");
-      return [...ingestSwdiItems(data.result || [], lat, lon, km).values()];
+      return [...ingestSwdiItems(data.result || [], lat, lon, km).values()].filter((h) =>
+        daySet.has(String(h.date || "").slice(0, 10)),
+      );
     } catch {
       if (attempt >= (slow ? 1 : 2)) break;
     }
@@ -1071,7 +1088,9 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgres
     const part = await Promise.all(
       chunks.slice(i, i + batch).map(async ({ start, end }) => {
         const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
-        const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
+        const endExclusive = new Date(end);
+        endExclusive.setDate(endExclusive.getDate() + 1);
+        const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(endExclusive)}?bbox=${bbox}`;
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
             const { body } = await httpGet(url, timeout);

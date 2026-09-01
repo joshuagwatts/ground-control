@@ -8,6 +8,7 @@ import {
   resolvedStormDrawPools,
   selectStormDate,
   setWxPin,
+  swdiApiDateRange,
   stormPassesSizeFilter,
   HOUSE_HAIL_KM,
   PIN_FETCH_FAST_KM,
@@ -196,5 +197,10 @@ assert(
   pools.zoneRows.some((h) => h.source === "noaa-swdi-radar"),
   "cached SWDI survives when sheet passes spotter-only rows",
 );
+
+const oneDay = swdiApiDateRange(["2024-05-25"]);
+assert(oneDay.start === "2024-05-25" && oneDay.end === "2024-05-26", "SWDI API end date is exclusive");
+const multi = swdiApiDateRange(["2024-05-25", "2024-05-26"]);
+assert(multi.end === "2024-05-27", "multi-day SWDI range adds one past last day");
 
 console.log("hail-days ok");
