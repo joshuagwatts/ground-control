@@ -14,7 +14,9 @@ async function registerWebProxy() {
       reg.waiting.postMessage({ type: "GC_SKIP_WAITING" });
     }
     await navigator.serviceWorker.ready;
-    await new Promise((r) => setTimeout(r, 250));
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
     return Boolean(navigator.serviceWorker.controller);
   } catch (err) {
     console.warn("service worker registration failed", err);

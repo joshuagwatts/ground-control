@@ -67,7 +67,7 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.205";
+} from "./wx.js?v=0.2.206";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -122,6 +122,15 @@ hydrateHealth(db.settings.brain_health || {});
 
 function persist() {
   save(db);
+}
+
+let persistTimer = 0;
+function persistSoon(ms = 400) {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    persistTimer = 0;
+    persist();
+  }, ms);
 }
 
 function esc(s) {
@@ -1452,7 +1461,7 @@ function paintFieldSheet() {
       <strong>Completed houses</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "None loaded yet"}</span>
     </div>
-    <p class="muted">Paste finished addresses and load yellow markers in the Jobs tab. Tap a yellow pin to zoom in and open storm dates for that house. Pin size slider is on the map.</p>
+    <p class="muted">Yellow pins = completed houses (Jobs tab). Hold the map to drop field marks; hold any pin to resize.</p>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-jobs">Manage in Jobs</button>
       ${selHouse ? `<button type="button" id="hs-done-all-pins">Clear selection</button>` : ""}
@@ -1577,68 +1586,77 @@ function paintHailScopeRadarBar() {
   bindHailScopeRadar(shell);
 }
 
+function syncLayerToggleStates(el) {
+  if (!el) return;
+  el.querySelector('[data-ov="me"]')?.classList.toggle("on", db.settings.showMyLocation !== false);
+  el.querySelector('[data-ov="dots"]')?.classList.toggle("on", db.settings.showHailDots !== false);
+  el.querySelector('[data-ov="flags"]')?.classList.toggle("on", db.settings.showPhoneFlags === true);
+  el.querySelector('[data-ov="done"]')?.classList.toggle("on", db.settings.showDone !== false);
+  el.querySelector('[data-ov="marks"]')?.classList.toggle("on", db.settings.showMarks !== false);
+}
+
 function paintLayerToggles() {
   const el = $("#hs-layers");
   if (!el) return;
-  const doneOn = db.settings.showDone !== false;
-  const marksOn = db.settings.showMarks !== false;
-  const meOn = db.settings.showMyLocation !== false;
-  const dotsOn = db.settings.showHailDots !== false;
-  const flagsOn = db.settings.showPhoneFlags === true;
-  el.innerHTML = `
-    <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
-    <button type="button" data-ov="dots" class="hs-dots-toggle ${dotsOn ? "on" : ""}" aria-label="Hail signature dots" title="Spotter (red) and SWDI radar (size-colored) dots — not weather radar or rental flags"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-b"></i></span>Dots</button>
-    <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="Green flags = for-rent listings. Blue pins = businesses with a phone. Tap off to clear, tap on to search this map view."><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
-    <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
-    <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
-  if (!el._hsFlagsStatusBound) {
-    el._hsFlagsStatusBound = true;
-    window.addEventListener("hs-phone-flags", (ev) => {
-      const msg = String(ev.detail?.msg || "").trim();
-      const btn = el.querySelector('[data-ov="flags"]');
-      if (btn) {
-        btn.title =
-          msg ||
-          "Green flags = for-rent listings. Blue pins = businesses with a phone. Tap off to clear, tap on to search this map view.";
+  if (!el._hsLayersMounted) {
+    el._hsLayersMounted = true;
+    el.innerHTML = `
+    <button type="button" data-ov="me" class="hs-me-toggle" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
+    <button type="button" data-ov="dots" class="hs-dots-toggle" aria-label="Hail signature dots" title="Spotter (red) and SWDI radar (size-colored) dots — not weather radar or rental flags"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-b"></i></span>Dots</button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle" aria-label="Phone flags" title="Green flags = for-rent listings. Blue pins = businesses with a phone. Tap off to clear, tap on to search this map view."><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
+    <button type="button" data-ov="done">Done</button>
+    <button type="button" data-ov="marks">Marks</button>`;
+    if (!el._hsFlagsStatusBound) {
+      el._hsFlagsStatusBound = true;
+      window.addEventListener("hs-phone-flags", (ev) => {
+        const msg = String(ev.detail?.msg || "").trim();
+        const btn = el.querySelector('[data-ov="flags"]');
+        if (btn) {
+          btn.title =
+            msg ||
+            "Green flags = for-rent listings. Blue pins = businesses with a phone. Tap off to clear, tap on to search this map view.";
+        }
+        if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
+      });
+    }
+    el.onclick = (e) => {
+      const b = e.target.closest("button[data-ov]");
+      if (!b) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (b.dataset.ov === "me") {
+        db.settings.showMyLocation = !(db.settings.showMyLocation !== false);
+        setMyLocationVisible(db.settings.showMyLocation);
+        syncLayerToggleStates(el);
+        return;
       }
-      if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
-    });
+      if (b.dataset.ov === "dots") {
+        db.settings.showHailDots = !(db.settings.showHailDots !== false);
+        persist();
+        syncLayerToggleStates(el);
+        paintFieldMap();
+        setStatus(db.settings.showHailDots !== false ? "Hail dots on" : "Hail dots cleared");
+        return;
+      }
+      if (b.dataset.ov === "flags") {
+        db.settings.showPhoneFlags = !(db.settings.showPhoneFlags === true);
+        persist();
+        syncLayerToggleStates(el);
+        if (db.settings.showPhoneFlags === true) {
+          cancelWarmMapViewStorms();
+          setStatus("Loading flags · map view…");
+        } else setStatus("Flags cleared");
+        paintFieldMap();
+        return;
+      }
+      if (b.dataset.ov === "done") db.settings.showDone = !(db.settings.showDone !== false);
+      if (b.dataset.ov === "marks") db.settings.showMarks = !(db.settings.showMarks !== false);
+      persist();
+      syncLayerToggleStates(el);
+      paintFieldMap();
+    };
   }
-  el.onclick = (e) => {
-    const b = e.target.closest("button[data-ov]");
-    if (!b) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (b.dataset.ov === "me") {
-      db.settings.showMyLocation = !(db.settings.showMyLocation !== false);
-      setMyLocationVisible(db.settings.showMyLocation);
-    }
-    if (b.dataset.ov === "dots") {
-      db.settings.showHailDots = !dotsOn;
-      persist();
-      paintLayerToggles();
-      paintFieldMap();
-      setStatus(db.settings.showHailDots !== false ? "Hail dots on" : "Hail dots cleared");
-      return;
-    }
-    if (b.dataset.ov === "flags") {
-      db.settings.showPhoneFlags = !flagsOn;
-      persist();
-      paintLayerToggles();
-      if (db.settings.showPhoneFlags === true) {
-        cancelWarmMapViewStorms();
-        setStatus("Loading flags · map view…");
-      } else setStatus("Flags cleared");
-      // On → setFieldOverlay rising-edge starts a fresh map-view search. Off → clears.
-      paintFieldMap();
-      return;
-    }
-    if (b.dataset.ov === "done") db.settings.showDone = !doneOn;
-    if (b.dataset.ov === "marks") db.settings.showMarks = !marksOn;
-    persist();
-    paintLayerToggles();
-    paintFieldMap();
-  };
+  syncLayerToggleStates(el);
 }
 
 async function ensureDoneHousesPlaced() {
@@ -2249,8 +2267,9 @@ function renderJobs() {
     doneBox.oninput = () => {
       if (!db.done) db.done = { text: "", houses: [] };
       db.done.text = doneBox.value;
-      persist();
+      persistSoon();
     };
+    doneBox.onblur = () => persist();
   }
   const loadBtn = $("#job-done-load");
   if (loadBtn) loadBtn.onclick = () => void loadDoneAddresses({ textId: "job-done-text" });
@@ -2510,8 +2529,14 @@ function boot() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && isHailTab()) refreshMapSize();
   });
+  let resizeMapTimer = 0;
   window.addEventListener("resize", () => {
-    if (isHailTab()) refreshMapSize();
+    if (!isHailTab()) return;
+    if (resizeMapTimer) clearTimeout(resizeMapTimer);
+    resizeMapTimer = window.setTimeout(() => {
+      resizeMapTimer = 0;
+      refreshMapSize();
+    }, 150);
   });
   void import("@capacitor/app")
     .then(({ App }) => {

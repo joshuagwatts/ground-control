@@ -29,8 +29,8 @@ const need = OK_RENT_FLAG_SEED.filter((r) => !r.phone && r.listingUrl).length;
 console.log(`Enriching ${need} phoneless pins (${start} total)…`);
 
 const enriched = await enrichRentFlagPhones(OK_RENT_FLAG_SEED, {
-  concurrency: 14,
-  delayMs: 80,
+  concurrency: 16,
+  delayMs: 60,
   onHit: (row, hits, total) => {
     if (hits % 25 === 0 || hits === total) {
       console.log(`  phones ${hits}/${total} — last ${row.name || row.street} ${row.phone}`);

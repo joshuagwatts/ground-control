@@ -1707,6 +1707,10 @@ body.hs-tab #status {
     box-shadow calc(var(--map-expand-ms) * 0.75) ease;
   overflow: hidden;
 }
+body.wx-map-animating header.stat,
+body.wx-map-animating .tabs {
+  backdrop-filter: none;
+}
 body.wx-map-animating .hs-map-shell {
   will-change: height, min-height, top, bottom;
 }
@@ -1922,7 +1926,19 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-layers {
   position: absolute; z-index: 500; left: 12px; top: 12px;
-  display: flex; gap: 0.3rem;
+  display: flex; gap: 0.3rem; flex-wrap: wrap;
+  max-width: calc(100% - 96px);
+}
+@media (max-width: 420px) {
+  .hs-layers button.hs-dots-toggle,
+  .hs-layers button.hs-flags-toggle {
+    font-size: 0;
+    gap: 0;
+    padding: 0.32rem 0.45rem;
+  }
+  .hs-pin-size input[type="range"] {
+    width: min(140px, 42vw);
+  }
 }
 .hs-styles {
   position: static;

@@ -252,6 +252,8 @@ function selectedStormsPinText(esc) {
   return `Overlay ${list.length} storm days — tap to toggle`;
 }
 let hailSearchQ = "";
+let hailSearchTimer = 0;
+let lastHailZoomBucket = -1;
 /** Storm-date list page (20 per page so the field footer stays below). */
 export const STORM_LIST_PAGE_SIZE = 20;
 let hailStormPage = 0;
@@ -1738,6 +1740,7 @@ export function quickMapConfig(settings) {
 }
 
 /** Leaflet often mounts at 0×0 on phone WebViews until layout settles. */
+let refreshMapSizeTimer = 0;
 export function refreshMapSize() {
   if (!map) return;
   const run = () => {
@@ -1747,10 +1750,16 @@ export function refreshMapSize() {
       /* ignore */
     }
   };
+  if (refreshMapSizeTimer) {
+    clearTimeout(refreshMapSizeTimer);
+    refreshMapSizeTimer = 0;
+  }
   run();
   requestAnimationFrame(run);
-  setTimeout(run, 150);
-  setTimeout(run, 500);
+  refreshMapSizeTimer = window.setTimeout(() => {
+    refreshMapSizeTimer = 0;
+    run();
+  }, 180);
 }
 const MAP_MAX_ZOOM = 22;
 const MAP_MIN_ZOOM = 3;
@@ -1765,7 +1774,7 @@ function flagBizPaintMax() {
 }
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
-const HOUSE_ENRICH_MAX = 24;
+const HOUSE_ENRICH_MAX = 32;
 const HOUSE_ENRICH_GAP_MS = 280;
 const LISTING_ENRICH_BATCH = 6;
 const HOUSE_FOOTPRINT_MAX = 2000;
@@ -5279,6 +5288,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     return;
   }
   lastHailDrawSig = drawSig;
+  lastHailZoomBucket = zBucket;
   hailDotMarkers.length = 0;
   hailStrokeLayers.length = 0;
   applyHailStrokeZoomStyles._bucket = -1;
@@ -7866,7 +7876,7 @@ async function pumpRentListingPhones(gen) {
     return;
   }
   listingPumpBusy = true;
-  const CONC = 10;
+  const CONC = isSlowBrowserNet() || usePhoneChrome() ? 4 : 10;
   let done = 0;
   try {
     emitPhoneFlagsStatus(flagStatusLine(`Listing phones 0/${rows.length}`));
@@ -8786,12 +8796,18 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   map.on("zoomend", () => {
     lastZoomUiScale = 0;
     scheduleZoomUiRefresh(true);
-    // Dot visibility flips with zoom; geometry itself is zoom-invariant.
+    const zDraw = map?.getZoom?.() ?? 14;
+    const bucket = zDraw < 9 ? 0 : zDraw < 11 ? 1 : zDraw < 13 ? 2 : 3;
     if (hasSelectedStormDates() && (lastHailRows.length || lastWindRows.length)) {
-      lastHailDrawSig = "";
-      drawHailMarkers(lastHailRows, lastWindRows, {
-      zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
-    });
+      if (bucket !== lastHailZoomBucket) {
+        lastHailZoomBucket = bucket;
+        lastHailDrawSig = "";
+        drawHailMarkers(lastHailRows, lastWindRows, {
+          zoneRows: lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+        });
+      } else {
+        applyHailStrokeZoomStyles(true);
+      }
     }
   });
   map.on("moveend zoomend", () => {
@@ -10267,7 +10283,7 @@ function hailScopeHtml(data, days, esc) {
     ${viewport ? "" : placeContactHtml(data, esc)}
     <p class="hs-legend"><span class="hs-legend-item"><span class="hs-dot hs-dot-spot"></span>Spotter</span><span class="hs-legend-item"><span class="hs-dot hs-dot-radar"></span>Radar</span><span class="hs-legend-item"><span class="hs-dot hs-dot-done"></span>Done</span><span class="hs-legend-item"><span class="hs-dot hs-dot-ping"></span>Ping</span></p>
     <div class="hs-filters">
-      <input type="search" id="hs-q" placeholder="Search dates, size, place…" value="${esc(q)}" />
+      <input type="search" id="hs-q" placeholder="Filter storm dates…" value="${esc(q)}" autocomplete="off" />
       ${
         viewport
           ? ""
@@ -10445,11 +10461,16 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
     qEl.oninput = () => {
       hailSearchQ = String(qEl.value || "").trim().toLowerCase();
       hailStormPage = 0;
-      const box = root.querySelector(".hs-dates");
-      if (box) {
-        box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
-        bindHailScopeDates(root, data, esc, { onRefetch });
-      }
+      if (hailSearchTimer) clearTimeout(hailSearchTimer);
+      hailSearchTimer = window.setTimeout(() => {
+        hailSearchTimer = 0;
+        const box = root.querySelector(".hs-dates");
+        if (box) {
+          box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
+          bindHailScopeDates(root, data, esc, { onRefetch });
+          paintHailScopeDateSelection(root, data, esc);
+        }
+      }, 200);
     };
   }
   bindHailScopeDates(root, data, esc, { onRefetch });
@@ -10494,11 +10515,10 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
         }
       }
       syncHailStormDateSelection(data);
-      renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
-      drawHailMarkers(mapHailRows(data, wxFilters), [], {
-        requireDate: true,
-        zoneRows: hailRowsForZones(data, wxFilters),
-      });
+      softUpdateHailScopeSheet(root, data, esc, { onRefetch });
+      const pools = resolvedStormDrawPools(data.hail || []);
+      lastHailDrawSig = "";
+      drawHailMarkers(pools.dotRows, [], { requireDate: true, zoneRows: pools.zoneRows });
     };
   };
   bind("#hs-f-km", "km", Number);
