@@ -7355,6 +7355,16 @@ function flagStatusLine(extra = "") {
   return extra || ready || "Loading flags…";
 }
 
+function withTimeout(promise, ms, label = "timeout") {
+  let t;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(t)),
+    new Promise((_, reject) => {
+      t = setTimeout(() => reject(new Error(label)), ms);
+    }),
+  ]);
+}
+
 /** Rental / business listing scan — idle, one-at-a-time. Network misses can retry. */
 async function enrichVisibleHouseInfo(nums, gen) {
   if (!phoneFlagsEnabled() || !map || !nums?.length) return;
@@ -7396,7 +7406,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
     })
     .map((n) => ({ n, d: haversineKm(c.lat, c.lng, n.lat, n.lon) }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, HOUSE_ENRICH_MAX)
+    .slice(0, 8)
     .map((x) => x.n);
   const runListing = async (n) => {
     if (!map || !phoneFlagsEnabled()) return;
@@ -7409,7 +7419,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
       return;
     }
     try {
-      const phone = await lookupListingRentPhone(url);
+      const phone = await withTimeout(lookupListingRentPhone(url), 8000);
       houseEnrichTried.add(key);
       if (!phone) return;
       n.phone = phone;
@@ -7420,6 +7430,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
       housePaintSig = "";
       paintHouseLayer([], houseCache.nums);
     } catch (e) {
+      houseEnrichTried.add(key);
       const msg = String(e?.message || e || "");
       if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
     }
@@ -7463,19 +7474,22 @@ async function enrichVisibleHouseInfo(nums, gen) {
   };
   const runCommercial = async (n) => {
     if (!map || !phoneFlagsEnabled()) return;
-    if (mapBusy > 0) return "busy";
     const name = String(n.owner_name || n.num || "").trim();
     const key = `biz|@${n.lat?.toFixed?.(5)},${n.lon?.toFixed?.(5)}|${name.slice(0, 48)}`;
     if (!key || houseEnrichTried.has(key)) return;
+    houseEnrichTried.add(key);
+    if (!String(n.street || "").trim()) return;
     try {
-      const contacts = await lookupCommercialFlagPhone(n.lat, n.lon, {
-        name,
-        street: n.street || "",
-        city: n.city || "",
-        state: isOklahomaLatLon(n.lat, n.lon) ? "OK" : "",
-        zip: n.zip || "",
-      });
-      houseEnrichTried.add(key);
+      const contacts = await withTimeout(
+        lookupCommercialFlagPhone(n.lat, n.lon, {
+          name,
+          street: n.street || "",
+          city: n.city || "",
+          state: isOklahomaLatLon(n.lat, n.lon) ? "OK" : "",
+          zip: n.zip || "",
+        }),
+        5000,
+      );
       const phone = contacts?.owner_phone || "";
       if (!phone) return;
       n.phone = phone;
@@ -7490,9 +7504,8 @@ async function enrichVisibleHouseInfo(nums, gen) {
       });
       housePaintSig = "";
       paintHouseLayer([], houseCache.nums);
-    } catch (e) {
-      const msg = String(e?.message || e || "");
-      if (!/timeout|abort|network|fetch/i.test(msg)) houseEnrichTried.add(key);
+    } catch {
+      /* timed out or network — pin stays, scan moves on */
     }
   };
   if (!listingQueue.length && !addrQueue.length && !commercialQueue.length) {
@@ -7509,7 +7522,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
       return;
     }
     const chunk = commercialQueue.slice(i, i + LISTING_ENRICH_BATCH);
-    await Promise.all(chunk.map((n) => runCommercial(n)));
+    await Promise.allSettled(chunk.map((n) => runCommercial(n)));
     step += chunk.length;
     emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
     await new Promise((r) => setTimeout(r, 80));
@@ -7522,7 +7535,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
       return;
     }
     const chunk = listingQueue.slice(i, i + LISTING_ENRICH_BATCH);
-    await Promise.all(chunk.map((n) => runListing(n)));
+    await Promise.allSettled(chunk.map((n) => withTimeout(runListing(n), 9000).catch(() => {})));
     step += chunk.length;
     emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
     await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));

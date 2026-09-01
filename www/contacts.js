@@ -2484,7 +2484,7 @@ export async function lookupFlagPhone(lat, lon, address = "") {
   };
 }
 
-/** Commercial POI phone hunt — YP/chamber by business name when street address is missing. */
+/** Commercial POI phone hunt — Yellow Pages only, and only with a real street address. */
 export async function lookupCommercialFlagPhone(
   lat,
   lon,
@@ -2493,33 +2493,19 @@ export async function lookupCommercialFlagPhone(
   const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "", source: "", phone_kind: "" };
   const bizName = String(name || "").trim();
   const cityState = [city, state].filter(Boolean).join(", ");
-  if (!bizName && !street) return blank;
-  const parts = {
-    house: parseStreetAddress([street, cityState].filter(Boolean).join(", ")).house || "1",
-    street: street || bizName,
-    city: city || "",
-    state: state || "OK",
-    zip: zip || "",
-  };
-  const searchAddr = [bizName || street, cityState].filter(Boolean).join(", ");
-  let hit = { name: bizName, phone: "", email: "", source: "" };
-  const batch = await Promise.all([
-    yellowPagesBusinessContacts(searchAddr, parts).catch(() => null),
-    isOklahomaAddress(searchAddr, parts) ? okChamberBusinessContacts(searchAddr, parts).catch(() => null) : null,
-    Number.isFinite(lat) && Number.isFinite(lon) ? overpassContacts(lat, lon, parts).catch(() => null) : null,
-  ]);
-  for (const part of batch) {
-    if (part) hit = mergeContacts(hit, part);
+  const addrLine = [street, cityState, zip].filter(Boolean).join(", ");
+  const parts = parseStreetAddress(addrLine);
+  if (!parts.house || !parts.street) {
+    return { ...blank, owner_name: bizName };
   }
-  const phoneKind = classifyFlagPhone({ ...hit, phone_kind: hit.phone_kind || "business" });
-  if (phoneKind !== "business" || !hit.phone) {
-    return { ...blank, owner_name: hit.name || bizName };
-  }
+  const yp = await yellowPagesBusinessContacts(addrLine, parts).catch(() => null);
+  const hit = yp ? mergeContacts({ name: bizName, phone: "", email: "", source: "" }, yp) : { name: bizName, phone: "" };
+  if (!hit.phone) return { ...blank, owner_name: hit.name || bizName };
   return {
     owner_name: hit.name || bizName,
     owner_phone: hit.phone || "",
     owner_email: hit.email || "",
-    source: hit.source || "commercial-lookup",
+    source: hit.source || "yellowpages",
     phone_kind: "business",
   };
 }
