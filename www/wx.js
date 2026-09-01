@@ -296,7 +296,7 @@ let listingPumpBusy = false;
 let listingPumpWanted = false;
 let flagDockIdx = 0;
 const flagHiddenKeys = new Set();
-let flagKindFilter = { rental: false, business: false };
+let flagKindFilter = { rental: true, business: true };
 try {
   const raw = sessionStorage.getItem("hs-flag-hidden");
   for (const k of JSON.parse(raw || "[]")) flagHiddenKeys.add(String(k));
@@ -7343,13 +7343,13 @@ function mergeHouseNums(into, nums) {
 }
 
 function flagStatusLine(extra = "") {
-  const list = readyFlagList(houseCache.nums);
-  const rent = list.filter((n) => housePhoneKind(n) === "rental").length;
-  const rentPhone = list.filter((n) => housePhoneKind(n) === "rental" && houseHasPhone(n)).length;
-  const biz = list.filter((n) => housePhoneKind(n) === "business").length;
+  const all = houseCache.nums || [];
+  const rent = all.filter((n) => housePhoneKind(n) === "rental" && houseHasFlag(n)).length;
+  const rentPhone = all.filter((n) => housePhoneKind(n) === "rental" && houseHasPhone(n)).length;
+  const biz = all.filter((n) => housePhoneKind(n) === "business" && houseHasFlag(n)).length;
   const bits = [];
   if (rent) bits.push(rentPhone && rentPhone < rent ? `${rent} residential (${rentPhone} w/ phone)` : `${rent} residential`);
-  if (biz) bits.push(`${biz} commercial`);
+  if (biz) bits.push(`${biz} commercial${flagKindFilter.business ? "" : " (hidden)"}`);
   const ready = bits.length ? `${bits.join(" · ")} ready` : "";
   if (extra && ready) return `${extra} · ${ready}`;
   return extra || ready || "Loading flags…";
@@ -7971,44 +7971,43 @@ function osmPoiQuery(south, west, north, east) {
   return osmCommercialPoiQuery(south, west, north, east);
 }
 
-/** Named shops / offices / food — phone optional so blue flags paint immediately. */
+/** Named shops / offices / food — keep the query small so Overpass answers. */
 function osmCommercialPoiQuery(south, west, north, east) {
-  return `[out:json][timeout:12][bbox:${south},${west},${north},${east}];(
+  return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(
     node["shop"];
-    way["shop"];
     node["office"];
-    way["office"];
     node["craft"];
     node["healthcare"];
-    way["healthcare"];
-    node["amenity"~"^(restaurant|fast_food|cafe|bar|pub|biergarten|food_court|ice_cream|fuel|bank|pharmacy|doctors|dentist|clinic|veterinary|car_wash|car_repair|marketplace)$"];
-    way["amenity"~"^(restaurant|fast_food|cafe|bar|pub|fuel|bank|pharmacy|clinic)$"];
-    node["tourism"~"^(hotel|motel|guest_house|hostel)$"];
-    way["tourism"~"^(hotel|motel|guest_house|hostel)$"];
-  );out tags center;`;
+    node["amenity"~"^(restaurant|fast_food|cafe|bar|pub|fuel|bank|pharmacy|doctors|dentist|clinic|car_wash|car_repair)$"];
+    way["shop"];
+    way["office"];
+    way["amenity"~"^(restaurant|fast_food|cafe|bar|pub|fuel|bank|pharmacy)$"];
+  );out tags center 250;`;
 }
 
 function osmHouseQuery(south, west, north, east) {
   return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
 }
 
-/** Business POIs — paint blue flags immediately, phone optional. */
+/** Business POIs — prefer a fast OSM map dump; Overpass fills gaps when it answers. */
 async function fetchOsmFlagPois(south, west, north, east) {
-  const over = await overpassJson(osmCommercialPoiQuery(south, west, north, east), 14000).catch(() => null);
-  if (over?.elements?.length) return numsFromOsmElements(over.elements, { requireBusinessTag: true });
-  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
-  return numsFromOsmElements(mapDump?.elements, { requireBusinessTag: true });
+  const fromDump = await osmMapJson(south, west, north, east, 10000)
+    .then((d) => numsFromOsmElements(d?.elements, { requireBusinessTag: true }))
+    .catch(() => []);
+  if (fromDump.length >= 12) return fromDump;
+  const fromOver = await overpassJson(osmCommercialPoiQuery(south, west, north, east), 10000)
+    .then((d) => numsFromOsmElements(d?.elements, { requireBusinessTag: true }))
+    .catch(() => []);
+  if (!fromDump.length) return fromOver;
+  if (!fromOver.length) return fromDump;
+  return mergeHouseNums(fromDump, fromOver);
 }
 
 function commercialSearchBounds() {
-  const view = flagSearchBounds();
-  if (!view?.isValid?.()) return view;
   const c = map?.getCenter?.();
-  if (!c) return view;
-  const diag = haversineKm(view.getSouth(), view.getWest(), view.getNorth(), view.getEast());
-  // Keep Overpass snappy — a downtown strip, not the whole county.
-  if (diag <= 16) return view;
-  const km = 6;
+  if (!c || !window.L) return flagSearchBounds();
+  // Tight ring so shops load even when Overpass is slow.
+  const km = 3.2;
   const dLat = km / 111.32;
   const dLon = km / (111.32 * Math.max(0.2, Math.cos((c.lat * Math.PI) / 180)));
   return window.L.latLngBounds([c.lat - dLat, c.lng - dLon], [c.lat + dLat, c.lng + dLon]);
@@ -8022,8 +8021,15 @@ function ingestCommercialPois(pois, gen) {
   persistBizFlags(houseCache.nums);
   scheduleFlagLayerPaint(true);
   const after = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
-  if (after > before) emitPhoneFlagsStatus(flagStatusLine());
-  return after - before;
+  const added = after - before;
+  if (added > 0) {
+    emitPhoneFlagsStatus(
+      flagKindFilter.business
+        ? flagStatusLine(`${added} commercial loaded`)
+        : `${after} commercial ready · tap the blue flag to show them`,
+    );
+  }
+  return added;
 }
 
 let commercialFetchGen = 0;
@@ -8039,10 +8045,15 @@ async function kickCommercialOsm(gen) {
   emitPhoneFlagsStatus(flagStatusLine("Loading commercial…"));
   try {
     const pois = await fetchOsmFlagPois(south, west, north, east);
-    if (myGen !== commercialFetchGen) return pois;
+    if (myGen !== commercialFetchGen) return pois || [];
+    if (!pois?.length) {
+      emitPhoneFlagsStatus(flagStatusLine("No commercial POIs in this view"));
+      return [];
+    }
     ingestCommercialPois(pois, gen);
     return pois;
   } catch {
+    emitPhoneFlagsStatus(flagStatusLine("Commercial lookup failed"));
     return [];
   }
 }
@@ -8160,6 +8171,9 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     } catch {
       /* ignore */
     }
+    // Keep last commercial pins while OSM refreshes — wipe left them blank.
+    persistHydrated = false;
+    hydratePersistedFlags();
   } else {
     hydratePersistedFlags();
   }

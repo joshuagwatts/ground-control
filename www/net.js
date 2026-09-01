@@ -534,6 +534,14 @@ export async function httpPostForm(url, formBody, timeoutMs = 18000) {
   } catch (e) {
     const msg = String(e?.message || e || "fetch failed");
     if (/abort/i.test(msg)) throw new Error("timeout");
+    // Browser CORS / blocked POST — fall back to GET through the same proxy path as httpGet.
+    if (needsBrowserCorsProxy(target) && /^data=/.test(body)) {
+      try {
+        return await httpGet(`${target}?${body}`, timeoutMs);
+      } catch {
+        /* fall through */
+      }
+    }
     throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
   } finally {
     clearTimeout(t);
@@ -546,7 +554,7 @@ const OVERPASS_ENDPOINTS = [
   "https://lz4.overpass-api.de/api/interpreter",
 ];
 
-/** Run an Overpass QL query (POST first, GET fallback). Skip empty hosts so regional mirrors cannot win. */
+/** Run an Overpass QL query (POST first, GET + CORS proxy fallback). */
 export async function overpassJson(query, timeoutMs = 18000) {
   const q = String(query || "").trim();
   if (!q) throw new Error("empty overpass query");
@@ -556,6 +564,14 @@ export async function overpassJson(query, timeoutMs = 18000) {
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
       const { body } = await httpPostForm(endpoint, form, timeoutMs);
+      const data = JSON.parse(body || "{}");
+      if (Array.isArray(data.elements) && data.elements.length) return data;
+      if (Array.isArray(data.elements)) empty = data;
+    } catch (e) {
+      last = String(e?.message || e || "overpass failed");
+    }
+    try {
+      const { body } = await httpGet(`${endpoint}?${form}`, Math.min(timeoutMs, 12000));
       const data = JSON.parse(body || "{}");
       if (Array.isArray(data.elements) && data.elements.length) return data;
       if (Array.isArray(data.elements)) empty = data;

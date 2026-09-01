@@ -69,7 +69,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.216";
+} from "./wx.js?v=0.2.217";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1661,6 +1661,17 @@ function paintLayerToggles() {
         persist();
         syncLayerToggleStates(el);
         if (db.settings.showPhoneFlags === true) {
+          // If both kind toggles were left off, turn them on so Flags actually shows something.
+          if (!(db.settings.showFlagResidential === true) && !(db.settings.showFlagCommercial === true)) {
+            db.settings.showFlagResidential = true;
+            db.settings.showFlagCommercial = true;
+            persist();
+          }
+          applyFlagKindFilters({
+            residential: db.settings.showFlagResidential === true,
+            commercial: db.settings.showFlagCommercial === true,
+          });
+          syncLayerToggleStates(el);
           cancelWarmMapViewStorms();
           setStatus("Loading flags · map view…");
         } else setStatus("Flags cleared");
