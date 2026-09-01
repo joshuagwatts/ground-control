@@ -10522,7 +10522,13 @@ function hailScopeLiveData(root, fallback) {
 }
 
 /** Shared storm-date pick — list rows and calendar both call this. */
-function pickStormDateFromSheet(dateRaw, root, live, esc, { toggle = true, fit = null, closeCalendar = false } = {}) {
+function pickStormDateFromSheet(
+  dateRaw,
+  root,
+  live,
+  esc,
+  { toggle = true, fit = null, closeCalendar = false, scrollToList = true } = {},
+) {
   const date = stormDateKey(dateRaw);
   if (!date) return false;
   const dossier = live || hailScopeLiveData(root, null);
@@ -10554,7 +10560,7 @@ function pickStormDateFromSheet(dateRaw, root, live, esc, { toggle = true, fit =
     zoneRows: pools.zoneRows,
   });
   syncHazardLayers();
-  paintHailScopeDateSelection(root, dossier, esc, { scrollTo: date });
+  paintHailScopeDateSelection(root, dossier, esc, { scrollTo: scrollToList ? date : null });
   if (closeCalendar) closeHsCalendarSheet();
   return true;
 }
@@ -10636,8 +10642,13 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
     hsCalendarYear = def.year;
     hsCalendarMonth = def.month;
   }
-  const subtitle = "Tap to toggle · bright = ≥2″ in map view";
-  pop.innerHTML = renderStormCalendar({
+  const subtitle = "Tap dates · Done when finished";
+  pop.innerHTML = `<div class="hs-cal-pop-inner">
+    <header class="hs-cal-top">
+      <span class="hs-cal-top-title">Storm calendar</span>
+      <button type="button" class="hs-cal-done" aria-label="Close calendar">Done</button>
+    </header>
+    ${renderStormCalendar({
     year: hsCalendarYear,
     month: hsCalendarMonth,
     highlightDays: highlights,
@@ -10645,13 +10656,23 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
     selectedDays: selectedStormDates,
     subtitle,
     esc,
+  })}
+  </div>`;
+  pop.querySelector(".hs-cal-done")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeHsCalendarSheet();
   });
   bindStormCalendar(pop, {
     onDay: (iso) => {
       if (!iso) return;
       const live = pop._hsData || hailScopeLiveData(pop._hsRoot, data);
       const turningOn = !isStormDateSelected(iso);
-      const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, { toggle: true, closeCalendar: false });
+      const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, {
+        toggle: true,
+        closeCalendar: true,
+        scrollToList: false,
+      });
       if (!picked) return;
       const n = selectedStormDates.size;
       if (!stormDays.has(iso) && turningOn) {
@@ -10664,7 +10685,6 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
         emitMapStatus(`${n} storm days on map`);
       }
       void ensureSwdiForSelectedStormDays();
-      if (hsCalendarOpen) paintHailCalendarPanel(pop._hsRoot, live, esc, { onRefetch: pop._hsOnRefetch });
     },
     onNav: (dir) => {
       let y = hsCalendarYear;
