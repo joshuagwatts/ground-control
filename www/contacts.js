@@ -1753,9 +1753,15 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
 export function formatYellowPagesAddressUrl(address) {
   const p = parseStreetAddress(address);
   if (!p.house || !p.street) return "";
-  const city = cityPathSlug(p.city || "edmond");
   const street = encodeURIComponent(`${p.house} ${p.street}`);
   return `https://www.yellowpages.com/search?search_terms=${street}&geo_location_terms=${encodeURIComponent(`${p.city || "Oklahoma"}, OK`)}`;
+}
+
+/** Yellow Pages search by business name + Oklahoma city (public business directory). */
+export function formatYellowPagesBizNameUrl(name, city = "Oklahoma") {
+  const q = String(name || "").trim();
+  if (q.length < 3) return "";
+  return `https://www.yellowpages.com/search?search_terms=${encodeURIComponent(q)}&geo_location_terms=${encodeURIComponent(`${city || "Oklahoma"}, OK`)}`;
 }
 
 /** OK city → chamber / member-directory hosts (business phones at the address). */
@@ -1864,11 +1870,12 @@ async function apartmentsListingContacts(address, parts) {
   return contactsFromDirectUrls(urls, parts, "apartments");
 }
 
-/** Yellow Pages business listing at this address. */
-async function yellowPagesBusinessContacts(address, parts) {
+/** Yellow Pages business listing at this address (optional name boost). */
+async function yellowPagesBusinessContacts(address, parts, bizName = "") {
   if (!parts?.house || !parts?.street) return null;
-  const url = formatYellowPagesAddressUrl(address);
-  return contactsFromDirectUrls([url], parts, "yellowpages");
+  const urls = [formatYellowPagesAddressUrl(address)];
+  if (bizName) urls.unshift(formatYellowPagesBizNameUrl(bizName, parts.city || "Oklahoma"));
+  return contactsFromDirectUrls(urls, parts, "yellowpages");
 }
 
 /**
@@ -2604,7 +2611,7 @@ export async function lookupCommercialFlagPhone(
   if (!parts.house || !parts.street) {
     return { ...blank, owner_name: bizName };
   }
-  const yp = await yellowPagesBusinessContacts(addrLine, parts).catch(() => null);
+  const yp = await yellowPagesBusinessContacts(addrLine, parts, bizName).catch(() => null);
   const hit = yp ? mergeContacts({ name: bizName, phone: "", email: "", source: "" }, yp) : { name: bizName, phone: "" };
   if (!hit.phone) return { ...blank, owner_name: hit.name || bizName };
   return {

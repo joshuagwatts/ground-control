@@ -16,3 +16,7 @@ android/app/upload.jks
 android/app/src/main/assets/public/
 www/data/ok-rent-flags-progress.json
 www/data/ok-biz-flags-progress.json
+www/data/ok-rent-zillow-progress.json
+www/data/ok-biz-osm-map-progress.json
+tmp/
+*.log
