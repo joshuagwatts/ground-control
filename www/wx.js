@@ -6549,7 +6549,7 @@ async function addressForHouseNum(n) {
     return a;
   };
   if (n.street) {
-    const cityBit = n.city ? `, ${n.city}` : ", Edmond";
+    const cityBit = n.city ? `, ${n.city}` : "";
     const zipBit = n.zip ? ` ${n.zip}` : "";
     return finish(`${n.num} ${n.street}${cityBit}${zipBit}`);
   }

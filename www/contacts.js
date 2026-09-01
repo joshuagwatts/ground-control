@@ -1251,10 +1251,15 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     acc = mergeRentFlagList(acc, cached);
     paintRows(acc);
   }
-  // Same-origin seed — works even when Rent.com is blocked in the app/CORS.
+  // Statewide seed — only paint what's in / near this map frame (never dump Edmond statewide).
   if (Array.isArray(OK_RENT_FLAG_SEED) && OK_RENT_FLAG_SEED.length) {
-    acc = mergeRentFlagList(acc, OK_RENT_FLAG_SEED);
-    paintRows(acc);
+    const seedRows = bounds
+      ? rentFlagsInBounds(OK_RENT_FLAG_SEED, bounds, 28)
+      : rentFlagsNearPoint(OK_RENT_FLAG_SEED, lat, lon, 32);
+    if (seedRows.length) {
+      acc = mergeRentFlagList(acc, seedRows);
+      paintRows(acc);
+    }
   }
 
   if ((force || retarget) && rentSweepInFlight) {
@@ -1324,9 +1329,11 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     const zMax = Number(profile.zillowDetails) > 0 ? Math.max(20, Number(profile.zillowDetails)) : 0;
     if (zMax > 0 && (primary || bounds)) {
       const zCities = (fastCities.length ? fastCities : [primary]).filter(Boolean).slice(0, 2);
-      const targets = zCities.length ? zCities : [inferOkCity(lat, lon) || "Edmond"];
+      const targets = (
+        zCities.length ? zCities : [inferOkCity(lat, lon) || (bounds ? "Oklahoma City" : "")]
+      ).filter(Boolean);
       await Promise.all(
-        targets.map(async (c, i) => {
+        targets.slice(0, 2).map(async (c, i) => {
           if (epoch !== rentSweepEpoch) return;
           const rows = await fetchZillowCityRentPhones(c, state || "OK", {
             lat,
@@ -1385,7 +1392,7 @@ export function formatYellowPagesAddressUrl(address) {
   if (!p.house || !p.street) return "";
   const city = cityPathSlug(p.city || "edmond");
   const street = encodeURIComponent(`${p.house} ${p.street}`);
-  return `https://www.yellowpages.com/search?search_terms=${street}&geo_location_terms=${encodeURIComponent(`${p.city || "Edmond"}, OK`)}`;
+  return `https://www.yellowpages.com/search?search_terms=${street}&geo_location_terms=${encodeURIComponent(`${p.city || "Oklahoma"}, OK`)}`;
 }
 
 /** OK city → chamber / member-directory hosts (business phones at the address). */
