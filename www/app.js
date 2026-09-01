@@ -69,7 +69,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.233";
+} from "./wx.js?v=0.2.234";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -2024,6 +2024,14 @@ async function renderWx() {
       setMapViewHailArmed(true);
       void onHailViewport();
     });
+    const refetchViewportStorms = async (filters) => {
+      const fresh = await viewportDossier(db.settings, filters);
+      if (fresh) {
+        wxState.data = fresh;
+        wxState.viewport = true;
+      }
+      return fresh;
+    };
     bindStormSheetOpen(() => {
       // No house pin: show idle Search storms UI — do not auto-fetch
       if (wxPinSelected()) return;
@@ -2032,17 +2040,13 @@ async function renderWx() {
       if (wxState.viewport && wxState.data && !wxState.data._meta?.idle) {
         if (!sheet.querySelector(".hs-date") && !sheet.querySelector("#hs-hail-search")) {
           syncHailScopeView(sheet, wxState.data, esc, {
-            onRefetch: async (filters) => {
-              const fresh = await viewportDossier(db.settings, filters);
-              if (fresh) wxState.data = fresh;
-              return fresh;
-            },
+            onRefetch: refetchViewportStorms,
             revealSheet: false,
           });
         }
         return;
       }
-      paintHailSearchIdle(sheet, esc);
+      paintHailSearchIdle(sheet, esc, { onRefetch: refetchViewportStorms });
     });
     bindMapViewStormMove(() => {
       // Careful loading: pan never auto-fetches storms. Use Search storms / Search this view.
@@ -2062,7 +2066,9 @@ async function renderWx() {
     refreshMapSize();
     {
       const sheetIdle = $("#hs-sheet");
-      if (sheetIdle && !wxPinSelected()) paintHailSearchIdle(sheetIdle, esc);
+      if (sheetIdle && !wxPinSelected()) {
+        paintHailSearchIdle(sheetIdle, esc, { onRefetch: refetchViewportStorms });
+      }
     }
     void finishWxBoot(gen);
   } catch (e) {

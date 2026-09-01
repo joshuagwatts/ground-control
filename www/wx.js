@@ -1105,7 +1105,9 @@ async function ensureSwdiForSelectedStormDays() {
   const anchor = stormSwdiAnchor();
   if (!anchor) return;
   const days = selectedStormDateList();
-  const km = hailRadarZoneKm();
+  const km = wxPinSelected()
+    ? hailRadarZoneKm()
+    : Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0);
   const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
   const need = days.filter((d) => {
     const near = pool.filter(
@@ -9677,7 +9679,7 @@ function scheduleMapViewStormMove(ms = 700) {
 }
 
 /** Idle filters + Search storms CTA — no network until the button (or a house pin). */
-export function paintHailSearchIdle(root, esc) {
+export function paintHailSearchIdle(root, esc, { onRefetch } = {}) {
   if (!root) return;
   const data = {
     hail: [],
@@ -9685,7 +9687,7 @@ export function paintHailSearchIdle(root, esc) {
     viewport: true,
     _meta: { viewport: true, idle: true },
   };
-  renderHailScopeSheet(root, data, esc, { drawMap: false });
+  renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
 }
 
 /** Slide open storm dates + completed jobs list. */
@@ -10599,6 +10601,49 @@ function hailScopeLiveData(root, fallback) {
   return box?._hsData || fallback || lastDossierDataRef || null;
 }
 
+/** Load viewport hail + SWDI when a date is picked before Search storms (or with no rows in view). */
+async function ensureStormOverlayForSelection(root, data, esc, { onRefetch, date = null } = {}) {
+  if (!hasSelectedStormDates()) return;
+  setMapViewHailArmed(true);
+  let live = data || hailScopeLiveData(root, null);
+  const idle = Boolean(live?._meta?.idle);
+  const empty = !(live?.hail?.length);
+
+  if ((idle || empty) && onRefetch) {
+    emitMapStatus("Loading hail for this map view…");
+    try {
+      const fresh = await onRefetch({ ...wxFilters });
+      if (fresh) {
+        fresh.viewport = true;
+        fresh._meta = { ...fresh._meta, viewport: true, idle: false };
+        live = fresh;
+        lastDossierDataRef = fresh;
+        if (root) {
+          const box = root.querySelector(".hs-dates");
+          if (box) box._hsData = fresh;
+          syncHailScopeView(root, fresh, esc, { onRefetch, revealSheet: false });
+        }
+      }
+    } catch {
+      emitMapStatus("Storm load failed — try Search storms");
+    }
+  } else {
+    emitMapStatus("Loading hail zones…");
+  }
+
+  await ensureSwdiForSelectedStormDays();
+  scheduleHailMapFill(120);
+
+  live = live || hailScopeLiveData(root, null);
+  if (!live || !root) return;
+  const drawCtx = { stormDraw: true };
+  const hailRows = mapHailRows(live, wxFilters, drawCtx);
+  const pools = resolvedStormDrawPools(hailRows);
+  lastHailDrawSig = "";
+  drawHailMarkers(pools.dotRows, lastWindRows, { requireDate: true, zoneRows: pools.zoneRows });
+  paintHailScopeDateSelection(root, live, esc, { scrollTo: date, scrollRow: false });
+}
+
 /** Shared storm-date pick — list rows and calendar both call this. */
 function pickStormDateFromSheet(
   dateRaw,
@@ -10644,6 +10689,12 @@ function pickStormDateFromSheet(
   });
   if (closeCalendar) closeHsCalendarSheet();
   if (revealList) revealHailStormSheet({ interactive: true, scroll: false });
+  if (toggle && turningOn) {
+    void ensureStormOverlayForSelection(root, dossier, esc, {
+      onRefetch: root?._hsOnRefetch,
+      date,
+    });
+  }
   return true;
 }
 
@@ -10768,7 +10819,6 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
       } else {
         emitMapStatus(`${n} storm days on map`);
       }
-      void ensureSwdiForSelectedStormDays();
     },
     onNav: (dir) => {
       let y = hsCalendarYear;
@@ -11304,6 +11354,7 @@ function enhanceHsFilterSelects(root) {
 
 function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (!root) return;
+  root._hsOnRefetch = onRefetch;
   const meta = data._meta || {};
   const viewport = Boolean(data.viewport || meta.viewport);
   const qEl = root.querySelector("#hs-q");
