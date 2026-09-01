@@ -1808,7 +1808,7 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open):active { cursor: grabbing; }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin::after {
-  content: "Swipe up for storm dates";
+  content: "Swipe up for filters · Search storms";
   display: block;
   font-size: 11px;
   color: var(--muted);
@@ -2335,6 +2335,23 @@ body.wx-map-expanded .hs-field {
   display: flex; flex-wrap: wrap; gap: 0.5rem;
   margin-bottom: 0.85rem;
   align-items: stretch;
+}
+.hs-hail-search {
+  flex: 1 1 100%;
+  margin: 0.15rem 0 0;
+  padding: 0.7rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid rgba(240, 180, 41, 0.45);
+  background: rgba(240, 180, 41, 0.16);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+.hs-hail-search:active {
+  background: rgba(240, 180, 41, 0.28);
 }
 .hs-filters input[type="search"],
 .hs-filters #hs-q {

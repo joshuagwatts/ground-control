@@ -2773,9 +2773,7 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, wind
   if (hasSelectedStormDates()) {
     scheduleHailMapFill(120);
   } else if (hadSelection && !wxPinSelected() && hailScopeMode) {
-    // Cleared every storm date — research the current map frame again on refocus/move.
-    mapViewStormForceNext = true;
-    scheduleMapViewStormMove(80);
+    // Cleared every storm date — leave list as-is; Search storms refreshes on demand.
   }
   if (hasSelectedStormDates() && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
@@ -8354,11 +8352,12 @@ export function revealHailAddressPeek() {
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
   hailBottomTier = "address";
   syncHailBottomChrome();
-  // No house yet: quiet loading peek — no redundant "Map view" title
+  // No house yet: idle peek — storms stay off until Search storms
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     const sheet = document.getElementById("hs-sheet");
-    if (sheet && !sheet.querySelector(".hs-pin") && !sheet.querySelector(".hs-date")) {
-      sheet.innerHTML = '<p class="hs-pin hs-pin-ready">Loading storm dates…</p>';
+    if (sheet && !sheet.querySelector(".hs-pin") && !sheet.querySelector(".hs-date") && !sheet.querySelector("#hs-hail-search")) {
+      const esc = window.__pipWxEsc || ((s) => String(s ?? ""));
+      paintHailSearchIdle(sheet, esc);
     }
   }
   if (wasExpanded) {
@@ -8368,10 +8367,28 @@ export function revealHailAddressPeek() {
   scheduleSheetScroll(scrollViewToAddressPeek, { waitForMap: wasExpanded });
 }
 
-/** Optional hook when storm sheet opens with no house pin (e.g. load map-view storms). */
+/** Optional hook when storm sheet opens with no house pin (e.g. show idle Search storms UI). */
 let stormSheetOpenHook = null;
 export function bindStormSheetOpen(fn) {
   stormSheetOpenHook = typeof fn === "function" ? fn : null;
+}
+
+/** Explicit Search storms button — never auto-fires hail fetch. */
+let hailSearchClickHook = null;
+export function bindHailSearchClick(fn) {
+  hailSearchClickHook = typeof fn === "function" ? fn : null;
+}
+
+/**
+ * Map-view hail fetch is opt-in. Boot / pan / sheet open do not pull storm dates
+ * until the user taps Search storms (or drops a house pin).
+ */
+let mapViewHailArmed = false;
+export function isMapViewHailArmed() {
+  return mapViewHailArmed === true;
+}
+export function setMapViewHailArmed(on) {
+  mapViewHailArmed = on === true;
 }
 
 /** Optional hook when the map view moves and no house pin is set (refresh statewide dates). */
@@ -8400,11 +8417,12 @@ export function mapViewStormsNeedRefresh(force = false) {
 }
 
 function scheduleMapViewStormMove(ms = 700) {
-  if (wxPinSelected() || !hailScopeMode || hasSelectedStormDates()) return;
+  // Careful loading: never auto-refresh storms on pan unless user armed Search storms.
+  if (!mapViewHailArmed || wxPinSelected() || !hailScopeMode || hasSelectedStormDates()) return;
   if (mapViewStormMoveTimer) clearTimeout(mapViewStormMoveTimer);
   mapViewStormMoveTimer = setTimeout(() => {
     mapViewStormMoveTimer = 0;
-    if (wxPinSelected() || !hailScopeMode || hasSelectedStormDates()) return;
+    if (!mapViewHailArmed || wxPinSelected() || !hailScopeMode || hasSelectedStormDates()) return;
     const force = mapViewStormForceNext;
     mapViewStormForceNext = false;
     try {
@@ -8413,6 +8431,18 @@ function scheduleMapViewStormMove(ms = 700) {
       /* ignore */
     }
   }, ms);
+}
+
+/** Idle filters + Search storms CTA — no network until the button (or a house pin). */
+export function paintHailSearchIdle(root, esc) {
+  if (!root) return;
+  const data = {
+    hail: [],
+    address: "",
+    viewport: true,
+    _meta: { viewport: true, idle: true },
+  };
+  renderHailScopeSheet(root, data, esc, { drawMap: false });
 }
 
 /** Slide open storm dates + completed jobs list. */
@@ -9213,10 +9243,7 @@ export function clearSelectedStormDate() {
   }
   pendingSelectedStormRows = null;
   if (hadSelection) emitMapStatus("Hail zones cleared");
-  if (hadSelection && !wxPinSelected() && hailScopeMode) {
-    mapViewStormForceNext = true;
-    scheduleMapViewStormMove(80);
-  }
+  // Do not auto-refetch map-view storms — user taps Search storms when they want a new pass.
 }
 
 /** Update address/contacts while storm list still loading — avoids wiping the sheet. */
@@ -9322,8 +9349,12 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
 
 function hailScopePinHtml(data, esc) {
   const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const idle = Boolean(data._meta?.idle);
   const pinLine = selectedStormsPinText(esc);
   if (viewport) {
+    if (idle) {
+      return `<p class="hs-pin hs-pin-ready">Set filters, then Search storms for this map view</p>`;
+    }
     const loading = data._meta?.loading ? " · loading more…" : "";
     const line =
       pinLine ||
@@ -9338,10 +9369,12 @@ function hailScopePinHtml(data, esc) {
 
 function hailScopeHtml(data, days, esc) {
   const viewport = Boolean(data.viewport || data._meta?.viewport);
+  const idle = Boolean(data._meta?.idle);
   const years = [
     ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
   ].sort((a, b) => b.localeCompare(a));
   const q = hailSearchQ;
+  const searchLab = idle || !days.length ? "Search storms" : "Search this view";
   return `
     ${hailScopePinHtml(data, esc)}
     ${viewport ? "" : placeContactHtml(data, esc)}
@@ -9374,6 +9407,11 @@ function hailScopeHtml(data, days, esc) {
         <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>Largest hail</option>
         <option value="storm"${wxFilters.sort === "storm" ? " selected" : ""}>Biggest storm</option>
       </select></label>
+      ${
+        viewport
+          ? `<button type="button" id="hs-hail-search" class="hs-hail-search">${esc(searchLab)}</button>`
+          : ""
+      }
     </div>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
@@ -9449,6 +9487,9 @@ export function stormListPageSlice(days, page, pageSize = STORM_LIST_PAGE_SIZE) 
 
 function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
   if (!days.length) {
+    if (data?._meta?.idle) {
+      return `<p class="hs-empty">Storm dates stay off until you tap Search storms. Flags load separately from the Flags toggle.</p>`;
+    }
     const cached = (data?.hail || []).length;
     if (cached > 0) {
       const msg = hailSearchQ
@@ -9519,6 +9560,18 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   }
   bindHailScopeDates(root, data, esc, { onRefetch });
   bindPlaceLinks(root);
+  const searchBtn = root.querySelector("#hs-hail-search");
+  if (searchBtn) {
+    searchBtn.onclick = (e) => {
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      try {
+        hailSearchClickHook?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }
   const bind = (id, key, cast) => {
     const el = root.querySelector(id);
     if (!el) return;
@@ -9526,6 +9579,8 @@ function bindHailScopeSheet(root, data, esc, { onRefetch } = {}) {
       hailStormPage = 0;
       wxFilters[key] = cast(el.value);
       if (key === "km" && wxPinSelected()) drawPinRadius();
+      // Idle sheet: only remember filters — Search storms starts the fetch.
+      if (meta.idle) return;
       const needRefetch =
         onRefetch &&
         !meta.listLocked &&
