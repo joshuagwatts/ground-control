@@ -67,7 +67,8 @@ import {
   bindHailScopeRadar,
   syncHailScopeRadar,
   applyLoadedMapConfig,
-} from "./wx.js?v=0.2.180";
+  startPhoneFlagScan,
+} from "./wx.js?v=0.2.181";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1587,7 +1588,11 @@ function paintLayerToggles() {
   el.innerHTML = `
     <button type="button" data-ov="me" class="hs-me-toggle ${meOn ? "on" : ""}" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
     <button type="button" data-ov="dots" class="hs-dots-toggle ${dotsOn ? "on" : ""}" aria-label="Hail dots" title="Show spotter (red) and radar (green) dots"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-g"></i></span>Dots</button>
-    <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="Green flags = for-rent listings (tap for phone or listing). Blue pins = businesses with a phone."><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle ${flagsOn ? "on" : ""}" aria-label="Phone flags" title="${
+      flagsOn
+        ? "Tap to refresh map-view flags · hold to clear"
+        : "Green flags = for-rent listings. Tap to load this map view. Blue = businesses with a phone."
+    }"><span class="hs-flag-ico" aria-hidden="true"></span>Flags</button>
     <button type="button" data-ov="done" class="${doneOn ? "on" : ""}">Done</button>
     <button type="button" data-ov="marks" class="${marksOn ? "on" : ""}">Marks</button>`;
   if (!el._hsFlagsStatusBound) {
@@ -1595,9 +1600,51 @@ function paintLayerToggles() {
     window.addEventListener("hs-phone-flags", (ev) => {
       const msg = String(ev.detail?.msg || "").trim();
       const btn = el.querySelector('[data-ov="flags"]');
-      if (btn) btn.title = msg || "Green flags = for-rent listings with a phone. Blue pins = businesses with a phone.";
+      if (btn) {
+        btn.title =
+          msg ||
+          (db.settings.showPhoneFlags === true
+            ? "Tap to refresh map-view flags · hold to clear"
+            : "Green flags = for-rent listings. Tap to load this map view.");
+      }
       if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
     });
+  }
+  if (!el._hsFlagsHoldBound) {
+    el._hsFlagsHoldBound = true;
+    let holdTimer = 0;
+    let holdFired = false;
+    const clearHold = () => {
+      if (holdTimer) {
+        clearTimeout(holdTimer);
+        holdTimer = 0;
+      }
+    };
+    el.addEventListener("pointerdown", (e) => {
+      const b = e.target.closest('button[data-ov="flags"]');
+      if (!b || db.settings.showPhoneFlags !== true) return;
+      holdFired = false;
+      clearHold();
+      holdTimer = window.setTimeout(() => {
+        holdTimer = 0;
+        holdFired = true;
+        db.settings.showPhoneFlags = false;
+        persist();
+        paintLayerToggles();
+        paintFieldMap();
+        setStatus("Flags cleared");
+      }, 550);
+    });
+    el.addEventListener("pointerup", clearHold);
+    el.addEventListener("pointercancel", clearHold);
+    el.addEventListener("pointerleave", (e) => {
+      if (e.target.closest?.('button[data-ov="flags"]')) clearHold();
+    });
+    el._hsFlagsHoldConsumed = () => {
+      if (!holdFired) return false;
+      holdFired = false;
+      return true;
+    };
   }
   el.onclick = (e) => {
     const b = e.target.closest("button[data-ov]");
@@ -1617,13 +1664,19 @@ function paintLayerToggles() {
       return;
     }
     if (b.dataset.ov === "flags") {
-      db.settings.showPhoneFlags = !flagsOn;
+      if (el._hsFlagsHoldConsumed?.()) return;
+      if (flagsOn) {
+        // Already on → hard refresh this map view (don't turn off).
+        cancelWarmMapViewStorms();
+        setStatus("Refreshing flags · map view…");
+        startPhoneFlagScan();
+        return;
+      }
+      db.settings.showPhoneFlags = true;
       persist();
       paintLayerToggles();
-      if (db.settings.showPhoneFlags === true) {
-        cancelWarmMapViewStorms();
-        setStatus("Loading flags · map view…");
-      } else setStatus("Flags cleared");
+      cancelWarmMapViewStorms();
+      setStatus("Refreshing flags · map view…");
       // paintFieldMap → setFieldOverlay rising-edge starts the scan once
       paintFieldMap();
       return;

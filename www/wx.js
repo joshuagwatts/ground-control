@@ -7061,7 +7061,7 @@ function applyRentFlagBatch(flags, gen) {
 }
 
 function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return Promise.resolve([]);
   const now = Date.now();
   const nextCity = String(place?.city || "").trim();
   const cityKey = (c) =>
@@ -7075,7 +7075,7 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
     haversineKm(lastRentSweepLat, lastRentSweepLon, lat, lon) >= RENT_SWEEP_MOVE_KM;
   const hardForce = force || geoMoved;
   const shouldRun = hardForce || cityUpgrade || !lastRentSweepAt || now - lastRentSweepAt >= RENT_SWEEP_COOL_MS;
-  if (!shouldRun) return;
+  if (!shouldRun) return Promise.resolve([]);
   lastRentSweepAt = now;
   lastRentSweepLat = lat;
   lastRentSweepLon = lon;
@@ -7086,7 +7086,7 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
       lastRentSweepCity ? `Loading flags · map view · ${lastRentSweepCity}…` : "Loading flags · map view…",
     );
   }
-  void lookupViewportRentFlags(lat, lon, {
+  return lookupViewportRentFlags(lat, lon, {
     city: nextCity || lastRentSweepCity || "",
     state: place?.state || (isOklahomaLatLon(lat, lon) ? "OK" : ""),
     bounds,
@@ -7095,8 +7095,11 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
     retarget: cityUpgrade && !hardForce,
     onBatch: (flags) => applyRentFlagBatch(flags, gen),
   })
-    .then((flags) => applyRentFlagBatch(flags, gen))
-    .catch(() => {});
+    .then((flags) => {
+      applyRentFlagBatch(flags, gen);
+      return flags;
+    })
+    .catch(() => []);
 }
 
 function osmPoiQuery(south, west, north, east) {
@@ -7155,7 +7158,18 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     paintFlagDock();
     return;
   }
-  hydratePersistedFlags();
+  // Toggle / re-tap refresh: wipe pins so the map visibly retargets this frame.
+  if (forceRent) {
+    houseCache = { key: "", rings: [], nums: [] };
+    housePaintSig = "";
+    try {
+      houseLayer?.clearLayers?.();
+    } catch {
+      /* ignore */
+    }
+  } else {
+    hydratePersistedFlags();
+  }
   const searchB = flagSearchBounds();
   if (!searchB) {
     houseLayer.clearLayers();
@@ -7175,7 +7189,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   if (!forceRent && !frameChanged && houseCache.nums.length) {
     scheduleFlagLayerPaint();
     if (center) {
-      kickRentFlags(
+      void kickRentFlags(
         center.lat,
         center.lng,
         {
@@ -7200,10 +7214,11 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
-  houseCache = { key, rings: [], nums: houseCache.nums || [] };
+  houseCache = { key, rings: [], nums: forceRent ? [] : houseCache.nums || [] };
 
+  let rentWork = Promise.resolve([]);
   if (center) {
-    kickRentFlags(
+    rentWork = kickRentFlags(
       center.lat,
       center.lng,
       {
@@ -7248,7 +7263,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
             (c) => slug(c) === slug(osmCity),
           );
           if (inFrame || !viewCity) {
-            kickRentFlags(
+            void kickRentFlags(
               center.lat,
               center.lng,
               {
@@ -7271,6 +7286,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     houseEnrichTimer = 0;
     void enrichVisibleHouseInfo(houseCache.nums, gen);
   }, 80);
+  return rentWork;
 }
 
 function emitPhoneFlagsStatus(msg) {
@@ -7291,7 +7307,7 @@ function emitMapStatus(msg) {
   }
 }
 
-/** Kick off Flags scan immediately (toggle / map settle). Toggle-on forces map-view refresh. */
+/** Kick off Flags scan immediately (toggle on / re-tap refresh). Hard-wipes then map-view reload. */
 export function startPhoneFlagScan() {
   if (!phoneFlagsEnabled()) return;
   if (!map || !window.L) {
@@ -7300,7 +7316,6 @@ export function startPhoneFlagScan() {
   }
   houseHoldUntil = 0;
   housePaintSig = "";
-  houseGen += 1;
   cancelRentFlagSweep();
   // Bypass rent cool-down and cancel any stale crawl.
   lastRentSweepAt = 0;
@@ -7316,48 +7331,30 @@ export function startPhoneFlagScan() {
     houseEnrichTimer = 0;
   }
 
-  // Fresh map-view pass — drop out-of-frame pins so toggle retargets the frame you see.
+  // Blank the layer first so refresh is visible (no stale persist flash).
   houseCache = { key: "", rings: [], nums: [] };
+  // Mark hydrated so a later pan doesn't dump the whole statewide localStorage into the layer.
+  persistHydrated = true;
   try {
     houseLayer?.clearLayers?.();
   } catch {
     /* ignore */
   }
-  persistHydrated = false;
-  hydratePersistedFlags();
-  const bounds = flagViewBoundsPayload();
-  if (bounds && houseCache.nums.length) {
-    const south = Number(bounds.south);
-    const west = Number(bounds.west);
-    const north = Number(bounds.north);
-    const east = Number(bounds.east);
-    const midLat = (south + north) / 2;
-    const padKm = 28;
-    const dLat = padKm / 111.32;
-    const dLon = padKm / (111.32 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
-    houseCache.nums = houseCache.nums.filter(
-      (n) =>
-        Number.isFinite(n?.lat) &&
-        Number.isFinite(n?.lon) &&
-        n.lat >= south - dLat &&
-        n.lat <= north + dLat &&
-        n.lon >= west - dLon &&
-        n.lon <= east + dLon,
-    );
-  }
+  paintFlagDock();
 
   const center = map.getCenter?.();
+  const bounds = flagViewBoundsPayload();
   const viewCity =
     (center &&
       citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 1 })[0]) ||
     (center && isOklahomaLatLon(center.lat, center.lng) ? inferOkCity(center.lat, center.lng) : "") ||
     "";
-  emitPhoneFlagsStatus(viewCity ? `Loading flags · map view · ${viewCity}…` : "Loading flags · map view…");
+  emitPhoneFlagsStatus(viewCity ? `Refreshing flags · map view · ${viewCity}…` : "Refreshing flags · map view…");
   setFlagsToggleBusy(true);
-  scheduleFlagLayerPaint(true);
-  void refreshHouseNumbers({ forceRent: true });
-  // Rent/Zillow stream async — drop busy pulse after a beat (batches keep status updated).
-  window.setTimeout(() => setFlagsToggleBusy(false), 6500);
+  void refreshHouseNumbers({ forceRent: true }).finally(() => {
+    setFlagsToggleBusy(false);
+    if (phoneFlagsEnabled()) emitPhoneFlagsStatus(flagStatusLine() || "Flags ready");
+  });
 }
 
 function setFlagsToggleBusy(on) {

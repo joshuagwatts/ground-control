@@ -1252,12 +1252,15 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     paintRows(acc);
   };
 
-  const cached = loadPersistedRentFlags();
-  if (cached.length) {
-    acc = mergeRentFlagList(acc, cached);
-    paintRows(acc);
+  // Force refresh: skip stale localStorage dump so the map actually clears, then refill.
+  // Seed (map-frame only) still paints so Oklahoma views aren't blank while network runs.
+  if (!force) {
+    const cached = loadPersistedRentFlags();
+    if (cached.length) {
+      acc = mergeRentFlagList(acc, cached);
+      paintRows(acc);
+    }
   }
-  // Statewide seed — only paint what's in / near this map frame (never dump Edmond statewide).
   if (Array.isArray(OK_RENT_FLAG_SEED) && OK_RENT_FLAG_SEED.length) {
     const seedRows = bounds
       ? rentFlagsInBounds(OK_RENT_FLAG_SEED, bounds, 28)
