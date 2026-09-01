@@ -41,6 +41,7 @@ import {
   citiesInMapBounds,
   inferOkCity,
   mergeRentFlagList,
+  borrowPhonesAcrossRentRows,
   persistRentFlags,
   loadPersistedRentFlags,
   persistedRentFlagsAt,
@@ -488,5 +489,10 @@ assert(cached.length === 2 && cached[0].city === "Edmond", "persist rent flags")
 assert(persistedRentFlagsAt() > 0, "persist stamp");
 persistRentFlags([rowA]);
 assert(loadPersistedRentFlags().length === 2, "persist merge keeps prior cities");
+
+const donor = { phone: "(405) 709-8424", lat: 35.656792, lon: -97.4539, listingUrl: "https://www.rent.com/a" };
+const zPin = { lat: 35.6571, lon: -97.4542, listingUrl: "https://www.zillow.com/b" };
+const borrowed = borrowPhonesAcrossRentRows([donor, zPin], 0.5);
+assert(borrowed[1].phone === donor.phone, "borrow rent phone onto nearby zillow pin");
 
 console.log("place-contacts ok");

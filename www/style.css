@@ -1333,7 +1333,10 @@ body.hs-tab .leaflet-container,
 }
 .wx-roof-blurb { font-size: 9px; margin: 0.35rem 0 0.45rem; letter-spacing: 0.04em; }
 .wx-hail-confirmed { filter: none; }
-.wx-hail-radar { filter: none; }
+.wx-hail-radar { filter: drop-shadow(0 0 4px rgba(125, 255, 90, 0.55)); }
+.wx-hail-topo.wx-hail-radar path {
+  stroke: #7dff5a;
+}
 .leaflet-popup.hs-zone-popup .leaflet-popup-content-wrapper {
   background: rgba(18, 18, 20, 0.96);
   color: var(--text, #eee);
@@ -2620,6 +2623,12 @@ body.wx-map-expanded .hs-field {
   -webkit-user-select: none;
   user-select: none;
   touch-action: manipulation;
+}
+.hs-phone-flag-ico.no-phone {
+  opacity: 0.78;
+}
+.hs-phone-flag-ico.no-phone svg path[fill="#1dff6e"] {
+  fill: #5cb870;
 }
 .hs-flag-dock {
   position: absolute;

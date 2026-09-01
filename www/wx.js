@@ -1107,6 +1107,17 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
+/** NOAA SWDI / radar swaths — green so they read distinct from spotter (warm) zones. */
+function hailRadarZoneColor(sizeIn) {
+  const sz = parseFloat(sizeIn);
+  if (Number.isNaN(sz)) return { stroke: "#7dff5a", fill: "#4caf2a", core: "#b8ff9a" };
+  if (sz >= 2) return { stroke: "#5dd44a", fill: "#2e7d32", core: "#9eff7a" };
+  if (sz >= 1.5) return { stroke: "#6ee85a", fill: "#388e3c", core: "#a8ff8a" };
+  if (sz >= 1) return { stroke: "#7dff5a", fill: "#43a047", core: "#b8ff9a" };
+  if (sz >= 0.75) return { stroke: "#8aff6a", fill: "#4caf2a", core: "#c8ffaa" };
+  return { stroke: "#b8ff9a", fill: "#66bb6a", core: "#d4ff9a" };
+}
+
 export function mergeHailRows(...groups) {
   const seen = new Set();
   const spots = [];
@@ -1465,8 +1476,9 @@ function flagBizPaintMax() {
 }
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
-const HOUSE_ENRICH_MAX = 20;
-const HOUSE_ENRICH_GAP_MS = 380;
+const HOUSE_ENRICH_MAX = 24;
+const HOUSE_ENRICH_GAP_MS = 280;
+const LISTING_ENRICH_BATCH = 6;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -4917,7 +4929,6 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const dayHits = zoneHitPool(h, hailRows || []);
     const atRoof = dayHits.filter((p) => hitDistKm(p) <= HOUSE_HAIL_KM);
     const pin = pinCoords();
-    const subRings = [];
     const roofHit = (h.near_hits || 0) > 0 || atRoof.length > 0;
     // Close-in only — yellow roof ring reads as a bubble when zoomed out.
     if (roofHit && pin && !wideView) {
@@ -4941,7 +4952,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       );
     }
     const zoneHits = dayHits;
-    for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
+    const radarHits = dayHits.filter(isRadarHail);
+    const spotHits = dayHits.filter(isSpotterHail);
+    const subRings = [];
+    if (radarHits.length) {
+      for (const sub of buildDetailedZoneRings(h, radarHits)) subRings.push(sub);
+    }
+    if (spotHits.length) {
+      for (const sub of buildDetailedZoneRings(h, spotHits)) subRings.push(sub);
+    }
     if (!subRings.length && dayHits.length) {
       const hasSpot = dayHits.some(isSpotterHail);
       const hasRadar = dayHits.some(isRadarHail);
@@ -4958,15 +4977,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     const bands = stackHailBandPolys(subRings);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
-      const col = hailZoneColor(sz);
       const isMixed = sub.source === "spot+radar";
       const isRadarZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
       const isConfirm = isMixed || (Boolean(sub.confirmed) && !isRadarZone);
+      const col = isRadarZone ? hailRadarZoneColor(sz) : hailZoneColor(sz);
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: hailLayerFillOpacity(sz),
+        fillOpacity: isRadarZone ? Math.min(0.82, hailLayerFillOpacity(sz) + 0.12) : hailLayerFillOpacity(sz),
         weight: 1.2,
         opacity: 0.7,
         stroke: true,
@@ -6211,8 +6230,9 @@ function flagMarkerKind(n) {
   return housePhoneKind(n) === "business" ? "business" : "home";
 }
 
-function phoneFlagIcon(tip = "", kind = "home") {
+function phoneFlagIcon(tip = "", kind = "home", hasPhone = true) {
   const title = tip ? ` title="${tip}"` : "";
+  const phCls = hasPhone ? "has-phone" : "no-phone";
   if (kind === "business" || kind === "info") {
     return window.L.divIcon({
       className: "hs-phone-flag hs-flag-pin",
@@ -6223,7 +6243,7 @@ function phoneFlagIcon(tip = "", kind = "home") {
   }
   return window.L.divIcon({
     className: "hs-phone-flag",
-    html: `<span class="hs-phone-flag-ico has-phone"${title} aria-hidden="true"><svg viewBox="0 0 16 22" width="13" height="18" focusable="false"><path fill="#0b0b0d" d="M2.4 0.8h1.8v20.2H2.4z"/><path fill="#1dff6e" d="M4.2 1.6h9.6l-2.6 3.5 2.6 3.5H4.2z"/><circle cx="3.3" cy="20.6" r="1.3" fill="#1dff6e"/></svg></span>`,
+    html: `<span class="hs-phone-flag-ico ${phCls}"${title} aria-hidden="true"><svg viewBox="0 0 16 22" width="13" height="18" focusable="false"><path fill="#0b0b0d" d="M2.4 0.8h1.8v20.2H2.4z"/><path fill="#1dff6e" d="M4.2 1.6h9.6l-2.6 3.5 2.6 3.5H4.2z"/><circle cx="3.3" cy="20.6" r="1.3" fill="#1dff6e"/></svg></span>`,
     iconSize: [13, 18],
     iconAnchor: [3, 18],
   });
@@ -6277,7 +6297,7 @@ function borrowPhonesForRentFlags(nums) {
   for (const n of nums || []) {
     if (housePhoneKind(n) !== "rental" || houseHasPhone(n)) continue;
     let best = null;
-    let bestD = 1.6;
+    let bestD = 2.5;
     for (const d of donors) {
       const dist = haversineKm(n.lat, n.lon, d.lat, d.lon);
       if (dist <= bestD) {
@@ -6420,8 +6440,9 @@ function paintHouseLayer(_rings, nums) {
   for (const n of list) {
     const tip = houseUsefulTip(n).replace(/"/g, "");
     const kind = flagMarkerKind(n);
+    const hasPhone = Boolean(phoneDigits(housePhoneFor(n)));
     const marker = window.L.marker([n.lat, n.lon], {
-      icon: phoneFlagIcon(tip, kind),
+      icon: phoneFlagIcon(tip, kind, hasPhone),
       pane: "houseNums",
       interactive: true,
       keyboard: true,
@@ -6615,6 +6636,37 @@ async function addressForHouseNum(n) {
 }
 
 /** Merge OSM house / POI points into the session pool (keeps phones found off-screen). */
+function coalesceRentPhonesNearby(nums, maxKm = 0.45) {
+  if (!nums?.length) return;
+  const donors = nums.filter((n) => {
+    if (housePhoneKind(n) !== "rental" && !n.zillow_rent) return false;
+    return houseHasPhone(n) || (n.phone && !isJunkPhone(n.phone));
+  });
+  if (!donors.length) return;
+  for (const n of nums) {
+    if (housePhoneKind(n) !== "rental" && !n.zillow_rent) continue;
+    if (houseHasPhone(n)) continue;
+    let best = null;
+    let bestD = maxKm;
+    for (const d of donors) {
+      const dist = haversineKm(n.lat, n.lon, d.lat, d.lon);
+      if (dist <= bestD) {
+        bestD = dist;
+        best = d;
+      }
+    }
+    if (!best) continue;
+    const ph = housePhoneFor(best) || best.phone;
+    if (!ph) continue;
+    n.phone = ph;
+    rememberHouseUseful(n, {
+      phone: ph,
+      kind: "rental",
+      source: n.source || best.source || "rent-com",
+    });
+  }
+}
+
 function mergeHouseNums(into, nums) {
   const out = Array.isArray(into) ? [...into] : [];
   const idx = new Map();
@@ -6660,8 +6712,10 @@ function mergeHouseNums(into, nums) {
   if (out.length > 1600) {
     const rentals = out.filter((n) => n.phone_kind === "rental" || /rent/i.test(n.source || ""));
     const rest = out.filter((n) => n.phone_kind !== "rental" && !/rent/i.test(n.source || ""));
+    coalesceRentPhonesNearby(out);
     return [...rentals.slice(-900), ...rest.slice(-400)];
   }
+  coalesceRentPhonesNearby(out);
   return out;
 }
 
@@ -6778,17 +6832,15 @@ async function enrichVisibleHouseInfo(nums, gen) {
   const total = listingQueue.length + addrQueue.length;
   emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… 0/${total}`));
   let step = 0;
-  for (const n of listingQueue) {
+  for (let i = 0; i < listingQueue.length; i += LISTING_ENRICH_BATCH) {
     if (!map || !phoneFlagsEnabled()) return;
-    if (gen !== houseGen && houseCache.nums !== nums) {
-      /* map moved — still finish this house, then stop starting new ones */
-    }
     if (mapBusy > 0) {
       emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
       return;
     }
-    await runListing(n);
-    step += 1;
+    const chunk = listingQueue.slice(i, i + LISTING_ENRICH_BATCH);
+    await Promise.all(chunk.map((n) => runListing(n)));
+    step += chunk.length;
     emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
     await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
     if (gen !== houseGen) return;

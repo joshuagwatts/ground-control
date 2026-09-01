@@ -1245,9 +1245,32 @@ function rentFlagsInBounds(rows, bounds, padKm = 12) {
   );
 }
 
+/** Match Rent.com seed phones onto nearby Zillow pins before paint. */
+export function borrowPhonesAcrossRentRows(rows, maxKm = 2.2) {
+  const list = Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [];
+  const donors = list.filter((r) => r?.phone && String(r.phone).trim());
+  if (!donors.length) return list;
+  for (const row of list) {
+    if (row.phone && String(row.phone).trim()) continue;
+    let best = null;
+    let bestD = maxKm;
+    for (const d of donors) {
+      const dist = haversineKm(row.lat, row.lon, d.lat, d.lon);
+      if (dist <= bestD) {
+        bestD = dist;
+        best = d;
+      }
+    }
+    if (!best) continue;
+    row.phone = best.phone;
+    if (!row.phone_kind) row.phone_kind = "rental";
+  }
+  return list;
+}
+
 /** Seed + persisted rent pins for the current map frame (no paint cap here). */
 export function rentFlagsForViewport(bounds, lat, lon, padKm = 56) {
-  const rows = mergeRentFlagList(loadPersistedRentFlags(), OK_RENT_FLAG_SEED);
+  const rows = borrowPhonesAcrossRentRows(mergeRentFlagList(loadPersistedRentFlags(), OK_RENT_FLAG_SEED));
   if (!rows.length) return [];
   const south = Number(bounds?.south);
   const west = Number(bounds?.west);
