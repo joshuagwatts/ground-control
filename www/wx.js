@@ -5861,7 +5861,7 @@ function scheduleHouseNumbers() {
     houseTimer = 0;
     if (Date.now() < houseHoldUntil || mapBusy > 0) return;
     refreshHouseNumbers();
-  }, 380);
+  }, 220);
 }
 
 function holdHouseOutlines(ms = 1500) {
@@ -6251,29 +6251,27 @@ function setFlagKindFilter(kind, on) {
 function readyFlagList(nums) {
   const c = map?.getCenter?.();
   const b = map?.getBounds?.();
-  // Match what the user sees: rentals inside the padded map frame (Zillow-style),
-  // not a 36 km circle that floods Edmond with OKC pins.
+  // Show rentals in / near the map frame (generous pad — city search hits sit across town).
   const list = (nums || []).filter((n) => {
     if (!houseHasFlag(n) || !Number.isFinite(n.lat) || !Number.isFinite(n.lon)) return false;
     if (flagHiddenKeys.has(flagItemKey(n))) return false;
     const kind = housePhoneKind(n);
     if (kind === "rental" && !flagKindFilter.rental) return false;
     if (kind === "business" && !flagKindFilter.business) return false;
-    if (kind === "rental" && b?.isValid?.()) {
+    if (b?.isValid?.()) {
       const s = b.getSouth();
       const n0 = b.getNorth();
       const w = b.getWest();
       const e = b.getEast();
-      const dLat = Math.max(0.01, (n0 - s) * 0.2);
-      const dLon = Math.max(0.01, (e - w) * 0.2);
+      const dLat = Math.max(0.02, (n0 - s) * 0.45);
+      const dLon = Math.max(0.02, (e - w) * 0.45);
       const inFrame = n.lat >= s - dLat && n.lat <= n0 + dLat && n.lon >= w - dLon && n.lon <= e + dLon;
       if (inFrame) return true;
-      // Tiny grace for pins just off-screen.
-      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 1.4, 6)) return true;
+      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 2.2, 12)) return true;
       return false;
     }
     if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
-      const maxKm = Math.max(flagSearchKm() * 2.4, 12);
+      const maxKm = Math.max(flagSearchKm() * 2.8, 14);
       if (haversineKm(c.lat, c.lng, n.lat, n.lon) > maxKm) return false;
     }
     return true;
@@ -7076,10 +7074,29 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
 }
 
 function osmPoiQuery(south, west, north, east) {
-  return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(
-    node["phone"]["amenity"];node["phone"]["shop"];node["phone"]["office"];node["phone"]["craft"];node["phone"]["healthcare"];
-    node["contact:phone"]["amenity"];node["contact:phone"]["shop"];node["contact:phone"]["office"];
-    way["phone"]["amenity"];way["phone"]["shop"];way["phone"]["office"];
+  return `[out:json][timeout:10][bbox:${south},${west},${north},${east}];(
+    node["phone"]["amenity"];
+    node["phone"]["shop"];
+    node["phone"]["office"];
+    node["phone"]["craft"];
+    node["phone"]["healthcare"];
+    node["phone"]["tourism"];
+    node["phone"]["leisure"];
+    node["phone"]["company"];
+    node["contact:phone"]["amenity"];
+    node["contact:phone"]["shop"];
+    node["contact:phone"]["office"];
+    node["contact:phone"]["craft"];
+    node["contact:phone"]["healthcare"];
+    node["contact:phone"]["tourism"];
+    way["phone"]["amenity"];
+    way["phone"]["shop"];
+    way["phone"]["office"];
+    way["phone"]["craft"];
+    way["phone"]["healthcare"];
+    way["contact:phone"]["amenity"];
+    way["contact:phone"]["shop"];
+    way["contact:phone"]["office"];
   );out tags center;`;
 }
 
@@ -7157,9 +7174,9 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   const north = padB.getNorth();
   const east = padB.getEast();
   const gen = ++houseGen;
+  houseCache = { key, rings: [], nums: houseCache.nums || [] };
 
   if (center) {
-    // Always force map-view rent load for the towns inside this frame.
     kickRentFlags(
       center.lat,
       center.lng,
@@ -7172,56 +7189,62 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     );
   }
 
-  const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
-  const pois = numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
-  const osmNums = numsFromOsmElements(mapDump?.elements);
-  if (!map || !phoneFlagsEnabled()) return;
-  const nums = mergeHouseNums(houseCache.nums, [...pois, ...osmNums]);
-  houseCache = { key, rings: [], nums };
-  persistBizFlags(nums);
-  scheduleFlagLayerPaint(true);
-
-  const place = placeFromOsmElements(mapDump?.elements);
-  const osmCity = String(place.city || "").trim();
-  if (center && osmCity) {
-    const slug = (n) =>
-      String(n || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "");
-    if (slug(osmCity) !== slug(viewCity)) {
-      const inFrame = citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 8 }).some(
-        (c) => slug(c) === slug(osmCity),
-      );
-      if (inFrame || !viewCity) {
-        kickRentFlags(
-          center.lat,
-          center.lng,
-          {
-            city: osmCity,
-            state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
-          },
-          gen,
-          { force: false },
-        );
-      }
-    }
-  }
-
-  void overpassJson(osmPoiQuery(south, west, north, east), 8000)
+  // Business flags: Overpass first (fast), do not wait on a full OSM map dump.
+  void overpassJson(osmPoiQuery(south, west, north, east), 10000)
     .then((overPois) => {
-      if (gen !== houseGen || !overPois?.elements?.length) return;
-      houseCache.nums = mergeHouseNums(houseCache.nums, numsFromOsmElements(overPois.elements, { requireBusinessPhone: true }));
+      if (gen !== houseGen || !phoneFlagsEnabled()) return;
+      const pois = numsFromOsmElements(overPois?.elements, { requireBusinessPhone: true });
+      if (!pois.length) return;
+      houseCache.nums = mergeHouseNums(houseCache.nums, pois);
       persistBizFlags(houseCache.nums);
-      scheduleFlagLayerPaint();
+      scheduleFlagLayerPaint(true);
+      emitPhoneFlagsStatus(flagStatusLine());
     })
     .catch(() => {});
 
-  emitPhoneFlagsStatus(readyFlagList(nums).length ? flagStatusLine() : "Loading flags · map view…");
+  // Secondary OSM dump for any extra tagged phones — background only.
+  void osmMapJson(south, west, north, east, 14000)
+    .then((mapDump) => {
+      if (gen !== houseGen || !phoneFlagsEnabled() || !mapDump?.elements?.length) return;
+      const pois = numsFromOsmElements(mapDump.elements, { requireBusinessPhone: true });
+      houseCache.nums = mergeHouseNums(houseCache.nums, pois);
+      persistBizFlags(houseCache.nums);
+      scheduleFlagLayerPaint();
+      const place = placeFromOsmElements(mapDump.elements);
+      const osmCity = String(place.city || "").trim();
+      if (center && osmCity) {
+        const slug = (n) =>
+          String(n || "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "");
+        if (slug(osmCity) !== slug(viewCity)) {
+          const inFrame = citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 8 }).some(
+            (c) => slug(c) === slug(osmCity),
+          );
+          if (inFrame || !viewCity) {
+            kickRentFlags(
+              center.lat,
+              center.lng,
+              {
+                city: osmCity,
+                state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
+              },
+              gen,
+              { force: false },
+            );
+          }
+        }
+      }
+      emitPhoneFlagsStatus(flagStatusLine());
+    })
+    .catch(() => {});
+
+  scheduleFlagLayerPaint(true);
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
   houseEnrichTimer = setTimeout(() => {
     houseEnrichTimer = 0;
-    void enrichVisibleHouseInfo(nums, gen);
-  }, 40);
+    void enrichVisibleHouseInfo(houseCache.nums, gen);
+  }, 80);
 }
 
 function emitPhoneFlagsStatus(msg) {
