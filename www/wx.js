@@ -4119,6 +4119,7 @@ export function setWxPin(lat, lon) {
   pinLon = nextLon;
   if (!moved) return;
   pinStormSwdiGen++;
+  hailStormPage = 0;
   applyContextStormFilters("pin");
   placeSelectPin([lat, lon]);
   clearPinRadius();
@@ -9979,7 +9980,15 @@ export function filterDossier(data, filters = wxFilters) {
   // One extremeness tag per date (HailTrace-style).
   let hail = collapseHailByDate(hailRaw).filter((h) => stormPassesSizeFilter(h, filters));
   hail = [...hail].sort((a, b) => {
-    // Newest mode: pure date order — no near_hits reshuffle as partials land.
+    // Pin mode: checked dates + hail-at-roof float above distant same-day storms.
+    if (wxPinSelected()) {
+      const aSel = isStormDateSelected(a.date) ? 0 : 1;
+      const bSel = isStormDateSelected(b.date) ? 0 : 1;
+      if (aSel !== bSel) return aSel - bSel;
+      const aRoof = (a.near_hits || 0) > 0 ? 0 : 1;
+      const bRoof = (b.near_hits || 0) > 0 ? 0 : 1;
+      if (aRoof !== bRoof) return aRoof - bRoof;
+    }
     if (sort === "date") {
       return String(b.date).localeCompare(String(a.date)) || (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
     }
@@ -10522,6 +10531,14 @@ function paintHailScopeDateSelection(root, data, esc) {
     tmp.innerHTML = hailScopePinHtml(data, esc);
     const next = tmp.firstElementChild;
     if (next) pinEl.replaceWith(next);
+  }
+  const box = root.querySelector(".hs-dates");
+  if (box && wxPinSelected()) {
+    const viewport = Boolean(data.viewport || data._meta?.viewport);
+    box.innerHTML = hailScopeDateRows(hailScopeDays(data), esc, { viewport, data });
+    box._hsData = data;
+    box._hsEsc = esc;
+    return;
   }
   root.querySelectorAll(".hs-date[data-storm-date]").forEach((row) => {
     const on = isStormDateSelected(row.getAttribute("data-storm-date"));
