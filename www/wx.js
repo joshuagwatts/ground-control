@@ -10126,11 +10126,11 @@ export function filterDossier(data, filters = wxFilters) {
   // One extremeness tag per date (HailTrace-style).
   let hail = collapseHailByDate(hailRaw).filter((h) => stormPassesSizeFilter(h, filters));
   hail = [...hail].sort((a, b) => {
-    // Pin mode: checked dates + hail-at-roof float above distant same-day storms.
+    const aSel = isStormDateSelected(a.date) ? 0 : 1;
+    const bSel = isStormDateSelected(b.date) ? 0 : 1;
+    if (aSel !== bSel) return aSel - bSel;
+    // Pin mode: hail-at-roof floats above distant same-day storms within the list.
     if (wxPinSelected()) {
-      const aSel = isStormDateSelected(a.date) ? 0 : 1;
-      const bSel = isStormDateSelected(b.date) ? 0 : 1;
-      if (aSel !== bSel) return aSel - bSel;
       const aRoof = (a.near_hits || 0) > 0 ? 0 : 1;
       const bRoof = (b.near_hits || 0) > 0 ? 0 : 1;
       if (aRoof !== bRoof) return aRoof - bRoof;
@@ -10465,9 +10465,37 @@ function hailDayMatchesQuery(h, q) {
   return hay.includes(q);
 }
 
+function hailDayStubForSelection(date, data) {
+  const key = stormDateKey(date);
+  if (!key) return null;
+  const hit = collapseHailByDate(
+    filterHailRaw(data, { ...wxFilters, hailIn: 0 }, { forMap: true, stormDraw: true }),
+  ).find((h) => stormDateKey(h.date) === key);
+  if (hit) return hit;
+  return {
+    date: key,
+    size_in: "—",
+    hits: 0,
+    distance_km: null,
+    near_hits: 0,
+    severity: "selected",
+    source: "calendar",
+    _selectedOnly: true,
+  };
+}
+
 export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   const { hail } = filterDossier(data, filters);
-  return hail.filter((h) => hailDayMatchesQuery(h, q));
+  const days = hail.filter((h) => hailDayMatchesQuery(h, q));
+  const seen = new Set(days.map((h) => stormDateKey(h.date)));
+  for (const d of selectedStormDateList()) {
+    if (seen.has(d)) continue;
+    const stub = hailDayStubForSelection(d, data);
+    if (!stub || !hailDayMatchesQuery(stub, q)) continue;
+    days.unshift(stub);
+    seen.add(d);
+  }
+  return days;
 }
 
 /** Rows for calendar — loaded hail clipped to the visible map frame. */
@@ -10527,7 +10555,7 @@ function pickStormDateFromSheet(
   root,
   live,
   esc,
-  { toggle = true, fit = null, closeCalendar = false, scrollToList = true } = {},
+  { toggle = true, fit = null, closeCalendar = false, scrollToList = true, scrollRow = true, revealList = false } = {},
 ) {
   const date = stormDateKey(dateRaw);
   if (!date) return false;
@@ -10560,8 +10588,12 @@ function pickStormDateFromSheet(
     zoneRows: pools.zoneRows,
   });
   syncHazardLayers();
-  paintHailScopeDateSelection(root, dossier, esc, { scrollTo: scrollToList ? date : null });
+  paintHailScopeDateSelection(root, dossier, esc, {
+    scrollTo: scrollToList ? date : null,
+    scrollRow,
+  });
   if (closeCalendar) closeHsCalendarSheet();
+  if (revealList) revealHailStormSheet({ interactive: true, scroll: false });
   return true;
 }
 
@@ -10671,7 +10703,9 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
       const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, {
         toggle: true,
         closeCalendar: true,
-        scrollToList: false,
+        scrollToList: true,
+        scrollRow: false,
+        revealList: true,
       });
       if (!picked) return;
       const n = selectedStormDates.size;
@@ -10932,7 +10966,7 @@ function hailScopeHtml(data, days, esc) {
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }
 
-function paintHailScopeDateSelection(root, data, esc, { scrollTo = null } = {}) {
+function paintHailScopeDateSelection(root, data, esc, { scrollTo = null, scrollRow = true } = {}) {
   if (!root) return;
   const pinEl = root.querySelector(".hs-pin");
   if (pinEl) {
@@ -10946,15 +10980,15 @@ function paintHailScopeDateSelection(root, data, esc, { scrollTo = null } = {}) 
   const viewport = Boolean(data.viewport || data._meta?.viewport);
   const days = hailScopeDays(data);
   const jumpKey = scrollTo ? stormDateKey(scrollTo) : "";
-  if (jumpKey && days.length) {
-    const idx = days.findIndex((h) => stormDateKey(h.date) === jumpKey);
-    if (idx >= 0) {
-      const wantPage = Math.floor(idx / STORM_LIST_PAGE_SIZE);
-      if (wantPage !== hailStormPage) {
-        hailStormPage = wantPage;
-        box.innerHTML = hailScopeDateRows(days, esc, { viewport, data });
-      }
+  if (days.length && (jumpKey || hasSelectedStormDates())) {
+    if (jumpKey) {
+      const idx = days.findIndex((h) => stormDateKey(h.date) === jumpKey);
+      if (idx >= 0) hailStormPage = Math.floor(idx / STORM_LIST_PAGE_SIZE);
+      else if (hasSelectedStormDates()) hailStormPage = 0;
+    } else {
+      hailStormPage = 0;
     }
+    box.innerHTML = hailScopeDateRows(days, esc, { viewport, data });
   } else if (wxPinSelected() && !box.querySelector(".hs-date")) {
     box.innerHTML = hailScopeDateRows(days, esc, { viewport, data });
   }
@@ -10965,7 +10999,7 @@ function paintHailScopeDateSelection(root, data, esc, { scrollTo = null } = {}) 
     row.classList.toggle("on", on);
     row.setAttribute("aria-pressed", on ? "true" : "false");
   });
-  if (jumpKey) {
+  if (jumpKey && scrollRow) {
     const row = box.querySelector(`.hs-date[data-storm-date="${jumpKey}"]`);
     if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
@@ -11048,7 +11082,9 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
       const src = hailSourceLabel(h);
       const far = h.size_far && h.far_km != null ? ` · ${h.size_far}″ also ${formatDistance(h.far_km)} out` : "";
       const span = h.span_km ? ` · ${formatDistance(h.span_km)} wide` : "";
-      const meta = viewport
+      const meta = h._selectedOnly
+        ? "Selected from calendar — loading hail for this map view"
+        : viewport
         ? `${sev} · ${src} · ${h.hits || 1} in view${span} · nearest ${formatDistance(h.distance_km)}${far}`
         : atRoof
           ? `${sev} · ${src} · ${h.near_hits} at this roof · ${h.hits || 1} sig${span} · nearest ${formatDistance(h.distance_km)}${far}`
