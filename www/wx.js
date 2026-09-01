@@ -7349,7 +7349,7 @@ export function startPhoneFlagScan() {
       citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 1 })[0]) ||
     (center && isOklahomaLatLon(center.lat, center.lng) ? inferOkCity(center.lat, center.lng) : "") ||
     "";
-  emitPhoneFlagsStatus(viewCity ? `Refreshing flags · map view · ${viewCity}…` : "Refreshing flags · map view…");
+  emitPhoneFlagsStatus(viewCity ? `Loading flags · map view · ${viewCity}…` : "Loading flags · map view…");
   setFlagsToggleBusy(true);
   void refreshHouseNumbers({ forceRent: true }).finally(() => {
     setFlagsToggleBusy(false);

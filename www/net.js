@@ -306,29 +306,40 @@ function unwrapProxyBody(body) {
 
 async function httpGetViaCorsProxy(url, timeoutMs) {
   const proxies = corsProxyCandidates(url);
-  let last = "cors proxy failed";
-  for (const proxy of proxies) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
-      if (!res.ok) {
-        last = `fetch ${res.status}`;
-        continue;
+  if (!proxies.length) throw new Error("cors proxy failed");
+  // Race proxies — sequential 18s×N made Flags feel frozen when one host hung.
+  const perMs = Math.min(7000, Math.max(2800, Math.floor(Number(timeoutMs) * 0.5) || 4000));
+  const ctrls = proxies.map(() => new AbortController());
+  const timers = ctrls.map((ctrl) => setTimeout(() => ctrl.abort(), perMs));
+  const abortAll = () => {
+    for (const c of ctrls) {
+      try {
+        c.abort();
+      } catch {
+        /* ignore */
       }
-      const body = unwrapProxyBody(await res.text());
-      if (body.length < 200) {
-        last = "proxy empty";
-        continue;
-      }
-      return { url, status: res.status, body };
-    } catch (e) {
-      last = String(e?.message || e || "proxy failed");
-    } finally {
-      clearTimeout(t);
     }
+    for (const t of timers) clearTimeout(t);
+  };
+  try {
+    const hit = await Promise.any(
+      proxies.map(async (proxy, i) => {
+        const res = await fetch(proxy, { signal: ctrls[i].signal, redirect: "follow" });
+        if (!res.ok) throw new Error(`fetch ${res.status}`);
+        const body = unwrapProxyBody(await res.text());
+        if (body.length < 200) throw new Error("proxy empty");
+        return { url, status: res.status, body };
+      }),
+    );
+    abortAll();
+    return hit;
+  } catch (e) {
+    abortAll();
+    const msg =
+      e?.errors?.map?.((x) => String(x?.message || x)).filter(Boolean)[0] ||
+      String(e?.message || e || "cors proxy failed");
+    throw new Error(msg);
   }
-  throw new Error(last);
 }
 
 export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {

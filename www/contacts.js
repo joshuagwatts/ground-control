@@ -1252,12 +1252,15 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     paintRows(acc);
   };
 
-  // Force refresh: skip stale localStorage dump so the map actually clears, then refill.
-  // Seed (map-frame only) still paints so Oklahoma views aren't blank while network runs.
-  if (!force) {
-    const cached = loadPersistedRentFlags();
-    if (cached.length) {
-      acc = mergeRentFlagList(acc, cached);
+  // Map-frame pins only — never dump statewide localStorage onto a Tulsa view.
+  // Force refresh still paints in-bounds persist so the layer isn't blank while network runs.
+  const cached = loadPersistedRentFlags();
+  if (cached.length) {
+    const frame = bounds
+      ? rentFlagsInBounds(cached, bounds, 28)
+      : rentFlagsNearPoint(cached, lat, lon, 32);
+    if (frame.length) {
+      acc = mergeRentFlagList(acc, frame);
       paintRows(acc);
     }
   }
@@ -1316,13 +1319,14 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
 
     const fetchRentApts = async (c) => {
       const [rentRows, aptRows] = await Promise.all([
-        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages: 2 }).catch(() => []),
-        fetchApartmentsComCityPages(c, state || "OK", { pages: 2 }).catch(() => []),
+        fetchRentComCityPages(c, state || "OK", { kinds: ["apartments", "houses"], pages: 1 }).catch(() => []),
+        fetchApartmentsComCityPages(c, state || "OK", { pages: 1 }).catch(() => []),
       ]);
       return mergeRentFlagList(rentRows, aptRows);
     };
 
     // 1) Rent.com + apartments.com for EVERY view city in parallel — paint ASAP.
+    // One page each keeps the first wave under ~proxy timeout instead of serial page 2 hangs.
     await Promise.all(
       fastCities.map(async (c) => {
         if (epoch !== rentSweepEpoch) return;
@@ -1334,21 +1338,21 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
     );
     if (epoch !== rentSweepEpoch) return acc;
 
-    // 2) Zillow map-bounds + city — stream phones; do not block rent paint.
-    const zMax = Number(profile.zillowDetails) > 0 ? Math.max(20, Number(profile.zillowDetails)) : 0;
+    // 2) Zillow streams in the background — do not block Flags "ready" / busy pulse.
+    const zMax = Number(profile.zillowDetails) > 0 ? Math.max(12, Number(profile.zillowDetails)) : 0;
     if (zMax > 0 && (primary || bounds)) {
       const zCities = (fastCities.length ? fastCities : [primary]).filter(Boolean).slice(0, 2);
       const targets = (
         zCities.length ? zCities : [inferOkCity(lat, lon) || (bounds ? "Oklahoma City" : "")]
       ).filter(Boolean);
-      await Promise.all(
+      void Promise.all(
         targets.slice(0, 2).map(async (c, i) => {
           if (epoch !== rentSweepEpoch) return;
           const rows = await fetchZillowCityRentPhones(c, state || "OK", {
             lat,
             lon,
             have: acc,
-            maxDetails: i === 0 ? zMax : Math.min(10, zMax),
+            maxDetails: i === 0 ? Math.min(16, zMax) : Math.min(8, zMax),
             bounds,
             onPartial: (part) => {
               if (epoch === rentSweepEpoch) emitView(part);
@@ -1356,9 +1360,10 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
           }).catch(() => []);
           if (epoch === rentSweepEpoch) emitView(rows);
         }),
-      );
+      ).then(() => {
+        if (epoch === rentSweepEpoch) persistRentFlags(acc);
+      });
     }
-    if (epoch !== rentSweepEpoch) return acc;
 
     if (inOk && !viewportOnly) {
       const swept = loadSweptRentCities();
