@@ -1111,7 +1111,7 @@ async function ensureSwdiForSelectedStormDays() {
     ? hailRadarZoneKm()
     : Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0);
   const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
-  const spotters = await ensureSpottersForSelectedStormDays(anchor, days, km, pool);
+  const spotters = await ensureSpotterHailForSelectedStormDays(anchor, days, km, pool);
   let livePool = pool;
   if (spotters.length) {
     lastHailRows = mergeHailRows(lastHailRows, spotters);
@@ -1168,6 +1168,29 @@ async function ensureSwdiForSelectedStormDays() {
   }
   if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
   if (!swdi.length) {
+    const reportN = livePool.filter(
+      (h) =>
+        need.some((d) => stormDayMatches(h.date, d)) &&
+        hailRowInMapView(h) &&
+        (isSpotterHail(h) || isSwdiHail(h)),
+    ).length;
+    if (reportN > 0) {
+      lastZoneHailRows = stormDrawZoneRows(zoneRowsFromHail(lastHailRows));
+      cancelScheduledStormRedraw();
+      lastHailDrawSig = "";
+      await deferToNextFrame();
+      if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
+      const pools = resolvedStormDrawPools();
+      drawHailMarkers(pools.dotRows, lastWindRows, {
+        requireDate: true,
+        zoneRows: stormDrawZoneRows(pools.zoneRows),
+      });
+      const dayLabel = need.length === 1 ? prettyStormDate(need[0]) : `${need.length} days`;
+      emitMapStatus(
+        `Overlay ${dayLabel} · ${reportN} spotter report${reportN === 1 ? "" : "s"} (no radar swath in view)`,
+      );
+      return;
+    }
     const spotN = livePool.filter(
       (h) => need.includes(String(h.date || "").slice(0, 10)) && isSpotterHail(h),
     ).length;
@@ -4014,6 +4037,44 @@ async function ensureSpottersForSelectedStormDays(anchor, days, km, pool) {
   const lsr = await fetchIemLsrHail(anchor.lat, anchor.lon, km, Number(wxFilters.days) || 730).catch(() => []);
   const daySet = new Set(need);
   return clipHailToMapView(lsr.filter((h) => daySet.has(parseStormDay(h.date))));
+}
+
+function spcStampFromIso(iso) {
+  return String(iso || "").slice(0, 10).replace(/-/g, "").slice(2);
+}
+
+export function spcDayStamp(iso) {
+  return spcStampFromIso(iso);
+}
+
+/** Calendar picks need SPC for the exact day — viewport search only loads ~14 recent days. */
+async function fetchSpcHailForStormDays(anchor, days, km) {
+  const out = [];
+  for (const iso of days || []) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso).slice(0, 10))) continue;
+    const stamp = spcStampFromIso(iso);
+    if (!stamp) continue;
+    const dayRows = await fetchSpcDay(stamp, iso);
+    for (const row of dayRows.hail || []) {
+      if (!Number.isFinite(row.lat) || !Number.isFinite(row.lon)) continue;
+      const dist = haversineKm(anchor.lat, anchor.lon, row.lat, row.lon);
+      if (dist > km) continue;
+      const sz = parseFloat(row.size_in);
+      out.push({
+        ...row,
+        distance_km: Math.round(dist * 10) / 10,
+        score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
+      });
+    }
+  }
+  return clipHailToMapView(out);
+}
+
+async function ensureSpotterHailForSelectedStormDays(anchor, days, km, pool) {
+  const spc = await fetchSpcHailForStormDays(anchor, days, km);
+  const merged = mergeHailRows(pool, spc);
+  const lsr = await ensureSpottersForSelectedStormDays(anchor, days, km, merged);
+  return mergeHailRows(spc, lsr);
 }
 
 function mapViewSwdiBbox(pad = 0.06) {

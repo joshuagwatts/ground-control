@@ -14,6 +14,7 @@ import {
   clearWxPin,
   selectStormDate,
   filterRowsToSelectedStormDays,
+  spcDayStamp,
 } from "../www/wx.js";
 
 function assert(ok, msg) {
@@ -97,6 +98,8 @@ const allDays = hailCalendarStormDays(vpData, { viewport: true });
 assert(allDays.has("2026-05-15") && allDays.has("2026-06-01"), "storm day set includes all loaded hail");
 
 assert(HAIL_EXTREME_IN === 2 && HAIL_PIN_CALENDAR_IN === 1, "threshold constants");
+
+assert(spcDayStamp("2026-07-04") === "260704", "SPC day stamp for July 4 2026");
 
 selectStormDate("2024-07-05", { toggle: false });
 const mixedRows = [
