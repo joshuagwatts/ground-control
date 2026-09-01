@@ -1028,6 +1028,7 @@ async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOve
   const { start, end, days } = range;
   const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
   const bbox = bboxOverride || bboxForKm(lat, lon, km);
+  const ingestKm = bboxOverride ? ingestKmForBbox({ lat, lon }, bbox) : km;
   const fmt = (iso) => iso.replace(/-/g, "");
   const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
   const daySet = new Set(days);
@@ -1039,7 +1040,7 @@ async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOve
       const { body } = await httpGet(url, timeout);
       const data = JSON.parse(body || "{}");
       const raw = Array.isArray(data.result) ? data.result : [];
-      const rows = [...ingestSwdiItems(raw, lat, lon, km).values()].filter((h) =>
+      const rows = [...ingestSwdiItems(raw, lat, lon, ingestKm).values()].filter((h) =>
         daySet.has(String(h.date || "").slice(0, 10)),
       );
       return { rows, raw: raw.length, err: rows.length ? "" : raw.length ? "filtered" : "empty" };
@@ -1108,9 +1109,14 @@ async function ensureSwdiForSelectedStormDays() {
   const mapBbox = !wxPinSelected() ? mapViewSwdiBbox(0.06) : null;
   const km = wxPinSelected()
     ? hailRadarZoneKm()
-    : Math.min(Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0), SWDI_ON_DEMAND_MAX_KM);
+    : Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0);
   const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
   const need = days.filter((d) => {
+    if (!wxPinSelected()) {
+      return !pool.some(
+        (h) => stormDayMatches(h.date, d) && isSwdiHail(h) && hailRowInMapView(h),
+      );
+    }
     const near = pool.filter(
       (h) =>
         stormDayMatches(h.date, d) &&
@@ -1155,7 +1161,8 @@ async function ensureSwdiForSelectedStormDays() {
     } else if (spotN > 0) {
       emitMapStatus(`No SWDI in NOAA feed for this day (${spotN} spotter${spotN === 1 ? "" : "s"} shown)`);
     } else {
-      emitMapStatus(`No SWDI radar in ${Math.round(km)} km for selected day${need.length === 1 ? "" : "s"}`);
+      const area = mapBbox ? "this map view" : `${Math.round(km)} km`;
+      emitMapStatus(`No SWDI radar in ${area} for selected day${need.length === 1 ? "" : "s"}`);
     }
     return;
   }
@@ -3948,6 +3955,12 @@ export function hailInMapView(rows) {
   return (rows || []).filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon) && b.contains([h.lat, h.lon]));
 }
 
+function hailRowInMapView(h) {
+  const b = mapViewBounds(0.02);
+  if (!b) return true;
+  return Number.isFinite(h?.lat) && Number.isFinite(h?.lon) && b.contains([h.lat, h.lon]);
+}
+
 /** Clip hail rows to the current map frame — keeps calendar, list, and overlays aligned. */
 function clipHailToMapView(rows) {
   if (!rows?.length) return rows || [];
@@ -3955,8 +3968,7 @@ function clipHailToMapView(rows) {
   return inView.length ? inView : rows;
 }
 
-/** SWDI on-demand fetch/draw caps — statewide pulls freeze the UI. */
-const SWDI_ON_DEMAND_MAX_KM = 72;
+/** SWDI draw caps — large statewide pulls are OK to fetch; mesh build must stay bounded. */
 const SWDI_DRAW_CAP = 360;
 const SWDI_MESH_PT_CAP = 140;
 
@@ -4301,7 +4313,7 @@ async function refreshHailMapFill() {
   if (!q) return;
   const gen = ++hailMapFillGen;
   const selectedDays = selectedStormDateList();
-  const km = Math.min(mapViewFetchKm(), SWDI_ON_DEMAND_MAX_KM);
+  const km = mapViewFetchKm();
   const bbox = mapViewSwdiBbox(0.06);
   try {
     const [spc, lsr] = await Promise.all([
