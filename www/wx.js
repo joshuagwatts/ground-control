@@ -1109,15 +1109,15 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
-/** NOAA SWDI / radar swaths — green so they read distinct from spotter (warm) zones. */
-function hailRadarZoneColor(sizeIn) {
+/** NOAA SWDI hail-radar signatures — blue (distinct from green rental flags). */
+function hailSwdiZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
-  if (Number.isNaN(sz)) return { stroke: "#7dff5a", fill: "#4caf2a", core: "#b8ff9a" };
-  if (sz >= 2) return { stroke: "#5dd44a", fill: "#2e7d32", core: "#9eff7a" };
-  if (sz >= 1.5) return { stroke: "#6ee85a", fill: "#388e3c", core: "#a8ff8a" };
-  if (sz >= 1) return { stroke: "#7dff5a", fill: "#43a047", core: "#b8ff9a" };
-  if (sz >= 0.75) return { stroke: "#8aff6a", fill: "#4caf2a", core: "#c8ffaa" };
-  return { stroke: "#b8ff9a", fill: "#66bb6a", core: "#d4ff9a" };
+  if (Number.isNaN(sz)) return { stroke: "#4a9eff", fill: "#2a81cb", core: "#b8e0ff" };
+  if (sz >= 2) return { stroke: "#3d8fd9", fill: "#1e6bb8", core: "#8ec8ff" };
+  if (sz >= 1.5) return { stroke: "#4a9eff", fill: "#2a81cb", core: "#a8d4ff" };
+  if (sz >= 1) return { stroke: "#5eb0ff", fill: "#3580d4", core: "#b8e0ff" };
+  if (sz >= 0.75) return { stroke: "#6eb8ff", fill: "#4a9eff", core: "#c8e8ff" };
+  return { stroke: "#8ec8ff", fill: "#5aa8e8", core: "#d8eeff" };
 }
 
 export function mergeHailRows(...groups) {
@@ -4954,15 +4954,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       );
     }
     const zoneHits = dayHits;
-    const radarHits = dayHits.filter(isRadarHail);
-    const spotHits = dayHits.filter(isSpotterHail);
     const subRings = [];
-    if (radarHits.length) {
-      for (const sub of buildDetailedZoneRings(h, radarHits)) subRings.push(sub);
-    }
-    if (spotHits.length) {
-      for (const sub of buildDetailedZoneRings(h, spotHits)) subRings.push(sub);
-    }
+    for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
     if (!subRings.length && dayHits.length) {
       const hasSpot = dayHits.some(isSpotterHail);
       const hasRadar = dayHits.some(isRadarHail);
@@ -4980,14 +4973,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const isMixed = sub.source === "spot+radar";
-      const isRadarZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
-      const isConfirm = isMixed || (Boolean(sub.confirmed) && !isRadarZone);
-      const col = isRadarZone ? hailRadarZoneColor(sz) : hailZoneColor(sz);
+      const isSwdiZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
+      const isConfirm = isMixed || (Boolean(sub.confirmed) && !isSwdiZone);
+      const col = isSwdiZone ? hailSwdiZoneColor(sz) : hailZoneColor(sz);
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(sub.ring, {
         color: col.stroke,
         fillColor: col.fill,
-        fillOpacity: isRadarZone ? Math.min(0.82, hailLayerFillOpacity(sz) + 0.12) : hailLayerFillOpacity(sz),
+        fillOpacity: isSwdiZone ? Math.min(0.78, hailLayerFillOpacity(sz) + 0.1) : hailLayerFillOpacity(sz),
         weight: 1.2,
         opacity: 0.7,
         stroke: true,
@@ -4998,15 +4991,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         bubblingMouseEvents: false,
         className: isConfirm
           ? "wx-hail-topo wx-hail-confirmed"
-          : isRadarZone
-            ? "wx-hail-topo wx-hail-radar"
+          : isSwdiZone
+            ? "wx-hail-topo wx-hail-swath-sig"
             : "wx-hail-topo",
       }).addTo(hailLayer);
       trackHailStroke(bindHailZoneTap(poly, h, sub), {
         confirmed: isConfirm,
         size: sz,
         kind: "fill",
-        radar: isRadarZone,
+        radar: isSwdiZone,
         outer: true,
       });
     }
@@ -5042,14 +5035,14 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       const baseR = isSpot ? 7 : 5.5;
       const mark = window.L.circleMarker([p.lat, p.lon], {
         radius: Math.max(isSpot ? 1.4 : 0.9, baseR * dotUi),
-        color: isSpot ? "#ffffff" : "#b8ff6a",
-        fillColor: isSpot ? "#ff2d2d" : "#4caf2a",
-        fillOpacity: isSpot ? 0.95 : 0.88,
-        weight: isSpot ? 1.6 : 1.1,
+        color: isSpot ? "#ffffff" : "#b8e0ff",
+        fillColor: isSpot ? "#ff2d2d" : "#2a81cb",
+        fillOpacity: isSpot ? 0.95 : 0.9,
+        weight: isSpot ? 1.6 : 1.2,
         pane: "hailDots",
         renderer: hailDotSvg,
         interactive: false,
-        className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
+        className: isSpot ? "wx-hail-spot" : "wx-hail-sig-radar",
       });
       mark.options.baseRadius = baseR;
       hailDotMarkers.push(mark);
@@ -5057,17 +5050,51 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         const pSz = parseFloat(p.size_in) || 0.75;
         window.L.circle([p.lat, p.lon], {
           radius: Math.max(48, Math.min(140, 52 + pSz * 38)),
-          color: "#7dff5a",
-          fillColor: "#3f8f32",
+          color: "#4a9eff",
+          fillColor: "#2a81cb",
           fillOpacity: 0.28 + Math.min(0.14, pSz * 0.06),
           weight: 1,
           pane: "hailDots",
           renderer: hailDotSvg,
-          className: "wx-hail-radar-pt",
+          className: "wx-hail-sig-radar",
           interactive: false,
         }).addTo(hailLayer);
       }
       mark.addTo(hailLayer);
+    }
+  }
+
+  if (!fitPts.length && day && (hailRows || []).length && hailLayer) {
+    for (const dayKey of day) {
+      const rows = (hailRows || []).filter(
+        (p) => String(p.date || "").slice(0, 10) === dayKey && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+      );
+      if (!rows.length) continue;
+      const anchor = collapseHailByDate(rows)[0] || {
+        date: dayKey,
+        lat: rows[0].lat,
+        lon: rows[0].lon,
+        size_in: rows[0].size_in,
+      };
+      const ring = topoZoneRing(anchor, rows);
+      if (!ring || ring.length < 3) continue;
+      const sz = parseFloat(anchor.size_in) || parseFloat(rows[0]?.size_in) || 0.75;
+      const col = hailZoneColor(sz);
+      fitPts.push(...ring);
+      window.L.polygon(ring, {
+        color: col.stroke,
+        fillColor: col.fill,
+        fillOpacity: Math.min(0.75, hailLayerFillOpacity(sz) + 0.15),
+        weight: 1.4,
+        opacity: 0.82,
+        stroke: true,
+        smoothFactor: 2.4,
+        pane: "hailFills",
+        renderer: hailFillSvg,
+        interactive: true,
+        bubblingMouseEvents: false,
+        className: "wx-hail-topo",
+      }).addTo(hailLayer);
     }
   }
 
@@ -7850,7 +7877,9 @@ export function setFieldOverlay({
   };
   if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";
-    drawHailMarkers(lastHailRows, lastWindRows);
+    drawHailMarkers(lastHailRows, lastWindRows, {
+      requireDate: hailScopeMode ? hasSelectedStormDates() : false,
+    });
   }
   if (prevFlags !== nextFlags) {
     housePaintSig = "";
@@ -9511,8 +9540,8 @@ export function prettyStormDate(iso) {
 }
 
 function hailSourceLabel(h) {
-  if (h.source === "mixed" || h.source === "spot+radar") return "Spotter + radar";
-  if (h.source === "noaa-swdi-radar") return "Radar";
+  if (h.source === "mixed" || h.source === "spot+radar") return "Spotter + hail radar";
+  if (h.source === "noaa-swdi-radar") return "Hail radar";
   if (h.source === "iem-lsr") return "Local storm report";
   return "Spotter";
 }
@@ -9640,7 +9669,9 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
 
   if (locked) {
     // Keep selection; debounce zone rebuilds so SWDI batches don't thrash the map.
-    if (hailGrew || fit) scheduleSelectedStormZoneRedraw(hailRows, []);
+    if (hailGrew || fit || !hailLayer || !map?.hasLayer?.(hailLayer)) {
+      scheduleSelectedStormZoneRedraw(hailRows, []);
+    }
     if (root.dataset.hsFilterSig !== filterSig || !root.querySelector(".hs-dates")) {
       root.dataset.hsFilterSig = filterSig;
       renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });

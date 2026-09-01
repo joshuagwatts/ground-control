@@ -1262,6 +1262,7 @@ body.hs-tab .leaflet-container,
 .wx-hail-topo,
 .wx-hail-topo-core,
 .wx-hail-pin-zone,
+.wx-hail-sig-radar,
 .wx-hail-radar-pt,
 .wx-hail-spot,
 .wx-wind-topo,
@@ -1333,10 +1334,11 @@ body.hs-tab .leaflet-container,
 }
 .wx-roof-blurb { font-size: 9px; margin: 0.35rem 0 0.45rem; letter-spacing: 0.04em; }
 .wx-hail-confirmed { filter: none; }
-.wx-hail-radar { filter: drop-shadow(0 0 4px rgba(125, 255, 90, 0.55)); }
-.wx-hail-topo.wx-hail-radar path {
-  stroke: #7dff5a;
+.wx-hail-swath-sig { filter: drop-shadow(0 0 4px rgba(74, 158, 255, 0.5)); }
+.wx-hail-topo.wx-hail-swath-sig path {
+  stroke: #4a9eff;
 }
+.wx-hail-sig-radar { filter: drop-shadow(0 0 4px rgba(74, 158, 255, 0.65)); }
 .leaflet-popup.hs-zone-popup .leaflet-popup-content-wrapper {
   background: rgba(18, 18, 20, 0.96);
   color: var(--text, #eee);
@@ -1960,7 +1962,7 @@ body.wx-map-expanded .hs-sheet {
   gap: 2px;
 }
 .hs-layers button.hs-dots-toggle .hs-dot-r,
-.hs-layers button.hs-dots-toggle .hs-dot-g {
+.hs-layers button.hs-dots-toggle .hs-dot-b {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -1970,12 +1972,12 @@ body.wx-map-expanded .hs-sheet {
   background: #ff2d2d;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
-.hs-layers button.hs-dots-toggle .hs-dot-g {
-  background: #4caf2a;
+.hs-layers button.hs-dots-toggle .hs-dot-b {
+  background: #2a81cb;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 .hs-layers button.hs-dots-toggle:not(.on) .hs-dot-r,
-.hs-layers button.hs-dots-toggle:not(.on) .hs-dot-g {
+.hs-layers button.hs-dots-toggle:not(.on) .hs-dot-b {
   opacity: 0.35;
   filter: grayscale(0.55);
 }
@@ -2308,7 +2310,7 @@ body.wx-map-expanded .hs-field {
   border-radius: 50%; margin-right: 0.22rem; vertical-align: -1px;
 }
 .hs-dot-spot { background: #ff2d2d; box-shadow: 0 0 0 1px #fff, 0 0 4px rgba(255,45,45,0.65); }
-.hs-dot-radar { background: #7dff5a; box-shadow: 0 0 0 1px #1a3a14; }
+.hs-dot-radar { background: #2a81cb; box-shadow: 0 0 0 1px #0d3d6b; }
 .hs-dot-done { background: #ffcc00; }
 .hs-dot-ping { background: #fb923c; }
 .hs-place {
