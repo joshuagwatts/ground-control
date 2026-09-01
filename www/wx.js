@@ -1775,11 +1775,12 @@ const FLAG_SEARCH_KM_MAX = 14;
 function flagBizPaintMax() {
   return Number(flagNetProfile()?.paintMax) || (isAndroid() ? 260 : 450);
 }
-const HOUSE_FETCH_PAD = 0.2;
+const HOUSE_FETCH_PAD = 0.12;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
 const HOUSE_ENRICH_MAX = 32;
 const HOUSE_ENRICH_GAP_MS = 280;
 const LISTING_ENRICH_BATCH = 6;
+const HOUSE_BIZ_MAX = 700;
 const HOUSE_FOOTPRINT_MAX = 2000;
 const HOUSE_ZOOM = 20;
 const ZOOM_UI_REF = 18;
@@ -6859,9 +6860,11 @@ function hideFlag(n) {
 
 function setFlagKindFilter(kind, on) {
   if (kind !== "rental" && kind !== "business") return;
+  const turningBizOn = kind === "business" && on === true && !flagKindFilter.business;
   flagKindFilter[kind] = on === true;
   housePaintSig = "";
   paintHouseLayer([], houseCache.nums);
+  if (turningBizOn && phoneFlagsEnabled()) void kickCommercialOsm(houseGen);
   try {
     window.dispatchEvent(
       new CustomEvent("hs-flag-kind-filter", {
@@ -6874,11 +6877,14 @@ function setFlagKindFilter(kind, on) {
 }
 
 export function applyFlagKindFilters({ residential, commercial } = {}) {
+  const prevBiz = flagKindFilter.business;
   if (typeof residential === "boolean") flagKindFilter.rental = residential;
   if (typeof commercial === "boolean") flagKindFilter.business = commercial;
   housePaintSig = "";
-  if (phoneFlagsEnabled()) paintHouseLayer([], houseCache.nums);
-  else paintFlagDock();
+  if (phoneFlagsEnabled()) {
+    paintHouseLayer([], houseCache.nums);
+    if (flagKindFilter.business && !prevBiz) void kickCommercialOsm(houseGen);
+  } else paintFlagDock();
 }
 
 export function getFlagKindFilter() {
@@ -7390,7 +7396,7 @@ async function enrichVisibleHouseInfo(nums, gen) {
     })
     .map((n) => ({ n, d: haversineKm(c.lat, c.lng, n.lat, n.lon) }))
     .sort((a, b) => a.d - b.d)
-    .slice(0, Math.max(6, Math.floor(HOUSE_ENRICH_MAX / 2)))
+    .slice(0, HOUSE_ENRICH_MAX)
     .map((x) => x.n);
   const runListing = async (n) => {
     if (!map || !phoneFlagsEnabled()) return;
@@ -7496,6 +7502,19 @@ async function enrichVisibleHouseInfo(nums, gen) {
   const total = listingQueue.length + addrQueue.length + commercialQueue.length;
   emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… 0/${total}`));
   let step = 0;
+  for (let i = 0; i < commercialQueue.length; i += LISTING_ENRICH_BATCH) {
+    if (!map || !phoneFlagsEnabled()) return;
+    if (mapBusy > 0) {
+      emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
+      return;
+    }
+    const chunk = commercialQueue.slice(i, i + LISTING_ENRICH_BATCH);
+    await Promise.all(chunk.map((n) => runCommercial(n)));
+    step += chunk.length;
+    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
+    await new Promise((r) => setTimeout(r, 80));
+    if (gen !== houseGen) return;
+  }
   for (let i = 0; i < listingQueue.length; i += LISTING_ENRICH_BATCH) {
     if (!map || !phoneFlagsEnabled()) return;
     if (mapBusy > 0) {
@@ -7519,18 +7538,6 @@ async function enrichVisibleHouseInfo(nums, gen) {
       return;
     }
     await runOne(addrQueue[i]);
-    step += 1;
-    emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
-    await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
-    if (gen !== houseGen) return;
-  }
-  for (let i = 0; i < commercialQueue.length; i++) {
-    if (!map || !phoneFlagsEnabled()) return;
-    if (mapBusy > 0) {
-      emitPhoneFlagsStatus(flagStatusLine("Paused while the map moves"));
-      return;
-    }
-    await runCommercial(commercialQueue[i]);
     step += 1;
     emitPhoneFlagsStatus(flagStatusLine(`Scanning listings… ${step}/${total}`));
     await new Promise((r) => setTimeout(r, HOUSE_ENRICH_GAP_MS));
@@ -7696,7 +7703,7 @@ function pushOsmFlagNum(el, nums, seen, { requireBusinessPhone = false, requireB
   if (requireBusinessPhone && !(phone && biz)) return;
   if (!num && !name && !phone) return;
   const key = `${num || name}|${lat.toFixed(5)}|${lon.toFixed(5)}`;
-  if (seen.has(key) || nums.length >= HOUSE_NUM_MAX) return;
+  if (seen.has(key) || nums.length >= (requireBusinessTag || requireBusinessPhone ? HOUSE_BIZ_MAX : HOUSE_NUM_MAX)) return;
   seen.add(key);
   if (biz) {
     if (phone) {
@@ -7792,7 +7799,13 @@ function loadPersistedBizFlags() {
     if (typeof localStorage === "undefined") return [];
     const j = JSON.parse(localStorage.getItem(BIZ_STORE_KEY) || "null");
     if (!j || !Array.isArray(j.flags)) return [];
-    return j.flags.filter((n) => n?.phone && Number.isFinite(Number(n.lat)) && Number.isFinite(Number(n.lon)));
+    return j.flags.filter(
+      (n) =>
+        Number.isFinite(Number(n.lat)) &&
+        Number.isFinite(Number(n.lon)) &&
+        (n.phone || n.owner_name || n.num) &&
+        (n.phone_kind === "business" || n.source === "osm-business"),
+    );
   } catch {
     return [];
   }
@@ -7802,7 +7815,13 @@ function persistBizFlags(nums) {
   try {
     if (typeof localStorage === "undefined") return;
     const incoming = (nums || [])
-      .filter((n) => n?.phone && (n.phone_kind === "business" || n.source === "osm-business"))
+      .filter(
+        (n) =>
+          Number.isFinite(Number(n.lat)) &&
+          Number.isFinite(Number(n.lon)) &&
+          (n.phone_kind === "business" || n.source === "osm-business") &&
+          (n.phone || n.owner_name || n.num),
+      )
       .map((n) => ({
         num: n.num || n.owner_name || "",
         street: n.street || "",
@@ -7810,7 +7829,7 @@ function persistBizFlags(nums) {
         zip: n.zip || "",
         lat: n.lat,
         lon: n.lon,
-        phone: n.phone,
+        phone: n.phone || "",
         owner_name: n.owner_name || "",
         phone_kind: "business",
         source: n.source || "osm-business",
@@ -7820,8 +7839,8 @@ function persistBizFlags(nums) {
     const merged = [];
     const seen = new Set();
     const push = (n) => {
-      if (!n?.phone || !Number.isFinite(Number(n.lat)) || !Number.isFinite(Number(n.lon))) return;
-      const key = `${phoneDigits(n.phone)}|${Number(n.lat).toFixed(4)}|${Number(n.lon).toFixed(4)}`;
+      if (!Number.isFinite(Number(n.lat)) || !Number.isFinite(Number(n.lon))) return;
+      const key = `${phoneDigits(n.phone) || String(n.owner_name || n.num || "")}|${Number(n.lat).toFixed(4)}|${Number(n.lon).toFixed(4)}`;
       if (seen.has(key)) return;
       seen.add(key);
       merged.push(n);
@@ -7936,50 +7955,23 @@ function kickRentFlags(lat, lon, place, gen, { force = false } = {}) {
 }
 
 function osmPoiQuery(south, west, north, east) {
-  return `[out:json][timeout:10][bbox:${south},${west},${north},${east}];(
-    node["phone"]["amenity"];
-    node["phone"]["shop"];
-    node["phone"]["office"];
-    node["phone"]["craft"];
-    node["phone"]["healthcare"];
-    node["phone"]["tourism"];
-    node["phone"]["leisure"];
-    node["phone"]["company"];
-    node["contact:phone"]["amenity"];
-    node["contact:phone"]["shop"];
-    node["contact:phone"]["office"];
-    node["contact:phone"]["craft"];
-    node["contact:phone"]["healthcare"];
-    node["contact:phone"]["tourism"];
-    way["phone"]["amenity"];
-    way["phone"]["shop"];
-    way["phone"]["office"];
-    way["phone"]["craft"];
-    way["phone"]["healthcare"];
-    way["contact:phone"]["amenity"];
-    way["contact:phone"]["shop"];
-    way["contact:phone"]["office"];
-  );out tags center;`;
+  return osmCommercialPoiQuery(south, west, north, east);
 }
 
-/** Named commercial POIs — phone optional; blue flags paint before YP/chamber lookup. */
+/** Named shops / offices / food — phone optional so blue flags paint immediately. */
 function osmCommercialPoiQuery(south, west, north, east) {
-  return `[out:json][timeout:10][bbox:${south},${west},${north},${east}];(
-    node["amenity"]["name"];
-    node["shop"]["name"];
-    node["office"]["name"];
-    node["craft"]["name"];
-    node["healthcare"]["name"];
-    node["tourism"]["name"];
-    node["leisure"]["name"];
-    node["company"]["name"];
-    node["amenity"]["operator"];
-    way["amenity"]["name"];
-    way["shop"]["name"];
-    way["office"]["name"];
-    way["craft"]["name"];
-    way["healthcare"]["name"];
-    way["tourism"]["name"];
+  return `[out:json][timeout:12][bbox:${south},${west},${north},${east}];(
+    node["shop"];
+    way["shop"];
+    node["office"];
+    way["office"];
+    node["craft"];
+    node["healthcare"];
+    way["healthcare"];
+    node["amenity"~"^(restaurant|fast_food|cafe|bar|pub|biergarten|food_court|ice_cream|fuel|bank|pharmacy|doctors|dentist|clinic|veterinary|car_wash|car_repair|marketplace)$"];
+    way["amenity"~"^(restaurant|fast_food|cafe|bar|pub|fuel|bank|pharmacy|clinic)$"];
+    node["tourism"~"^(hotel|motel|guest_house|hostel)$"];
+    way["tourism"~"^(hotel|motel|guest_house|hostel)$"];
   );out tags center;`;
 }
 
@@ -7987,12 +7979,59 @@ function osmHouseQuery(south, west, north, east) {
   return `[out:json][timeout:8][bbox:${south},${west},${north},${east}];(node["addr:housenumber"];way["addr:housenumber"];);out tags center;`;
 }
 
-/** Business POIs with a public OSM phone — paint blue flags immediately. */
+/** Business POIs — paint blue flags immediately, phone optional. */
 async function fetchOsmFlagPois(south, west, north, east) {
-  const over = await overpassJson(osmPoiQuery(south, west, north, east), 9000).catch(() => null);
-  if (over?.elements?.length) return numsFromOsmElements(over.elements, { requireBusinessPhone: true });
+  const over = await overpassJson(osmCommercialPoiQuery(south, west, north, east), 14000).catch(() => null);
+  if (over?.elements?.length) return numsFromOsmElements(over.elements, { requireBusinessTag: true });
   const mapDump = await osmMapJson(south, west, north, east, 16000).catch(() => null);
-  return numsFromOsmElements(mapDump?.elements, { requireBusinessPhone: true });
+  return numsFromOsmElements(mapDump?.elements, { requireBusinessTag: true });
+}
+
+function commercialSearchBounds() {
+  const view = flagSearchBounds();
+  if (!view?.isValid?.()) return view;
+  const c = map?.getCenter?.();
+  if (!c) return view;
+  const diag = haversineKm(view.getSouth(), view.getWest(), view.getNorth(), view.getEast());
+  // Keep Overpass snappy — a downtown strip, not the whole county.
+  if (diag <= 16) return view;
+  const km = 6;
+  const dLat = km / 111.32;
+  const dLon = km / (111.32 * Math.max(0.2, Math.cos((c.lat * Math.PI) / 180)));
+  return window.L.latLngBounds([c.lat - dLat, c.lng - dLon], [c.lat + dLat, c.lng + dLon]);
+}
+
+function ingestCommercialPois(pois, gen) {
+  if (gen != null && gen !== houseGen) return 0;
+  if (!phoneFlagsEnabled() || !pois?.length) return 0;
+  const before = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
+  houseCache.nums = mergeHouseNums(houseCache.nums, pois);
+  persistBizFlags(houseCache.nums);
+  scheduleFlagLayerPaint(true);
+  const after = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
+  if (after > before) emitPhoneFlagsStatus(flagStatusLine());
+  return after - before;
+}
+
+let commercialFetchGen = 0;
+async function kickCommercialOsm(gen) {
+  if (!phoneFlagsEnabled() || !map) return [];
+  const b = commercialSearchBounds();
+  if (!b?.isValid?.()) return [];
+  const south = b.getSouth();
+  const west = b.getWest();
+  const north = b.getNorth();
+  const east = b.getEast();
+  const myGen = ++commercialFetchGen;
+  emitPhoneFlagsStatus(flagStatusLine("Loading commercial…"));
+  try {
+    const pois = await fetchOsmFlagPois(south, west, north, east);
+    if (myGen !== commercialFetchGen) return pois;
+    ingestCommercialPois(pois, gen);
+    return pois;
+  } catch {
+    return [];
+  }
 }
 
 /** Address points only — skip building footprints so Overpass returns fast for Flags. */
@@ -8130,6 +8169,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   mergeViewportRentFlagsIntoCache();
 
   const frameChanged = houseCache.key !== key;
+  const bizN = houseCache.nums.filter((n) => housePhoneKind(n) === "business").length;
   if (!forceRent && !frameChanged && houseCache.nums.length) {
     mergeViewportRentFlagsIntoCache();
     scheduleFlagLayerPaint();
@@ -8144,6 +8184,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
         houseGen,
       );
     }
+    if (bizN < 8) void kickCommercialOsm(houseGen);
     if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
     houseEnrichTimer = setTimeout(() => {
       houseEnrichTimer = 0;
@@ -8176,70 +8217,8 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     );
   }
 
-  // Business flags: Overpass first (fast), do not wait on a full OSM map dump.
-  void overpassJson(osmPoiQuery(south, west, north, east), 10000)
-    .then((overPois) => {
-      if (gen !== houseGen || !phoneFlagsEnabled()) return;
-      const pois = numsFromOsmElements(overPois?.elements, { requireBusinessPhone: true });
-      if (!pois.length) return;
-      houseCache.nums = mergeHouseNums(houseCache.nums, pois);
-      persistBizFlags(houseCache.nums);
-      scheduleFlagLayerPaint(true);
-      emitPhoneFlagsStatus(flagStatusLine());
-    })
-    .catch(() => {});
-
-  // Named commercial POIs — blue pins even without an OSM phone tag.
-  void overpassJson(osmCommercialPoiQuery(south, west, north, east), 12000)
-    .then((overBiz) => {
-      if (gen !== houseGen || !phoneFlagsEnabled()) return;
-      const pois = numsFromOsmElements(overBiz?.elements, { requireBusinessTag: true });
-      if (!pois.length) return;
-      houseCache.nums = mergeHouseNums(houseCache.nums, pois);
-      persistBizFlags(houseCache.nums);
-      scheduleFlagLayerPaint(true);
-      emitPhoneFlagsStatus(flagStatusLine());
-    })
-    .catch(() => {});
-
-  // Secondary OSM dump for any extra tagged phones — background only.
-  void osmMapJson(south, west, north, east, 14000)
-    .then((mapDump) => {
-      if (gen !== houseGen || !phoneFlagsEnabled() || !mapDump?.elements?.length) return;
-      const pois = numsFromOsmElements(mapDump.elements, { requireBusinessPhone: true });
-      houseCache.nums = mergeHouseNums(houseCache.nums, pois);
-      const namedBiz = numsFromOsmElements(mapDump.elements, { requireBusinessTag: true });
-      houseCache.nums = mergeHouseNums(houseCache.nums, namedBiz);
-      persistBizFlags(houseCache.nums);
-      scheduleFlagLayerPaint();
-      const place = placeFromOsmElements(mapDump.elements);
-      const osmCity = String(place.city || "").trim();
-      if (center && osmCity) {
-        const slug = (n) =>
-          String(n || "")
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "");
-        if (slug(osmCity) !== slug(viewCity)) {
-          const inFrame = citiesInMapBounds(bounds, { lat: center.lat, lon: center.lng, limit: 8 }).some(
-            (c) => slug(c) === slug(osmCity),
-          );
-          if (inFrame || !viewCity) {
-            void kickRentFlags(
-              center.lat,
-              center.lng,
-              {
-                city: osmCity,
-                state: place.state || (isOklahomaLatLon(center.lat, center.lng) ? "OK" : ""),
-              },
-              gen,
-              { force: false },
-            );
-          }
-        }
-      }
-      emitPhoneFlagsStatus(flagStatusLine());
-    })
-    .catch(() => {});
+  // Commercial first — shops/offices paint without waiting on rental crawl or phone hunt.
+  void kickCommercialOsm(gen);
 
   scheduleFlagLayerPaint(true);
   if (houseEnrichTimer) clearTimeout(houseEnrichTimer);
@@ -8297,7 +8276,8 @@ export function startPhoneFlagScan() {
   listingPumpWanted = true;
   houseCache = { key: "", rings: [], nums: [] };
   clearPersistedRentFlags();
-  persistHydrated = true;
+  persistHydrated = false;
+  hydratePersistedFlags();
   try {
     houseLayer?.clearLayers?.();
   } catch {

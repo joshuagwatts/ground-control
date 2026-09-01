@@ -2275,9 +2275,21 @@ export function isBusinessPhoneSource(source) {
   );
 }
 
-/** OSM POI tags that are public businesses, not residential house phones. */
+/** OSM POI tags that are public businesses, not parking lots / civic / house phones. */
+const OSM_BIZ_AMENITY_RE =
+  /^(restaurant|fast_food|cafe|bar|pub|biergarten|food_court|ice_cream|fuel|bank|atm|pharmacy|doctors|dentist|clinic|veterinary|car_wash|car_rental|car_repair|marketplace|cinema|theatre|nightclub|casino|studio|coworking_space|post_office|parcel_locker)$/i;
+const OSM_BIZ_TOURISM_RE = /^(hotel|motel|guest_house|hostel|apartment|chalet)$/i;
+const OSM_SKIP_AMENITY_RE =
+  /^(parking|parking_space|parking_entrance|bicycle_parking|bench|waste_basket|toilets|drinking_water|fountain|shelter|grave_yard|place_of_worship|school|kindergarten|college|university|library|fire_station|police|townhall|community_centre|social_facility|post_box|telephone|recycling|vending_machine|clock|bus_station|taxi)$/i;
+
 export function isOsmBusinessTags(tags = {}) {
-  return Boolean(tags?.amenity || tags?.shop || tags?.office || tags?.craft || tags?.healthcare);
+  if (tags?.shop || tags?.office || tags?.craft || tags?.healthcare) return true;
+  const amenity = String(tags?.amenity || "");
+  if (amenity && OSM_SKIP_AMENITY_RE.test(amenity)) return false;
+  if (amenity && OSM_BIZ_AMENITY_RE.test(amenity)) return true;
+  if (OSM_BIZ_TOURISM_RE.test(String(tags?.tourism || ""))) return true;
+  if (/^(fitness_centre|sports_centre|bowling_alley)$/i.test(String(tags?.leisure || ""))) return true;
+  return Boolean(amenity && !OSM_SKIP_AMENITY_RE.test(amenity) && (tags?.name || tags?.operator || tags?.phone));
 }
 
 /**
@@ -2479,29 +2491,27 @@ export async function lookupCommercialFlagPhone(
   { name = "", street = "", city = "", state = "OK", zip = "" } = {},
 ) {
   const blank = { owner_name: "", owner_phone: "", owner_email: "", zillow_url: "", source: "", phone_kind: "" };
-  const cityState = [city, state].filter(Boolean).join(", ");
-  const addrLine = [street, cityState, zip].filter(Boolean).join(", ");
-  if (addrLine && parseStreetAddress(addrLine).house) {
-    const hit = await lookupFlagPhone(lat, lon, addrLine);
-    if (hit.phone_kind === "business" && hit.owner_phone) return hit;
-  }
   const bizName = String(name || "").trim();
-  if (!bizName) return blank;
-  const parts = { house: "1", street: bizName, city: city || "", state: state || "OK", zip: zip || "" };
-  const searchAddr = cityState ? `${bizName}, ${cityState}` : bizName;
+  const cityState = [city, state].filter(Boolean).join(", ");
+  if (!bizName && !street) return blank;
+  const parts = {
+    house: parseStreetAddress([street, cityState].filter(Boolean).join(", ")).house || "1",
+    street: street || bizName,
+    city: city || "",
+    state: state || "OK",
+    zip: zip || "",
+  };
+  const searchAddr = [bizName || street, cityState].filter(Boolean).join(", ");
   let hit = { name: bizName, phone: "", email: "", source: "" };
   const batch = await Promise.all([
     yellowPagesBusinessContacts(searchAddr, parts).catch(() => null),
     isOklahomaAddress(searchAddr, parts) ? okChamberBusinessContacts(searchAddr, parts).catch(() => null) : null,
+    Number.isFinite(lat) && Number.isFinite(lon) ? overpassContacts(lat, lon, parts).catch(() => null) : null,
   ]);
   for (const part of batch) {
     if (part) hit = mergeContacts(hit, part);
   }
-  if (!hit.phone && Number.isFinite(lat) && Number.isFinite(lon)) {
-    const osm = await overpassContacts(lat, lon, parts).catch(() => null);
-    if (osm?.phone && classifyFlagPhone(osm) === "business") hit = mergeContacts(hit, osm);
-  }
-  const phoneKind = classifyFlagPhone(hit);
+  const phoneKind = classifyFlagPhone({ ...hit, phone_kind: hit.phone_kind || "business" });
   if (phoneKind !== "business" || !hit.phone) {
     return { ...blank, owner_name: hit.name || bizName };
   }

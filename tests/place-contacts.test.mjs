@@ -425,6 +425,8 @@ assert(classifyFlagPhone({ phone: "4053489911", source: "ok-phonebook" }) === ""
 assert(classifyFlagPhone({ phone: "4053489911", source: "zillow" }) === "", "sale listing is not a flag");
 assert(classifyFlagPhone({ source: "apartments" }) === "", "rental without phone is not a flag");
 assert(isOsmBusinessTags({ amenity: "cafe" }), "amenity is business");
+assert(isOsmBusinessTags({ shop: "supermarket" }), "shop is business");
+assert(!isOsmBusinessTags({ amenity: "parking" }), "parking is not a commercial listing");
 assert(!isOsmBusinessTags({ building: "house", phone: "1" }), "house phone is not a business");
 
 const osmNodes = parseOsmXmlNodes(`
