@@ -20,6 +20,7 @@ import {
   isOklahomaLatLon,
   inferOkCity,
   citiesInMapBounds,
+  rentFlagsForViewport,
   loadPersistedRentFlags,
   persistRentFlags,
   clearPersistedRentFlags,
@@ -271,7 +272,7 @@ const BIZ_STORE_MAX = 800;
 /** Short cool — map-view flags should retarget quickly after a pan. */
 const RENT_SWEEP_COOL_MS = 4 * 1000;
 /** Re-kick rent/city sweep when the map center moves this far (km). */
-const RENT_SWEEP_MOVE_KM = 5;
+const RENT_SWEEP_MOVE_KM = 2;
 /** Session map of house keys → owner phone (drives green house-number labels). */
 const housePhoneByKey = new Map();
 /** Session map of house keys → { phone, name, email } when public info exists. */
@@ -1457,9 +1458,9 @@ const MAP_HAIL_MAX_KM = 450;
 /** Search radius (km) around map center for OSM business flags. */
 const FLAG_SEARCH_KM_MIN = 2.2;
 const FLAG_SEARCH_KM_MAX = 14;
-/** Painted flag cap — rentals are never dropped to make room for businesses. */
-function flagPaintMax() {
-  return Number(flagNetProfile()?.paintMax) || (isAndroid() ? 220 : 400);
+/** Painted flag cap — business POIs only; rentals in view are never dropped. */
+function flagBizPaintMax() {
+  return Math.min(Number(flagNetProfile()?.paintMax) || (isAndroid() ? 260 : 450), 150);
 }
 const HOUSE_FETCH_PAD = 0.2;
 /** Viewport lookups per settle — keep this small so Flags never stall the map. */
@@ -6279,15 +6280,15 @@ function readyFlagList(nums) {
       const n0 = b.getNorth();
       const w = b.getWest();
       const e = b.getEast();
-      const dLat = Math.max(0.035, (n0 - s) * 0.75);
-      const dLon = Math.max(0.035, (e - w) * 0.75);
+      const dLat = Math.max(0.05, (n0 - s) * 1.1);
+      const dLon = Math.max(0.05, (e - w) * 1.1);
       const inFrame = n.lat >= s - dLat && n.lat <= n0 + dLat && n.lon >= w - dLon && n.lon <= e + dLon;
       if (inFrame) return true;
-      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 3.2, 18)) return true;
+      if (c && haversineKm(c.lat, c.lng, n.lat, n.lon) <= Math.max(flagSearchKm() * 4.5, 28)) return true;
       return false;
     }
     if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
-      const maxKm = Math.max(flagSearchKm() * 3.2, 18);
+      const maxKm = Math.max(flagSearchKm() * 4.5, 28);
       if (haversineKm(c.lat, c.lng, n.lat, n.lon) > maxKm) return false;
     }
     return true;
@@ -6296,10 +6297,8 @@ function readyFlagList(nums) {
   const biz = list.filter((n) => housePhoneKind(n) !== "rental");
   rentals.sort((a, b) => flagDist2(a, c) - flagDist2(b, c));
   biz.sort((a, b) => flagDist2(a, c) - flagDist2(b, c));
-  const cap = flagPaintMax();
-  const rentKeep = rentals.slice(0, cap);
-  const room = Math.max(0, cap - rentKeep.length);
-  return [...rentKeep, ...biz.slice(0, room)];
+  const bizCap = flagBizPaintMax();
+  return [...rentals, ...biz.slice(0, bizCap)];
 }
 
 function flyToFlag(n) {
@@ -7150,6 +7149,45 @@ async function fetchOsmHouseNums(south, west, north, east) {
   return numsFromOsmElements(mapDump?.elements);
 }
 
+function trimHouseCacheOutsideView() {
+  if (!map) return;
+  const b = map.getBounds?.();
+  if (!b?.isValid?.()) return;
+  const c = map.getCenter?.();
+  const s = b.getSouth();
+  const n = b.getNorth();
+  const w = b.getWest();
+  const e = b.getEast();
+  const dLat = Math.max(0.08, (n - s) * 1.5);
+  const dLon = Math.max(0.08, (e - w) * 1.5);
+  const maxKm = Math.max(flagSearchKm() * 4.5, 32);
+  houseCache.nums = (houseCache.nums || []).filter((pin) => {
+    if (!Number.isFinite(pin?.lat) || !Number.isFinite(pin?.lon)) return false;
+    if (
+      pin.lat >= s - dLat &&
+      pin.lat <= n + dLat &&
+      pin.lon >= w - dLon &&
+      pin.lon <= e + dLon
+    ) {
+      return true;
+    }
+    if (c && haversineKm(c.lat, c.lng, pin.lat, pin.lon) <= maxKm) return true;
+    return false;
+  });
+}
+
+function mergeViewportRentFlagsIntoCache() {
+  if (!phoneFlagsEnabled() || !map) return;
+  const bounds = flagViewBoundsPayload();
+  const c = map.getCenter?.();
+  if (!bounds && !c) return;
+  const rows = rentFlagsForViewport(bounds, c?.lat, c?.lng, 72);
+  if (!rows.length) return;
+  const before = houseCache.nums.length;
+  houseCache.nums = mergeHouseNums(houseCache.nums, numsFromRentFlags(rows));
+  if (houseCache.nums.length !== before) scheduleFlagLayerPaint(true);
+}
+
 async function refreshHouseNumbers({ forceRent = false } = {}) {
   if (!map || !window.L) return;
   ensureHousePane();
@@ -7186,8 +7224,12 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
     (center && isOklahomaLatLon(center.lat, center.lng) ? inferOkCity(center.lat, center.lng) : "") ||
     "";
 
+  trimHouseCacheOutsideView();
+  mergeViewportRentFlagsIntoCache();
+
   const frameChanged = houseCache.key !== key;
   if (!forceRent && !frameChanged && houseCache.nums.length) {
+    mergeViewportRentFlagsIntoCache();
     scheduleFlagLayerPaint();
     if (center) {
       void kickRentFlags(
@@ -7216,6 +7258,7 @@ async function refreshHouseNumbers({ forceRent = false } = {}) {
   const east = padB.getEast();
   const gen = ++houseGen;
   houseCache = { key, rings: [], nums: forceRent ? [] : houseCache.nums || [] };
+  mergeViewportRentFlagsIntoCache();
 
   let rentWork = Promise.resolve([]);
   if (center) {

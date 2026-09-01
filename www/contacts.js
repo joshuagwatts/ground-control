@@ -1193,6 +1193,29 @@ function rentFlagsInBounds(rows, bounds, padKm = 12) {
   );
 }
 
+/** Seed + persisted rent pins for the current map frame (no paint cap here). */
+export function rentFlagsForViewport(bounds, lat, lon, padKm = 56) {
+  const rows = mergeRentFlagList(loadPersistedRentFlags(), OK_RENT_FLAG_SEED);
+  if (!rows.length) return [];
+  const south = Number(bounds?.south);
+  const west = Number(bounds?.west);
+  const north = Number(bounds?.north);
+  const east = Number(bounds?.east);
+  const hasB = [south, west, north, east].every(Number.isFinite);
+  if (hasB) {
+    let hit = rentFlagsInBounds(rows, bounds, padKm);
+    if (hit.length < 15) hit = rentFlagsInBounds(rows, bounds, padKm + 40);
+    if (hit.length < 15 && Number.isFinite(lat) && Number.isFinite(lon)) {
+      hit = mergeRentFlagList(hit, rentFlagsNearPoint(rows, lat, lon, Math.max(36, padKm)));
+    }
+    return hit;
+  }
+  if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lon))) {
+    return rentFlagsNearPoint(rows, lat, lon, Math.max(36, padKm));
+  }
+  return rows.filter((r) => r?.phone || r?.listingUrl);
+}
+
 function isOklahomaCityName(name) {
   return /^(oklahoma\s*city|okc)$/i.test(String(name || "").trim());
 }
@@ -1249,7 +1272,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
   const retarget = opts.retarget === true;
   const viewportOnly = opts.viewportOnly !== false;
   const bounds = opts.bounds && typeof opts.bounds === "object" ? opts.bounds : null;
-  const ordered = citiesInMapBounds(bounds, { lat, lon, limit: 6 });
+  const ordered = citiesInMapBounds(bounds, { lat, lon, limit: 10 });
   const fallbackOrdered =
     !ordered.length && (isOklahomaLatLon(lat, lon) || stateAbbr(opts.state || "") === "ok")
       ? citiesNearPoint(lat, lon).slice(0, 3)
@@ -1349,7 +1372,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
           okc.lon <= Number(bounds.east)
         );
       })
-      .slice(0, 6);
+      .slice(0, 10);
 
     const fetchRentApts = async (c, pages = 1) => {
       const [rentRows, aptRows] = await Promise.all([
@@ -1431,7 +1454,7 @@ export async function lookupViewportRentFlags(lat, lon, opts = {}) {
       const skip = new Set(fastCities.map((c) => cityPathSlug(c)).filter(Boolean));
       const batch = citiesNearPoint(lat, lon)
         .filter((c) => !skip.has(cityPathSlug(c)) && rentCityNeedsSweep(c, swept, now))
-        .slice(0, 6);
+        .slice(0, 10);
       if (batch.length) {
         void (async () => {
           await Promise.all(
