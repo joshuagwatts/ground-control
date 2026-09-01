@@ -842,6 +842,33 @@ export async function lookupListingRentPhone(listingUrl) {
   return parseGenericListingPhone(html);
 }
 
+/** Listing URL first, then address-based rental/business directories. */
+export async function lookupRentFlagPhone(row) {
+  const url = String(row?.listingUrl || "").trim();
+  if (url) {
+    const direct = await lookupListingRentPhone(url).catch(() => "");
+    if (direct) return direct;
+  }
+  const street = String(row?.street || "").trim();
+  const city = String(row?.city || "").trim();
+  const state = String(row?.state || "OK").trim();
+  const zip = String(row?.zip || "").trim();
+  if (!street || !city) return "";
+  const address = `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
+  const parts = parseStreetAddress(address);
+  if (!parts.house) return "";
+  const batch = await Promise.all([
+    apartmentsListingContacts(address, parts).catch(() => null),
+    zillowRentContacts(address, parts).catch(() => null),
+    yellowPagesBusinessContacts(address, parts).catch(() => null),
+    isOklahomaAddress(address, parts) ? okChamberBusinessContacts(address, parts).catch(() => null) : null,
+  ]);
+  for (const part of batch) {
+    if (part?.phone) return formatPhone(part.phone);
+  }
+  return "";
+}
+
 /** All Oklahoma municipalities (pop ≥ 1000) — generated list + sweep progress for statewide Flags. */
 const rentFlagCache = new Map();
 const rentCityCache = new Map();
@@ -1295,7 +1322,7 @@ export function borrowPhonesAcrossRentRows(rows, maxKm = 12) {
 }
 
 /** Detail-page scrape for phoneless rental rows (Node / Capacitor — not browser CORS). */
-export async function enrichRentFlagPhones(rows, { concurrency = 12, onHit = null, delayMs = 100 } = {}) {
+export async function enrichRentFlagPhones(rows, { concurrency = 12, onHit = null, onProgress = null, delayMs = 100 } = {}) {
   const list = borrowPhonesAcrossRentRows(
     Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [],
     15,
@@ -1304,16 +1331,19 @@ export async function enrichRentFlagPhones(rows, { concurrency = 12, onHit = nul
   if (!need.length) return list;
   let idx = 0;
   let hits = 0;
+  let done = 0;
   const worker = async () => {
     while (idx < need.length) {
       const i = idx++;
       const row = need[i];
-      const phone = await lookupListingRentPhone(row.listingUrl).catch(() => "");
+      const phone = await lookupRentFlagPhone(row).catch(() => "");
+      done += 1;
       if (phone) {
         row.phone = phone;
         hits += 1;
         if (typeof onHit === "function") onHit(row, hits, need.length);
       }
+      if (typeof onProgress === "function") onProgress(done, need.length, hits);
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     }
   };

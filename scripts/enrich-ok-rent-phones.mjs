@@ -29,11 +29,16 @@ const need = OK_RENT_FLAG_SEED.filter((r) => !r.phone && r.listingUrl).length;
 console.log(`Enriching ${need} phoneless pins (${start} total)…`);
 
 const enriched = await enrichRentFlagPhones(OK_RENT_FLAG_SEED, {
-  concurrency: 16,
-  delayMs: 60,
+  concurrency: 10,
+  delayMs: 100,
   onHit: (row, hits, total) => {
     if (hits % 25 === 0 || hits === total) {
       console.log(`  phones ${hits}/${total} — last ${row.name || row.street} ${row.phone}`);
+    }
+  },
+  onProgress: (done, total, hits) => {
+    if (done % 50 === 0 || done === total) {
+      console.log(`  scraped ${done}/${total} · ${hits} phones found`);
     }
   },
 });

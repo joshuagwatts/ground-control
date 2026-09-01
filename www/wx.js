@@ -7885,7 +7885,7 @@ async function pumpRentListingPhones(gen) {
       const chunk = rows.slice(i, i + CONC);
       const got = await Promise.all(
         chunk.map(async (r) => {
-          const phone = await lookupListingRentPhone(r.listingUrl).catch(() => "");
+          const phone = await lookupRentFlagPhone(r).catch(() => "");
           if (!phone) return null;
           return { ...r, phone, source: r.source || (/zillow/i.test(r.listingUrl) ? "zillow-rent" : "rent-com") };
         }),
