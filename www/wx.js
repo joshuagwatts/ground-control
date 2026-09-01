@@ -10868,12 +10868,14 @@ function hailScopeHtml(data, days, esc) {
         <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>Largest hail</option>
         <option value="storm"${wxFilters.sort === "storm" ? " selected" : ""}>Biggest storm</option>
       </select></label>
-      ${
-        viewport
-          ? `<button type="button" id="hs-hail-search" class="hs-hail-search">${esc(searchLab)}</button>`
-          : ""
-      }
-      <button type="button" id="hs-cal-trig" class="hs-cal-trig" aria-expanded="false" aria-haspopup="dialog">Calendar</button>
+      <div class="hs-actions">
+        ${
+          viewport
+            ? `<button type="button" id="hs-hail-search" class="hs-hail-search">${esc(searchLab)}</button>`
+            : ""
+        }
+        <button type="button" id="hs-cal-trig" class="hs-cal-trig" aria-expanded="false" aria-haspopup="dialog">Calendar</button>
+      </div>
     </div>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport, data })}</div>`;
 }

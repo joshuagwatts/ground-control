@@ -2413,22 +2413,28 @@ body.wx-map-expanded .hs-field {
   margin-bottom: 0.85rem;
   align-items: stretch;
 }
-.hs-filters .hs-hail-search {
+.hs-actions {
   grid-column: 1 / -1;
+  display: flex;
+  align-items: stretch;
+  gap: 0.45rem;
+  min-width: 0;
 }
 .hs-hail-search {
-  flex: 1 1 100%;
-  margin: 0.15rem 0 0;
-  padding: 0.7rem 0.9rem;
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0.38rem 0.55rem;
   border-radius: 10px;
   border: 1px solid rgba(240, 180, 41, 0.45);
   background: rgba(240, 180, 41, 0.16);
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.01em;
   cursor: pointer;
+  white-space: nowrap;
 }
 .hs-hail-search:active {
   background: rgba(240, 180, 41, 0.28);
@@ -2614,8 +2620,8 @@ body.wx-map-expanded .hs-field {
   flex: 1;
 }
 .hs-cal-trig {
-  align-self: stretch;
-  width: 100%;
+  flex: 0 1 auto;
+  min-width: 4.75rem;
   min-height: 2.35rem;
   font-size: 12px;
   font-weight: 550;
@@ -2627,6 +2633,9 @@ body.wx-map-expanded .hs-field {
   text-align: center;
   cursor: pointer;
   letter-spacing: 0.02em;
+}
+.hs-actions:not(:has(.hs-hail-search)) .hs-cal-trig {
+  flex: 1 1 auto;
 }
 .hs-cal-trig.open,
 .hs-cal-trig:active {
