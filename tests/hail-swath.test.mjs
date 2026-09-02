@@ -3,7 +3,19 @@
  * Imports wx.js helpers indirectly by exercising draw path math via a tiny inline port check.
  */
 import assert from "node:assert/strict";
-import { buildHailSwathRings } from "../www/wx.js";
+import { buildHailSwathRings, calibrateRadarSizeIn } from "../www/wx.js";
+
+assert.ok(calibrateRadarSizeIn(2.75, 35.5, -97.5, "2026-03-10", []) < 2.5, "unverified hot SWDI dampens below purple");
+assert.ok(
+  calibrateRadarSizeIn(
+    2.75,
+    35.5,
+    -97.5,
+    "2026-03-10",
+    [{ lat: 35.5, lon: -97.5, size_in: "1.25", date: "2026-03-10", source: "noaa-spc" }],
+  ) < 2,
+  "spotter ground truth pulls radar down from purple",
+);
 
 // Morph close should fill a 1-cell gap
 const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.5, 2.0, 2.5];
