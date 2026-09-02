@@ -45,6 +45,7 @@ function blank() {
   desktop_lens: true,
       desktop_auto: true,
       desktop_model: "",
+      github_token: "",
       lat: "",
       lon: "",
       city: "",

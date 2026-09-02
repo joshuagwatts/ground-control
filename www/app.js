@@ -69,7 +69,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.241";
+} from "./wx.js?v=0.2.242";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -77,6 +77,7 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale, mergeMarksPack, serializeTeamMarksPack, markListIconHtml } from "./marks.js";
+import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
 import { CACHE_BUST } from "./version.js";
@@ -1491,11 +1492,10 @@ function paintFieldSheet() {
       <button type="button" id="hs-mark-copy"${shown.length ? "" : " disabled"}>Copy list</button>
       <button type="button" id="hs-mark-csv"${shown.length ? "" : " disabled"}>CSV</button>
       <button type="button" id="hs-mark-letter"${shown.length ? "" : " disabled"}>Draft letter</button>
-      <button type="button" id="hs-mark-push">Push to team</button>
+      <button type="button" class="primary" id="hs-mark-push">Push to team</button>
       <button type="button" id="hs-mark-pull">Pull team</button>
-      <button type="button" id="hs-mark-import">Import</button>
-      <input type="file" id="hs-mark-import-file" accept="application/json,.json" hidden />
     </div>
+    <p class="muted hs-team-hint">One tap publishes marks for everyone on the site. Pull loads the latest. Set a GitHub token in Settings → Team sync once.</p>
     <div class="hs-mark-list">${
       shown.length
         ? shown
@@ -1542,25 +1542,16 @@ function paintFieldSheet() {
     setStatus(ok ? `Letter drafted for ${pack.count} homes` : "Copy failed");
   };
   const pushBtn = $("#hs-mark-push");
-  if (pushBtn) pushBtn.onclick = () => void downloadTeamMarksPack();
+  if (pushBtn) pushBtn.onclick = () => void pushTeamMarksOneClick();
   const pullBtn = $("#hs-mark-pull");
   if (pullBtn) {
     pullBtn.onclick = async () => {
       setStatus("Pulling team marks…");
       const res = await syncTeamMarksPack();
       paintFieldMap();
-      if (!res.ok) setStatus("Team marks pack unavailable");
+      paintFieldSheet();
+      if (!res.ok) setStatus("Team marks unavailable — check network");
       else setStatus(`Team marks · ${fieldMarks().length} on map${res.added ? ` (+${res.added} new)` : ""}`);
-    };
-  }
-  const importBtn = $("#hs-mark-import");
-  const importFile = $("#hs-mark-import-file");
-  if (importBtn && importFile) {
-    importBtn.onclick = () => importFile.click();
-    importFile.onchange = () => {
-      const file = importFile.files?.[0];
-      importFile.value = "";
-      void importTeamMarksFile(file);
     };
   }
   root.querySelectorAll(".hs-mark-row").forEach((b) => {
@@ -1858,29 +1849,21 @@ async function downloadTeamDonePack() {
     setStatus("No done targets to share yet");
     return;
   }
-  const json = JSON.stringify(pack, null, 2);
-  const blob = new Blob([json], { type: "application/json" });
-  const file = new File([blob], "team-done.json", { type: "application/json" });
-  const copied = await copyText(json);
-  try {
-    if (navigator.canShare?.({ files: [file] })) {
-      await navigator.share({ title: "Ground Control done targets", files: [file], text: json.slice(0, 4000) });
-      setStatus(`Shared ${placed} done target${placed === 1 ? "" : "s"}${copied ? " · also copied" : ""}`);
-      return;
-    }
-  } catch (e) {
-    if (/abort|cancel/i.test(String(e.message || e))) return;
+  const token = String(db.settings.github_token || "").trim();
+  if (!token) {
+    setStatus("Add GitHub token in Settings → Team sync (once), then Share");
+    return;
   }
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "team-done.json";
-  a.click();
-  URL.revokeObjectURL(a.href);
-  setStatus(
-    copied
-      ? `Copied ${placed} done target${placed === 1 ? "" : "s"} — paste here or send team-done.json to publish for Safari`
-      : `Exported ${placed} done target${placed === 1 ? "" : "s"} — send team-done.json to update the team site`,
-  );
+  setStatus("Pushing done targets to team…");
+  try {
+    await syncTeamDonePack();
+    const next = serializeTeamDonePack(db.done || {});
+    await pushTeamJson(TEAM_DONE_PATH, next, token);
+    const n = (next.houses || []).filter((h) => Number.isFinite(Number(h.lat))).length;
+    setStatus(`Pushed ${n} done target${n === 1 ? "" : "s"} — team can Pull`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 96));
+  }
 }
 
 async function importTeamDoneFile(file) {
@@ -1927,36 +1910,31 @@ async function syncTeamMarksPack() {
 }
 
 async function downloadTeamMarksPack() {
+  return pushTeamMarksOneClick();
+}
+
+async function pushTeamMarksOneClick() {
   const marks = fieldMarks();
   const placed = marks.filter((m) => Number.isFinite(Number(m.lat)) && Number.isFinite(Number(m.lon))).length;
   if (!placed) {
-    setStatus("No field marks to share yet");
+    setStatus("No field marks to push yet");
     return;
   }
-  const pack = teamMarksSnapshot();
-  const json = JSON.stringify(pack, null, 2);
-  const blob = new Blob([json], { type: "application/json" });
-  const file = new File([blob], "team-marks.json", { type: "application/json" });
-  const copied = await copyText(json);
-  try {
-    if (navigator.canShare?.({ files: [file] })) {
-      await navigator.share({ title: "Ground Control field marks", files: [file], text: json.slice(0, 4000) });
-      setStatus(`Shared ${placed} mark${placed === 1 ? "" : "s"}${copied ? " · also copied" : ""}`);
-      return;
-    }
-  } catch (e) {
-    if (/abort|cancel/i.test(String(e.message || e))) return;
+  const token = String(db.settings.github_token || "").trim();
+  if (!token) {
+    setStatus("Add GitHub token in Settings → Team sync (once), then Push");
+    return;
   }
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "team-marks.json";
-  a.click();
-  URL.revokeObjectURL(a.href);
-  setStatus(
-    copied
-      ? `Copied ${placed} mark${placed === 1 ? "" : "s"} — send team-marks.json to publish for the team`
-      : `Exported ${placed} mark${placed === 1 ? "" : "s"} — send team-marks.json to update the team site`,
-  );
+  setStatus("Pushing marks to team…");
+  try {
+    // Merge remote first so we never wipe a teammate's pins.
+    await syncTeamMarksPack();
+    const pack = serializeTeamMarksPack(fieldMarks());
+    await pushTeamJson(TEAM_MARKS_PATH, pack, token);
+    setStatus(`Pushed ${placed} mark${placed === 1 ? "" : "s"} — team can Pull`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 96));
+  }
 }
 
 async function importTeamMarksFile(file) {
@@ -2374,17 +2352,15 @@ function renderJobs() {
         : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
     <h3>Completed houses</h3>
-    <p class="muted">Paste finished addresses (one per line), then load yellow markers on HailScope. Lines without a city use Settings city. Safari / LAN auto-load the shared team pack so nobody re-pastes.</p>
+    <p class="muted">Paste finished addresses (one per line), then load yellow markers on HailScope. Push to team once — everyone Pulls (or auto on boot).</p>
     <textarea id="job-done-text" rows="6" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
     <div class="actions">
       <button type="button" class="primary" id="job-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load yellow markers"}</button>
       <button type="button" id="job-done-clear"${houses.length ? "" : " disabled"}>Clear markers</button>
     </div>
     <div class="actions">
-      <button type="button" id="job-done-share"${houses.length || rawText.trim() ? "" : " disabled"}>Share team pack</button>
-      <button type="button" id="job-done-import">Import pack</button>
-      <input id="job-done-import-file" type="file" accept="application/json,.json" hidden />
-      <button type="button" id="job-done-pull">Pull team pack</button>
+      <button type="button" class="primary" id="job-done-share"${houses.length || rawText.trim() ? "" : " disabled"}>Push to team</button>
+      <button type="button" id="job-done-pull">Pull team</button>
     </div>
     <p class="muted">${placed.length ? `${placed.length} yellow marker${placed.length === 1 ? "" : "s"} ready — open HailScope to see them.` : "No yellow markers yet."}</p>
     ${placed
@@ -2449,16 +2425,6 @@ function renderJobs() {
   }
   const shareBtn = $("#job-done-share");
   if (shareBtn) shareBtn.onclick = () => void downloadTeamDonePack();
-  const importBtn = $("#job-done-import");
-  const importFile = $("#job-done-import-file");
-  if (importBtn && importFile) {
-    importBtn.onclick = () => importFile.click();
-    importFile.onchange = () => {
-      const file = importFile.files?.[0];
-      importFile.value = "";
-      void importTeamDoneFile(file);
-    };
-  }
   const pullBtn = $("#job-done-pull");
   if (pullBtn) {
     pullBtn.onclick = async () => {
@@ -2555,6 +2521,9 @@ function renderKeys() {
     <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
+    <h3>Team sync</h3>
+    <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
+    <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
     <h3>Discontinued lookup</h3>
     <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>
     <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on this device.</p>`;
@@ -2578,6 +2547,13 @@ function renderKeys() {
     units.onchange = () => {
       db.settings.units = units.value === "metric" ? "metric" : "imperial";
       setWxUnits(db.settings.units);
+      persist();
+    };
+  }
+  const ghTok = $("#set-gh-token");
+  if (ghTok) {
+    ghTok.oninput = () => {
+      db.settings.github_token = ghTok.value.trim();
       persist();
     };
   }

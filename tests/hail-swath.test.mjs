@@ -114,5 +114,10 @@ const swdiPts = [
 const swdiBands = buildHailSwathRings(swdiPts, {});
 assert.ok(swdiBands.some((b) => b.source === "radar-poly"), "SWDI polygon band");
 assert.ok(!swdiBands.some((b) => b.source === "mesh-swath"), "no stacked mesh on SWDI polygon");
+assert.ok(swdiBands.every((b) => Array.isArray(b.ring) && b.ring.length >= 3), "each band is one region");
+assert.ok(swdiBands.length <= 3, "simple intensity footprints — not nested heat bands");
+
+const lone = buildHailSwathRings([{ lat: 35.5, lon: -97.5, size_in: "1.5", source: "noaa-swdi-radar" }], {});
+assert.equal(lone.length, 1, "one sig → one region");
 
 console.log("hail-swath ok");
