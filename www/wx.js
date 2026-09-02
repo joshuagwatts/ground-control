@@ -41,7 +41,7 @@ import {
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel } from "./assessor.js";
-import { kindMeta, validMarkCoord, markBadge, markTint, clampPinScale } from "./marks.js";
+import { kindMeta, validMarkCoord, markBadge, markTint, markPinSvgHtml, clampPinScale } from "./marks.js";
 import { flagNetProfile, isAndroid, isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
 
 let map = null;
@@ -8778,16 +8778,14 @@ function ensureFieldPanes() {
 function markDivIcon(mark, zoomUi = zoomUiScale()) {
   const meta = kindMeta(mark.kind);
   const prod = String(mark.productId || "").replace(/[^a-z0-9:-]/gi, "");
-  const text = markBadge(mark);
   const scale = clampPinScale(mark.iconScale) * zoomUi;
-  const w = Math.round(52 * scale);
-  const h = Math.round(22 * scale);
-  const fs = Math.max(9, Math.round(11 * scale));
+  const w = Math.round(25 * scale);
+  const h = Math.round(41 * scale);
   return window.L.divIcon({
     className: `hs-mark hs-mark-${meta.id}${prod ? ` hs-mark-p` : ""}`,
-    html: `<span style="background:${markTint(mark)};font-size:${fs}px;transform:scale(1);line-height:1.1">${text}</span>`,
+    html: markPinSvgHtml(mark, w, h),
     iconSize: [w, h],
-    iconAnchor: [Math.round(w / 2), h],
+    iconAnchor: [Math.round(w * 0.48), h],
   });
 }
 

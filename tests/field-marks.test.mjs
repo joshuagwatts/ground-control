@@ -1,4 +1,4 @@
-import { MARK_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, validMarkCoord, isProductPing, productIdOf, markBadge, customProductId, clampPinScale } from "../www/marks.js";
+import { MARK_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, validMarkCoord, isProductPing, productIdOf, markBadge, customProductId, clampPinScale, mergeMarksPack, serializeTeamMarksPack, markPinSvgHtml, markKindGlyph } from "../www/marks.js";
 import { mailerProducts, mailerProduct } from "../www/catalog.js";
 import { formatAccuAddress, normalizeAccuJob, jobDidLine, accuColor, accuDone, accuJobsOnMap, accuJobsCsv } from "../www/acculynx.js";
 
@@ -8,6 +8,8 @@ function assert(ok, msg) {
 
 assert(kindMeta("atlas").short === "ATLAS", "atlas kind");
 assert(MARK_KINDS.some((k) => k.id === "zone"), "zone kind");
+assert(MARK_KINDS.some((k) => k.id === "asbestos"), "asbestos kind");
+assert(kindMeta("asbestos").short === "ASB", "asbestos short");
 assert(validMarkCoord(35.5, -97.5), "ok coord");
 assert(!validMarkCoord(0, 0), "zero coord");
 assert(clampPinScale(3) === 2.5 && clampPinScale(0.1) === 0.25, "pin scale clamp");
@@ -61,5 +63,16 @@ const belmont = mailerProduct("certainteed-belmont");
 assert(belmont && belmont.short === "BELMONT" && !belmont.discontinued, "belmont mailer chip");
 assert(mailerProducts().some((p) => p.id === "gaf-timberline-hd"), "gaf hd chip");
 assert(customProductId("GAF Grand Sequoia") === "custom:gaf-grand-sequoia", "custom id");
+
+const asb = newMark({ lat: 35.5, lon: -97.5, kind: "asbestos", label: "Asbestos", note: "Tile siding" });
+assert(asb.kind === "asbestos", "asbestos mark");
+assert(filterMarks([asb], "asbestos").length === 1, "filter asbestos");
+assert(/svg/i.test(markPinSvgHtml(asb)) && !/NOTE|ASB/.test(markPinSvgHtml(asb)), "pin icon not text");
+assert(markKindGlyph("asbestos").includes("path"), "asbestos glyph");
+
+const merged = mergeMarksPack([pin], [asb]);
+assert(merged.length === 2, "merge marks pack");
+const snap = serializeTeamMarksPack(merged);
+assert(snap.marks.length === 2 && snap.v === 1, "serialize team marks");
 
 console.log("field-marks ok");

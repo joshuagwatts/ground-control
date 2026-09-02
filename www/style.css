@@ -2286,27 +2286,20 @@ body.wx-map-expanded .hs-field {
   padding: 0.65rem 0.8rem; border-radius: var(--radius);
 }
 .hs-mark-row span { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.hs-mark-row .hs-mark-list-ico { flex-shrink: 0; }
 .hs-mark-row em { font-style: normal; color: var(--muted); font-size: 12px; }
 .leaflet-div-icon.hs-mark {
   background: transparent !important;
   border: none !important;
 }
-.hs-mark span {
-  display: inline-block;
-  padding: 2px 6px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  color: #0b0b0d;
-  background: #ffcc00;
-  border-radius: 4px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.45);
-  white-space: nowrap;
+.hs-mark .hs-mark-pin-svg {
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
 }
-.hs-mark-work span { background: #22c55e; }
-.hs-mark-zone span { background: #86efac; }
-.hs-mark-atlas span, .hs-mark-ping span, .hs-mark-disc span { background: #fb923c; }
-.hs-mark-note span { background: #ffcc00; }
+.leaflet-div-icon.hs-done-pin .hs-mark-pin-svg,
+.leaflet-div-icon.hs-mark .hs-mark-pin-svg {
+  pointer-events: none;
+}
 .hs-styles button {
   padding: 0.4rem 0.7rem; font-size: 12px;
   background: rgba(22,22,24,0.92); color: var(--text);

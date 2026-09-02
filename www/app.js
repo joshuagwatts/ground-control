@@ -69,14 +69,14 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.239";
+} from "./wx.js?v=0.2.240";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
-import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale } from "./marks.js";
+import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale, mergeMarksPack, serializeTeamMarksPack, markListIconHtml } from "./marks.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
 import { CACHE_BUST } from "./version.js";
@@ -1482,6 +1482,7 @@ function paintFieldSheet() {
         <option value="work"${kind === "work" ? " selected" : ""}>Work done</option>
         <option value="zone"${kind === "zone" ? " selected" : ""}>Work zone</option>
         <option value="note"${kind === "note" ? " selected" : ""}>Notes</option>
+        <option value="asbestos"${kind === "asbestos" ? " selected" : ""}>Asbestos</option>
         <option value="ping"${kind === "ping" ? " selected" : ""}>All product pings</option>
         ${mailerProducts()
           .map((p) => `<option value="p:${esc(p.id)}"${kind === `p:${p.id}` ? " selected" : ""}>${esc(p.label)}</option>`)
@@ -1490,13 +1491,17 @@ function paintFieldSheet() {
       <button type="button" id="hs-mark-copy"${shown.length ? "" : " disabled"}>Copy list</button>
       <button type="button" id="hs-mark-csv"${shown.length ? "" : " disabled"}>CSV</button>
       <button type="button" id="hs-mark-letter"${shown.length ? "" : " disabled"}>Draft letter</button>
+      <button type="button" id="hs-mark-push">Push to team</button>
+      <button type="button" id="hs-mark-pull">Pull team</button>
+      <button type="button" id="hs-mark-import">Import</button>
+      <input type="file" id="hs-mark-import-file" accept="application/json,.json" hidden />
     </div>
     <div class="hs-mark-list">${
       shown.length
         ? shown
             .map(
               (m) =>
-                `<button type="button" class="hs-mark-row" data-id="${esc(m.id)}"><i class="hs-dot" style="background:${kindMeta(m.kind).color}"></i><span><strong>${esc(m.label || kindMeta(m.kind).label)}</strong>${esc(m.address || `${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}`)}${m.note ? `<em>${esc(m.note)}</em>` : ""}</span></button>`,
+                `<button type="button" class="hs-mark-row" data-id="${esc(m.id)}">${markListIconHtml(m)}<span><strong>${esc(m.label || kindMeta(m.kind).label)}</strong>${esc(m.address || `${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}`)}${m.note ? `<em>${esc(m.note)}</em>` : ""}</span></button>`,
             )
             .join("")
         : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product.</p>`
@@ -1536,6 +1541,28 @@ function paintFieldSheet() {
     const ok = await copyText(`${pack.subject}\n\n${pack.body}`);
     setStatus(ok ? `Letter drafted for ${pack.count} homes` : "Copy failed");
   };
+  const pushBtn = $("#hs-mark-push");
+  if (pushBtn) pushBtn.onclick = () => void downloadTeamMarksPack();
+  const pullBtn = $("#hs-mark-pull");
+  if (pullBtn) {
+    pullBtn.onclick = async () => {
+      setStatus("Pulling team marks…");
+      const res = await syncTeamMarksPack();
+      paintFieldMap();
+      if (!res.ok) setStatus("Team marks pack unavailable");
+      else setStatus(`Team marks · ${fieldMarks().length} on map${res.added ? ` (+${res.added} new)` : ""}`);
+    };
+  }
+  const importBtn = $("#hs-mark-import");
+  const importFile = $("#hs-mark-import-file");
+  if (importBtn && importFile) {
+    importBtn.onclick = () => importFile.click();
+    importFile.onchange = () => {
+      const file = importFile.files?.[0];
+      importFile.value = "";
+      void importTeamMarksFile(file);
+    };
+  }
   root.querySelectorAll(".hs-mark-row").forEach((b) => {
     b.onclick = () => {
       const m = fieldMarks().find((x) => x.id === b.dataset.id);
@@ -1869,6 +1896,79 @@ async function importTeamDoneFile(file) {
     setStatus(`Imported team pack — ${placed} yellow marker${placed === 1 ? "" : "s"}`);
     if (tab === "jobs") renderJobs();
     if (placed < parseDoneList(merged.text).length) void loadDoneAddresses();
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+  }
+}
+
+function teamMarksSnapshot() {
+  return serializeTeamMarksPack(fieldMarks());
+}
+
+async function syncTeamMarksPack() {
+  try {
+    const res = await fetch(`./data/team-marks.json?v=${CACHE_BUST}`, { cache: "no-cache" });
+    if (!res.ok) return { ok: false, reason: "missing" };
+    const pack = await res.json();
+    const remote = Array.isArray(pack?.marks) ? pack.marks : [];
+    if (!remote.length) return { ok: true, added: 0, total: fieldMarks().length };
+    const before = fieldMarks().length;
+    const merged = mergeMarksPack(fieldMarks(), remote);
+    const afterKey = JSON.stringify(merged.map((m) => m.id).sort());
+    const beforeKey = JSON.stringify(fieldMarks().map((m) => m.id).sort());
+    if (afterKey === beforeKey) return { ok: true, added: 0, total: fieldMarks().length };
+    db.marks = merged;
+    persist();
+    paintFieldSheet();
+    return { ok: true, added: Math.max(0, merged.length - before), total: merged.length };
+  } catch {
+    return { ok: false, reason: "fetch" };
+  }
+}
+
+async function downloadTeamMarksPack() {
+  const marks = fieldMarks();
+  const placed = marks.filter((m) => Number.isFinite(Number(m.lat)) && Number.isFinite(Number(m.lon))).length;
+  if (!placed) {
+    setStatus("No field marks to share yet");
+    return;
+  }
+  const pack = teamMarksSnapshot();
+  const json = JSON.stringify(pack, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const file = new File([blob], "team-marks.json", { type: "application/json" });
+  const copied = await copyText(json);
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ title: "Ground Control field marks", files: [file], text: json.slice(0, 4000) });
+      setStatus(`Shared ${placed} mark${placed === 1 ? "" : "s"}${copied ? " · also copied" : ""}`);
+      return;
+    }
+  } catch (e) {
+    if (/abort|cancel/i.test(String(e.message || e))) return;
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "team-marks.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(
+    copied
+      ? `Copied ${placed} mark${placed === 1 ? "" : "s"} — send team-marks.json to publish for the team`
+      : `Exported ${placed} mark${placed === 1 ? "" : "s"} — send team-marks.json to update the team site`,
+  );
+}
+
+async function importTeamMarksFile(file) {
+  if (!file) return;
+  try {
+    const pack = JSON.parse(await file.text());
+    const remote = Array.isArray(pack?.marks) ? pack.marks : [];
+    db.marks = mergeMarksPack(fieldMarks(), remote);
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    setStatus(`Imported team marks — ${fieldMarks().length} on map`);
   } catch (e) {
     setStatus(String(e.message || e).slice(0, 64));
   }
@@ -2609,11 +2709,16 @@ function boot() {
     })
     .catch(() => {});
   void (async () => {
-    const res = await syncTeamDonePack();
-    if (res.ok && res.placed) {
+    const doneRes = await syncTeamDonePack();
+    if (doneRes.ok && doneRes.placed) {
       if (isHailTab()) paintFieldMap();
-      setStatus(`Team pack · ${res.placed} done target${res.placed === 1 ? "" : "s"}`);
+      setStatus(`Team pack · ${doneRes.placed} done target${doneRes.placed === 1 ? "" : "s"}`);
       void ensureDoneHousesPlaced();
+    }
+    const marksRes = await syncTeamMarksPack();
+    if (marksRes.ok && marksRes.added > 0) {
+      if (isHailTab()) paintFieldMap();
+      setStatus(`Team marks · ${marksRes.total} on map (+${marksRes.added} new)`);
     }
   })();
 }
