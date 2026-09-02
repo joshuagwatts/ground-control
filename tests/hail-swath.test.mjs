@@ -112,12 +112,14 @@ const swdiPts = [
   },
 ];
 const swdiBands = buildHailSwathRings(swdiPts, {});
-assert.ok(swdiBands.some((b) => b.source === "radar-poly"), "SWDI polygon band");
-assert.ok(!swdiBands.some((b) => b.source === "mesh-swath"), "no stacked mesh on SWDI polygon");
-assert.ok(swdiBands.every((b) => Array.isArray(b.ring) && b.ring.length >= 3), "each band is one region");
-assert.ok(swdiBands.length <= 3, "simple intensity footprints — not nested heat bands");
+assert.ok(swdiBands.some((b) => b.source === "mesh-swath"), "MESH nested swath bands");
+assert.ok(swdiBands.every((b) => Array.isArray(b.ring) && b.ring.length >= 3), "each band has a ring");
+assert.ok(swdiBands.length >= 2, "nested size contours (HailTrace-style)");
+const sizes = swdiBands.map((b) => Number(b.maxSize));
+assert.ok(sizes.some((s) => s <= 1.01) && sizes.some((s) => s >= 1.2), "fringe + stronger core");
 
 const lone = buildHailSwathRings([{ lat: 35.5, lon: -97.5, size_in: "1.5", source: "noaa-swdi-radar" }], {});
-assert.equal(lone.length, 1, "one sig → one region");
+assert.ok(lone.length >= 2, "single sig still nests fringe→core");
+assert.ok(lone.every((b) => b.source === "mesh-swath"), "spotters excluded from radar swaths");
 
 console.log("hail-swath ok");
