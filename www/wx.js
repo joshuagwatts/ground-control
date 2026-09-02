@@ -206,6 +206,7 @@ function selectedStormDateSig() {
 
 function clearStormDateSelection() {
   selectedStormDates.clear();
+  persistStormSession();
 }
 
 function pruneStormDateSelection(validDates) {
@@ -221,6 +222,7 @@ function setStormDateSelection(dates, { replace = true } = {}) {
   const next = (Array.isArray(dates) ? dates : [dates]).map(stormDateKey).filter(Boolean);
   if (replace) selectedStormDates.clear();
   for (const d of next) selectedStormDates.add(d);
+  persistStormSession();
 }
 
 function toggleStormDateSelection(date) {
@@ -228,9 +230,53 @@ function toggleStormDateSelection(date) {
   if (!k) return;
   if (selectedStormDates.has(k)) {
     selectedStormDates.delete(k);
-    return;
+  } else {
+    selectedStormDates.add(k);
   }
-  selectedStormDates.add(k);
+  persistStormSession();
+}
+
+const STORM_SESSION_KEY = "gc-storm-session-v1";
+
+function persistStormSession() {
+  try {
+    const days = selectedStormDateList();
+    const swdi = (lastStormSwdiRows || [])
+      .filter(isSwdiHail)
+      .slice(0, 400)
+      .map((h) => ({
+        date: h.date,
+        time: h.time || "",
+        lat: h.lat,
+        lon: h.lon,
+        size_in: h.size_in,
+        source: h.source || "noaa-swdi-radar",
+        location: h.location || "",
+        distance_km: h.distance_km,
+        swdi_ring: Array.isArray(h.swdi_ring) && h.swdi_ring.length <= 24 ? h.swdi_ring : undefined,
+      }));
+    sessionStorage.setItem(STORM_SESSION_KEY, JSON.stringify({ days, swdi, t: Date.now() }));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function hydrateStormSession() {
+  try {
+    const raw = sessionStorage.getItem(STORM_SESSION_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || Date.now() - Number(parsed.t || 0) > 1000 * 60 * 60 * 12) return;
+    for (const d of parsed.days || []) {
+      const k = stormDateKey(d);
+      if (k) selectedStormDates.add(k);
+    }
+    if (Array.isArray(parsed.swdi) && parsed.swdi.length) {
+      lastStormSwdiRows = mergeHailRows(lastStormSwdiRows, parsed.swdi);
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 function hailInOptionHtml(cur = wxFilters.hailIn, { short = false } = {}) {
@@ -1116,7 +1162,11 @@ async function ensureSwdiForSelectedStormDays() {
   const km = wxPinSelected()
     ? hailRadarZoneKm()
     : Math.max(hailRadarZoneKm(), mapViewFetchKm() || 0);
-  const pool = mergeHailRows(lastZoneHailRows.length ? lastZoneHailRows : lastHailRows, lastDossierDataRef?.hail || []);
+  const pool = mergeHailRows(
+    lastStormSwdiRows,
+    lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
+    lastDossierDataRef?.hail || [],
+  );
   const spotters = await ensureSpotterHailForSelectedStormDays(anchor, days, km, pool);
   let livePool = pool;
   if (spotters.length) {
@@ -1229,6 +1279,7 @@ async function ensureSwdiForSelectedStormDays() {
   }
   swdi = capSwdiRowsForDraw(filterRowsToSelectedStormDays(swdi), SWDI_DRAW_CAP);
   lastStormSwdiRows = mergeHailRows(lastStormSwdiRows, swdi);
+  persistStormSession();
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
   lastHailRows = merged;
@@ -3305,6 +3356,7 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, zone
   }
   if (hadSelection && !hasSelectedStormDates()) {
     lastStormSwdiRows = [];
+    stormSwathBandCache.clear();
     emitMapStatus("Hail zones cleared");
   }
   const needDate = requireDate === true || (requireDate !== false && hailScopeMode);
@@ -4151,14 +4203,46 @@ function capRadarPtsForMesh(pts, max = SWDI_MESH_PT_CAP) {
 
 function stormDrawZoneRows(rows) {
   let zRows = rows || [];
-  if (hasSelectedStormDates() && !wxPinSelected()) {
+  if (hasSelectedStormDates()) {
+    // Full selected-day pool — do NOT clip to the map frame. Viewport clipping
+    // rebuilt different meshes every pan and made swaths flicker / disappear.
     zRows = filterRowsToSelectedStormDays(zRows);
-    zRows = clipHailToMapView(zRows);
     const radar = capSwdiRowsForDraw(zRows.filter(isSwdiHail), SWDI_DRAW_CAP);
     const spots = zRows.filter(isSpotterHail).slice(0, 120);
-    zRows = mergeHailRows(radar, spots);
+    return mergeHailRows(radar, spots);
   }
   return zRows;
+}
+
+/** Stable mesh input signature — same points → same swath geometry. */
+function hailSwathInputSig(dayKey, pts) {
+  const parts = (pts || [])
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+    .map(
+      (p) =>
+        `${(Math.round(p.lat * 1000) / 1000).toFixed(3)},${(Math.round(p.lon * 1000) / 1000).toFixed(3)},${Number(p.size_in) || 0}`,
+    )
+    .sort();
+  return `${dayKey}|${parts.length}|${parts[0] || ""}|${parts[parts.length - 1] || ""}|${parts[(parts.length / 2) | 0] || ""}`;
+}
+
+const stormSwathBandCache = new Map();
+
+function cachedStormSwathBands(dayKey, meshPts, anchor) {
+  const sig = hailSwathInputSig(dayKey, meshPts);
+  const hit = stormSwathBandCache.get(dayKey);
+  if (hit && hit.sig === sig) return hit.bands;
+  const bands = stackHailBandPolys(
+    buildHailSwathRings(meshPts, anchor, {
+      includeSpotters: meshPts.some(isSpotterHail),
+    }),
+  );
+  stormSwathBandCache.set(dayKey, { sig, bands });
+  if (stormSwathBandCache.size > 12) {
+    const oldest = stormSwathBandCache.keys().next().value;
+    stormSwathBandCache.delete(oldest);
+  }
+  return bands;
 }
 
 async function deferToNextFrame() {
@@ -5672,9 +5756,7 @@ function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFi
       lon: meshPts.reduce((s, p) => s + p.lon, 0) / meshPts.length,
       size_in: Math.max(...meshPts.map((p) => parseFloat(p.size_in) || 0), 0.75),
     };
-    const bands = stackHailBandPolys(
-      buildHailSwathRings(meshPts, anchor, { includeSpotters: !radarPts.length || spotPts.length > 0 }),
-    );
+    const bands = cachedStormSwathBands(dayKey, meshPts, anchor);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(anchor.size_in) || 0.75;
       const col = hailRadarBandColor(sz);
@@ -9338,6 +9420,7 @@ export function destroyMap() {
 export function mountMap(container, config, { onTap, onHold, center, product, base, initialPin = true } = {}) {
   if (!window.L) throw new Error("Leaflet not loaded");
   destroyMap();
+  hydrateStormSession();
   const c = center || config.center || { lat: 0, lon: 0 };
   const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : HOUSE_ZOOM;
   map = window.L.map(container, {
