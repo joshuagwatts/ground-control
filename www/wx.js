@@ -1,12 +1,14 @@
 /** WX map + storm dossier — runs on phone (public APIs). */
 import {
   parseStormDay,
+  centralStormDay,
   renderStormCalendar,
   bindStormCalendar,
   defaultCalendarMonth,
   HAIL_EXTREME_IN,
   HAIL_PIN_CALENDAR_IN,
 } from "./hail-calendar.js";
+export { centralStormDay };
 import { httpGet, httpLanGet, httpLanPostJson, openUrl, overpassJson, osmMapJson } from "./net.js";
 import { locateDevice, watchGps } from "./geo.js";
 import {
@@ -933,7 +935,8 @@ function ingestSwdiItems(items, lat, lon, km, hits = new Map()) {
     const dist = haversineKm(lat, lon, hitLat, hitLon);
     if (dist > km) continue;
     const ztime = String(item.ZTIME || "");
-    const day = parseStormDay(ztime);
+    // Local Central day — evening cells at 00–05Z belong to the prior calendar day.
+    const day = centralStormDay(ztime);
     if (!day) continue;
     const sz = parseFloat(item.MAXSIZE);
     const row = {
@@ -966,11 +969,12 @@ function addIsoDay(iso, days = 1) {
   return d.toISOString().slice(0, 10);
 }
 
-/** @param {string[]} isoDays sorted YYYY-MM-DD */
+/** @param {string[]} isoDays sorted YYYY-MM-DD (Central calendar days) */
 export function swdiApiDateRange(isoDays) {
   const days = [...new Set((isoDays || []).map((d) => String(d).slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
   if (!days.length) return null;
-  return { start: days[0], end: addIsoDay(days[days.length - 1], 1), days };
+  // Exclusive end +2 UTC days so evening Central storms (next UTC morning) are included.
+  return { start: days[0], end: addIsoDay(days[days.length - 1], 2), days };
 }
 
 /** Oklahoma state bbox — storm-day SWDI fallback when pin ring is empty. */
@@ -1501,10 +1505,10 @@ function hailZoneColor(sizeIn) {
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
-/** Radar / MESH swath bands — HailTrace algorithm look (solid nested size bands). */
+/** Radar / MESH swath bands — HailTrace algorithm look (pale fringe → warm cores). */
 function hailRadarBandColor(sizeIn) {
   const sz = parseFloat(sizeIn);
-  if (Number.isNaN(sz)) return { stroke: "#f0e68c", fill: "#fff59d", core: "#fffde7" };
+  if (Number.isNaN(sz)) return { stroke: "#cfd8dc", fill: "#eceff1", core: "#fafafa" };
   if (sz >= 4) return { stroke: "#4a148c", fill: "#6a1b9a", core: "#ce93d8" };
   if (sz >= 3.5) return { stroke: "#6a1b9a", fill: "#7b1fa2", core: "#ce93d8" };
   if (sz >= 3) return { stroke: "#6a1b9a", fill: "#8e24aa", core: "#ce93d8" };
@@ -1515,21 +1519,21 @@ function hailRadarBandColor(sizeIn) {
   if (sz >= 1.75) return { stroke: "#d84315", fill: "#ff5722", core: "#ffab91" };
   if (sz >= 1.5) return { stroke: "#ef6c00", fill: "#ff9800", core: "#ffcc80" };
   if (sz >= 1.25) return { stroke: "#f9a825", fill: "#ffc107", core: "#ffe082" };
-  if (sz >= 1) return { stroke: "#fbc02d", fill: "#ffeb3b", core: "#fff59d" };
-  // 0.75″ fringe — pale yellow like HailTrace outer band
-  return { stroke: "#f0e68c", fill: "#fff9c4", core: "#fffde7" };
+  if (sz >= 1) return { stroke: "#c5b358", fill: "#fff59d", core: "#fffde7" };
+  // 0.75″ fringe — translucent white / pale grey like HailTrace outer band
+  return { stroke: "#b0bec5", fill: "#f5f5f5", core: "#fafafa" };
 }
 
-/** Nested fills — outer fringe more opaque, cores still readable. */
+/** Nested fills — translucent so satellite stays readable. */
 function hailMeshBandOpacity(sizeIn) {
   const sz = Number(sizeIn) || 0;
-  if (sz < 1) return 0.72;
-  if (sz < 1.25) return 0.7;
-  if (sz < 1.5) return 0.68;
-  if (sz < 1.75) return 0.66;
-  if (sz < 2) return 0.64;
-  if (sz < 2.5) return 0.62;
-  return 0.6;
+  if (sz < 1) return 0.36;
+  if (sz < 1.25) return 0.4;
+  if (sz < 1.5) return 0.44;
+  if (sz < 1.75) return 0.48;
+  if (sz < 2) return 0.5;
+  if (sz < 2.5) return 0.52;
+  return 0.55;
 }
 
 /** Spotter-confirmed hail zones — warm red/orange. */
@@ -4898,9 +4902,10 @@ function traceBinaryExteriorRings(grid, w, h, cellKm, xyToLatLon, maxRings = 24)
  * HailTrace-style nested size contours along storm tracks.
  * Radar drives continuous swaths; spotters are dots only (not filled zones).
  */
-export function buildHailSwathRings(rawPts, zone = {}) {
+export function buildHailSwathRings(rawPts, zone = {}, opts = {}) {
+  const includeSpotters = opts.includeSpotters === true;
   const pts = (rawPts || []).filter(
-    (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && !isSpotterHail(p),
+    (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && (includeSpotters || !isSpotterHail(p)),
   );
   if (!pts.length) return [];
   const asCluster = (cluster) => {
@@ -5479,12 +5484,15 @@ function pointInLatLonRing(lat, lon, ring) {
 }
 
 /**
- * HailTrace hatched “isolated” swaths — small, sparse pockets only, not every core.
+ * HailTrace hatch — mid-size / isolated bands (cores stay solid color).
  */
 function isIsolatedHailBand(sub) {
   if (!sub?.ring || sub.ring.length < 4) return false;
   const src = String(sub.source || "");
-  if (!/mesh|radar|swdi/i.test(src)) return false;
+  if (!/mesh|radar|swdi|spot/i.test(src)) return false;
+  const sz = Number(sub.maxSize) || 0;
+  // Match HailTrace screenshots: yellow fringe/mid often hatched; red cores solid.
+  if (sz > 0 && sz < 1.75) return true;
   const c = ringCentroidLatLon(sub.ring);
   if (!c) return false;
   let rSum = 0;
@@ -5518,13 +5526,13 @@ function ensureHailHatchPattern(svgRoot) {
   const base = document.createElementNS("http://www.w3.org/2000/svg", "rect");
   base.setAttribute("width", "10");
   base.setAttribute("height", "10");
-  base.setAttribute("fill", "rgba(255, 255, 255, 0.42)");
+  base.setAttribute("fill", "rgba(255, 245, 157, 0.55)");
   const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
   line.setAttribute("x1", "0");
   line.setAttribute("y1", "0");
   line.setAttribute("x2", "0");
   line.setAttribute("y2", "10");
-  line.setAttribute("stroke", "rgba(160, 160, 160, 0.55)");
+  line.setAttribute("stroke", "rgba(120, 110, 60, 0.45)");
   line.setAttribute("stroke-width", "2");
   pattern.appendChild(base);
   pattern.appendChild(line);
@@ -5643,22 +5651,30 @@ function bindHailZoneTap(layer, h, sub) {
   return layer;
 }
 
-/** HailTrace-style nested radar swaths for the selected storm day(s). */
+/** HailTrace-style nested swaths for selected storm day(s) — radar + spotter kernels. */
 function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFillSvg) {
   if (!day?.size || !hailLayer || !hasSelectedStormDates()) return;
   for (const dayKey of day) {
+    const dayPts = (zoneRows || []).filter(
+      (p) => stormDayMatches(p.date, dayKey) && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+    );
     const radarPts = capRadarPtsForMesh(
-      (zoneRows || []).filter((p) => stormDayMatches(p.date, dayKey) && isSwdiHail(p)),
+      dayPts.filter(isSwdiHail),
       Math.min(SWDI_DRAW_CAP, 220),
     );
-    if (!radarPts.length) continue;
+    const spotPts = dayPts.filter(isSpotterHail).slice(0, 80);
+    // HailTrace metro coverage often exists where SWDI is empty — seed from spotters too.
+    const meshPts = radarPts.length ? [...radarPts, ...spotPts] : spotPts;
+    if (!meshPts.length) continue;
     const anchor = {
       date: dayKey,
-      lat: radarPts.reduce((s, p) => s + p.lat, 0) / radarPts.length,
-      lon: radarPts.reduce((s, p) => s + p.lon, 0) / radarPts.length,
-      size_in: Math.max(...radarPts.map((p) => parseFloat(p.size_in) || 0), 0.75),
+      lat: meshPts.reduce((s, p) => s + p.lat, 0) / meshPts.length,
+      lon: meshPts.reduce((s, p) => s + p.lon, 0) / meshPts.length,
+      size_in: Math.max(...meshPts.map((p) => parseFloat(p.size_in) || 0), 0.75),
     };
-    const bands = stackHailBandPolys(buildHailSwathRings(radarPts, anchor));
+    const bands = stackHailBandPolys(
+      buildHailSwathRings(meshPts, anchor, { includeSpotters: !radarPts.length || spotPts.length > 0 }),
+    );
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(anchor.size_in) || 0.75;
       const col = hailRadarBandColor(sz);
@@ -5668,10 +5684,10 @@ function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFi
       const poly = window.L.polygon(latLngs, {
         color: col.stroke,
         fillColor: isIsolated ? "url(#gc-hail-hatch)" : col.fill,
-        fillOpacity: isIsolated ? 0.85 : hailMeshBandOpacity(sz),
-        weight: isIsolated ? 1.1 : 0.7,
-        opacity: isIsolated ? 0.75 : 0.45,
-        dashArray: isIsolated ? "5 4" : null,
+        fillOpacity: isIsolated ? 0.72 : hailMeshBandOpacity(sz),
+        weight: isIsolated ? 0.9 : 0.6,
+        opacity: isIsolated ? 0.65 : 0.4,
+        dashArray: null,
         stroke: true,
         smoothFactor: 1.8,
         pane: "hailRadarFills",
@@ -5686,7 +5702,7 @@ function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFi
         confirmed: false,
         size: sz,
         kind: "fill",
-        radar: true,
+        radar: radarPts.length > 0,
         outer: true,
       });
     }

@@ -201,9 +201,9 @@ assert(
 );
 
 const oneDay = swdiApiDateRange(["2024-05-25"]);
-assert(oneDay.start === "2024-05-25" && oneDay.end === "2024-05-26", "SWDI API end date is exclusive");
+assert(oneDay.start === "2024-05-25" && oneDay.end === "2024-05-27", "SWDI API covers Central evening spill (+2 exclusive)");
 const multi = swdiApiDateRange(["2024-05-25", "2024-05-26"]);
-assert(multi.end === "2024-05-27", "multi-day SWDI range adds one past last day");
+assert(multi.end === "2024-05-28", "multi-day SWDI range covers last day + evening spill");
 
 const stormBbox = spotterSwdiBbox(
   ["2024-05-25"],

@@ -1,4 +1,4 @@
-/** Parse hail/storm timestamps into YYYY-MM-DD (local storm day). */
+/** Parse hail/storm timestamps into YYYY-MM-DD (calendar day, no timezone shift). */
 export function parseStormDay(raw) {
   const s = String(raw || "").trim();
   if (!s) return "";
@@ -9,6 +9,29 @@ export function parseStormDay(raw) {
   const compact = s.match(/^(\d{4})(\d{2})(\d{2})/);
   if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
   return "";
+}
+
+/**
+ * Storm calendar day in America/Chicago.
+ * Evening OK storms after ~19:00 CDT are next-day UTC — HailTrace / SPC use local day.
+ */
+export function centralStormDay(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (!/T\d{2}:|Z$|[+-]\d{2}:?\d{2}$|\d{2}:\d{2}/.test(s)) return parseStormDay(s);
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return parseStormDay(s);
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return parseStormDay(s);
+  }
 }
 
 export const HAIL_EXTREME_IN = 2;

@@ -1,5 +1,6 @@
 import {
   parseStormDay,
+  centralStormDay,
   calendarWeeks,
   renderStormCalendar,
   defaultCalendarMonth,
@@ -26,6 +27,11 @@ assert(parseStormDay("2024-05-15T18:30:00Z") === "2024-05-15", "iso datetime");
 assert(parseStormDay("202405151230") === "2024-05-15", "compact SWDI ZTIME");
 assert(parseStormDay("2024/05/15 12:30") === "2024-05-15", "slash date");
 assert(parseStormDay("") === "", "empty");
+
+// Evening CDT storm stamped next UTC day still belongs on the Central calendar day.
+assert(centralStormDay("2026-03-11T00:00:19Z") === "2026-03-10", "00Z CDT evening → prior Central day");
+assert(centralStormDay("2026-03-10T23:00:00Z") === "2026-03-10", "late UTC afternoon still Central Mar 10");
+assert(centralStormDay("2026-03-10") === "2026-03-10", "bare date unchanged");
 
 const weeks = calendarWeeks(2024, 4);
 assert(weeks.length >= 4 && weeks[0].length === 7, "may 2024 grid");
