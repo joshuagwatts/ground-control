@@ -1535,34 +1535,32 @@ async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
 function hailZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
   if (Number.isNaN(sz)) return { stroke: "#7dff5a", fill: "#7dff5a", core: "#b8ff9a" };
-  if (sz >= 4) return { stroke: "#ffffff", fill: "#fce4ec", core: "#ffffff" };
-  if (sz >= 3) return { stroke: "#f8bbd0", fill: "#f48fb1", core: "#ffffff" };
-  if (sz >= 2.5) return { stroke: "#f8bbd0", fill: "#ce93d8", core: "#ffffff" };
-  if (sz >= 2) return { stroke: "#e040fb", fill: "#ab47bc", core: "#f8bbd0" };
-  if (sz >= 1.5) return { stroke: "#ff1744", fill: "#e53935", core: "#ff8a80" };
-  if (sz >= 1) return { stroke: "#ff6d00", fill: "#ef6c00", core: "#ffab40" };
-  if (sz >= 0.75) return { stroke: "#ffb300", fill: "#f9a825", core: "#ffe082" };
-  // 0.5″ fringe — large soft white envelope under the yellow cores.
+  if (sz >= 3) return { stroke: "#6a1b9a", fill: "#8e24aa", core: "#ce93d8" };
+  if (sz >= 2.5) return { stroke: "#ad1457", fill: "#c2185b", core: "#f48fb1" };
+  if (sz >= 2) return { stroke: "#c62828", fill: "#e53935", core: "#ef9a9a" };
+  if (sz >= 1.5) return { stroke: "#ef6c00", fill: "#ff9800", core: "#ffcc80" };
+  if (sz >= 1) return { stroke: "#f9a825", fill: "#ffc107", core: "#ffe082" };
+  if (sz >= 0.75) return { stroke: "#c5b358", fill: "#fff59d", core: "#fffde7" };
   if (sz >= 0.5) return { stroke: "#eceff1", fill: "#fafafa", core: "#ffffff" };
   return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
-/** Radar / MESH swath bands — HailTrace algorithm look (pale fringe → warm cores). */
+/**
+ * Radar swath ramp — purple only on truly large hail.
+ * 0.75 pale → 1″ yellow → 1.5″ orange → 2″ red → 2.5″+ purple.
+ */
 function hailRadarBandColor(sizeIn) {
   const sz = parseFloat(sizeIn);
   if (Number.isNaN(sz)) return { stroke: "#cfd8dc", fill: "#eceff1", core: "#fafafa" };
-  if (sz >= 4) return { stroke: "#4a148c", fill: "#6a1b9a", core: "#ce93d8" };
-  if (sz >= 3.5) return { stroke: "#6a1b9a", fill: "#7b1fa2", core: "#ce93d8" };
-  if (sz >= 3) return { stroke: "#6a1b9a", fill: "#8e24aa", core: "#ce93d8" };
-  if (sz >= 2.75) return { stroke: "#880e4f", fill: "#ad1457", core: "#f48fb1" };
-  if (sz >= 2.5) return { stroke: "#ad1457", fill: "#d81b60", core: "#f48fb1" };
-  if (sz >= 2.25) return { stroke: "#b71c1c", fill: "#e53935", core: "#ef9a9a" };
-  if (sz >= 2) return { stroke: "#c62828", fill: "#e53935", core: "#ef9a9a" };
-  if (sz >= 1.75) return { stroke: "#d84315", fill: "#ff5722", core: "#ffab91" };
-  if (sz >= 1.5) return { stroke: "#ef6c00", fill: "#ff9800", core: "#ffcc80" };
+  if (sz >= 3) return { stroke: "#4a148c", fill: "#6a1b9a", core: "#ce93d8" };
+  if (sz >= 2.5) return { stroke: "#6a1b9a", fill: "#8e24aa", core: "#ce93d8" };
+  if (sz >= 2.25) return { stroke: "#b71c1c", fill: "#d32f2f", core: "#ef9a9a" };
+  if (sz >= 2) return { stroke: "#d84315", fill: "#ff5722", core: "#ffab91" };
+  if (sz >= 1.75) return { stroke: "#ef6c00", fill: "#ff9800", core: "#ffcc80" };
+  if (sz >= 1.5) return { stroke: "#f57c00", fill: "#ffa726", core: "#ffe0b2" };
   if (sz >= 1.25) return { stroke: "#f9a825", fill: "#ffc107", core: "#ffe082" };
   if (sz >= 1) return { stroke: "#c5b358", fill: "#fff59d", core: "#fffde7" };
-  // 0.75″ fringe — translucent white / pale grey like HailTrace outer band
+  // 0.75″ fringe — translucent white / pale grey
   return { stroke: "#b0bec5", fill: "#f5f5f5", core: "#fafafa" };
 }
 
@@ -4665,8 +4663,8 @@ function hailFootprintM(sizeIn, source) {
  * HailTrace / algorithm-map style nested size contours.
  * Starts at 0.75″, steps ~0.25″ — continuous swath corridors, not disks.
  */
-/** HailTrace algorithm maps: 0.75″ start, ~0.25″ steps. */
-const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.5, 4.0];
+/** HailTrace algorithm maps: 0.75″ start, then meaningful steps (purple reserved for 2.5″+). */
+const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 /** Morph-close bridges scan gaps into continuous corridors (tight on cores). */
 const HAIL_CLOSE_KM = (thr) => (thr <= 0.75 ? 3.4 : thr <= 1 ? 2.6 : thr <= 1.5 ? 1.8 : thr <= 2 ? 1.15 : 0.7);
 /** Separate storm cores beyond this stay separate overlapping swaths. */
@@ -4969,7 +4967,10 @@ export function buildHailSwathRings(rawPts, zone = {}, opts = {}) {
   const asCluster = (cluster) => {
     if (cluster.length === 1 && !(cluster[0].swdi_ring?.length >= 3)) {
       const p = cluster[0];
-      const sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.75);
+      let sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.75);
+      if (!isSpotterHail(p)) {
+        sz = calibrateRadarSizeIn(sz, p.lat, p.lon, zone.date || p.date, []);
+      }
       return softCircleBands(p.lat, p.lon, sz, p);
     }
     return buildHailSwathRingsCluster(cluster, zone);
@@ -5089,6 +5090,31 @@ function stormAxisFromPts(pts, toXY) {
   return { ax: Math.cos(ang), ay: Math.sin(ang) };
 }
 
+/**
+ * Ground-truth calibration — SWDI/nx3hail routinely runs hot vs spotter reports.
+ * Nearby SPC/LSR pulls size down; no report → mild dampen so purple isn't fake.
+ */
+export function calibrateRadarSizeIn(rawSize, lat, lon, day, spotters = []) {
+  const raw = Math.max(parseFloat(rawSize) || 0.75, 0.75);
+  let spotMax = 0;
+  for (const s of spotters || []) {
+    if (!Number.isFinite(s?.lat) || !Number.isFinite(s?.lon)) continue;
+    if (day && !stormDayMatches(s.date, day)) continue;
+    if (haversineKm(lat, lon, s.lat, s.lon) > 14) continue;
+    spotMax = Math.max(spotMax, parseFloat(s.size_in) || 0);
+  }
+  if (spotMax >= 0.5) {
+    if (raw <= spotMax + 0.15) return Math.max(raw, spotMax);
+    // Radar hotter than reports — blend toward ground truth (don't invent purple).
+    const blended = spotMax * 0.6 + raw * 0.25 + (spotMax + 0.2) * 0.15;
+    return Math.round(Math.min(raw, Math.max(spotMax, blended)) * 100) / 100;
+  }
+  if (raw >= 2.5) return Math.round(raw * 0.7 * 100) / 100;
+  if (raw >= 2) return Math.round(raw * 0.78 * 100) / 100;
+  if (raw >= 1.5) return Math.round(raw * 0.88 * 100) / 100;
+  return raw;
+}
+
 function buildHailSwathRingsCluster(pts, zone = {}) {
   const oLat = Math.round((pts.reduce((a, p) => a + p.lat, 0) / pts.length) * 4) / 4;
   const oLon = Math.round((pts.reduce((a, p) => a + p.lon, 0) / pts.length) * 4) / 4;
@@ -5102,6 +5128,8 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     oLon + xKm / (111.32 * Math.max(0.2, cos)),
   ];
   const { ax, ay } = stormAxisFromPts(pts, toXY);
+  const day = parseStormDay(zone.date) || parseStormDay(pts[0]?.date);
+  const spotters = pts.filter(isSpotterHail);
 
   let minX = Infinity;
   let minY = Infinity;
@@ -5118,7 +5146,10 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
   };
 
   for (const p of pts) {
-    const sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.75);
+    const rawSz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.75);
+    const sz = isSpotterHail(p)
+      ? rawSz
+      : calibrateRadarSizeIn(rawSz, p.lat, p.lon, day, spotters);
     const rKm = (hailFootprintM(sz, p.source) / 1000) * 1.15;
     if (p.swdi_ring?.length >= 3) {
       const ring = p.swdi_ring;
@@ -5549,8 +5580,8 @@ function isIsolatedHailBand(sub) {
   const src = String(sub.source || "");
   if (!/mesh|radar|swdi|spot/i.test(src)) return false;
   const sz = Number(sub.maxSize) || 0;
-  // Match HailTrace screenshots: yellow fringe/mid often hatched; red cores solid.
-  if (sz > 0 && sz < 1.75) return true;
+  // Match HailTrace screenshots: pale/yellow fringe hatched; orange+ cores solid.
+  if (sz > 0 && sz < 1.5) return true;
   const c = ringCentroidLatLon(sub.ring);
   if (!c) return false;
   let rSum = 0;
