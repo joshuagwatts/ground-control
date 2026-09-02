@@ -1154,6 +1154,16 @@ async function ensureSwdiForSelectedStormDays() {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, { bbox: mapBbox });
     swdi = result.rows;
   }
+  if (!wxPinSelected() && isOklahomaLatLon(anchor.lat, anchor.lon)) {
+    const viewN = (swdi || []).filter((h) => hailRowInMapView(h)).length;
+    if (viewN < SWDI_DAY_MIN_SIGS) {
+      const okResult = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need, {
+        bbox: OK_SWDI_BBOX,
+      });
+      swdi = mergeHailRows(swdi, okResult.rows || []);
+      if ((okResult.raw || 0) > (result.raw || 0)) result = okResult;
+    }
+  }
   if (!swdi.length && wxPinSelected()) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need);
     swdi = result.rows;
@@ -1174,6 +1184,9 @@ async function ensureSwdiForSelectedStormDays() {
         hailRowInMapView(h) &&
         (isSpotterHail(h) || isSwdiHail(h)),
     ).length;
+    const radarState = mergeHailRows(swdi, lastHailRows).filter(
+      (h) => need.some((d) => stormDayMatches(h.date, d)) && isSwdiHail(h),
+    ).length;
     if (reportN > 0) {
       lastZoneHailRows = stormDrawZoneRows(zoneRowsFromHail(lastHailRows));
       cancelScheduledStormRedraw();
@@ -1186,8 +1199,10 @@ async function ensureSwdiForSelectedStormDays() {
         zoneRows: stormDrawZoneRows(pools.zoneRows),
       });
       const dayLabel = need.length === 1 ? prettyStormDate(need[0]) : `${need.length} days`;
+      const radarHint =
+        radarState > 0 ? ` · ${radarState} radar sig${radarState === 1 ? "" : "s"} statewide (zoom out)` : "";
       emitMapStatus(
-        `Overlay ${dayLabel} · ${reportN} spotter report${reportN === 1 ? "" : "s"} (no radar swath in view)`,
+        `Overlay ${dayLabel} · ${reportN} spotter report${reportN === 1 ? "" : "s"} in view (no radar swath here)${radarHint}`,
       );
       return;
     }
@@ -1206,7 +1221,7 @@ async function ensureSwdiForSelectedStormDays() {
     }
     return;
   }
-  swdi = capSwdiRowsForDraw(clipHailToMapView(filterRowsToSelectedStormDays(swdi)), SWDI_DRAW_CAP);
+  swdi = capSwdiRowsForDraw(filterRowsToSelectedStormDays(swdi), SWDI_DRAW_CAP);
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
   lastHailRows = merged;
@@ -1225,7 +1240,10 @@ async function ensureSwdiForSelectedStormDays() {
     zoneRows: stormDrawZoneRows(pools.zoneRows),
   });
   const dayLabel = need.length === 1 ? prettyStormDate(need[0]) : `${need.length} days`;
-  emitMapStatus(`Overlay ${dayLabel} · ${swdi.length} radar sig${swdi.length === 1 ? "" : "s"} in view`);
+  const inViewN = swdi.filter((h) => hailRowInMapView(h)).length;
+  emitMapStatus(
+    `Overlay ${dayLabel} · ${inViewN || swdi.length} radar sig${(inViewN || swdi.length) === 1 ? "" : "s"} in view`,
+  );
 }
 
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgress } = {}) {
@@ -4428,14 +4446,20 @@ async function refreshHailMapFill() {
     ]);
     let swdi = [];
     if (bbox && selectedDays.length) {
-      const result = await fetchSwdiHailForDays(q.lat, q.lon, km, selectedDays, { bbox });
+      let result = await fetchSwdiHailForDays(q.lat, q.lon, km, selectedDays, { bbox });
       swdi = result.rows || [];
+      if (isOklahomaLatLon(q.lat, q.lon)) {
+        const viewN = swdi.filter((h) => hailRowInMapView(h)).length;
+        if (viewN < SWDI_DAY_MIN_SIGS) {
+          const okResult = await fetchSwdiHailForDays(q.lat, q.lon, MAP_HAIL_MAX_KM, selectedDays, {
+            bbox: OK_SWDI_BBOX,
+          });
+          swdi = mergeHailRows(swdi, okResult.rows || []);
+        }
+      }
     }
     if (gen !== hailMapFillGen || !hasSelectedStormDates()) return;
-    swdi = capSwdiRowsForDraw(
-      clipHailToMapView(filterRowsToSelectedStormDays(swdi)),
-      SWDI_DRAW_CAP,
-    );
+    swdi = capSwdiRowsForDraw(filterRowsToSelectedStormDays(swdi), SWDI_DRAW_CAP);
     const merged = mergeHailRows(spc.hail || [], swdi, lsr || []);
     const byKey = new Map();
     for (const h of [...(lastHailRows || []), ...merged]) {
@@ -4461,7 +4485,7 @@ function scheduleHailMapFill(ms = 280) {
     const pools = resolvedStormDrawPools();
     drawHailMarkers(pools.dotRows, lastWindRows, {
       requireDate: true,
-      zoneRows: pools.zoneRows,
+      zoneRows: stormDrawZoneRows(pools.zoneRows),
     });
     repaintOpenHsCalendar();
     if (!wxPinSelected()) void refreshHailMapFill();
@@ -11132,7 +11156,7 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = nul
     lastHailDrawSig = "";
     drawHailMarkers(pools.dotRows, lastWindRows, {
       requireDate: true,
-      zoneRows: pools.zoneRows,
+      zoneRows: stormDrawZoneRows(pools.zoneRows),
     });
   }, 280);
 }
