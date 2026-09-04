@@ -143,36 +143,23 @@ export function listingBrowserHeaders({ zillow = false, ua, cap } = {}) {
   };
 }
 
-/** How hard Flags may hit the network — Android stays parallel; Safari web stays gentle. */
+/** How hard Flags may hit the network — Apple stays slightly gentler on listing scrapes only. */
 export function flagNetProfile({ ua, cap } = {}) {
   const android = isAndroid(ua ?? uaBlob(), cap ?? capacitorPlatform());
   const apple = isAppleDevice(ua ?? uaBlob(), cap ?? capacitorPlatform());
-  const slowWeb = isSlowBrowserNet(ua ?? uaBlob(), cap ?? capacitorPlatform());
   return {
-    cityChunk: android && !slowWeb ? 4 : slowWeb ? 2 : 3,
-    statewideBatch: android && !slowWeb ? 10 : slowWeb ? 5 : 8,
-    zillowDetails: android ? 22 : slowWeb ? 14 : 36,
+    cityChunk: android ? 4 : apple ? 3 : 3,
+    statewideBatch: android ? 10 : apple ? 7 : 8,
+    zillowDetails: android ? 22 : apple ? 18 : 36,
     paintMax: android ? 260 : 450,
   };
 }
 
 /**
- * Safari / iOS *browser* web only. Native Capacitor iOS/Android match the fast path.
- * Apple CORS/proxy throttles were making Android feel frozen when this was too broad.
+ * Reserved for true last-resort throttles. iPhone Safari on Pages must match Android
+ * Chrome for HailScope — teammates should not need a native rebuild for smooth UI.
  */
-export function isSlowBrowserNet(ua = uaBlob(), cap = capacitorPlatform()) {
-  if (cap === "android" || cap === "ios") return false;
-  try {
-    const plug = typeof window !== "undefined" ? window.Capacitor : null;
-    // Native HTTP bridge — same speed class as Android Capacitor.
-    if (plug?.Plugins?.CapacitorHttp || plug?.isNativePlatform?.()) return false;
-  } catch {
-    /* web */
-  }
-  if (isAndroid(ua, cap)) return false;
-  if (isAppleDevice(ua, cap)) return true;
-  const blob = String(ua || "");
-  if (/Safari/i.test(blob) && !/Chrome|Chromium|Edg|OPR|Firefox|Android/i.test(blob)) return true;
+export function isSlowBrowserNet(_ua = uaBlob(), _cap = capacitorPlatform()) {
   return false;
 }
 

@@ -4328,14 +4328,13 @@ export async function viewportDossier(settings, filters = wxFilters, { onPartial
   if (!q) return null;
   const slow = isSlowBrowserNet();
   const kmFull = Math.max(filterKm(filters), mapViewFetchKm());
-  // iPhone Safari/Pages: start with a tighter ring so dates appear before statewide SWDI.
-  const km = slow ? Math.min(kmFull, 110) : kmFull;
+  const km = kmFull;
   const days = Number(filters.days) || 730;
   const lsrDays = lsrFirstDays(days);
   const spcDays = spcLookbackDays(14);
-  const recentDays = Math.min(days, slow ? 90 : 120);
-  const deepDays = slow ? Math.min(days, 365) : days;
-  const deepKm = slow ? Math.min(kmFull, 200) : kmFull;
+  const recentDays = Math.min(days, 120);
+  const deepDays = days;
+  const deepKm = kmFull;
 
   const distRows = (rows) =>
     (rows || []).map((h) => ({

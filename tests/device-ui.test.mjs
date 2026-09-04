@@ -45,7 +45,7 @@ assert(isAppleDevice(iphoneUa, "web"), "iphone apple");
 assert(!isAppleDevice(androidUa, "web"), "android not apple");
 assert(!isSlowBrowserNet(androidUa, "web"), "android chrome stays fast");
 assert(!isSlowBrowserNet(chromeDesktop, "web"), "desktop chrome stays fast");
-assert(isSlowBrowserNet(iphoneUa, "web"), "safari web is the slow path");
+assert(!isSlowBrowserNet(iphoneUa, "web"), "iphone Safari matches Android hail UX (Pages teammates)");
 assert(!isSlowBrowserNet(iphoneUa, "ios"), "native ios is not slow");
 
 const aHead = listingBrowserHeaders({ ua: androidUa, cap: "web" });
@@ -58,7 +58,7 @@ assert(/iPhone/i.test(iHead["User-Agent"]), "apple listing ua is Safari");
 const aProf = flagNetProfile({ ua: androidUa, cap: "web" });
 assert(aProf.zillowDetails === 22 && aProf.cityChunk === 4 && aProf.paintMax === 260, "android flag profile");
 const iProf = flagNetProfile({ ua: iphoneUa, cap: "web" });
-assert(iProf.zillowDetails === 14 && iProf.cityChunk === 2 && iProf.paintMax === 450, "safari flag profile");
+assert(iProf.zillowDetails === 18 && iProf.cityChunk === 3 && iProf.paintMax === 450, "safari flag profile");
 const dProf = flagNetProfile({ ua: chromeDesktop, cap: "web" });
 assert(dProf.zillowDetails === 36 && dProf.cityChunk === 3 && dProf.paintMax === 450, "desktop flag profile");
 
