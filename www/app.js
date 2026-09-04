@@ -49,6 +49,7 @@ import {
   revealHailAddressPeek,
   revealHailStormSheet,
   advanceHailBottomReveal,
+  hailTierGestureRecently,
   syncHailBottomChrome,
   setWxMapExpanded,
   setMyLocationVisible,
@@ -69,7 +70,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.250";
+} from "./wx.js?v=0.2.251";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -2623,6 +2624,8 @@ function boot() {
     if (!b) return;
     const next = b.dataset.tab;
     if ((next === "hailscope" || next === "wx") && (tab === "hailscope" || tab === "wx") && mapIsLive()) {
+      // Tab swipe already advanced — iOS fires a click that would skip another tier.
+      if (hailTierGestureRecently()) return;
       advanceHailBottomReveal();
       return;
     }

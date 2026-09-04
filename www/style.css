@@ -1043,7 +1043,8 @@ body.gc-ios.hs-tab #view {
 body.gc-ios .hs-map-shell .leaflet-container,
 body.gc-ios .hs-map-shell #wx-map,
 body.gc-ios .hs-map-shell #hs-map {
-  touch-action: pan-x pan-y pinch-zoom;
+  /* Leaflet owns gestures — pan-x/pan-y lets Safari scroll #view (double-slide). */
+  touch-action: none;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -1850,10 +1851,17 @@ body.wx-map-expanded .hs-sheet {
   cursor: grab;
   touch-action: none; /* vertical pull = fullscreen; upward = feed (JS) */
 }
+.hs-bottom-panel.hs-addr-open #hs-addr-q,
+.hs-bottom-panel.hs-sheet-open #hs-addr-q {
+  touch-action: manipulation; /* keep typing usable under touch-action:none parent */
+}
 .hs-bottom-panel.hs-sheet-open #hs-search,
 .hs-bottom-panel.hs-sheet-open .hs-goto,
 .hs-bottom-panel.hs-sheet-open .hs-pin {
   touch-action: none;
+}
+.hs-bottom-panel.hs-sheet-open #hs-search #hs-addr-q {
+  touch-action: manipulation;
 }
 .hs-bottom-panel.hs-pull-expand,
 .hs-map-shell.hs-pull-expand {
@@ -2647,6 +2655,15 @@ body.wx-map-expanded .hs-field {
   text-align: center;
   cursor: pointer;
   letter-spacing: 0.02em;
+  touch-action: manipulation;
+}
+.hs-cal-click-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 1450;
+  background: transparent;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
 }
 .hs-actions:not(:has(.hs-hail-search)) .hs-cal-trig {
   flex: 1 1 auto;
@@ -2702,16 +2719,18 @@ body.wx-map-expanded .hs-field {
 .hs-cal-done {
   flex: 0 0 auto;
   margin: 0;
-  padding: 0.28rem 0.55rem;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.75rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 204, 0, 0.35);
   background: rgba(255, 204, 0, 0.1);
   color: var(--phos);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.02em;
   cursor: pointer;
+  touch-action: manipulation;
 }
 .hs-cal-done:active {
   background: rgba(255, 204, 0, 0.22);
@@ -2719,23 +2738,26 @@ body.wx-map-expanded .hs-field {
 .hs-cal-head { display: flex; align-items: center; justify-content: space-between; gap: 0.35rem; margin-bottom: 0.25rem; }
 .hs-cal-title { font-size: 13px; color: var(--phos); font-weight: 600; }
 .hs-cal-nav {
-  width: 1.65rem; height: 1.65rem; padding: 0; border-radius: 999px;
-  border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 16px; line-height: 1;
+  width: 2.35rem; height: 2.35rem; padding: 0; border-radius: 999px;
+  border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 18px; line-height: 1;
+  touch-action: manipulation;
 }
 .hs-cal-legend { font-size: 10px; margin: 0.35rem 0 0; text-align: center; line-height: 1.3; }
-.hs-cal-dows { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; margin-bottom: 1px; }
+.hs-cal-dows { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 2px; }
 .hs-cal-dow { font-size: 9px; text-align: center; color: var(--muted); letter-spacing: 0.04em; }
-.hs-cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+.hs-cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
 .hs-cal-day {
   aspect-ratio: 1;
-  min-height: 1.55rem;
-  font-size: 11px;
+  min-height: 2.15rem;
+  font-size: 12px;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   cursor: default;
   padding: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .hs-cal-day.in-month { color: var(--text, #e8e8ea); }
 .hs-cal-day.out-month { opacity: 0.28; }
@@ -2745,7 +2767,12 @@ body.wx-map-expanded .hs-field {
 .hs-cal-day.hs-cal-on { box-shadow: inset 0 0 0 1.5px var(--phos); }
 .hs-cal-day.hs-cal-hail.hs-cal-on { background: rgba(250, 204, 21, 0.52); }
 .hs-cal-day.hs-cal-storm.hs-cal-on { background: rgba(250, 204, 21, 0.22); }
-.hs-cal-day:disabled { pointer-events: none; opacity: 0.18; }
+/* Keep hit target so taps don't fall through to the dim backdrop / storm list. */
+.hs-cal-day:disabled {
+  pointer-events: auto;
+  opacity: 0.18;
+  cursor: default;
+}
 .hs-date {
   display: grid;
   grid-template-columns: auto 1fr auto;

@@ -9579,6 +9579,21 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     activeOverlays = new Set([activeWxProduct]);
   }
   applyOverlays();
+  // iOS Safari: map pan must not scroll #view underneath (double-slide).
+  if (document.body.classList.contains("gc-ios")) {
+    map.on("dragstart zoomstart", () => {
+      const v = document.getElementById("view");
+      if (!v || document.body.classList.contains("wx-map-expanded")) return;
+      v.dataset.iosMapGesture = "1";
+      v.style.overflowY = "hidden";
+    });
+    map.on("dragend zoomend", () => {
+      const v = document.getElementById("view");
+      if (!v || !v.dataset.iosMapGesture) return;
+      delete v.dataset.iosMapGesture;
+      if (!document.body.classList.contains("wx-map-expanded")) v.style.overflowY = "";
+    });
+  }
   map.on("click", (e) => {
     if (wxSuppressMapTap) return;
     // Storm overlay mode: taps hit zones for info — don't drop/move the blue pin.
@@ -9730,12 +9745,20 @@ let hailBottomTier = "hidden";
 let addressSwipeOpeningSheet = false;
 /** One advancement per finger-down so a continuous drag can't skip address → sheet. */
 let hailTierGestureLocked = false;
+/** Last tab/chrome tier advance — suppress follow-up click on iOS. */
+let lastHailTierGestureAt = 0;
 
 function lockHailTierGesture() {
   hailTierGestureLocked = true;
+  lastHailTierGestureAt = Date.now();
 }
 function unlockHailTierGesture() {
   hailTierGestureLocked = false;
+}
+
+/** True briefly after a tab swipe tier change (blocks ghost click → skip a step). */
+export function hailTierGestureRecently(ms = 450) {
+  return Date.now() - lastHailTierGestureAt < ms;
 }
 
 /**
@@ -9834,6 +9857,8 @@ function bindAddressSwipeToStormSheet(el) {
     revealHailStormSheet({ interactive: true, scroll: false });
   };
 
+  let pendingOpenFeed = false;
+
   const syncScroll = (clientY) => {
     const view = viewEl();
     if (!view) return;
@@ -9844,12 +9869,10 @@ function bindAddressSwipeToStormSheet(el) {
     if (isExpanded()) return;
     if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return;
     if (e.touches && e.touches.length !== 1) return;
-    // Allow search field — vertical pull still enters fullscreen; taps keep typing.
-    if (e.target.closest("button, a, select, textarea, .hs-date, .hs-dates, .hs-filters")) return;
+    // Never steal typing / calendar / date taps.
+    if (e.target.closest("button, a, select, textarea, input, .hs-date, .hs-dates, .hs-filters, .hs-cal-sheet")) return;
     if (!onChrome(e.target) && !e.target.closest?.("#hs-bottom-panel")) return;
-    // Feed-scroll only from address chrome when peeking; pull-down from chrome always.
     if (!onChrome(e.target) && hailBottomTier === "sheet") {
-      // Still allow pull from pin/search when sheet is open
       if (!e.target.closest?.("#hs-search, .hs-pin, .hs-goto, #hs-addr-q")) return;
     }
     stopCoast();
@@ -9860,6 +9883,7 @@ function bindAddressSwipeToStormSheet(el) {
     active = true;
     dragging = false;
     pulling = false;
+    pendingOpenFeed = false;
     pullDy = 0;
     startX = p.clientX;
     startY = p.clientY;
@@ -9893,10 +9917,10 @@ function bindAddressSwipeToStormSheet(el) {
           /* ignore */
         }
       } else if (up > 8 && hailBottomTier === "address") {
+        // Defer sheet open until touchend — mid-gesture reveal fights iOS scroll.
         dragging = true;
-        openFeed();
+        pendingOpenFeed = true;
       } else if (up > 8 && hailBottomTier === "sheet") {
-        // Already open — just feed-scroll
         dragging = true;
       } else {
         return;
@@ -9932,21 +9956,29 @@ function bindAddressSwipeToStormSheet(el) {
       pulling = false;
       const commit = pullDy > 48;
       if (commit) {
-        clearPullVisual({ animate: false });
         if (hailBottomTier === "hidden") {
           hailBottomTier = "address";
           syncHailBottomChrome();
         }
-        setWxMapExpanded(true);
+        setWxMapExpanded(true, { fromPull: true });
+        clearPullVisual({ animate: false });
       } else {
         clearPullVisual({ animate: true });
       }
       pullDy = 0;
       dragging = false;
+      pendingOpenFeed = false;
       return;
     }
-    if (!dragging) return;
+    if (!dragging) {
+      pendingOpenFeed = false;
+      return;
+    }
     dragging = false;
+    if (pendingOpenFeed) {
+      pendingOpenFeed = false;
+      openFeed();
+    }
     if (vel > 0.15) coastScroll();
   };
 
@@ -10173,22 +10205,26 @@ export function advanceHailBottomReveal() {
   return hailBottomTier;
 }
 
-export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
+export function setWxMapExpanded(on, { scrollToSheet = false, fromPull = false } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const view = document.getElementById("view");
   const panel = document.getElementById("hs-bottom-panel");
   if (!shell) return;
   if (on === shell.classList.contains("expanded")) return;
-  // Drop any in-progress pull-to-expand visuals before the real transition.
+  // fromPull: keep current stretched height; snap to expanded without a second slide.
+  if (fromPull) {
+    shell.style.transition = "none";
+    if (panel) panel.style.transition = "none";
+  }
   shell.classList.remove("hs-pull-expand");
   panel?.classList.remove("hs-pull-expand");
   shell.style.height = "";
   shell.style.minHeight = "";
-  shell.style.transition = "";
+  if (!fromPull) shell.style.transition = "";
   if (panel) {
     panel.style.transform = "";
     panel.style.opacity = "";
-    panel.style.transition = "";
+    if (!fromPull) panel.style.transition = "";
   }
   shell.classList.toggle("expanded", on);
   document.body.classList.toggle("wx-map-expanded", on);
@@ -10197,6 +10233,12 @@ export function setWxMapExpanded(on, { scrollToSheet = false } = {}) {
   setWxMapExpanded._animTimer = setTimeout(() => {
     document.body.classList.remove("wx-map-animating");
   }, MAP_SHELL_MS);
+  if (fromPull) {
+    requestAnimationFrame(() => {
+      shell.style.transition = "";
+      if (panel) panel.style.transition = "";
+    });
+  }
   if (on) hailBottomTier = "hidden";
   syncHailBottomChrome();
   if (view) view.style.overflowY = on ? "hidden" : "";
@@ -10248,7 +10290,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     if (!isExpanded() || !mapBar?.contains(e.target)) return false;
     return true;
   };
-  const tryExpandFromAddressBar = () => {
+  const tryExpandFromAddressBar = ({ fromPull = false } = {}) => {
     if (isExpanded()) return false;
     // Recover if tier got stuck hidden while the shell is collapsed.
     if (hailBottomTier === "hidden") {
@@ -10256,7 +10298,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       syncHailBottomChrome();
     }
     if (hailBottomTier !== "address" && hailBottomTier !== "sheet") return false;
-    setWxMapExpanded(true);
+    setWxMapExpanded(true, { fromPull });
     return true;
   };
   const tryCollapse = () => {
@@ -10281,8 +10323,9 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     } else {
       advanceHailBottomReveal();
     }
+    // Hold lock until after touchend + ghost click window (iOS).
     clearTimeout(tryBottomSwipeUp._unlock);
-    tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 220);
+    tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 480);
     return true;
   };
   view.addEventListener(
@@ -10301,7 +10344,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         return;
       }
       // Address peek: wheel up opens dates + scrolls like a feed
-      if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0 && onPeekBand(e.target)) {
+      if (!isExpanded() && hailBottomTier === "address" && e.deltaY < 0 && onAddressBar(e.target)) {
         e.preventDefault();
         revealHailStormSheet({ interactive: true, scroll: false });
         view.scrollTop += Math.min(140, Math.max(28, -e.deltaY));
@@ -10402,8 +10445,8 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
           clearBarPull({ animate: true });
         }
       } else if (touchPullDy > 48) {
+        tryExpandFromAddressBar({ fromPull: true });
         clearBarPull({ animate: false });
-        tryExpandFromAddressBar();
       } else {
         clearBarPull({ animate: true });
       }
@@ -10432,6 +10475,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   if (tabNav) {
     let tabTouchY = 0;
     let tabAccum = 0;
+    let tabDidAdvance = false;
     tabNav.addEventListener(
       "touchstart",
       (e) => {
@@ -10439,6 +10483,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         unlockHailTierGesture();
         tabTouchY = e.touches[0].clientY;
         tabAccum = 0;
+        tabDidAdvance = false;
       },
       { passive: true },
     );
@@ -10454,12 +10499,22 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
         tabAccum += dy;
         if (tabAccum < -8) {
           e.preventDefault();
-          tryBottomSwipeUp();
+          if (tryBottomSwipeUp()) tabDidAdvance = true;
           tabAccum = 0;
         }
       },
       { passive: false },
     );
+    const endTabTouch = () => {
+      // Keep lock through the synthetic click that follows a swipe.
+      if (tabDidAdvance) {
+        clearTimeout(tryBottomSwipeUp._unlock);
+        tryBottomSwipeUp._unlock = setTimeout(unlockHailTierGesture, 420);
+      }
+      tabDidAdvance = false;
+    };
+    tabNav.addEventListener("touchend", endTabTouch, { passive: true });
+    tabNav.addEventListener("touchcancel", endTabTouch, { passive: true });
   }
 }
 
@@ -11199,6 +11254,12 @@ function openHsCalendarSheet(trig) {
 function closeHsCalendarSheet() {
   if (!hsCalendarSheet) return;
   hsCalendarOpen = false;
+  // iOS: absorb the synthetic click that would land on the storm list under the finger.
+  const shield = document.createElement("div");
+  shield.className = "hs-cal-click-shield";
+  shield.setAttribute("aria-hidden", "true");
+  document.body.appendChild(shield);
+  setTimeout(() => shield.remove(), 380);
   hsCalendarSheet.classList.remove("open");
   hsCalendarTrig?.classList.remove("open");
   hsCalendarTrig?.setAttribute("aria-expanded", "false");
@@ -11241,6 +11302,9 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
     e.preventDefault();
     e.stopPropagation();
     closeHsCalendarSheet();
+    if (hasSelectedStormDates()) {
+      revealHailStormSheet({ interactive: true, scroll: false });
+    }
   });
   bindStormCalendar(pop, {
     onDay: (iso) => {
@@ -11249,12 +11313,14 @@ function paintHailCalendarPanel(root, data, esc, { onRefetch } = {}) {
       const turningOn = !isStormDateSelected(iso);
       const picked = pickStormDateFromSheet(iso, pop._hsRoot, live, esc, {
         toggle: true,
-        closeCalendar: true,
+        // Keep calendar open until Done — closing on tap ghost-clicks the list on iOS Safari.
+        closeCalendar: false,
         scrollToList: true,
         scrollRow: false,
-        revealList: true,
+        revealList: false,
       });
       if (!picked) return;
+      repaintOpenHsCalendar();
       const n = selectedStormDates.size;
       if (!stormDays.has(iso) && turningOn) {
         emitMapStatus(`No hail loaded for ${prettyStormDate(iso)} — Search storms or widen window`);
