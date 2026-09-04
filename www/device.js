@@ -157,14 +157,15 @@ export function flagNetProfile({ ua, cap } = {}) {
 }
 
 /**
- * Safari / iOS web only. Android Chrome, Capacitor, and desktop Chrome stay on the
- * fast path — Apple CORS/proxy throttles were making Android feel frozen.
+ * Safari / iOS *browser* web only. Native Capacitor iOS/Android match the fast path.
+ * Apple CORS/proxy throttles were making Android feel frozen when this was too broad.
  */
 export function isSlowBrowserNet(ua = uaBlob(), cap = capacitorPlatform()) {
   if (cap === "android" || cap === "ios") return false;
   try {
     const plug = typeof window !== "undefined" ? window.Capacitor : null;
-    if (plug?.Plugins?.CapacitorHttp) return false;
+    // Native HTTP bridge — same speed class as Android Capacitor.
+    if (plug?.Plugins?.CapacitorHttp || plug?.isNativePlatform?.()) return false;
   } catch {
     /* web */
   }
@@ -180,9 +181,19 @@ export function applyFormFactorClass() {
   const f = detectFormFactor({ refresh: true });
   const body = document.body;
   if (!body) return f;
-  body.classList.remove("gc-phone", "gc-tablet", "gc-desktop");
+  body.classList.remove("gc-phone", "gc-tablet", "gc-desktop", "gc-ios", "gc-android");
   body.classList.add(`gc-${f}`);
   body.dataset.formFactor = f;
+  const root = document.documentElement;
+  root?.classList.remove("gc-ios", "gc-android");
+  if (isAppleDevice()) {
+    body.classList.add("gc-ios");
+    root?.classList.add("gc-ios");
+  }
+  if (isAndroid()) {
+    body.classList.add("gc-android");
+    root?.classList.add("gc-android");
+  }
   return f;
 }
 

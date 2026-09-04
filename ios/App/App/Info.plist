@@ -66,5 +66,15 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Ground Control uses your location to center the map, drop the select pin, and find nearby hail storms.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Ground Control uses your location to keep the map near you while you canvass.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Ground Control uses the camera for Lens shingle and damage inspection.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Ground Control needs photo access so you can attach roof and damage pictures.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Ground Control saves inspection photos to your library when you export.</string>
 </dict>
 </plist>

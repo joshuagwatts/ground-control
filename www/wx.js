@@ -52,6 +52,9 @@ let hailLayer = null;
 /** Day-locked swath polygons — never cleared on pan/zoom (glue). */
 let hailSwathLayer = null;
 let stormSwathPaintSig = "";
+/** After selected-day radar/spotter load finishes, swaths stay frozen until the day changes. */
+let stormSwathLoadDone = false;
+let stormSwathDayLock = "";
 let windLayer = null;
 let layers = {};
 let activeLayer = "sat";
@@ -1158,6 +1161,11 @@ function cancelScheduledStormRedraw() {
 
 async function ensureSwdiForSelectedStormDays() {
   if (!hasSelectedStormDates()) return;
+  // Fully glued — pan / sheet sync must not refetch or redraw.
+  if (stormSwathsAreGlued()) {
+    keepStormSwathsOnMap();
+    return;
+  }
   const anchor = stormSwdiAnchor();
   if (!anchor) return;
   const days = selectedStormDateList();
@@ -1180,13 +1188,23 @@ async function ensureSwdiForSelectedStormDays() {
     livePool = mergeHailRows(pool, spotters);
   }
   const need = days.filter((d) => {
-    // Count the full loaded day pool — NOT the map frame. In-view checks caused
-    // endless refetch (statewide 300+) → clip to metro (~36) → status flicker.
     const n = livePool.filter((h) => stormDayMatches(h.date, d) && isSwdiHail(h)).length;
     return n < SWDI_DAY_MIN_SIGS;
   });
   if (!need.length) {
-    // Data already loaded — do not force a redraw (that was wiping/flickering swaths).
+    // Day pool is complete — one stable paint, then freeze for pan/zoom.
+    stormSwathLoadDone = true;
+    if (!stormSwathsAreGlued()) {
+      cancelScheduledStormRedraw();
+      lastHailDrawSig = "";
+      const pools = resolvedStormDrawPools();
+      drawHailMarkers(pools.dotRows, lastWindRows, {
+        requireDate: true,
+        zoneRows: stormDrawZoneRows(pools.zoneRows),
+      });
+    } else {
+      keepStormSwathsOnMap();
+    }
     return;
   }
   cancelScheduledStormRedraw();
@@ -1239,6 +1257,7 @@ async function ensureSwdiForSelectedStormDays() {
       lastHailDrawSig = "";
       await deferToNextFrame();
       if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
+      stormSwathLoadDone = true;
       const pools = resolvedStormDrawPools();
       drawHailMarkers(pools.dotRows, lastWindRows, {
         requireDate: true,
@@ -1252,6 +1271,8 @@ async function ensureSwdiForSelectedStormDays() {
       );
       return;
     }
+    // Nothing to draw — still mark load done so pan doesn't keep refetching.
+    stormSwathLoadDone = true;
     const spotN = livePool.filter(
       (h) => need.includes(String(h.date || "").slice(0, 10)) && isSpotterHail(h),
     ).length;
@@ -1282,6 +1303,7 @@ async function ensureSwdiForSelectedStormDays() {
   emitMapStatus("Drawing hail zones…");
   await deferToNextFrame();
   if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
+  stormSwathLoadDone = true;
   const pools = resolvedStormDrawPools();
   const viewZones = stormDrawZoneRows(pools.zoneRows);
   drawHailMarkers(pools.dotRows, lastWindRows, {
@@ -1933,8 +1955,9 @@ export function quickMapConfig(settings) {
   });
 }
 
-/** Leaflet often mounts at 0×0 on phone WebViews until layout settles. */
+/** Leaflet often mounts at 0×0 on phone WebViews until layout settles — worse on iOS WKWebView. */
 let refreshMapSizeTimer = 0;
+let mapViewportBound = false;
 export function refreshMapSize() {
   if (!map) return;
   const run = () => {
@@ -1954,6 +1977,13 @@ export function refreshMapSize() {
     refreshMapSizeTimer = 0;
     run();
   }, 180);
+  if (!mapViewportBound && typeof window !== "undefined") {
+    mapViewportBound = true;
+    const bump = () => refreshMapSize();
+    window.addEventListener("orientationchange", bump);
+    window.visualViewport?.addEventListener?.("resize", bump);
+    window.visualViewport?.addEventListener?.("scroll", bump);
+  }
 }
 const MAP_MAX_ZOOM = 22;
 const MAP_MIN_ZOOM = 3;
@@ -3336,12 +3366,18 @@ export function bindStormGraph(root, onPick) {
 
 export function selectStormDate(date, { fit = false, requireDate, hailRows, zoneRows, windRows, toggle = false } = {}) {
   const hadSelection = hasSelectedStormDates();
+  const prevSig = selectedStormDateSig();
   if (!date) {
     clearStormDateSelection();
   } else if (toggle) {
     toggleStormDateSelection(date);
   } else {
     setStormDateSelection([date], { replace: true });
+  }
+  const nextSig = selectedStormDateSig();
+  // Any day change unlocks glue so the new day can paint once, then freeze again.
+  if (prevSig !== nextSig) {
+    clearStormSwathGlue();
   }
   if (hadSelection && !hasSelectedStormDates()) {
     lastStormSwdiRows = [];
@@ -4497,12 +4533,14 @@ export function setWxPin(lat, lon) {
   placeSelectPin([lat, lon]);
   clearPinRadius();
   lastHailDrawSig = "";
-  if (lastHailRows.length || lastWindRows.length || hasSelectedStormDates()) {
+  if ((lastHailRows.length || lastWindRows.length || hasSelectedStormDates()) && !stormSwathsAreGlued()) {
     const pools = resolvedStormDrawPools();
     drawHailMarkers(pools.dotRows, lastWindRows, {
       requireDate: hasSelectedStormDates(),
       zoneRows: pools.zoneRows,
     });
+  } else if (stormSwathsAreGlued()) {
+    keepStormSwathsOnMap();
   }
   if (hasSelectedStormDates()) void ensureSwdiForSelectedStormDays();
 }
@@ -4555,8 +4593,35 @@ function stormGluePaintSig(zoneRows) {
     .join("||");
 }
 
+function stormSwathsAreGlued() {
+  return (
+    hasSelectedStormDates() &&
+    stormSwathLoadDone &&
+    stormSwathDayLock === selectedStormDateSig() &&
+    (hailSwathLayer?.getLayers?.()?.length || 0) > 0
+  );
+}
+
+function keepStormSwathsOnMap() {
+  if (!map || !hailSwathLayer) return;
+  try {
+    if (!map.hasLayer(hailSwathLayer)) hailSwathLayer.addTo(map);
+  } catch {
+    /* ignore */
+  }
+  if (hailLayer) {
+    try {
+      if (!map.hasLayer(hailLayer)) hailLayer.addTo(map);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function clearStormSwathGlue() {
   stormSwathPaintSig = "";
+  stormSwathLoadDone = false;
+  stormSwathDayLock = "";
   stormSwathBandCache.clear();
   if (hailSwathLayer) {
     try {
@@ -5795,6 +5860,13 @@ function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFi
 
 export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (!map || !window.L) return;
+  // Absolute glue: once the selected day is painted, pan/pin/sync cannot rebuild swaths.
+  if (stormSwathsAreGlued()) {
+    keepStormSwathsOnMap();
+    syncHazardLayers();
+    scheduleZoomUiRefresh();
+    return;
+  }
   const dotRows = hailRows || [];
   const sourceZones = opts.zoneRows || dotRows;
   const zoneRows = stormDrawZoneRows(sourceZones);
@@ -5810,21 +5882,13 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const zDraw = map?.getZoom?.() ?? 14;
   const zBucket = zDraw < 9 ? 0 : zDraw < 11 ? 1 : zDraw < 13 ? 2 : 3;
   const stormLocked = hasSelectedStormDates();
-  // Day-locked: ignore pin/basemap/zoom noise — only data+day changes rebuild glue.
   const drawSig = stormLocked
     ? `${selectedStormDateSig()}|${requireDate}|${stormGluePaintSig(zoneRows)}|dots${fieldOverlay.showHailDots !== false ? 1 : 0}`
     : `${selectedStormDateSig()}|${requireDate}|${lastHailRows.length}|${zoneRows.length}|r${radarN}|${lastWindRows.length}|${pin?.lat ?? ""}|${pin?.lon ?? ""}|${activeLayer}|${opts.fit ? 1 : 0}|${fieldOverlay.showHailDots !== false ? 1 : 0}|z${zBucket}`;
   if (drawSig === lastHailDrawSig && hailLayer && map.hasLayer(hailLayer)) {
-    if (stormLocked && hailSwathLayer && map.hasLayer(hailSwathLayer)) {
-      syncHazardLayers();
-      scheduleZoomUiRefresh();
-      return;
-    }
-    if (!stormLocked) {
-      syncHazardLayers();
-      scheduleZoomUiRefresh();
-      return;
-    }
+    syncHazardLayers();
+    scheduleZoomUiRefresh();
+    return;
   }
   lastHailDrawSig = drawSig;
   lastHailZoomBucket = zBucket;
@@ -5874,6 +5938,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     } catch {
       /* ignore */
     }
+    // Freeze after a successful paint once the day load is marked complete.
+    if (stormSwathLoadDone && (hailSwathLayer.getLayers?.()?.length || 0) > 0) {
+      stormSwathDayLock = selectedStormDateSig();
+    }
   } else {
     clearStormSwathGlue();
     try {
@@ -5886,30 +5954,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
     const zoneDay = parseStormDay(h.date);
     const dayHits = zoneHitPool(h, zoneRows);
-    const atRoof = dayHits.filter((p) => hitDistKm(p) <= HOUSE_HAIL_KM);
     const pin = pinCoords();
-    const roofHit = (h.near_hits || 0) > 0 || atRoof.length > 0;
-    // Close-in only — yellow roof ring reads as a bubble when zoomed out.
-    if (roofHit && pin && !wideView) {
-      const sz = atRoof.reduce((m, p) => Math.max(m, parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0);
-      const col = hailZoneColor(sz);
-      bindHailZoneTap(
-        window.L.circle([pin.lat, pin.lon], {
-          radius: Math.max(50, Math.min(140, 48 + sz * 42)),
-          color: "#ffcc00",
-          fillColor: col.fill,
-          fillOpacity: hailZoneOpacityBoost(0.9),
-          weight: 3,
-          opacity: 1,
-          pane: "hailDots",
-          renderer: hailDotSvg,
-          interactive: true,
-          className: "wx-hail-pin-zone",
-        }).addTo(hailLayer),
-        h,
-        { maxSize: sz, hits: atRoof.length || 1, source: "spot+radar" },
-      );
-    }
     const zoneHits =
       pin && hailStormAtPin()
         ? dayHits.filter((p) => hitDistKm(p) <= HOUSE_ZONE_KM).length
@@ -6181,7 +6226,7 @@ function syncHazardLayers() {
   try {
     if (hailSwathLayer) {
       if (showHail && hasSelectedStormDates()) hailSwathLayer.addTo(map);
-      else map.removeLayer(hailSwathLayer);
+      else if (!hasSelectedStormDates()) map.removeLayer(hailSwathLayer);
     }
     if (hailLayer) {
       if (showHail) hailLayer.addTo(map);
@@ -9441,6 +9486,8 @@ export function destroyMap() {
   hailLayer = null;
   hailSwathLayer = null;
   stormSwathPaintSig = "";
+  stormSwathLoadDone = false;
+  stormSwathDayLock = "";
   windLayer = null;
   windFieldLayer = null;
   lastHailRows = [];
@@ -9598,8 +9645,11 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       }
     }
     scheduleHouseNumbers();
-    // Selected storm day: do NOT refill/redraw hail on pan — zones stay glued.
-    if (!hasSelectedStormDates() && !wxPinSelected()) {
+    if (hasSelectedStormDates()) {
+      keepStormSwathsOnMap();
+      return;
+    }
+    if (!wxPinSelected()) {
       const z = map?.getZoom?.() ?? 14;
       scheduleMapViewStormMove(z < 9 ? 550 : 900);
     }
@@ -11305,6 +11355,10 @@ let selectedStormRedrawTimer = 0;
 let pendingSelectedStormRows = null;
 
 function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = null) {
+  if (stormSwathsAreGlued()) {
+    keepStormSwathsOnMap();
+    return;
+  }
   pendingSelectedStormRows = { hailRows, windRows, zoneRows };
   if (selectedStormRedrawTimer) return;
   selectedStormRedrawTimer = window.setTimeout(() => {
@@ -11312,15 +11366,12 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = nul
     const pending = pendingSelectedStormRows;
     pendingSelectedStormRows = null;
     if (!pending || !hasSelectedStormDates()) return;
-    const pools = resolvedStormDrawPools(pending.hailRows || []);
-    const nextZones = stormDrawZoneRows(pools.zoneRows);
-    const nextGlue = stormGluePaintSig(nextZones);
-    // Sheet updates must not rip glued swaths if radar/spotter set is unchanged.
-    if (nextGlue === stormSwathPaintSig && hailSwathLayer?.getLayers?.()?.length) {
-      lastZoneHailRows = nextZones;
-      lastHailRows = mergeHailRows(lastHailRows, pools.dotRows);
+    if (stormSwathsAreGlued()) {
+      keepStormSwathsOnMap();
       return;
     }
+    const pools = resolvedStormDrawPools(pending.hailRows || []);
+    const nextZones = stormDrawZoneRows(pools.zoneRows);
     lastHailDrawSig = "";
     drawHailMarkers(pools.dotRows, lastWindRows, {
       requireDate: true,

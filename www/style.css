@@ -1029,6 +1029,25 @@ body.wx-tab #view {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
 }
+/* iOS WKWebView: rubber-band scroll was stealing map pans and breaking sheet gestures. */
+html.gc-ios,
+body.gc-ios {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+body.gc-ios.wx-tab #view,
+body.gc-ios.hs-tab #view {
+  overscroll-behavior-y: none;
+  -webkit-overflow-scrolling: auto;
+}
+body.gc-ios .hs-map-shell .leaflet-container,
+body.gc-ios .hs-map-shell #wx-map,
+body.gc-ios .hs-map-shell #hs-map {
+  touch-action: pan-x pan-y pinch-zoom;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 body.wx-tab #status { display: none; }
 body.wx-tab main { padding: 0; overflow: visible; }
 body.wx-tab .leaflet-control-attribution {
