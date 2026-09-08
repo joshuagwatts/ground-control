@@ -16,6 +16,7 @@ import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHail
 const LEAD_KEY = "homescope_lead_v1";
 const TOP_STORM_N = 10;
 const LIST_PAGE = 10;
+const REPORT_LIST_N = 5;
 
 const state = {
   lead: null,
@@ -801,6 +802,8 @@ function escHtml(s) {
 function buildReportText(rec) {
   // Plain-text fallback for share / clipboard — not shown in the UI.
   const b = PRODUCT.brand;
+  const extreme = rankedStorms(state.storms, "intense").slice(0, REPORT_LIST_N);
+  const recent = rankedStorms(state.storms, "recent").slice(0, REPORT_LIST_N);
   const lines = [
     `${b.company} · ${PRODUCT.name}`,
     `Hail Report — ${state.address}`,
@@ -813,14 +816,49 @@ function buildReportText(rec) {
     rec.secondaryCta ? `Also: ${rec.secondaryCta}` : "",
     `Call ${b.phone} · ${b.webLabel}`,
     "",
-    "Storms covering this home:",
+    `History window: ${state.years} years · ≥ ${state.minHailIn}″ · ${state.storms.length} verified covering date(s)`,
+    "",
+    `Top ${REPORT_LIST_N} most extreme:`,
   ].filter((x) => x !== "");
-  for (const s of state.storms) {
-    lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+  if (extreme.length) {
+    for (const s of extreme) {
+      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+    }
+  } else {
+    lines.push("• None in the selected filters");
   }
-  if (!state.storms.length) lines.push("• None in the selected filters");
+  lines.push("", `Top ${REPORT_LIST_N} most recent:`);
+  if (recent.length) {
+    for (const s of recent) {
+      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+    }
+  } else {
+    lines.push("• None in the selected filters");
+  }
   lines.push("", PRODUCT.disclaimer);
   return lines.join("\n");
+}
+
+function reportStormRowsHtml(storms, flag) {
+  if (!storms.length) {
+    return `<li class="hg-storm empty"><div class="hg-storm-body"><strong>No verified covering storms in this filter</strong>
+        <span class="hg-storm-meta">Listed only when near-roof (≤2.5 km) or a zone polygon covers this pin.</span></div></li>`;
+  }
+  return storms
+    .map((s, idx) => {
+      const cover = [s.coversNear ? "Near roof" : null, s.coversPolygon ? "Zone over home" : null]
+        .filter(Boolean)
+        .join(" · ");
+      return `<li class="hg-storm">
+            <div class="hg-storm-size">${escHtml(Number(s.maxSizeIn).toFixed(2))}<span>″</span></div>
+            <div class="hg-storm-body">
+              <strong>${escHtml(s.pretty || s.date)}</strong>
+              <span class="hg-storm-meta">${escHtml(s.sources)}${cover ? " · " + escHtml(cover) : ""} · ${escHtml(Number(s.minDist).toFixed(1))} km</span>
+            </div>
+            <div class="hg-storm-flag">${escHtml(flag || "#" + (idx + 1))}</div>
+          </li>`;
+    })
+    .join("");
 }
 
 function renderReportDocument(rec) {
@@ -834,27 +872,10 @@ function renderReportDocument(rec) {
   const quality = rec.roofQuality || {};
   const prepared = state.lead?.name || state.lead?.email || "Homeowner";
   const tone = rec.considerClaim ? "claim" : rec.talkToRoofer ? "roofer" : "ok";
-  const reportStorms = rankedStorms(state.storms, "intense");
-
-  const stormRows = reportStorms.length
-    ? reportStorms
-        .map((s) => {
-          const on = state.selected.has(s.date);
-          const cover = [s.coversNear ? "Near roof" : null, s.coversPolygon ? "Zone over home" : null]
-            .filter(Boolean)
-            .join(" · ");
-          return `<li class="hg-storm${on ? " on" : ""}">
-            <div class="hg-storm-size">${escHtml(Number(s.maxSizeIn).toFixed(2))}<span>″</span></div>
-            <div class="hg-storm-body">
-              <strong>${escHtml(s.pretty || s.date)}</strong>
-              <span class="hg-storm-meta">${escHtml(s.sources)}${cover ? " · " + escHtml(cover) : ""} · ${escHtml(Number(s.minDist).toFixed(1))} km</span>
-            </div>
-            <div class="hg-storm-flag">${on ? "On map" : ""}</div>
-          </li>`;
-        })
-        .join("")
-    : `<li class="hg-storm empty"><div class="hg-storm-body"><strong>No verified covering storms in this filter</strong>
-        <span class="hg-storm-meta">Listed only when near-roof (≤2.5 km) or a zone polygon covers this pin.</span></div></li>`;
+  const allCovering = state.storms || [];
+  const extreme = rankedStorms(allCovering, "intense").slice(0, REPORT_LIST_N);
+  const recent = rankedStorms(allCovering, "recent").slice(0, REPORT_LIST_N);
+  const yearsLabel = `${state.years} year${state.years === 1 ? "" : "s"}`;
 
   return `<header class="hg-doc-top">
       <div class="hg-logo" aria-label="${escHtml(b.company)}">
@@ -900,9 +921,13 @@ function renderReportDocument(rec) {
     <section class="hg-card">
       <div class="hg-section-head">
         <h2 class="hg-section-label">Storms over this home</h2>
-        <span class="hg-count">${reportStorms.length} verified date${reportStorms.length === 1 ? "" : "s"}</span>
+        <span class="hg-count">${allCovering.length} verified in ${escHtml(yearsLabel)}</span>
       </div>
-      <ul class="hg-storm-list">${stormRows}</ul>
+      <p class="hg-storm-blurb">Highlights from your selected history window (≥ ${escHtml(String(state.minHailIn))}″, verified cover only).</p>
+      <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most extreme</h3>
+      <ul class="hg-storm-list">${reportStormRowsHtml(extreme, "Extreme")}</ul>
+      <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most recent</h3>
+      <ul class="hg-storm-list">${reportStormRowsHtml(recent, "Recent")}</ul>
     </section>
 
     <section class="hg-card hg-trust">
@@ -1042,7 +1067,9 @@ function reportHtmlDoc() {
   .hg-secondary-cta{margin:.75rem 0 0;font-size:.9rem;color:var(--phos)}
   .hg-section-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem}
   .hg-count{font-size:.75rem;color:var(--muted)}
-  .hg-storm-list{list-style:none;margin:.65rem 0 0;padding:0;display:flex;flex-direction:column;gap:.4rem}
+  .hg-storm-blurb{margin:.35rem 0 0;font-size:.85rem;color:var(--muted);line-height:1.4}
+  .hg-storm-group{margin:1rem 0 .35rem;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--phos);font-weight:650}
+  .hg-storm-list{list-style:none;margin:.45rem 0 0;padding:0;display:flex;flex-direction:column;gap:.4rem}
   .hg-storm{display:grid;grid-template-columns:auto 1fr auto;gap:.55rem .75rem;align-items:center;padding:.65rem .75rem;background:var(--inset);border-radius:12px;border:1px solid transparent}
   .hg-storm.on{border-color:rgba(255,204,0,.35)}
   .hg-storm-size{font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;font-size:1.05rem}
