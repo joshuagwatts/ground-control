@@ -1174,7 +1174,7 @@ function renderReportDocument(rec) {
         : `Unknown (last ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown} years)`;
   const quality = rec.roofQuality || {};
   const prepared = state.lead?.name || state.lead?.email || "Homeowner";
-  const tone = rec.considerClaim ? "claim" : rec.talkToRoofer ? "roofer" : "ok";
+  const tone = rec.talkToRoofer ? "roofer" : rec.considerClaim ? "review" : "ok";
   const allCovering = state.storms || [];
   const extreme = rankedStorms(allCovering, "intense").slice(0, REPORT_LIST_N);
   const recent = rankedStorms(allCovering, "recent").slice(0, REPORT_LIST_N);
@@ -1193,7 +1193,7 @@ function renderReportDocument(rec) {
       </div>
     </header>
 
-    <p class="hg-doc-lede">Stronger proof for claims. Clear storm history for your Oklahoma roof.</p>
+    <p class="hg-doc-lede">Clear storm history for your Oklahoma roof — from public NOAA / SPC / IEM records.</p>
 
     <section class="hg-card hg-property">
       <h2 class="hg-section-label">Property</h2>
@@ -1234,9 +1234,9 @@ function renderReportDocument(rec) {
     </section>
 
     <section class="hg-card hg-trust">
-      <h2 class="hg-section-label">Why this matters</h2>
-      <p>Oklahoma hail regularly totals roofs. High Ground uses drone and AI documentation to strengthen your position — and we stand with you when insurance is involved.</p>
-      <p class="hg-trust-line">Family-run · Edmond &amp; surrounding · Honesty over scare tactics</p>
+      <h2 class="hg-section-label">About High Ground</h2>
+      <p>Oklahoma weather is hard on roofs. High Ground uses drone and AI documentation for clear, honest inspections — family-run, serving Edmond and surrounding communities.</p>
+      <p class="hg-trust-line">Honesty over scare tactics · Free inspections</p>
     </section>
 
     <footer class="hg-doc-foot">

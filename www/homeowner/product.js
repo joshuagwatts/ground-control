@@ -14,12 +14,13 @@ export const PRODUCT = {
     phoneTel: "+14052520058",
     web: "https://www.highgroundokc.com/",
     webLabel: "highgroundokc.com",
-    address: "449 NE 144th Pl, Edmond, OK 73013",
+    /** Service area only — do not invent a street address on reports. */
+    address: "Edmond, OK & surrounding",
     cta: "Get a Free Inspection",
     ctaUrl: "https://www.highgroundokc.com/",
   },
   disclaimer:
-    "HomeScope summarizes public NOAA SWDI / SPC / IEM hail records for Oklahoma addresses. A storm is listed only when a near-roof report (≤2.5 km) or a radar zone polygon covers this pin — nearby-only reports are not claimed as hitting your roof. Map colors follow hail size. This is not a formal insurance decision, appraisal, or substitute for a licensed adjuster.",
+    "HomeScope summarizes public NOAA SWDI / SPC / IEM hail records for Oklahoma addresses. A storm is listed only when a near-roof report (≤2.5 km) or a radar zone covers this pin — nearby-only reports are not treated as hitting your roof. This is informational storm history only, not a roof inspection or damage appraisal.",
   /** Internal CRM intake — set webhookUrl so HomeScope can create the contact and email the report. */
   crm: {
     webhookUrl: "",
@@ -27,11 +28,10 @@ export const PRODUCT = {
   },
 };
 
-/** Locked claim / CTA rules. */
+/** Locked recommendation / CTA rules. */
 export const CLAIM_RULES = {
-  /** Hail larger than 1″ qualifies. */
+  /** Hail larger than 1″ qualifies for the multi-storm recommendation. */
   minHailInches: 1.0,
-  /** Strictly greater than 1.0″ for claim multi-storm trigger (spotter 1.00 still counts as ≥1). */
   minHailInchesExclusive: false,
   minStormsToConsiderClaim: 2,
   defaultLookbackYearsIfRoofUnknown: 2,
@@ -41,7 +41,6 @@ export const CLAIM_RULES = {
   /** Count a storm if near-roof hits OR zone polygon covers the pin — never soft/nearby guesses. */
   coverModes: ["near_roof", "polygon"],
   nearRoofKm: 1.6,
-  /** Max distance for “near roof” cover (aligned with field zone paint). */
   nearZoneKm: 2.5,
 };
 
@@ -76,10 +75,10 @@ function roofAgeYears(roofReplacedOn, asOf) {
 }
 
 /**
- * Full HomeScope recommendation.
+ * Full HomeScope recommendation — keep claim talk to one short line when relevant.
  * - Always CTA: get a free inspection
- * - Consider claim when ≥2 qualifying storms cover the home in the review window
- * - Talk to a roofer when roof is ≤2 years old AND ≥1 qualifying storm covered the home
+ * - Multi-storm 1″+ cover → brief note that a claim may be worth discussing with an inspection
+ * - Recent roof + ≥1 qualifying storm → talk to a roofer
  */
 export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Date() } = {}) {
   const end = asOf instanceof Date ? asOf : new Date(asOf);
@@ -103,21 +102,21 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
   const lines = [];
   if (considerClaim) {
     lines.push(
-      `${qualifying.length} storm dates with ${CLAIM_RULES.minHailInches}″+ hail covered this home since ${windowStart}. In Oklahoma that pattern is exactly when homeowners should look into whether a claim makes sense.`,
+      `${qualifying.length} dates with ${CLAIM_RULES.minHailInches}″+ hail covered this home since ${windowStart}. A free inspection can document the roof; if damage is found, you can discuss whether a claim makes sense.`,
     );
   } else if (qualifying.length === 1) {
     lines.push(
-      `One storm with ${CLAIM_RULES.minHailInches}″+ hail covered this home in the review window (${windowStart} → ${windowEnd}). One hit can still matter — especially on a newer roof.`,
+      `One ${CLAIM_RULES.minHailInches}″+ storm covered this home in the review window (${windowStart} → ${windowEnd}). A free inspection can check for damage that isn’t obvious from the ground.`,
     );
   } else {
     lines.push(
-      `No multi-storm ${CLAIM_RULES.minHailInches}″+ pattern over the home in the review window (${windowStart} → ${windowEnd}). Visible damage can still exist — get eyes on the roof.`,
+      `No multi-storm ${CLAIM_RULES.minHailInches}″+ pattern over the home in the review window (${windowStart} → ${windowEnd}). A free inspection can still catch wear that isn’t obvious from the street.`,
     );
   }
 
   if (talkToRoofer) {
     lines.push(
-      `Your roof is about ${ageY.toFixed(1)} years old (≤${CLAIM_RULES.recentRoofYears} years) and at least one ${CLAIM_RULES.minHailInches}″+ storm covered it — talk with a roofer; a newer roof can still be totaled.`,
+      `Your roof is about ${ageY.toFixed(1)} years old (≤${CLAIM_RULES.recentRoofYears} years) with at least one ${CLAIM_RULES.minHailInches}″+ covering storm — talk with a roofer; newer roofs can still need repair.`,
     );
   }
 
@@ -133,13 +132,12 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
     covering,
     windowStart,
     windowEnd,
-    /** Always the primary CTA. */
     primaryCta: PRODUCT.brand.cta,
     secondaryCta: talkToRoofer ? "Talk to a roofer" : null,
-    headline: considerClaim
-      ? "Look into a claim — and get a free inspection"
-      : talkToRoofer
-        ? "Talk to a roofer — and get a free inspection"
+    headline: talkToRoofer
+      ? "Talk to a roofer — get a free inspection"
+      : considerClaim
+        ? "Get a free inspection"
         : PRODUCT.brand.cta,
     reason: lines.join(" "),
   };
@@ -156,8 +154,8 @@ export function estimateRoofQuality({ ageY, qualifyingCount = 0, considerClaim =
   }
   if (ageY <= 2) {
     return {
-      label: considerClaim || qualifyingCount ? "Newer roof — hail exposure risk" : "Newer roof",
-      detail: `About ${ageY.toFixed(1)} years old. Newer roofs can still be totaled by qualifying hail — document early.`,
+      label: qualifyingCount ? "Newer roof with hail history" : "Newer roof",
+      detail: `About ${ageY.toFixed(1)} years old. Newer roofs can still need repair after qualifying hail — a free inspection documents condition early.`,
     };
   }
   if (ageY <= 5) {
@@ -169,11 +167,11 @@ export function estimateRoofQuality({ ageY, qualifyingCount = 0, considerClaim =
   if (ageY <= 10) {
     return {
       label: considerClaim ? "Aging roof with hail history" : "Aging roof",
-      detail: `About ${ageY.toFixed(1)} years old. Aging roofs lose resiliency; hail history raises the odds of needed repair or replacement.`,
+      detail: `About ${ageY.toFixed(1)} years old. Aging roofs lose resiliency; covering hail history is a good reason for a professional look.`,
     };
   }
   return {
-    label: considerClaim ? "Older roof — strong claim review candidate" : "Older roof",
+    label: considerClaim ? "Older roof with hail history" : "Older roof",
     detail: `About ${ageY.toFixed(1)} years old. Older roofs plus covering hail is when homeowners most often need a professional look.`,
   };
 }
