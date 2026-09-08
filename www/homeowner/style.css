@@ -1013,13 +1013,17 @@ a {
 }
 
 .ho-actions-report {
-  margin: 0.85rem 0 0.9rem;
+  margin: 0.35rem 0 0;
 }
 
 .ho-actions-report .primary {
   width: 100%;
   min-height: 48px;
   touch-action: manipulation;
+}
+
+.ho-report-cta-panel .lead {
+  margin-bottom: 0.65rem;
 }
 
 .ho-foot {
