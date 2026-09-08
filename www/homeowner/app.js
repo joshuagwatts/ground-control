@@ -851,7 +851,6 @@ async function refreshStorms({ force = false } = {}) {
     // Accept progressive updates for this pin even if a newer refresh gen started
     // for the same coordinates (map tap / search retries). Drop only if pin moved.
     if (!stillThisPin()) return;
-    if (gen !== refreshStorms._gen && opts?.requireLatest) return;
     applyStormResult(result, opts);
   };
 
@@ -863,11 +862,10 @@ async function refreshStorms({ force = false } = {}) {
     cache.hail?.length &&
     (cache.fetchedDays || 0) >= Math.min(needDays, 730);
 
-  if (canFilterOnly && needDays <= (cache.fetchedDays || 0) && !cache.loadingDeep) {
+  if (canFilterOnly && needDays <= (cache.fetchedDays || 0) && !cache.loadingDeep && !cache.deepenPromise) {
     applyIfCurrent(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), {
       loading: false,
       reseatSelection: true,
-      requireLatest: true,
     });
     return;
   }
@@ -897,19 +895,15 @@ async function refreshStorms({ force = false } = {}) {
           skipMap: true,
         }),
     });
-    // Final pass: full polygon cover + map paint (loading=false in summarize).
+    // Final pass after deepen + cover drain — always paint the map.
     applyIfCurrent(
-      filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }),
+      result?.error ? result : filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }),
       {
         loading: false,
         reseatSelection: state.overlayCollection,
         skipMap: false,
-        requireLatest: true,
       },
     );
-    if (result?.error) {
-      applyIfCurrent(result, { loading: false, reseatSelection: false, requireLatest: true });
-    }
   } catch (err) {
     if (!stillThisPin()) return;
     paintStormList({ loading: false });

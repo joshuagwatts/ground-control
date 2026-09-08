@@ -15,6 +15,24 @@ import {
 
 const HOME_DEEP_KM = 40;
 const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM);
+/** Max new HailTrace cover checks per summarize while streaming — keeps the list growing without freezing. */
+const STREAM_POLY_BUDGET = 12;
+
+function pinKey(lat, lon) {
+  return `${Number(lat).toFixed(4)}|${Number(lon).toFixed(4)}`;
+}
+
+/** pinKey|YYYY-MM-DD → coversPolygon */
+let coverPolyCache = new Map();
+let coverPolyCachePin = "";
+
+function resetCoverPolyCache(lat, lon) {
+  const key = pinKey(lat, lon);
+  if (coverPolyCachePin !== key) {
+    coverPolyCache.clear();
+    coverPolyCachePin = key;
+  }
+}
 
 function pointInLatLonRing(lat, lon, ring) {
   if (!ring || ring.length < 3) return false;
@@ -31,7 +49,19 @@ function pointInLatLonRing(lat, lon, ring) {
   return inside;
 }
 
-function stormCoversHome(row, lat, lon, dayRows = [], { fast = false } = {}) {
+function polygonCoversHome(day, lat, lon, dayRows = []) {
+  try {
+    const bands = buildHailTraceDayBands(day, dayRows) || [];
+    for (const band of bands) {
+      if (band?.ring && pointInLatLonRing(lat, lon, band.ring)) return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function stormCoversHome(row, lat, lon, dayRows = [], { budget = { left: Infinity } } = {}) {
   const pts = row.zone_pts || [];
   const minDist = Number(row.min_dist);
   const coversNear =
@@ -39,34 +69,25 @@ function stormCoversHome(row, lat, lon, dayRows = [], { fast = false } = {}) {
     (Number.isFinite(minDist) && minDist <= COVER_NEAR_KM) ||
     pts.some((p) => (Number(p.distance_km) || 999) <= COVER_NEAR_KM);
 
-  // While history is still streaming, skip HailTrace mesh builds — they freeze the UI
-  // so the list never grows past the first 1–2 dates until a filter flip.
-  if (fast) {
-    return {
-      coversNear: Boolean(coversNear),
-      coversPolygon: false,
-      coversHome: Boolean(coversNear),
-    };
+  if (coversNear) {
+    return { coversNear: true, coversPolygon: false, coversHome: true };
   }
 
-  let coversPolygon = false;
-  try {
-    const bands = buildHailTraceDayBands(row.date, dayRows) || [];
-    for (const band of bands) {
-      if (band?.ring && pointInLatLonRing(lat, lon, band.ring)) {
-        coversPolygon = true;
-        break;
-      }
-    }
-  } catch {
-    coversPolygon = false;
+  resetCoverPolyCache(lat, lon);
+  const cacheKey = `${coverPolyCachePin}|${row.date}`;
+  if (coverPolyCache.has(cacheKey)) {
+    const coversPolygon = coverPolyCache.get(cacheKey);
+    return { coversNear: false, coversPolygon, coversHome: coversPolygon };
   }
 
-  return {
-    coversNear: Boolean(coversNear),
-    coversPolygon: Boolean(coversPolygon),
-    coversHome: Boolean(coversNear || coversPolygon),
-  };
+  // Defer Trace builds across stream chunks so the UI can paint 1 → 2 → N dates.
+  if (budget.left <= 0) {
+    return { coversNear: false, coversPolygon: false, coversHome: false, deferred: true };
+  }
+  budget.left -= 1;
+  const coversPolygon = polygonCoversHome(row.date, lat, lon, dayRows);
+  coverPolyCache.set(cacheKey, coversPolygon);
+  return { coversNear: false, coversPolygon, coversHome: coversPolygon };
 }
 
 function sourceLabel(row) {
@@ -124,6 +145,8 @@ function emitHailCache() {
 }
 
 export function clearHomeHailCache() {
+  coverPolyCache.clear();
+  coverPolyCachePin = "";
   pinCache = {
     key: "",
     lat: null,
@@ -145,33 +168,36 @@ export function getHomeHailCache() {
   return pinCache;
 }
 
-function pinKey(lat, lon) {
-  return `${Number(lat).toFixed(4)}|${Number(lon).toFixed(4)}`;
-}
-
 export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 730, years, loading = false, note = null } = {}) {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
   const cutoffIso = cutoff.toISOString().slice(0, 10);
-  const fastCover = Boolean(loading);
+  resetCoverPolyCache(lat, lon);
 
   const collapsed = collapseHailByDate(hailRows || []);
   const byDay = new Map();
-  if (!fastCover) {
-    for (const h of hailRows || []) {
-      const d = String(h?.date || "").slice(0, 10);
-      if (!d) continue;
-      if (!byDay.has(d)) byDay.set(d, []);
-      byDay.get(d).push(h);
-    }
+  for (const h of hailRows || []) {
+    const d = String(h?.date || "").slice(0, 10);
+    if (!d) continue;
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(h);
   }
+
+  // While streaming: only spend a few Trace builds per chunk so dates appear 1, 2, 3…
+  // Cached results carry forward; when loading finishes, budget is unlimited.
+  const budget = { left: loading ? STREAM_POLY_BUDGET : Infinity };
+  let deferred = 0;
   const storms = [];
   for (const row of collapsed) {
     const date = String(row.date || "");
     if (!date || date < cutoffIso) continue;
     const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
-    const cover = stormCoversHome(row, lat, lon, byDay.get(date) || [], { fast: fastCover });
+    const cover = stormCoversHome(row, lat, lon, byDay.get(date) || [], { budget });
+    if (cover.deferred) {
+      deferred += 1;
+      continue;
+    }
     if (!cover.coversHome) continue;
     storms.push({
       date,
@@ -191,10 +217,10 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   storms.sort((a, b) => b.date.localeCompare(a.date));
 
   let msg = note;
-  if (!msg && !storms.length && (hailRows || []).length) {
-    msg = fastCover
-      ? `Scanning ${(hailRows || []).length} hail reports…`
-      : `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y.`;
+  if (!msg && deferred && loading) {
+    msg = `Checking zone cover… ${storms.length} confirmed, ${deferred} more to verify`;
+  } else if (!msg && !storms.length && (hailRows || []).length) {
+    msg = `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y.`;
   } else if (!msg && !storms.length && !(hailRows || []).length && !loading) {
     msg = "No hail rows yet — hard-refresh once so the radar proxy can load.";
   }
@@ -209,7 +235,8 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     note: msg,
     storms,
     hailRowCount: (hailRows || []).length,
-    loading: Boolean(loading || pinCache.loadingDeep),
+    loading: Boolean(loading || pinCache.loadingDeep || deferred > 0),
+    deferredCover: deferred,
   };
 }
 
@@ -237,8 +264,7 @@ export function filterCachedHomeStorms({ years = 2, minHailIn = 1 } = {}) {
 }
 
 function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note) {
-  // Single summarize → notify. Cache listeners re-filter cheaply; avoid building
-  // HailTrace meshes on every archive chunk (that froze the list at 1–2 dates).
+  // Single summarize → notify. Cache listeners re-filter cheaply.
   const result = summarizeHailRows(pinCache.hail, lat, lon, {
     minHailIn,
     days,
@@ -249,6 +275,29 @@ function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note)
   emitHailCache();
   const fn = onPartial || pinCache.uiNotify;
   if (fn) fn(result);
+  return result;
+}
+
+/** Finish remaining zone-cover checks in small batches so the list keeps growing. */
+async function drainCoverChecks(lat, lon, onPartial, minHailIn, days, years) {
+  const key = pinKey(lat, lon);
+  for (let i = 0; i < 80; i++) {
+    if (pinCache.key !== key) return;
+    const result = pushPartial(
+      onPartial,
+      lat,
+      lon,
+      minHailIn,
+      days,
+      years,
+      true,
+      `Confirming zone cover… ${i + 1}`,
+    );
+    if (!result?.deferredCover) break;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (pinCache.key !== key) return;
+  pushPartial(onPartial, lat, lon, minHailIn, days, years, false, null);
 }
 
 async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
@@ -260,21 +309,15 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   if (pinCache.deepenPromise && pinCache.key === key) {
     await pinCache.deepenPromise;
     if ((pinCache.fetchedDays || 0) >= days) {
-      pushPartial(
-        onPartial,
-        lat,
-        lon,
-        minHailIn,
-        days,
-        years,
-        false,
-        null,
-      );
+      await drainCoverChecks(lat, lon, onPartial, minHailIn, days, years);
       return;
     }
   }
 
-  if ((pinCache.fetchedDays || 0) >= days) return;
+  if ((pinCache.fetchedDays || 0) >= days) {
+    await drainCoverChecks(lat, lon, onPartial, minHailIn, days, years);
+    return;
+  }
 
   pinCache.loadingDeep = true;
   emitHailCache();
@@ -313,16 +356,7 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   pinCache.deepenPromise = run;
   await run;
   if (pinCache.key !== key) return;
-  pushPartial(
-    pinCache.uiNotify,
-    lat,
-    lon,
-    minHailIn,
-    days,
-    years,
-    false,
-    pinCache.fetchedDays >= days ? null : "Older years partially loaded — keep this tab open to retry.",
-  );
+  await drainCoverChecks(lat, lon, pinCache.uiNotify, minHailIn, days, years);
 }
 
 /**
