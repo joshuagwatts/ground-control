@@ -274,6 +274,7 @@ let pinCache = {
   deepenPromise: null,
   dossierPromise: null,
   swdiPromise: null,
+  reportDeepDone: false,
 };
 
 const hailListeners = new Set();
@@ -310,6 +311,7 @@ export function clearHomeHailCache() {
     deepenPromise: null,
     dossierPromise: null,
     swdiPromise: null,
+    reportDeepDone: false,
   };
   emitHailCache();
 }
@@ -629,6 +631,7 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
     deepenPromise: null,
     dossierPromise: null,
     swdiPromise: null,
+    reportDeepDone: false,
   };
   const seq = pinCache.loadSeq;
 
@@ -694,6 +697,99 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
   if (pinCache.key !== key || seq !== pinCache.loadSeq) {
     return filterCachedHomeStorms({ years, minHailIn });
   }
+  return filterCachedHomeStorms({ years, minHailIn });
+}
+
+/** Wider SWDI for thin years — report-time deep pass beyond the normal ~100 km crawl. */
+const HOME_SWDI_REPORT_KM = 180;
+
+/**
+ * Finish incomplete archive/SWDI, then one extra wide-radius pass for thin years.
+ * Call when the homeowner hits "Get free hail report".
+ */
+export async function deepenHomeHailForReport(
+  lat,
+  lon,
+  { address = "", years = 10, minHailIn = 0.5, onPartial } = {},
+) {
+  const days = Math.min(Math.max(Math.round(Number(years) * 365.25), 30), 3650);
+  const key = pinKey(lat, lon);
+  setWxPin(lat, lon);
+  pinCache.uiNotify = onPartial || pinCache.uiNotify;
+
+  if (pinCache.key !== key || !pinCache.fetchedDays) {
+    return loadHomeStorms(lat, lon, { address, years, minHailIn, onPartial, force: false });
+  }
+
+  const seq = pinCache.loadSeq;
+  if (days > (pinCache.fetchedDays || 0) || pinCache.deepenPromise) {
+    await deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq);
+  }
+  if (days > (pinCache.swdiFetchedDays || 0) || pinCache.swdiPromise) {
+    await deepenSwdiHistory(lat, lon, days, onPartial, minHailIn, years, seq);
+  }
+
+  if (pinCache.key !== key || seq !== pinCache.loadSeq) {
+    return filterCachedHomeStorms({ years, minHailIn });
+  }
+
+  if (!pinCache.reportDeepDone) {
+    pinCache.loadingSwdi = true;
+    emitHailCache();
+    try {
+      const end = new Date();
+      const startLimit = new Date();
+      startLimit.setDate(startLimit.getDate() - days);
+      const startLimitIso = startLimit.toISOString().slice(0, 10);
+      const endIso = end.toISOString().slice(0, 10);
+      const yearEnd = end.getFullYear();
+      const yearStart = startLimit.getFullYear();
+
+      for (let y = yearEnd; y >= yearStart; y--) {
+        if (pinCache.key !== key || seq !== pinCache.loadSeq) break;
+        let spanStart = `${y}-01-01`;
+        let spanEnd = `${y}-12-31`;
+        if (spanStart < startLimitIso) spanStart = startLimitIso;
+        if (spanEnd > endIso) spanEnd = endIso;
+        if (spanEnd < spanStart) continue;
+
+        const yearSwdi = (pinCache.hail || []).filter(
+          (h) =>
+            isSwdiHail(h) &&
+            String(h.date || "").slice(0, 10) >= spanStart &&
+            String(h.date || "").slice(0, 10) <= spanEnd,
+        ).length;
+        // Already dense near the pin — skip the wider crawl for this year.
+        if (yearSwdi >= 12) continue;
+
+        pushPartial(
+          pinCache.uiNotify,
+          lat,
+          lon,
+          minHailIn,
+          days,
+          years,
+          true,
+          `Deep report search · radar ${y} (wide)…`,
+        );
+        try {
+          const { rows } = await fetchSwdiHailSpan(lat, lon, HOME_SWDI_REPORT_KM, spanStart, spanEnd);
+          if (pinCache.key !== key || seq !== pinCache.loadSeq) break;
+          if (rows?.length) pinCache.hail = mergeHailRows(pinCache.hail, rows);
+        } catch (err) {
+          console.warn("[HomeScope] report SWDI wide", y, err);
+        }
+      }
+      if (pinCache.key === key && seq === pinCache.loadSeq) pinCache.reportDeepDone = true;
+    } finally {
+      if (pinCache.key === key) {
+        pinCache.loadingSwdi = false;
+        emitHailCache();
+      }
+    }
+  }
+
+  pushPartial(pinCache.uiNotify, lat, lon, minHailIn, days, years, false, null);
   return filterCachedHomeStorms({ years, minHailIn });
 }
 
