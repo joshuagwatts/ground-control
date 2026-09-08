@@ -19,7 +19,7 @@ export const PRODUCT = {
     ctaUrl: "https://www.highgroundokc.com/",
   },
   disclaimer:
-    "HomeScope summarizes public NOAA / SPC / IEM hail records for Oklahoma addresses. In Oklahoma, severe hail regularly totals roofs — insurers often call it an act of God. This report helps you see what hit your property and decide next steps with High Ground. It is not a formal insurance decision, appraisal, or substitute for a licensed adjuster.",
+    "HomeScope summarizes public NOAA SWDI / SPC / IEM hail records for Oklahoma addresses. A storm is listed only when a near-roof report (≤2.5 km) or a radar zone polygon covers this pin — nearby-only reports are not claimed as hitting your roof. Map colors follow hail size. This is not a formal insurance decision, appraisal, or substitute for a licensed adjuster.",
   /** Internal CRM intake — set webhookUrl so HomeScope can create the contact and email the report. */
   crm: {
     webhookUrl: "",
@@ -38,9 +38,11 @@ export const CLAIM_RULES = {
   maxHistoryYears: 10,
   /** Recent roof = repaired/replaced within this many years. */
   recentRoofYears: 2,
-  /** Count a storm if near-roof hits OR zone polygon covers the pin. */
+  /** Count a storm if near-roof hits OR zone polygon covers the pin — never soft/nearby guesses. */
   coverModes: ["near_roof", "polygon"],
   nearRoofKm: 1.6,
+  /** Max distance for “near roof” cover (aligned with field zone paint). */
+  nearZoneKm: 2.5,
 };
 
 /**

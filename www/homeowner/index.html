@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.259" />
+  <link rel="stylesheet" href="./style.css?v=0.2.260" />
 </head>
 <body>
   <header class="ho-top">
@@ -29,8 +29,8 @@
       </ol>
       <h1>See the hail that hit your roof</h1>
       <p>
-        Enter your Oklahoma address and review storms over your home. Unlock a free High Ground hail report with your
-        contact info and roof age — we’ll email the file from our CRM.
+        Enter your Oklahoma address for verified NOAA / SPC hail cover over that pin. Unlock a free High Ground report
+        with roof age and contact info — emailed from our CRM.
       </p>
     </section>
 
@@ -64,13 +64,15 @@
 
     <section class="ho-panel" id="panel-storms" data-panel="storms" hidden>
       <h2>Storms over your home</h2>
-      <p class="lead">Change filters anytime — the list and map refresh. Tap dates to overlay zones.</p>
+      <p class="lead">
+        Only dates with verified near-roof or zone-over-home cover. Map colors show hail size — not decoration.
+      </p>
 
       <p class="ho-mini-label">History</p>
       <div class="ho-chips" id="filter-years" role="group" aria-label="History window">
-        <button type="button" class="ho-chip on" data-years="2">2 years</button>
+        <button type="button" class="ho-chip" data-years="2">2 years</button>
         <button type="button" class="ho-chip" data-years="5">5 years</button>
-        <button type="button" class="ho-chip" data-years="10">10 years</button>
+        <button type="button" class="ho-chip on" data-years="10">10 years</button>
       </div>
       <p class="ho-mini-label">Min hail size</p>
       <div class="ho-chips" id="filter-hail" role="group" aria-label="Minimum hail size">
@@ -79,8 +81,21 @@
         <button type="button" class="ho-chip" data-hail="1.5">≥ 1½″</button>
         <button type="button" class="ho-chip" data-hail="2">≥ 2″</button>
       </div>
+      <p class="ho-mini-label">Rank &amp; map top 10</p>
+      <div class="ho-chips" id="filter-sort" role="group" aria-label="Storm ranking">
+        <button type="button" class="ho-chip on" data-sort="intense">Most intense</button>
+        <button type="button" class="ho-chip" data-sort="recent">Most recent</button>
+      </div>
 
       <div class="ho-map" id="ho-map" aria-label="Home map"></div>
+      <div class="ho-hail-legend" aria-hidden="true">
+        <span class="ho-leg-swatch" style="--c:#fff59d"></span><span>¾–1″</span>
+        <span class="ho-leg-swatch" style="--c:#ffc107"></span><span>1–1½″</span>
+        <span class="ho-leg-swatch" style="--c:#ff9800"></span><span>1½–2″</span>
+        <span class="ho-leg-swatch" style="--c:#e53935"></span><span>2–2½″</span>
+        <span class="ho-leg-swatch" style="--c:#8e24aa"></span><span>2½″+</span>
+        <span class="ho-leg-note">Blue pin = your home · dashed = spotter report location</span>
+      </div>
       <p class="ho-status" id="storm-status" role="status">Waiting for address…</p>
       <ul class="ho-storm-list" id="storm-list"></ul>
       <div class="ho-actions">
@@ -146,6 +161,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.259"></script>
+  <script type="module" src="./boot.js?v=0.2.260"></script>
 </body>
 </html>

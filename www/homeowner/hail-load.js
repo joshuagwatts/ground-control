@@ -15,8 +15,8 @@ import {
 
 /** Homeowner deep archive radius — wide enough for storm days, not a regional dump. */
 const HOME_DEEP_KM = 40;
-/** Count as covering the roof when a hit is this close (field zone paint ≈ 2.5km). */
-const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM, 3.2);
+/** Strict near-roof cover — matches field HailScope house zone, not a soft guess. */
+const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM);
 
 function pointInLatLonRing(lat, lon, ring) {
   if (!ring || ring.length < 3) return false;
@@ -33,6 +33,10 @@ function pointInLatLonRing(lat, lon, ring) {
   return inside;
 }
 
+/**
+ * Honest cover: near-roof hits and/or radar/spotter swath polygon over the pin.
+ * Soft “nearby” reports are tracked but never claimed as covering the home.
+ */
 function stormCoversHome(row, lat, lon) {
   const pts = row.zone_pts || [];
   const minDist = Number(row.min_dist);
@@ -43,7 +47,8 @@ function stormCoversHome(row, lat, lon) {
 
   let coversPolygon = false;
   try {
-    const rings = buildHailSwathRings(pts, row, { includeSpotters: true }) || [];
+    // Radar swaths only for polygon cover — spotters are point reports, not filled zones.
+    const rings = buildHailSwathRings(pts, row, { includeSpotters: false }) || [];
     for (const band of rings) {
       if (band?.ring && pointInLatLonRing(lat, lon, band.ring)) {
         coversPolygon = true;
@@ -54,13 +59,19 @@ function stormCoversHome(row, lat, lon) {
     coversPolygon = false;
   }
 
-  // Soft cover: nearest hit within ~5km + size — still "over this home" for homeowner UX.
-  const softNear = Number.isFinite(minDist) && minDist <= 5.5;
+  const nearbyEvidence =
+    !coversNear &&
+    !coversPolygon &&
+    Number.isFinite(minDist) &&
+    minDist > COVER_NEAR_KM &&
+    minDist <= 5.5;
+
   return {
     coversNear: Boolean(coversNear),
     coversPolygon: Boolean(coversPolygon),
-    coversHome: Boolean(coversNear || coversPolygon || softNear),
-    softNear: Boolean(softNear && !coversNear && !coversPolygon),
+    coversHome: Boolean(coversNear || coversPolygon),
+    nearbyEvidence: Boolean(nearbyEvidence),
+    softNear: Boolean(nearbyEvidence),
   };
 }
 
@@ -132,6 +143,7 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
     const cover = stormCoversHome(row, lat, lon);
+    // Only list storms that actually cover the home — nearby-only is noted, not claimed.
     if (!cover.coversHome) continue;
     storms.push({
       date,
@@ -141,7 +153,7 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       coversHome: true,
       coversNear: cover.coversNear,
       coversPolygon: cover.coversPolygon,
-      softNear: cover.softNear,
+      softNear: false,
       nearHits: Number(row.near_hits) || 0,
       minDist: Number(row.min_dist) || 999,
       hits: Number(row.hits) || 0,
@@ -149,11 +161,12 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       raw: row,
     });
   }
+  // Default chronological; UI re-ranks by intense vs recent.
   storms.sort((a, b) => b.date.localeCompare(a.date));
 
   let msg = note;
   if (!msg && !storms.length && (hailRows || []).length) {
-    msg = `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ cover this roof in ~${years || Math.round(days / 365)}y. Try a lower hail size.`;
+    msg = `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y. Try a lower hail size or wider history.`;
   } else if (!msg && !storms.length && !(hailRows || []).length && !loading) {
     msg = "No hail rows yet — hard-refresh once so the radar proxy can load.";
   }

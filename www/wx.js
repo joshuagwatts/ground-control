@@ -836,7 +836,7 @@ function iemBboxQuery(lat, lon, radiusKm) {
   ].join("&");
 }
 
-function isSpotterHail(p) {
+export function isSpotterHail(p) {
   const src = String(p?.source || "");
   if (/swdi|radar/i.test(src)) return false;
   return /spc|lsr|spot|iem/i.test(src) || src === "hail" || src === "noaa-spc";
@@ -957,7 +957,7 @@ function isRadarHail(p) {
 }
 
 /** True NOAA SWDI radar signature — not generic non-spotter rows. */
-function isSwdiHail(p) {
+export function isSwdiHail(p) {
   return /swdi|radar/i.test(String(p?.source || ""));
 }
 
@@ -1615,7 +1615,7 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
   }
 }
 
-function hailZoneColor(sizeIn) {
+export function hailZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
   if (Number.isNaN(sz)) return { stroke: "#7dff5a", fill: "#7dff5a", core: "#b8ff9a" };
   if (sz >= 3) return { stroke: "#6a1b9a", fill: "#8e24aa", core: "#ce93d8" };
@@ -1632,7 +1632,7 @@ function hailZoneColor(sizeIn) {
  * Radar swath ramp — purple only on truly large hail.
  * 0.75 pale → 1″ yellow → 1.5″ orange → 2″ red → 2.5″+ purple.
  */
-function hailRadarBandColor(sizeIn) {
+export function hailRadarBandColor(sizeIn) {
   const sz = parseFloat(sizeIn);
   if (Number.isNaN(sz)) return { stroke: "#cfd8dc", fill: "#eceff1", core: "#fafafa" };
   if (sz >= 3) return { stroke: "#4a148c", fill: "#6a1b9a", core: "#ce93d8" };
@@ -1648,7 +1648,7 @@ function hailRadarBandColor(sizeIn) {
 }
 
 /** Nested fills — translucent so satellite stays readable. */
-function hailMeshBandOpacity(sizeIn) {
+export function hailMeshBandOpacity(sizeIn) {
   const sz = Number(sizeIn) || 0;
   if (sz < 1) return 0.36;
   if (sz < 1.25) return 0.4;
@@ -1660,7 +1660,7 @@ function hailMeshBandOpacity(sizeIn) {
 }
 
 /** Spotter-confirmed hail zones — warm red/orange. */
-function hailSpotterZoneColor(sizeIn) {
+export function hailSpotterZoneColor(sizeIn) {
   const sz = parseFloat(sizeIn);
   if (Number.isNaN(sz)) return { stroke: "#ff5252", fill: "#e53935", core: "#ff8a80" };
   if (sz >= 2) return { stroke: "#ff1744", fill: "#c62828", core: "#ff8a80" };

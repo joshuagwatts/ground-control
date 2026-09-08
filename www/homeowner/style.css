@@ -760,13 +760,28 @@ a {
   color: var(--muted);
 }
 
-.ho-mini-label {
-  margin: 0.85rem 0 0.35rem;
-  font-size: 0.68rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.ho-hail-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
+  margin: 0.55rem 0 0.35rem;
+  font-size: 0.72rem;
   color: var(--muted);
-  font-weight: 600;
+}
+
+.ho-leg-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  background: var(--c);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  flex: 0 0 auto;
+}
+
+.ho-leg-note {
+  flex: 1 1 100%;
+  opacity: 0.9;
 }
 
 .ho-gate-modal {
