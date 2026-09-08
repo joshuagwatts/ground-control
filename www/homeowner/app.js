@@ -6,6 +6,7 @@ import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddress
 import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
 import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache } from "./hail-load.js";
 import { buildHailSwathRings } from "../wx.js";
+import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
 
 const LEAD_KEY = "homescope_lead_v1";
 
@@ -16,6 +17,7 @@ const state = {
   lat: null,
   lon: null,
   roofMode: "idk",
+  roofAgeLabel: "Not sure",
   roofReplacedOn: null,
   years: 2,
   minHailIn: 1,
@@ -51,9 +53,100 @@ function readLead() {
 
 function saveLead(lead) {
   localStorage.setItem(LEAD_KEY, JSON.stringify(lead));
-  // CRM hook — replace with your endpoint later.
-  window.dispatchEvent(new CustomEvent("homescope:lead", { detail: lead }));
-  console.info("[HomeScope] lead captured (CRM stub)", lead);
+}
+
+function leadReadyForReport(lead) {
+  return Boolean(
+    lead?.name &&
+      lead?.email &&
+      lead?.phone &&
+      lead?.roofCaptured &&
+      (lead.roofMode === "idk" || lead.roofReplacedOn || lead.roofMode),
+  );
+}
+
+function openReportGate() {
+  const gate = $("#report-gate");
+  if (!gate) return;
+  gate.hidden = false;
+  if (state.lead) {
+    if ($("#gate-name") && state.lead.name) $("#gate-name").value = state.lead.name;
+    if ($("#gate-email") && state.lead.email) $("#gate-email").value = state.lead.email;
+    if ($("#gate-phone") && state.lead.phone) $("#gate-phone").value = state.lead.phone;
+  }
+  const mode = state.roofMode || state.lead?.roofMode || "idk";
+  paintGateRoofMode(mode);
+  if (mode === "year" && state.lead?.roofYear && $("#gate-roof-year")) {
+    $("#gate-roof-year").value = state.lead.roofYear;
+  }
+  setStatus($("#gate-status"), "");
+  $("#gate-name")?.focus?.();
+}
+
+function closeReportGate() {
+  const gate = $("#report-gate");
+  if (gate) gate.hidden = true;
+}
+
+function paintGateRoofMode(mode) {
+  state.roofMode = mode || "idk";
+  const root = $("#gate-roof-mode");
+  if (root) {
+    $$("[data-roof]", root).forEach((b) => b.classList.toggle("on", b.getAttribute("data-roof") === state.roofMode));
+  }
+  const inputs = $("#gate-roof-inputs");
+  if (inputs) inputs.hidden = state.roofMode !== "year";
+  syncRoofFromGate();
+}
+
+function isoYearsAgo(years) {
+  const d = new Date();
+  d.setMonth(d.getMonth() - Math.round(Number(years) * 12));
+  return d.toISOString().slice(0, 10);
+}
+
+/** Map gate roof chips → replaced-on date + label for CRM / report. */
+function syncRoofFromGate() {
+  const mode = state.roofMode || "idk";
+  if (mode === "idk") {
+    state.roofReplacedOn = null;
+    state.roofAgeLabel = "Not sure";
+    return true;
+  }
+  if (mode === "lt2") {
+    state.roofReplacedOn = isoYearsAgo(1);
+    state.roofAgeLabel = "Under 2 years";
+    return true;
+  }
+  if (mode === "y2_5") {
+    state.roofReplacedOn = isoYearsAgo(3.5);
+    state.roofAgeLabel = "2–5 years";
+    return true;
+  }
+  if (mode === "y5_10") {
+    state.roofReplacedOn = isoYearsAgo(7.5);
+    state.roofAgeLabel = "5–10 years";
+    return true;
+  }
+  if (mode === "y10") {
+    state.roofReplacedOn = isoYearsAgo(12);
+    state.roofAgeLabel = "10+ years";
+    return true;
+  }
+  if (mode === "year") {
+    const y = Number($("#gate-roof-year")?.value);
+    if (!Number.isFinite(y) || y < 1970 || y > 2030) {
+      state.roofReplacedOn = null;
+      state.roofAgeLabel = "Exact year";
+      return false;
+    }
+    state.roofReplacedOn = `${y}-01-01`;
+    state.roofAgeLabel = `Replaced ${y}`;
+    return true;
+  }
+  state.roofReplacedOn = null;
+  state.roofAgeLabel = "Not sure";
+  return true;
 }
 
 function setStep(step) {
@@ -78,40 +171,6 @@ function setStep(step) {
       paintOverlays();
     });
   }
-}
-
-function openReportGate() {
-  const gate = $("#report-gate");
-  if (!gate) return;
-  gate.hidden = false;
-  if (state.lead) {
-    if ($("#gate-name") && state.lead.name) $("#gate-name").value = state.lead.name;
-    if ($("#gate-email") && state.lead.email) $("#gate-email").value = state.lead.email;
-    if ($("#gate-phone") && state.lead.phone) $("#gate-phone").value = state.lead.phone;
-  }
-  $("#gate-name")?.focus?.();
-}
-
-function closeReportGate() {
-  const gate = $("#report-gate");
-  if (gate) gate.hidden = true;
-}
-
-function syncRoofFromUi() {
-  if (state.roofMode === "idk") {
-    state.roofReplacedOn = null;
-    return true;
-  }
-  if (state.roofMode === "month") {
-    const m = $("#roof-month")?.value;
-    if (!m) return false;
-    state.roofReplacedOn = `${m}-01`;
-    return true;
-  }
-  const y = Number($("#roof-year")?.value);
-  if (!Number.isFinite(y) || y < 1970 || y > 2030) return false;
-  state.roofReplacedOn = `${y}-01-01`;
-  return true;
 }
 
 function ensureMap() {
@@ -464,7 +523,6 @@ async function refreshStorms({ force = false } = {}) {
   if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
   const status = $("#storm-status");
   const gen = ++refreshStorms._gen;
-  syncRoofFromUi();
   setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
   $("#make-report").disabled = true;
 
@@ -597,9 +655,13 @@ function buildReportText(rec) {
 
 function renderReportDocument(rec) {
   const b = PRODUCT.brand;
-  const roofLabel = state.roofReplacedOn
-    ? state.roofReplacedOn.slice(0, 7)
-    : `Unknown (last ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown} years)`;
+  const roofLabel =
+    state.roofAgeLabel && state.roofAgeLabel !== "Exact year"
+      ? state.roofAgeLabel
+      : state.roofReplacedOn
+        ? state.roofReplacedOn.slice(0, 7)
+        : `Unknown (last ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown} years)`;
+  const quality = rec.roofQuality || {};
   const prepared = state.lead?.name || state.lead?.email || "Homeowner";
   const tone = rec.considerClaim ? "claim" : rec.talkToRoofer ? "roofer" : "ok";
 
@@ -643,12 +705,14 @@ function renderReportDocument(rec) {
       <p class="hg-addr">${escHtml(state.address)}</p>
       <dl class="hg-meta-grid">
         <div><dt>Prepared for</dt><dd>${escHtml(prepared)}</dd></div>
-        <div><dt>Roof last replaced</dt><dd>${escHtml(roofLabel)}</dd></div>
+        <div><dt>Roof age</dt><dd>${escHtml(roofLabel)}</dd></div>
+        <div><dt>Roof estimate</dt><dd>${escHtml(quality.label || "—")}</dd></div>
         <div><dt>History window</dt><dd>${escHtml(String(state.years))} years · ≥ ${escHtml(String(state.minHailIn))}″</dd></div>
         <div><dt>Review period</dt><dd>${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)}</dd></div>
         <div><dt>Generated</dt><dd>${escHtml(new Date().toLocaleString())}</dd></div>
         <div><dt>Sources</dt><dd>NOAA SWDI · SPC · IEM LSR</dd></div>
       </dl>
+      ${quality.detail ? `<p class="hg-roof-quality">${escHtml(quality.detail)}</p>` : ""}
     </section>
 
     <section class="hg-verdict hg-verdict-${tone}">
@@ -687,8 +751,8 @@ function renderReportDocument(rec) {
     </footer>`;
 }
 
-function generateReport() {
-  syncRoofFromUi();
+async function generateReport({ emailViaCrm = true } = {}) {
+  syncRoofFromGate();
   const rec = homescopeRecommendation({
     storms: state.storms,
     roofReplacedOn: state.roofReplacedOn,
@@ -699,6 +763,64 @@ function generateReport() {
   if (doc) doc.innerHTML = renderReportDocument(rec);
   setStep("report");
   closeReportGate();
+
+  const html = reportHtmlDoc();
+  if (emailViaCrm && state.lead?.email) {
+    const email = buildCrmEmailPackage({
+      lead: {
+        ...state.lead,
+        roofLabel: state.roofAgeLabel,
+        address: state.address,
+      },
+      reportHtml: html,
+      reportText: state.reportText,
+      rec,
+    });
+    const crmResult = await submitHomescopeLeadToCrm({
+      type: "homescope_report_lead",
+      action: "create_contact_and_email_report",
+      lead: {
+        ...state.lead,
+        lat: state.lat,
+        lon: state.lon,
+        address: state.address,
+        roofMode: state.roofMode,
+        roofReplacedOn: state.roofReplacedOn,
+        roofAgeLabel: state.roofAgeLabel,
+        years: state.years,
+        minHailIn: state.minHailIn,
+      },
+      recommendation: {
+        headline: rec.headline,
+        reason: rec.reason,
+        considerClaim: rec.considerClaim,
+        talkToRoofer: rec.talkToRoofer,
+        roofQuality: rec.roofQuality,
+        windowStart: rec.windowStart,
+        windowEnd: rec.windowEnd,
+      },
+      storms: state.storms.map((s) => ({
+        date: s.date,
+        maxSizeIn: s.maxSizeIn,
+        sources: s.sources,
+        coversNear: s.coversNear,
+        coversPolygon: s.coversPolygon,
+      })),
+      email,
+    });
+    if (state.lead) {
+      state.lead.crm = crmResult.status;
+      state.lead.crmAt = new Date().toISOString();
+      saveLead(state.lead);
+    }
+    setStatus(
+      $("#share-status"),
+      crmResult.status === "sent"
+        ? `Report emailed to ${state.lead.email} via High Ground CRM`
+        : `Report ready — High Ground CRM will email ${state.lead.email}`,
+    );
+  }
+
   requestAnimationFrame(() => doc?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
 }
 
@@ -739,6 +861,7 @@ function reportHtmlDoc() {
   .hg-meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:.65rem .85rem;margin:0}
   .hg-meta-grid dt{font-size:.65rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
   .hg-meta-grid dd{margin:.15rem 0 0;font-size:.92rem}
+  .hg-roof-quality{margin:.85rem 0 0;color:var(--muted);font-size:.9rem}
   .hg-verdict{border-radius:14px;padding:1.15rem 1.1rem;margin:0 0 1rem;border:1px solid var(--line);background:linear-gradient(160deg,rgba(255,204,0,.12),rgba(20,20,22,.95))}
   .hg-verdict-title{margin:.2rem 0 .45rem;font-size:1.35rem;letter-spacing:-.02em;line-height:1.2}
   .hg-verdict-body{margin:0 0 .9rem;color:var(--muted);font-size:.95rem}
@@ -807,13 +930,30 @@ function boot() {
   if (gateDisc) gateDisc.textContent = PRODUCT.disclaimer;
 
   const existing = readLead();
-  if (existing?.email) state.lead = existing;
+  if (existing?.email) {
+    state.lead = existing;
+    if (existing.roofMode) {
+      state.roofMode = existing.roofMode;
+      state.roofReplacedOn = existing.roofReplacedOn || null;
+      state.roofAgeLabel = existing.roofAgeLabel || state.roofAgeLabel;
+    }
+  }
 
-  $("#gate-form")?.addEventListener("submit", (e) => {
+  bindChips("#gate-roof-mode", "roof", (mode) => {
+    paintGateRoofMode(mode);
+  });
+  $("#gate-roof-year")?.addEventListener("input", () => syncRoofFromGate());
+
+  $("#gate-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("#gate-name")?.value?.trim() || "";
     const email = $("#gate-email")?.value?.trim() || "";
     const phone = $("#gate-phone")?.value?.trim() || "";
+    if (!syncRoofFromGate() && state.roofMode === "year") {
+      setStatus($("#gate-status"), "Enter the year your roof was last replaced", true);
+      $("#gate-roof-year")?.focus?.();
+      return;
+    }
     if (!name) {
       setStatus($("#gate-status"), "Enter your name", true);
       return;
@@ -834,11 +974,19 @@ function boot() {
       source: "homescope_report_gate",
       crm: "pending",
       address: state.address,
+      lat: state.lat,
+      lon: state.lon,
+      roofCaptured: true,
+      roofMode: state.roofMode,
+      roofReplacedOn: state.roofReplacedOn,
+      roofAgeLabel: state.roofAgeLabel,
+      roofYear: state.roofMode === "year" ? Number($("#gate-roof-year")?.value) || null : null,
+      emailReport: true,
     };
     saveLead(lead);
     state.lead = lead;
-    setStatus($("#gate-status"), "Building your report…");
-    generateReport();
+    setStatus($("#gate-status"), "Building your report and queuing CRM email…");
+    await generateReport({ emailViaCrm: true });
   });
   $("#gate-scrim")?.addEventListener("click", closeReportGate);
 
@@ -887,19 +1035,6 @@ function boot() {
     clearSuggestions();
   });
 
-  bindChips("#roof-mode", "roof", (mode) => {
-    state.roofMode = mode;
-    const inputs = $("#roof-inputs");
-    const year = $("#roof-year");
-    const month = $("#roof-month");
-    if (inputs) inputs.hidden = mode === "idk";
-    if (year) year.hidden = mode !== "year";
-    if (month) month.hidden = mode !== "month";
-    syncRoofFromUi();
-  });
-  $("#roof-year")?.addEventListener("change", () => syncRoofFromUi());
-  $("#roof-month")?.addEventListener("change", () => syncRoofFromUi());
-
   bindChips("#filter-years", "years", (v) => {
     state.years = Number(v) || 2;
     if (Number.isFinite(state.lat)) applyFiltersFromChips();
@@ -914,9 +1049,13 @@ function boot() {
       setStatus($("#storm-status"), "Load hail for an address first", true);
       return;
     }
-    syncRoofFromUi();
-    if (state.lead?.email && state.lead?.phone && state.lead?.name) {
-      generateReport();
+    if (leadReadyForReport(state.lead)) {
+      if (state.lead.roofMode) {
+        state.roofMode = state.lead.roofMode;
+        state.roofReplacedOn = state.lead.roofReplacedOn || null;
+        state.roofAgeLabel = state.lead.roofAgeLabel || state.roofAgeLabel;
+      }
+      void generateReport({ emailViaCrm: true });
       return;
     }
     openReportGate();

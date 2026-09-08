@@ -20,6 +20,11 @@ export const PRODUCT = {
   },
   disclaimer:
     "HomeScope summarizes public NOAA / SPC / IEM hail records for Oklahoma addresses. In Oklahoma, severe hail regularly totals roofs — insurers often call it an act of God. This report helps you see what hit your property and decide next steps with High Ground. It is not a formal insurance decision, appraisal, or substitute for a licensed adjuster.",
+  /** Internal CRM intake — set webhookUrl so HomeScope can create the contact and email the report. */
+  crm: {
+    webhookUrl: "",
+    emailReport: true,
+  },
 };
 
 /** Locked claim / CTA rules. */
@@ -114,11 +119,14 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
     );
   }
 
+  const roofQuality = estimateRoofQuality({ ageY, qualifyingCount: qualifying.length, considerClaim });
+
   return {
     considerClaim,
     talkToRoofer,
     recentRoof,
     roofAgeYears: ageY,
+    roofQuality,
     qualifying,
     covering,
     windowStart,
@@ -132,6 +140,39 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
         ? "Talk to a roofer — and get a free inspection"
         : PRODUCT.brand.cta,
     reason: lines.join(" "),
+  };
+}
+
+/** Rough condition read from roof age + covering hail — not an inspection. */
+export function estimateRoofQuality({ ageY, qualifyingCount = 0, considerClaim = false } = {}) {
+  if (ageY == null || !Number.isFinite(ageY) || ageY < 0) {
+    return {
+      label: "Unknown (roof age not provided)",
+      detail:
+        "Without a roof age we used a 2-year lookback. Confirm when the roof was last replaced so High Ground can sharpen the estimate.",
+    };
+  }
+  if (ageY <= 2) {
+    return {
+      label: considerClaim || qualifyingCount ? "Newer roof — hail exposure risk" : "Newer roof",
+      detail: `About ${ageY.toFixed(1)} years old. Newer roofs can still be totaled by qualifying hail — document early.`,
+    };
+  }
+  if (ageY <= 5) {
+    return {
+      label: considerClaim ? "Mid-life roof with multi-storm hail" : "Mid-life roof",
+      detail: `About ${ageY.toFixed(1)} years old. Mid-life roofs often show cumulative hail wear after Oklahoma storms.`,
+    };
+  }
+  if (ageY <= 10) {
+    return {
+      label: considerClaim ? "Aging roof with hail history" : "Aging roof",
+      detail: `About ${ageY.toFixed(1)} years old. Aging roofs lose resiliency; hail history raises the odds of needed repair or replacement.`,
+    };
+  }
+  return {
+    label: considerClaim ? "Older roof — strong claim review candidate" : "Older roof",
+    detail: `About ${ageY.toFixed(1)} years old. Older roofs plus covering hail is when homeowners most often need a professional look.`,
   };
 }
 

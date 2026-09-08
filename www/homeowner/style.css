@@ -834,6 +834,21 @@ a {
   gap: 0.75rem;
 }
 
+.ho-gate-sheet .ho-chips {
+  margin: 0 0 0.35rem;
+}
+
+.ho-gate-sheet .ho-row {
+  margin: 0 0 0.65rem;
+}
+
+.hg-roof-quality {
+  margin: 0.85rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .ho-gate-btn {
   margin-top: 0.25rem;
   align-self: flex-start;

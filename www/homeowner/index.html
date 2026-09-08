@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.258" />
+  <link rel="stylesheet" href="./style.css?v=0.2.259" />
 </head>
 <body>
   <header class="ho-top">
@@ -29,8 +29,8 @@
       </ol>
       <h1>See the hail that hit your roof</h1>
       <p>
-        Enter your Oklahoma address, review storm dates over your home, then unlock a free High Ground hail report
-        with your name, email, and phone.
+        Enter your Oklahoma address and review storms over your home. Unlock a free High Ground hail report with your
+        contact info and roof age — we’ll email the file from our CRM.
       </p>
     </section>
 
@@ -66,17 +66,6 @@
       <h2>Storms over your home</h2>
       <p class="lead">Change filters anytime — the list and map refresh. Tap dates to overlay zones.</p>
 
-      <p class="ho-mini-label">Roof last replaced</p>
-      <div class="ho-chips" id="roof-mode" role="group" aria-label="Roof age">
-        <button type="button" class="ho-chip on" data-roof="idk">I don’t know</button>
-        <button type="button" class="ho-chip" data-roof="year">Year</button>
-        <button type="button" class="ho-chip" data-roof="month">Year + month</button>
-      </div>
-      <div class="ho-row" id="roof-inputs" hidden style="margin-top: 0.55rem">
-        <input type="number" id="roof-year" min="1970" max="2030" placeholder="Year (e.g. 2019)" />
-        <input type="month" id="roof-month" hidden />
-      </div>
-
       <p class="ho-mini-label">History</p>
       <div class="ho-chips" id="filter-years" role="group" aria-label="History window">
         <button type="button" class="ho-chip on" data-years="2">2 years</button>
@@ -110,13 +99,28 @@
     </section>
   </main>
 
-  <!-- Report unlock — only when they ask for the free report -->
+  <!-- Report unlock — CRM lead + roof age, then email report -->
   <div class="ho-gate-modal" id="report-gate" hidden>
     <button type="button" class="ho-gate-scrim" id="gate-scrim" aria-label="Close"></button>
     <div class="ho-gate-sheet" role="dialog" aria-modal="true" aria-labelledby="gate-title">
       <h2 id="gate-title">Unlock your free hail report</h2>
-      <p class="lead">Drop your info and we’ll generate a High Ground HomeScope report you can print or share.</p>
+      <p class="lead">
+        Tell us how old the roof is and drop your contact info. We’ll build an accurate High Ground estimate and email
+        the report from our CRM.
+      </p>
       <form id="gate-form" class="ho-gate">
+        <p class="ho-mini-label" id="gate-roof-label">About how old is your roof?</p>
+        <div class="ho-chips" id="gate-roof-mode" role="group" aria-labelledby="gate-roof-label">
+          <button type="button" class="ho-chip" data-roof="lt2">Under 2 yrs</button>
+          <button type="button" class="ho-chip" data-roof="y2_5">2–5 yrs</button>
+          <button type="button" class="ho-chip" data-roof="y5_10">5–10 yrs</button>
+          <button type="button" class="ho-chip" data-roof="y10">10+ yrs</button>
+          <button type="button" class="ho-chip" data-roof="year">Exact year</button>
+          <button type="button" class="ho-chip on" data-roof="idk">Not sure</button>
+        </div>
+        <div class="ho-row" id="gate-roof-inputs" hidden>
+          <input type="number" id="gate-roof-year" min="1970" max="2030" placeholder="Year last replaced (e.g. 2019)" />
+        </div>
         <label class="ho-lab">Full name
           <input type="text" id="gate-name" name="name" autocomplete="name" required placeholder="Jordan Smith" />
         </label>
@@ -126,7 +130,7 @@
         <label class="ho-lab">Phone
           <input type="tel" id="gate-phone" name="phone" autocomplete="tel" required placeholder="(405) 555-0100" />
         </label>
-        <button type="submit" class="primary ho-gate-btn">Show my report</button>
+        <button type="submit" class="primary ho-gate-btn">Email my report</button>
       </form>
       <p class="ho-status" id="gate-status" role="status"></p>
       <p class="ho-disclaimer" id="ho-disclaimer-gate"></p>
@@ -142,6 +146,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.258"></script>
+  <script type="module" src="./boot.js?v=0.2.259"></script>
 </body>
 </html>

@@ -71,3 +71,21 @@ test("storms that miss the home do not count", () => {
   const rec = homescopeRecommendation({ storms, roofReplacedOn: null, asOf });
   assert.equal(rec.considerClaim, false);
 });
+
+test("roof quality estimate uses age + hail", () => {
+  const asOf = new Date("2026-09-08T12:00:00Z");
+  const storms = [
+    { date: "2025-05-01", maxSizeIn: 1.25, coversHome: true },
+    { date: "2024-10-01", maxSizeIn: 1.5, coversHome: true },
+  ];
+  const unknown = homescopeRecommendation({ storms, roofReplacedOn: null, asOf });
+  assert.match(unknown.roofQuality.label, /Unknown/i);
+
+  const aging = homescopeRecommendation({
+    storms,
+    roofReplacedOn: "2016-01-01",
+    asOf,
+  });
+  assert.match(aging.roofQuality.label, /Older roof/i);
+  assert.ok(aging.roofQuality.detail);
+});
