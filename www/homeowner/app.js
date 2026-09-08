@@ -87,10 +87,12 @@ function ensureMap() {
     attributionControl: true,
     scrollWheelZoom: true,
   }).setView([35.4676, -97.5164], 11);
-  window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution: "&copy; OpenStreetMap &copy; CARTO",
-    maxZoom: 19,
-    subdomains: "abcd",
+  // Same Google tiles as field HailScope — Carto dark tiles now require an API key.
+  window.L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&hl=en&scale=2&x={x}&y={y}&z={z}", {
+    attribution: "&copy; Google",
+    maxZoom: 21,
+    maxNativeZoom: 21,
+    subdomains: "0123",
   }).addTo(state.map);
   window.L.control.zoom({ position: "bottomright" }).addTo(state.map);
   state.overlay = window.L.layerGroup().addTo(state.map);
@@ -325,7 +327,7 @@ function roofDateFromInputs() {
   return `${y}-01-01`;
 }
 
-function paintStormList() {
+function paintStormList({ loading = false } = {}) {
   const list = $("#storm-list");
   const btn = $("#make-report");
   if (!list) return;
@@ -334,7 +336,9 @@ function paintStormList() {
     const li = document.createElement("li");
     li.style.cursor = "default";
     li.style.opacity = "0.75";
-    li.innerHTML = `<span class="sz">—</span><span>No covering storms yet<br/><span class="meta">Try a wider year window or lower hail size</span></span><span></span>`;
+    li.innerHTML = loading
+      ? `<span class="sz">…</span><span>Loading hail zones…<br/><span class="meta">NOAA radar + spotter reports</span></span><span></span>`
+      : `<span class="sz">—</span><span>No covering storms yet<br/><span class="meta">Try a wider year window or lower hail size</span></span><span></span>`;
     list.appendChild(li);
     if (btn) btn.disabled = true;
     paintOverlays();
@@ -364,26 +368,62 @@ function paintStormList() {
 async function refreshStorms() {
   if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
   const status = $("#storm-status");
+  const gen = ++refreshStorms._gen;
   setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
   $("#make-report").disabled = true;
+  state.storms = [];
+  state.selected.clear();
+  paintStormList({ loading: true });
   try {
     const result = await loadHomeStorms(state.lat, state.lon, {
       address: state.address,
       years: state.years,
       minHailIn: state.minHailIn,
       onPartial: (part) => {
-        if (part?.storms?.length) {
-          state.storms = part.storms;
-          for (const s of state.storms.slice(0, 3)) state.selected.add(s.date);
-          paintStormList();
-          setStatus(status, `Updating… ${part.storms.length} covering storm(s) so far`);
+        if (gen !== refreshStorms._gen) return;
+        state.storms = part.storms || [];
+        if (state.selected.size === 0 && state.storms.length) {
+          state.selected = new Set(state.storms.slice(0, Math.min(4, state.storms.length)).map((s) => s.date));
+        } else {
+          for (const s of state.storms) {
+            if (state.selected.size >= 4) break;
+            state.selected.add(s.date);
+          }
         }
+        // Drop selections that vanished after a filter refresh.
+        for (const d of [...state.selected]) {
+          if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
+        }
+        paintStormList({ loading: Boolean(part.loading) });
+        const n = state.storms.length;
+        const rows = part.hailRowCount || 0;
+        setStatus(
+          status,
+          part.loading
+            ? `Loading… ${n} covering storm(s) · ${rows} hail reports`
+            : n
+              ? `${n} storm date(s) covering this home`
+              : part.note || "Still searching…",
+        );
       },
     });
+    if (gen !== refreshStorms._gen) return;
     state.storms = result.storms || [];
-    state.selected = new Set(state.storms.slice(0, Math.min(3, state.storms.length)).map((s) => s.date));
-    paintStormList();
+    if (!state.selected.size && state.storms.length) {
+      state.selected = new Set(state.storms.slice(0, Math.min(4, state.storms.length)).map((s) => s.date));
+    }
+    for (const d of [...state.selected]) {
+      if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
+    }
+    paintStormList({ loading: false });
+    ensureMap();
+    if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
+    paintOverlays();
     const note = result.note ? ` ${result.note}` : "";
+    if (result.error) {
+      setStatus(status, result.note || "Hail load failed", true);
+      return;
+    }
     setStatus(
       status,
       state.storms.length
@@ -391,9 +431,12 @@ async function refreshStorms() {
         : `No storms ≥${state.minHailIn}″ covering this home in ~${state.years} years.${note}`,
     );
   } catch (err) {
+    if (gen !== refreshStorms._gen) return;
+    paintStormList({ loading: false });
     setStatus(status, err?.message || "Hail load failed", true);
   }
 }
+refreshStorms._gen = 0;
 
 function buildReportText(rec) {
   const lines = [];
@@ -533,8 +576,9 @@ function unlockFromLead(lead) {
 
 function boot() {
   $("#ho-brand").textContent = PRODUCT.name;
-  $("#ho-ver").textContent = `v${APP_VERSION}`;
   document.title = PRODUCT.name;
+  // version label set in boot.js; keep in sync if boot skipped
+  if ($("#ho-ver") && !$("#ho-ver").textContent) $("#ho-ver").textContent = `v${APP_VERSION}`;
   $("#ho-disclaimer").textContent = PRODUCT.disclaimer;
   $("#ho-disclaimer-gate").textContent = PRODUCT.disclaimer;
 
