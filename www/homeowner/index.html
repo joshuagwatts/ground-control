@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.301" />
+  <link rel="stylesheet" href="./style.css?v=0.2.302" />
 </head>
 <body>
   <header class="ho-top">
@@ -164,15 +164,15 @@
           <input type="number" id="gate-roof-year" min="1970" max="2030" placeholder="Year last replaced (e.g. 2019)" />
         </div>
         <label class="ho-lab">Full name
-          <input type="text" id="gate-name" name="name" autocomplete="name" required placeholder="Jordan Smith" />
+          <input type="text" id="gate-name" name="name" autocomplete="name" enterkeyhint="next" placeholder="Jordan Smith" />
         </label>
         <label class="ho-lab">Email
-          <input type="email" id="gate-email" name="email" autocomplete="email" required placeholder="you@email.com" />
+          <input type="email" id="gate-email" name="email" autocomplete="email" enterkeyhint="next" inputmode="email" placeholder="you@email.com" />
         </label>
         <label class="ho-lab">Phone
-          <input type="tel" id="gate-phone" name="phone" autocomplete="tel" required placeholder="(405) 555-0100" />
+          <input type="tel" id="gate-phone" name="phone" autocomplete="tel" enterkeyhint="go" inputmode="tel" placeholder="(405) 555-0100" />
         </label>
-        <button type="submit" class="primary ho-gate-btn">Build my hail report</button>
+        <button type="button" class="primary ho-gate-btn" id="gate-submit">Build my hail report</button>
       </form>
       <p class="ho-status" id="gate-status" role="status"></p>
       <p class="ho-disclaimer" id="ho-disclaimer-gate"></p>
@@ -206,6 +206,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.301"></script>
+  <script type="module" src="./boot.js?v=0.2.302"></script>
 </body>
 </html>

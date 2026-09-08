@@ -1027,6 +1027,7 @@ a {
   border: 0;
   background: rgba(0, 0, 0, 0.62);
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 .ho-gate-sheet {
@@ -1037,6 +1038,9 @@ a {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  touch-action: pan-y;
+  pointer-events: auto;
+  -webkit-transform: translateZ(0);
   margin: 0;
   padding: 1.25rem 1.15rem calc(1.35rem + var(--safe-bottom));
   border-radius: 18px 18px 0 0;
@@ -1049,7 +1053,7 @@ a {
 html.ho-gate-open,
 body.ho-gate-open {
   overflow: hidden;
-  touch-action: none;
+  /* Do not set touch-action:none here — it breaks iOS/Android taps + sheet scroll. */
 }
 
 .ho-gate-sheet h2 {
@@ -1090,18 +1094,24 @@ body.ho-gate-open {
 }
 
 .ho-gate-btn {
-  margin-top: 0.25rem;
-  align-self: flex-start;
+  margin-top: 0.45rem;
+  align-self: stretch;
+  width: 100%;
+  min-height: 48px;
   appearance: none;
   border: none;
   background: var(--phos);
   color: #1c1400;
   font: inherit;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
-  padding: 0.75rem 1.1rem;
+  padding: 0.85rem 1.1rem;
   border-radius: 10px;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(255, 204, 0, 0.35);
+  position: relative;
+  z-index: 2;
 }
 
 .ho-deep-modal {
@@ -1252,7 +1262,6 @@ body.ho-gate-open {
 html.ho-deep-open,
 body.ho-deep-open {
   overflow: hidden;
-  touch-action: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

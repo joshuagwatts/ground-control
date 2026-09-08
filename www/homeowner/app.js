@@ -1917,8 +1917,9 @@ function boot() {
   });
   $("#gate-roof-year")?.addEventListener("input", () => syncRoofFromGate());
 
-  $("#gate-form")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
+  async function submitReportGate(e) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     const name = $("#gate-name")?.value?.trim() || "";
     const email = $("#gate-email")?.value?.trim() || "";
     const phone = $("#gate-phone")?.value?.trim() || "";
@@ -1929,15 +1930,23 @@ function boot() {
     }
     if (!name) {
       setStatus($("#gate-status"), "Enter your name", true);
+      $("#gate-name")?.focus?.();
       return;
     }
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setStatus($("#gate-status"), "Enter a valid email", true);
+      $("#gate-email")?.focus?.();
       return;
     }
     if (!phone || phone.replace(/\D/g, "").length < 10) {
-      setStatus($("#gate-status"), "Enter a phone number", true);
+      setStatus($("#gate-status"), "Enter a phone number (10 digits)", true);
+      $("#gate-phone")?.focus?.();
       return;
+    }
+    const btn = $("#gate-submit");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Starting…";
     }
     const lead = {
       name,
@@ -1956,10 +1965,35 @@ function boot() {
       roofYear: state.roofMode === "year" ? Number($("#gate-roof-year")?.value) || null : null,
       emailReport: true,
     };
-    saveLead(lead);
-    state.lead = lead;
-    setStatus($("#gate-status"), "Deep searching hail, then building your report…");
-    await generateReport({ emailViaCrm: true });
+    try {
+      saveLead(lead);
+      state.lead = lead;
+      setStatus($("#gate-status"), "Deep searching hail, then building your report…");
+      // Blur inputs so iOS keyboard closes before the deep-search overlay.
+      try {
+        document.activeElement?.blur?.();
+      } catch {
+        /* ignore */
+      }
+      await generateReport({ emailViaCrm: true });
+    } catch (err) {
+      console.warn("[HomeScope] gate submit", err);
+      setStatus($("#gate-status"), "Couldn’t start the report — try again", true);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Build my hail report";
+      }
+    }
+  }
+
+  $("#gate-form")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    void submitReportGate(e);
+  });
+  // type=button + click/touch — more reliable than form submit on iPhone Safari.
+  $("#gate-submit")?.addEventListener("click", (e) => {
+    void submitReportGate(e);
   });
   $("#gate-scrim")?.addEventListener("click", closeReportGate);
 
