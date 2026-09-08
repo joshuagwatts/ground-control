@@ -8,7 +8,6 @@ import {
   buildHailTraceDayBands,
   hailRadarBandColor,
   hailMeshBandOpacity,
-  isSpotterHail,
 } from "../wx.js";
 import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
 import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache, onHomeHailCache } from "./hail-load.js";
@@ -344,8 +343,6 @@ function paintOverlays() {
 
   const dayPool = getHomeHailCache().hail || [];
   let needHatch = false;
-  const seenSpot = new Set();
-  let spotBudget = 120;
 
   for (const day of days) {
     const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
@@ -383,25 +380,6 @@ function paintOverlays() {
       for (const ll of band.ring) {
         if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
       }
-    }
-
-    const spotPts = dayRows.filter(
-      (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p),
-    );
-    for (const p of spotPts) {
-      if (spotBudget <= 0) break;
-      const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
-      if (seenSpot.has(key)) continue;
-      seenSpot.add(key);
-      spotBudget -= 1;
-      window.L.circleMarker([p.lat, p.lon], {
-        radius: 5,
-        color: "#ffffff",
-        weight: 1.4,
-        fillColor: "#ff2d2d",
-        fillOpacity: 0.95,
-      }).addTo(state.overlay);
-      bounds.push([p.lat, p.lon]);
     }
   }
 
