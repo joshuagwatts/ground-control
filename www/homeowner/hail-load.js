@@ -1,5 +1,5 @@
 /**
- * HomeScope hail load — fast 2y first, optional deepen, client-side filter refresh.
+ * HomeScope hail load — stream updates until the requested history window is actually filled.
  */
 import { ensureWebProxyReady } from "../net.js";
 import {
@@ -13,9 +13,7 @@ import {
   mergeHailRows,
 } from "../wx.js";
 
-/** Homeowner deep archive radius — wide enough for storm days, not a regional dump. */
 const HOME_DEEP_KM = 40;
-/** Strict near-roof cover — matches field HailScope house zone, not a soft guess. */
 const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM);
 
 function pointInLatLonRing(lat, lon, ring) {
@@ -33,10 +31,6 @@ function pointInLatLonRing(lat, lon, ring) {
   return inside;
 }
 
-/**
- * Honest cover: near-roof hits and/or HailScope zone polygon over the pin.
- * Soft “nearby” reports are never claimed as covering the home.
- */
 function stormCoversHome(row, lat, lon, dayRows = []) {
   const pts = row.zone_pts || [];
   const minDist = Number(row.min_dist);
@@ -58,19 +52,10 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
     coversPolygon = false;
   }
 
-  const nearbyEvidence =
-    !coversNear &&
-    !coversPolygon &&
-    Number.isFinite(minDist) &&
-    minDist > COVER_NEAR_KM &&
-    minDist <= 5.5;
-
   return {
     coversNear: Boolean(coversNear),
     coversPolygon: Boolean(coversPolygon),
     coversHome: Boolean(coversNear || coversPolygon),
-    nearbyEvidence: Boolean(nearbyEvidence),
-    softNear: Boolean(nearbyEvidence),
   };
 }
 
@@ -96,7 +81,6 @@ function prettyDate(iso) {
   }
 }
 
-/** In-memory hail rows for the current pin — filter changes don't refetch. */
 let pinCache = {
   key: "",
   lat: null,
@@ -106,7 +90,25 @@ let pinCache = {
   fetchedDays: 0,
   loadingDeep: false,
   deepTarget: 0,
+  loadSeq: 0,
 };
+
+const hailListeners = new Set();
+
+export function onHomeHailCache(fn) {
+  hailListeners.add(fn);
+  return () => hailListeners.delete(fn);
+}
+
+function emitHailCache() {
+  for (const fn of hailListeners) {
+    try {
+      fn(pinCache);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 export function clearHomeHailCache() {
   pinCache = {
@@ -118,7 +120,9 @@ export function clearHomeHailCache() {
     fetchedDays: 0,
     loadingDeep: false,
     deepTarget: 0,
+    loadSeq: 0,
   };
+  emitHailCache();
 }
 
 export function getHomeHailCache() {
@@ -149,7 +153,6 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
     const cover = stormCoversHome(row, lat, lon, byDay.get(date) || []);
-    // Only list storms that actually cover the home — nearby-only is noted, not claimed.
     if (!cover.coversHome) continue;
     storms.push({
       date,
@@ -159,7 +162,6 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       coversHome: true,
       coversNear: cover.coversNear,
       coversPolygon: cover.coversPolygon,
-      softNear: false,
       nearHits: Number(row.near_hits) || 0,
       minDist: Number(row.min_dist) || 999,
       hits: Number(row.hits) || 0,
@@ -167,12 +169,11 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       raw: row,
     });
   }
-  // Default chronological; UI re-ranks by intense vs recent.
   storms.sort((a, b) => b.date.localeCompare(a.date));
 
   let msg = note;
   if (!msg && !storms.length && (hailRows || []).length) {
-    msg = `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y. Try a lower hail size or wider history.`;
+    msg = `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y.`;
   } else if (!msg && !storms.length && !(hailRows || []).length && !loading) {
     msg = "No hail rows yet — hard-refresh once so the radar proxy can load.";
   }
@@ -187,85 +188,93 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     note: msg,
     storms,
     hailRowCount: (hailRows || []).length,
-    loading: Boolean(loading),
+    loading: Boolean(loading || pinCache.loadingDeep),
   };
 }
 
-/**
- * Re-filter cached hail without network — year / size chips should feel instant.
- */
 export function filterCachedHomeStorms({ years = 2, minHailIn = 1 } = {}) {
   if (!pinCache.key || !Number.isFinite(pinCache.lat)) {
     return { ok: false, storms: [], hailRowCount: 0, loading: false, note: "Enter an address first", fetchedDays: 0 };
   }
   const days = Math.min(Math.max(Math.round(Number(years) * 365.25), 30), 3650);
-  const needDays = days;
   const have = pinCache.fetchedDays || 0;
-  const loading = pinCache.loadingDeep && needDays > have;
+  const loading = pinCache.loadingDeep || days > have;
   return summarizeHailRows(pinCache.hail, pinCache.lat, pinCache.lon, {
     minHailIn,
     days,
     years,
     loading,
     note:
-      needDays > have && pinCache.loadingDeep
-        ? `Showing what we have · loading older years…`
-        : needDays > have
-          ? `Showing ~${Math.round(have / 365)}y loaded · older years still catching up`
+      days > have && pinCache.loadingDeep
+        ? `Still loading history… ~${Math.max(1, Math.round(have / 365))}y in so far`
+        : days > have
+          ? `Showing ~${Math.round(have / 365)}y loaded — older years incomplete`
           : null,
   });
 }
 
-async function deepenArchive(lat, lon, days, onPartial, minHailIn, years) {
-  if (pinCache.loadingDeep) return;
+function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note) {
+  emitHailCache();
+  if (!onPartial) return;
+  onPartial(
+    summarizeHailRows(pinCache.hail, lat, lon, {
+      minHailIn,
+      days,
+      years,
+      loading,
+      note,
+    }),
+  );
+}
+
+async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   if ((pinCache.fetchedDays || 0) >= days) return;
   pinCache.loadingDeep = true;
   pinCache.deepTarget = Math.max(pinCache.deepTarget || 0, days);
+  emitHailCache();
   try {
-    const deep = await Promise.race([
-      fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
-        onChunk: (rows, meta) => {
-          pinCache.hail = mergeHailRows(pinCache.hail, [], rows);
-          const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
-          if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
-          if (onPartial) {
-            onPartial(
-              summarizeHailRows(pinCache.hail, lat, lon, {
-                minHailIn,
-                days,
-                years,
-                loading: true,
-                note: `Loading older storm years… (~${Math.round((pinCache.fetchedDays || 0) / 365)}y so far)`,
-              }),
-            );
-          }
-        },
-      }),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 45000)),
-    ]);
+    const deep = await fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
+      onChunk: (rows, meta) => {
+        if (seq !== pinCache.loadSeq) return;
+        pinCache.hail = mergeHailRows(pinCache.hail, [], rows);
+        const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
+        if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
+        pushPartial(
+          onPartial,
+          lat,
+          lon,
+          minHailIn,
+          days,
+          years,
+          true,
+          `Loading older storm years… (~${Math.round((pinCache.fetchedDays || 0) / 365)}y so far)`,
+        );
+      },
+    });
+    if (seq !== pinCache.loadSeq) return;
     pinCache.hail = mergeHailRows(pinCache.hail, [], deep);
     pinCache.fetchedDays = Math.max(pinCache.fetchedDays, days);
-  } catch {
-    /* keep what we have — filters still work */
+  } catch (err) {
+    console.warn("[HomeScope] deepen archive", err);
   } finally {
-    pinCache.loadingDeep = false;
+    if (seq === pinCache.loadSeq) pinCache.loadingDeep = false;
   }
-  if (onPartial) {
-    onPartial(
-      summarizeHailRows(pinCache.hail, lat, lon, {
-        minHailIn,
-        days,
-        years,
-        loading: false,
-        note: pinCache.fetchedDays >= days ? null : "Older years partially loaded — filters still work on what we have.",
-      }),
-    );
-  }
+  if (seq !== pinCache.loadSeq) return;
+  pushPartial(
+    onPartial,
+    lat,
+    lon,
+    minHailIn,
+    days,
+    years,
+    false,
+    pinCache.fetchedDays >= days ? null : "Older years partially loaded — flip a filter or wait for retry.",
+  );
 }
 
 /**
- * Load hail for a home. Returns as soon as the ~2y pin dossier is ready.
- * Deeper years continue in the background via onPartial.
+ * Load hail for a home. Streams partials as radar + archive arrive.
+ * Awaits deepen for the requested window so we don't pretend 2 dates is “done”.
  */
 export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHailIn = 1, onPartial, force = false } = {}) {
   const days = Math.min(Math.max(Math.round(Number(years) * 365.25), 30), 3650);
@@ -274,15 +283,14 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
   await ensureWebProxyReady(8000);
   setWxPin(lat, lon);
 
-  // Same pin + already have recent window → filter only; deepen in background if needed.
   if (!force && pinCache.key === key && (pinCache.fetchedDays || 0) >= Math.min(days, 730) && pinCache.hail.length) {
     if (days > pinCache.fetchedDays && !pinCache.loadingDeep) {
-      void deepenArchive(lat, lon, days, onPartial, minHailIn, years);
+      const seq = pinCache.loadSeq;
+      await deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq);
     }
     return filterCachedHomeStorms({ years, minHailIn });
   }
 
-  // New pin — reset cache.
   if (pinCache.key !== key) {
     pinCache = {
       key,
@@ -293,12 +301,15 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
       fetchedDays: 0,
       loadingDeep: false,
       deepTarget: 0,
+      loadSeq: (pinCache.loadSeq || 0) + 1,
     };
   } else {
     pinCache.address = address || pinCache.address;
     pinCache.lat = lat;
     pinCache.lon = lon;
+    pinCache.loadSeq += 1;
   }
+  const seq = pinCache.loadSeq;
 
   let dossier;
   try {
@@ -307,16 +318,22 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
       deep: false,
       onPartial: onPartial
         ? (part) => {
+            if (seq !== pinCache.loadSeq) return;
             const hail = part?.hail || [];
             pinCache.hail = mergeHailRows(pinCache.hail, hail);
-            pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(730, Number(part?._meta?.fetchedDays) || 400));
-            onPartial(
-              summarizeHailRows(pinCache.hail, lat, lon, {
-                minHailIn,
-                days,
-                years,
-                loading: true,
-              }),
+            pinCache.fetchedDays = Math.max(
+              pinCache.fetchedDays,
+              Math.min(730, Number(part?._meta?.fetchedDays) || 400),
+            );
+            pushPartial(
+              onPartial,
+              lat,
+              lon,
+              minHailIn,
+              days,
+              years,
+              true,
+              "Loading NOAA radar + spotter reports…",
             );
           }
         : undefined,
@@ -336,27 +353,32 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
       error: true,
     };
     if (onPartial) onPartial(empty);
+    emitHailCache();
     return empty;
   }
+
+  if (seq !== pinCache.loadSeq) return filterCachedHomeStorms({ years, minHailIn });
 
   pinCache.hail = mergeHailRows(pinCache.hail, dossier?.hail || []);
   pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(730, Number(dossier?._meta?.fetchedDays) || 730));
   pinCache.address = dossier?.address || address || pinCache.address;
 
-  const shown = summarizeHailRows(pinCache.hail, lat, lon, {
+  pushPartial(
+    onPartial,
+    lat,
+    lon,
     minHailIn,
     days,
     years,
-    loading: days > pinCache.fetchedDays,
-    note: days > pinCache.fetchedDays ? "Recent years ready · loading older history…" : null,
-  });
-  if (onPartial) onPartial(shown);
+    days > pinCache.fetchedDays,
+    days > pinCache.fetchedDays ? "Recent years ready · loading older history…" : null,
+  );
 
   if (days > pinCache.fetchedDays) {
-    void deepenArchive(lat, lon, days, onPartial, minHailIn, years);
+    await deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq);
   }
 
-  return shown;
+  return filterCachedHomeStorms({ years, minHailIn });
 }
 
 export { HOUSE_HAIL_KM, HOUSE_ZONE_KM, COVER_NEAR_KM, HOME_DEEP_KM };

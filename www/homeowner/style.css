@@ -378,6 +378,11 @@ a {
   background: rgba(255, 204, 0, 0.08);
 }
 
+.ho-storm-list li.map-focus {
+  border-color: color-mix(in srgb, #0ea5e9 70%, transparent);
+  box-shadow: inset 3px 0 0 #0ea5e9;
+}
+
 .ho-storm-list .sz {
   font-weight: 700;
   color: var(--phos);

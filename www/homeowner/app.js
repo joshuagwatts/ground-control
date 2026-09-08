@@ -11,7 +11,7 @@ import {
   isSpotterHail,
 } from "../wx.js";
 import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
-import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache } from "./hail-load.js";
+import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache, onHomeHailCache } from "./hail-load.js";
 
 const LEAD_KEY = "homescope_lead_v1";
 const TOP_STORM_N = 10;
@@ -30,6 +30,7 @@ const state = {
   stormSort: "intense",
   storms: [],
   selected: new Set(),
+  mapFocusDate: null,
   map: null,
   marker: null,
   overlay: null,
@@ -276,99 +277,95 @@ function rankedStorms(storms = state.storms, sort = state.stormSort) {
 }
 
 function autoSelectTopStorms(storms = state.storms, sort = state.stormSort, n = TOP_STORM_N) {
-  return new Set(rankedStorms(storms, sort).slice(0, n).map((s) => s.date));
+  const ranked = rankedStorms(storms, sort);
+  if (ranked.length && !state.mapFocusDate) state.mapFocusDate = ranked[0].date;
+  else if (ranked.length && !ranked.some((s) => s.date === state.mapFocusDate)) {
+    state.mapFocusDate = ranked[0].date;
+  }
+  return new Set(ranked.slice(0, n).map((s) => s.date));
 }
 
 function paintOverlays() {
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
-  const map = state.map;
-  if (map && !state.hailSvg) state.hailSvg = window.L.svg({ padding: 0.85 });
+  if (state.map && !state.hailSvg) state.hailSvg = window.L.svg({ padding: 0.85 });
   const homeLat = state.lat;
   const homeLon = state.lon;
   const bounds = [];
   if (Number.isFinite(homeLat) && Number.isFinite(homeLon)) bounds.push([homeLat, homeLon]);
-  let anySelected = false;
+
+  const ranked = rankedStorms();
+  // HailScope Trace draw is a single storm-day swath — not 10 metro meshes stacked.
+  const focus =
+    state.mapFocusDate && ranked.some((s) => s.date === state.mapFocusDate)
+      ? state.mapFocusDate
+      : ranked[0]?.date || null;
+  if (!focus) {
+    if (Number.isFinite(homeLat) && state.map) state.map.setView([homeLat, homeLon], 14);
+    return;
+  }
+  state.mapFocusDate = focus;
+
   const dayPool = getHomeHailCache().hail || [];
+  const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === focus);
+  let bands = [];
+  try {
+    bands = buildHailTraceDayBands(focus, dayRows) || [];
+  } catch (err) {
+    console.warn("[HomeScope] HailTrace bands failed", focus, err);
+    bands = [];
+  }
+
   let needHatch = false;
-
-  for (const s of rankedStorms()) {
-    if (!state.selected.has(s.date)) continue;
-    anySelected = true;
-    const day = String(s.date || "").slice(0, 10);
-    const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
-
-    let bands = [];
-    try {
-      // Field HailScope selected-day path: nested HailTrace swaths + size colors.
-      bands = buildHailTraceDayBands(day, dayRows) || [];
-    } catch (err) {
-      console.warn("[HomeScope] HailTrace bands failed", day, err);
-      bands = [];
-    }
-
-    for (const band of bands) {
-      if (!band?.ring?.length) continue;
-      const sz = Number(band.maxSize) || Number(s.maxSizeIn) || 1;
-      const col = hailRadarBandColor(sz);
-      const isolated = Boolean(band.isolated);
-      if (isolated) needHatch = true;
-      const latLngs = [band.ring, ...(band.holes || [])];
-      window.L.polygon(latLngs, {
-        color: col.stroke,
-        weight: isolated ? 0.9 : 0.65,
-        fillColor: isolated ? "url(#gc-hail-hatch)" : col.fill,
-        fillOpacity: isolated ? 0.72 : hailMeshBandOpacity(sz),
-        opacity: isolated ? 0.65 : 0.42,
-        stroke: true,
-        smoothFactor: 1.8,
-        renderer: state.hailSvg || undefined,
-        className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
-      }).addTo(state.overlay);
-      for (const ll of band.ring) {
-        if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
-      }
-    }
-
-    // Spotter reports as dots on the swath — never filled red hulls.
-    const spotPts = dayRows
-      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p))
-      .filter((p) => {
-        if (!Number.isFinite(homeLat)) return true;
-        const d = Number(p.distance_km);
-        if (Number.isFinite(d) && d < 900) return d <= 40;
-        return true;
-      });
-    const seen = new Set();
-    for (const p of spotPts.slice(0, 80)) {
-      const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const pSz = Number(p.size_in) || Number(s.maxSizeIn) || 1;
-      const col = hailRadarBandColor(pSz);
-      window.L.circleMarker([p.lat, p.lon], {
-        radius: 5,
-        color: "#ffffff",
-        weight: 1.4,
-        fillColor: "#ff2d2d",
-        fillOpacity: 0.95,
-      }).addTo(state.overlay);
-      bounds.push([p.lat, p.lon]);
+  for (const band of bands) {
+    if (!band?.ring?.length) continue;
+    const sz = Number(band.maxSize) || 1;
+    const col = hailRadarBandColor(sz);
+    const isolated = Boolean(band.isolated);
+    if (isolated) needHatch = true;
+    const latLngs = [band.ring, ...(band.holes || [])];
+    window.L.polygon(latLngs, {
+      color: col.stroke,
+      weight: isolated ? 0.9 : 0.65,
+      fillColor: isolated ? "url(#gc-hail-hatch)" : col.fill,
+      fillOpacity: isolated ? 0.72 : hailMeshBandOpacity(sz),
+      opacity: isolated ? 0.65 : 0.45,
+      stroke: true,
+      smoothFactor: 1.8,
+      renderer: state.hailSvg || undefined,
+      className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
+    }).addTo(state.overlay);
+    for (const ll of band.ring) {
+      if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
     }
   }
 
-  if (needHatch && state.hailSvg?._container) {
-    ensureHomeHailHatch(state.hailSvg._container);
+  const spotPts = dayRows.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p));
+  const seen = new Set();
+  for (const p of spotPts.slice(0, 100)) {
+    const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    window.L.circleMarker([p.lat, p.lon], {
+      radius: 5,
+      color: "#ffffff",
+      weight: 1.4,
+      fillColor: "#ff2d2d",
+      fillOpacity: 0.95,
+    }).addTo(state.overlay);
+    bounds.push([p.lat, p.lon]);
   }
 
-  if (anySelected && state.map && bounds.length >= 2) {
+  if (needHatch && state.hailSvg?._container) ensureHomeHailHatch(state.hailSvg._container);
+
+  if (state.map && bounds.length >= 2) {
     try {
-      state.map.fitBounds(bounds, { padding: [44, 44], maxZoom: 14 });
+      state.map.fitBounds(bounds, { padding: [48, 48], maxZoom: 13 });
     } catch {
-      if (Number.isFinite(homeLat)) state.map.setView([homeLat, homeLon], 13);
+      if (Number.isFinite(homeLat)) state.map.setView([homeLat, homeLon], 12);
     }
-  } else if (Number.isFinite(homeLat) && Number.isFinite(homeLon) && state.map) {
-    state.map.setView([homeLat, homeLon], 14);
+  } else if (Number.isFinite(homeLat) && state.map) {
+    state.map.setView([homeLat, homeLon], 13);
   }
 }
 
@@ -491,7 +488,10 @@ async function selectAddressHit(hit) {
       !Number.isFinite(state.lat) ||
       Math.abs(state.lat - lat) > 1e-5 ||
       Math.abs(state.lon - lon) > 1e-5;
-    if (moved) clearHomeHailCache();
+    if (moved) {
+      clearHomeHailCache();
+      state.mapFocusDate = null;
+    }
     state.address = label;
     state.lat = lat;
     state.lon = lon;
@@ -567,8 +567,8 @@ function paintStormList({ loading = false } = {}) {
     li.style.cursor = "default";
     li.style.opacity = "0.75";
     li.innerHTML = loading
-      ? `<span class="sz">…</span><span>Loading verified hail cover…<br/><span class="meta">NOAA SWDI radar + SPC / IEM spotter reports</span></span><span></span>`
-      : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤2.5 km) or zone polygon over this pin · try wider history or lower size</span></span><span></span>`;
+      ? `<span class="sz">…</span><span>Loading verified hail cover…<br/><span class="meta">NOAA SWDI radar + SPC / IEM — keep this tab open</span></span><span></span>`
+      : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤2.5 km) or HailTrace zone over this pin</span></span><span></span>`;
     list.appendChild(li);
     if (btn) btn.disabled = true;
     paintOverlays();
@@ -576,31 +576,64 @@ function paintStormList({ loading = false } = {}) {
   }
   ranked.forEach((s, idx) => {
     const on = state.selected.has(s.date);
+    const focused = s.date === state.mapFocusDate;
     const li = document.createElement("li");
-    li.className = on ? "on" : "";
+    li.className = `${on ? "on" : ""}${focused ? " map-focus" : ""}`.trim();
     const col = colorForHailSize(s.maxSizeIn);
-    const how = [
-      s.coversNear ? "near roof" : null,
-      s.coversPolygon ? "zone over home" : null,
-    ]
+    const how = [s.coversNear ? "near roof" : null, s.coversPolygon ? "zone over home" : null]
       .filter(Boolean)
       .join(" · ");
-    const rank =
-      state.stormSort === "intense"
-        ? `#${idx + 1} intensity`
-        : s.pretty || s.date;
     li.innerHTML = `<span class="sz" style="color:${col.fill}">${Number(s.maxSizeIn).toFixed(2)}″</span>
       <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"} · nearest ${Number(s.minDist).toFixed(1)} km</span></span>
-      <span class="meta">${on ? "On map" : rank}</span>`;
+      <span class="meta">${focused ? "On map" : on ? "In report" : "#" + (idx + 1)}</span>`;
     li.addEventListener("click", () => {
-      if (state.selected.has(s.date)) state.selected.delete(s.date);
-      else state.selected.add(s.date);
+      state.mapFocusDate = s.date;
+      if (!state.selected.has(s.date)) state.selected.add(s.date);
       paintStormList();
     });
     list.appendChild(li);
   });
   if (btn) btn.disabled = false;
   paintOverlays();
+}
+
+function applyStormResult(result, { loading = false, reseatSelection = true } = {}) {
+  state.storms = result.storms || [];
+  if (reseatSelection) {
+    state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
+  } else {
+    for (const d of [...state.selected]) {
+      if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
+    }
+    if (!state.selected.size && state.storms.length) {
+      state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
+    } else {
+      autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
+    }
+  }
+  paintStormList({ loading: loading || Boolean(result.loading) });
+  ensureMap();
+  if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
+  paintOverlays();
+  const status = $("#storm-status");
+  const note = result.note ? ` ${result.note}` : "";
+  const focus = state.mapFocusDate
+    ? state.storms.find((s) => s.date === state.mapFocusDate)?.pretty || state.mapFocusDate
+    : "";
+  const sortLabel = state.stormSort === "recent" ? "most recent" : "most intense";
+  if (result.error) {
+    setStatus(status, result.note || "Hail load failed", true);
+    return;
+  }
+  const still = loading || result.loading;
+  setStatus(
+    status,
+    still
+      ? `Loading… ${state.storms.length} covering date(s) so far · ${result.hailRowCount || 0} reports.${note}`
+      : state.storms.length
+        ? `${state.storms.length} verified covering · map: ${focus || "—"} (${sortLabel}) · NOAA SWDI / SPC / IEM.${note}`
+        : `No storms ≥${state.minHailIn}″ with verified cover in ~${state.years} years.${note}`,
+  );
 }
 
 async function refreshStorms({ force = false } = {}) {
@@ -610,6 +643,11 @@ async function refreshStorms({ force = false } = {}) {
   setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
   $("#make-report").disabled = true;
 
+  const applyIfCurrent = (result, opts) => {
+    if (gen !== refreshStorms._gen) return;
+    applyStormResult(result, opts);
+  };
+
   const cache = getHomeHailCache();
   const needDays = Math.min(Math.max(Math.round(state.years * 365.25), 30), 3650);
   const canFilterOnly =
@@ -618,50 +656,22 @@ async function refreshStorms({ force = false } = {}) {
     cache.hail?.length &&
     (cache.fetchedDays || 0) >= Math.min(needDays, 730);
 
-  const applyResult = (result, { loading = false, reseatSelection = true } = {}) => {
-    if (gen !== refreshStorms._gen) return;
-    state.storms = result.storms || [];
-    if (reseatSelection) {
-      state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
-    } else {
-      for (const d of [...state.selected]) {
-        if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
-      }
-      if (!state.selected.size && state.storms.length) {
-        state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
-      }
-    }
-    paintStormList({ loading });
-    ensureMap();
-    if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
-    paintOverlays();
-    const note = result.note ? ` ${result.note}` : "";
-    const shown = Math.min(TOP_STORM_N, state.storms.length);
-    const sortLabel = state.stormSort === "recent" ? "most recent" : "most intense";
-    if (result.error) {
-      setStatus(status, result.note || "Hail load failed", true);
-      return;
-    }
-    setStatus(
-      status,
-      loading
-        ? `Loading verified cover… ${state.storms.length} date(s) · ${result.hailRowCount || 0} reports${note}`
-        : state.storms.length
-          ? `${state.storms.length} verified covering date(s) · map shows top ${shown} ${sortLabel} · NOAA SWDI / SPC / IEM.${note}`
-          : `No storms ≥${state.minHailIn}″ with near-roof or zone-over-home cover in ~${state.years} years.${note}`,
-    );
-  };
-
-  if (canFilterOnly && needDays <= (cache.fetchedDays || 0)) {
-    applyResult(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), { loading: false });
+  if (canFilterOnly && needDays <= (cache.fetchedDays || 0) && !cache.loadingDeep) {
+    applyIfCurrent(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), {
+      loading: false,
+      reseatSelection: true,
+    });
     return;
   }
 
   if (canFilterOnly) {
-    // Show cached immediately, then deepen.
-    applyResult(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), { loading: true });
+    applyIfCurrent(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), {
+      loading: true,
+      reseatSelection: true,
+    });
   } else {
     state.storms = [];
+    state.mapFocusDate = null;
     paintStormList({ loading: true });
   }
 
@@ -671,9 +681,9 @@ async function refreshStorms({ force = false } = {}) {
       years: state.years,
       minHailIn: state.minHailIn,
       force,
-      onPartial: (part) => applyResult(part, { loading: Boolean(part.loading) }),
+      onPartial: (part) => applyIfCurrent(part, { loading: Boolean(part.loading), reseatSelection: true }),
     });
-    applyResult(result, { loading: Boolean(result.loading) });
+    applyIfCurrent(result, { loading: Boolean(result.loading), reseatSelection: true });
   } catch (err) {
     if (gen !== refreshStorms._gen) return;
     paintStormList({ loading: false });
@@ -686,33 +696,11 @@ function applyFiltersFromChips({ reseatSelection = true } = {}) {
   if (!Number.isFinite(state.lat)) return;
   const cache = getHomeHailCache();
   const needDays = Math.min(Math.max(Math.round(state.years * 365.25), 30), 3650);
-  if (cache.hail?.length && (cache.fetchedDays || 0) >= Math.min(needDays, 730)) {
-    const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
-    state.storms = result.storms || [];
-    if (reseatSelection) {
-      state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
-    } else {
-      for (const d of [...state.selected]) {
-        if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
-      }
-      if (!state.selected.size && state.storms.length) {
-        state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
-      }
-    }
-    paintStormList({ loading: Boolean(result.loading) });
-    paintOverlays();
-    const shown = Math.min(TOP_STORM_N, state.storms.length);
-    const sortLabel = state.stormSort === "recent" ? "most recent" : "most intense";
-    setStatus(
-      $("#storm-status"),
-      state.storms.length
-        ? `${state.storms.length} verified covering · top ${shown} ${sortLabel} on map · ≥${state.minHailIn}″ · ~${state.years}y${result.note ? " · " + result.note : ""}`
-        : `No verified cover for ≥${state.minHailIn}″ in ~${state.years}y`,
-    );
-    if (needDays > (cache.fetchedDays || 0)) void refreshStorms({ force: false });
-    return;
+  const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
+  applyStormResult(result, { loading: Boolean(result.loading), reseatSelection });
+  if (needDays > (cache.fetchedDays || 0) || cache.loadingDeep) {
+    void refreshStorms({ force: false });
   }
-  void refreshStorms({ force: false });
 }
 
 function escHtml(s) {
@@ -1142,14 +1130,25 @@ function boot() {
   bindChips("#filter-sort", "sort", (v) => {
     state.stormSort = v === "recent" ? "recent" : "intense";
     if (!state.storms.length) return;
+    state.mapFocusDate = null;
     state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
-    paintStormList();
-    const shown = Math.min(TOP_STORM_N, state.storms.length);
-    const sortLabel = state.stormSort === "recent" ? "most recent" : "most intense";
-    setStatus(
-      $("#storm-status"),
-      `${state.storms.length} verified covering · top ${shown} ${sortLabel} on map · ≥${state.minHailIn}″ · ~${state.years}y`,
+    applyStormResult(
+      { storms: state.storms, hailRowCount: getHomeHailCache().hail?.length || 0, loading: false, note: null },
+      { loading: false, reseatSelection: false },
     );
+  });
+
+  // Keep UI honest if the pin cache grows after a refresh gen advanced (filter flip mid-load).
+  onHomeHailCache(() => {
+    if (!Number.isFinite(state.lat)) return;
+    const cache = getHomeHailCache();
+    if (!cache.hail?.length) return;
+    const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
+    // While history is still filling, keep reseating top-10 so we don't freeze on the first 2 dates.
+    applyStormResult(result, {
+      loading: Boolean(result.loading),
+      reseatSelection: Boolean(result.loading || cache.loadingDeep),
+    });
   });
 
   $("#make-report")?.addEventListener("click", () => {
