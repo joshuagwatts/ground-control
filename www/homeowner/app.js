@@ -15,6 +15,7 @@ import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHail
 
 const LEAD_KEY = "homescope_lead_v1";
 const TOP_STORM_N = 10;
+const LIST_PAGE = 10;
 
 const state = {
   lead: null,
@@ -31,6 +32,7 @@ const state = {
   storms: [],
   selected: new Set(),
   mapFocusDate: null,
+  listLimit: LIST_PAGE,
   map: null,
   marker: null,
   overlay: null,
@@ -491,6 +493,7 @@ async function selectAddressHit(hit) {
     if (moved) {
       clearHomeHailCache();
       state.mapFocusDate = null;
+      state.listLimit = LIST_PAGE;
     }
     state.address = label;
     state.lat = lat;
@@ -558,11 +561,15 @@ function scheduleSuggest(raw) {
 
 function paintStormList({ loading = false } = {}) {
   const list = $("#storm-list");
+  const moreWrap = $("#storm-more-wrap");
+  const moreBtn = $("#storm-more");
+  const moreMeta = $("#storm-more-meta");
   const btn = $("#make-report");
   if (!list) return;
   list.innerHTML = "";
   const ranked = rankedStorms();
   if (!ranked.length) {
+    if (moreWrap) moreWrap.hidden = true;
     const li = document.createElement("li");
     li.style.cursor = "default";
     li.style.opacity = "0.75";
@@ -574,11 +581,19 @@ function paintStormList({ loading = false } = {}) {
     paintOverlays();
     return;
   }
-  ranked.forEach((s, idx) => {
+
+  const limit = Math.min(Math.max(state.listLimit || LIST_PAGE, LIST_PAGE), ranked.length);
+  state.listLimit = limit;
+  const visible = ranked.slice(0, limit);
+  const remaining = ranked.length - visible.length;
+
+  visible.forEach((s, idx) => {
     const on = state.selected.has(s.date);
     const focused = s.date === state.mapFocusDate;
     const li = document.createElement("li");
     li.className = `${on ? "on" : ""}${focused ? " map-focus" : ""}`.trim();
+    li.setAttribute("role", "button");
+    li.tabIndex = 0;
     const col = colorForHailSize(s.maxSizeIn);
     const how = [s.coversNear ? "near roof" : null, s.coversPolygon ? "zone over home" : null]
       .filter(Boolean)
@@ -586,13 +601,36 @@ function paintStormList({ loading = false } = {}) {
     li.innerHTML = `<span class="sz" style="color:${col.fill}">${Number(s.maxSizeIn).toFixed(2)}″</span>
       <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"} · nearest ${Number(s.minDist).toFixed(1)} km</span></span>
       <span class="meta">${focused ? "On map" : on ? "In report" : "#" + (idx + 1)}</span>`;
-    li.addEventListener("click", () => {
+    const activate = () => {
       state.mapFocusDate = s.date;
       if (!state.selected.has(s.date)) state.selected.add(s.date);
       paintStormList();
+    };
+    li.addEventListener("click", activate);
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        activate();
+      }
     });
     list.appendChild(li);
   });
+
+  if (moreWrap && moreBtn) {
+    if (remaining > 0) {
+      moreWrap.hidden = false;
+      moreBtn.disabled = false;
+      const next = Math.min(LIST_PAGE, remaining);
+      moreBtn.textContent = `Load ${next} more storm${next === 1 ? "" : "s"}`;
+      if (moreMeta) {
+        moreMeta.textContent = `Showing ${visible.length} of ${ranked.length} · OK roofs often see this kind of depth in ~3–5 years`;
+      }
+    } else {
+      moreWrap.hidden = true;
+      moreBtn.disabled = false;
+    }
+  }
+
   if (btn) btn.disabled = false;
   paintOverlays();
 }
@@ -600,6 +638,7 @@ function paintStormList({ loading = false } = {}) {
 function applyStormResult(result, { loading = false, reseatSelection = true } = {}) {
   state.storms = result.storms || [];
   if (reseatSelection) {
+    state.listLimit = LIST_PAGE;
     state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
   } else {
     for (const d of [...state.selected]) {
@@ -1131,11 +1170,24 @@ function boot() {
     state.stormSort = v === "recent" ? "recent" : "intense";
     if (!state.storms.length) return;
     state.mapFocusDate = null;
+    state.listLimit = LIST_PAGE;
     state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     applyStormResult(
       { storms: state.storms, hailRowCount: getHomeHailCache().hail?.length || 0, loading: false, note: null },
       { loading: false, reseatSelection: false },
     );
+  });
+
+  $("#storm-more")?.addEventListener("click", () => {
+    const total = rankedStorms().length;
+    if (!total) return;
+    state.listLimit = Math.min(total, (state.listLimit || LIST_PAGE) + LIST_PAGE);
+    paintStormList();
+    // Keep the new rows in view on phone without jumping the whole page.
+    requestAnimationFrame(() => {
+      const wrap = $("#storm-more-wrap");
+      wrap?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+    });
   });
 
   // Keep UI honest if the pin cache grows after a refresh gen advanced (filter flip mid-load).
