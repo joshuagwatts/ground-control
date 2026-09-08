@@ -1104,6 +1104,168 @@ body.ho-gate-open {
   cursor: pointer;
 }
 
+.ho-deep-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background:
+    radial-gradient(ellipse at 50% 30%, rgba(255, 204, 0, 0.12), transparent 55%),
+    rgba(8, 8, 10, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.ho-deep-modal[hidden] {
+  display: none;
+}
+
+.ho-deep-card {
+  width: min(22rem, 100%);
+  padding: 1.45rem 1.25rem 1.3rem;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--phos) 35%, transparent);
+  background: linear-gradient(165deg, rgba(28, 28, 30, 0.98), rgba(14, 14, 16, 0.98));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.ho-deep-radar {
+  position: relative;
+  width: 7.5rem;
+  height: 7.5rem;
+  margin: 0 auto 1.1rem;
+}
+
+.ho-deep-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--phos) 35%, transparent);
+  animation: ho-deep-pulse 2.4s ease-out infinite;
+}
+
+.ho-deep-ring:nth-child(2) {
+  inset: 18%;
+  animation-delay: 0.4s;
+}
+
+.ho-deep-ring:nth-child(3) {
+  inset: 36%;
+  animation-delay: 0.8s;
+}
+
+.ho-deep-beam {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 48%;
+  height: 2px;
+  margin-left: -1px;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--phos), transparent);
+  animation: ho-deep-sweep 2.2s linear infinite;
+  opacity: 0.9;
+}
+
+.ho-deep-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin: -0.35rem 0 0 -0.35rem;
+  border-radius: 50%;
+  background: var(--phos);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--phos) 70%, transparent);
+}
+
+@keyframes ho-deep-pulse {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1.08);
+    opacity: 0;
+  }
+}
+
+@keyframes ho-deep-sweep {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ho-deep-kicker {
+  margin: 0 0 0.35rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--phos);
+}
+
+.ho-deep-title {
+  margin: 0 0 0.45rem;
+  font-size: 1.28rem;
+  letter-spacing: -0.02em;
+}
+
+.ho-deep-msg {
+  margin: 0;
+  min-height: 2.6em;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.ho-deep-bar {
+  margin: 1rem 0 0.75rem;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.ho-deep-bar-fill {
+  display: block;
+  height: 100%;
+  width: 18%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #9a7a00, var(--phos), #fff3b0);
+  transition: width 0.45s ease;
+}
+
+.ho-deep-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted);
+  opacity: 0.9;
+}
+
+html.ho-deep-open,
+body.ho-deep-open {
+  overflow: hidden;
+  touch-action: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ho-deep-ring,
+  .ho-deep-beam {
+    animation: none;
+  }
+  .ho-deep-beam {
+    opacity: 0.45;
+    transform: rotate(35deg);
+  }
+}
+
 .ho-cta {
   margin: 0.55rem 0 0;
   font-size: 14px;

@@ -113,6 +113,38 @@ function closeReportGate() {
   document.body.classList.remove("ho-gate-open");
 }
 
+function showDeepSearchOverlay({ title, msg, progress = 0.12 } = {}) {
+  const el = $("#deep-search");
+  if (!el) return;
+  el.hidden = false;
+  el.setAttribute("aria-busy", "true");
+  document.documentElement.classList.add("ho-deep-open");
+  document.body.classList.add("ho-deep-open");
+  updateDeepSearchOverlay({ title, msg, progress });
+}
+
+function updateDeepSearchOverlay({ title, msg, progress } = {}) {
+  if (title && $("#deep-search-title")) $("#deep-search-title").textContent = title;
+  if (msg && $("#deep-search-msg")) $("#deep-search-msg").textContent = msg;
+  const bar = $("#deep-search-bar");
+  if (bar && Number.isFinite(progress)) {
+    const pct = Math.max(8, Math.min(96, Math.round(Number(progress) * 100)));
+    bar.style.width = `${pct}%`;
+  }
+}
+
+function hideDeepSearchOverlay() {
+  const el = $("#deep-search");
+  if (el) {
+    el.hidden = true;
+    el.setAttribute("aria-busy", "false");
+  }
+  document.documentElement.classList.remove("ho-deep-open");
+  document.body.classList.remove("ho-deep-open");
+  const bar = $("#deep-search-bar");
+  if (bar) bar.style.width = "18%";
+}
+
 function paintGateRoofMode(mode) {
   state.roofMode = mode || "idk";
   const root = $("#gate-roof-mode");
@@ -1592,7 +1624,19 @@ async function generateReport({ emailViaCrm = true } = {}) {
     btn.disabled = true;
     btn.textContent = "Deep searching hail…";
   }
-  setStatus(statusEl, "Deep searching hail for your report (spotter archive + NOAA radar)…");
+
+  closeReportGate();
+  showDeepSearchOverlay({
+    title: "Deep searching hail",
+    msg: "Finishing spotter archive + NOAA radar for this roof…",
+    progress: 0.12,
+  });
+  setStatus(statusEl, "Deep searching hail for your report…");
+
+  const bumpDeep = (msg, progress, title) => {
+    updateDeepSearchOverlay({ title, msg, progress });
+    if (msg) setStatus(statusEl, msg);
+  };
 
   try {
     if (Number.isFinite(state.lat) && Number.isFinite(state.lon)) {
@@ -1602,16 +1646,17 @@ async function generateReport({ emailViaCrm = true } = {}) {
         years: reportYears,
         minHailIn: state.minHailIn,
         onPartial: (result) => {
-          // Keep the on-screen list on the homeowner's selected years while cache deepens to 10y.
           const filtered = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
           applyStormResult(
             { ...filtered, loading: Boolean(result.loading), note: result.note },
             { loading: Boolean(result.loading), reseatSelection: false, skipMap: true },
           );
-          if (result.note) setStatus(statusEl, result.note);
+          const swdiHave = getHomeHailCache().swdiFetchedDays || 0;
+          const daysTarget = Math.round(reportYears * 365.25);
+          const prog = 0.15 + 0.45 * Math.min(1, swdiHave / Math.max(daysTarget, 1));
+          bumpDeep(result.note || "Loading more hail history…", prog, "Deep searching hail");
         },
       });
-      // List stays on selected years; report uses full 10y pack from cache.
       applyStormResult(
         filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }),
         { loading: false, reseatSelection: false, skipMap: true },
@@ -1629,12 +1674,16 @@ async function generateReport({ emailViaCrm = true } = {}) {
         if (n < SWDI_DAY_MIN) swdiEnrichedDays.delete(d);
       }
       if (reportDays.length) {
-        setStatus(statusEl, `Pulling statewide radar swaths for ${reportDays.length} storm date(s)…`);
+        bumpDeep(
+          `Pulling statewide radar swaths for ${reportDays.length} storm date(s)…`,
+          0.72,
+          "Mapping radar swaths",
+        );
         const grew = await ensureStatewideSwdiForDays(reportDays);
-        if (grew) {
-          refreshStormListFromCache();
-        }
+        if (grew) refreshStormListFromCache();
       }
+
+      bumpDeep("Building your High Ground hail report…", 0.9, "Almost ready");
 
       const finalReportStorms =
         filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms || reportStorms;
@@ -1656,7 +1705,7 @@ async function generateReport({ emailViaCrm = true } = {}) {
       paintStormList({ loading: false, skipMap: true });
 
       setStep("report");
-      closeReportGate();
+      hideDeepSearchOverlay();
 
       const html = reportHtmlDoc();
       if (emailViaCrm && state.lead?.email) {
@@ -1722,8 +1771,10 @@ async function generateReport({ emailViaCrm = true } = {}) {
     }
   } catch (err) {
     console.warn("[HomeScope] report deep search", err);
+    bumpDeep("Deep search hit a snag — building with what we have…", 0.85, "Finishing report");
     setStatus(statusEl, "Deep search hit a snag — building report with what we have.", true);
   } finally {
+    hideDeepSearchOverlay();
     if (btn) {
       btn.disabled = false;
       btn.textContent = prevBtn || "Answer questions · Get report";

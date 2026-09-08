@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.300" />
+  <link rel="stylesheet" href="./style.css?v=0.2.301" />
 </head>
 <body>
   <header class="ho-top">
@@ -179,6 +179,24 @@
     </div>
   </div>
 
+  <!-- Deep-search wait — keep the homeowner patient while radar/history fills in -->
+  <div class="ho-deep-modal" id="deep-search" hidden aria-live="polite" aria-busy="true">
+    <div class="ho-deep-card" role="status">
+      <div class="ho-deep-radar" aria-hidden="true">
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-beam"></span>
+        <span class="ho-deep-core"></span>
+      </div>
+      <p class="ho-deep-kicker">High Ground · HomeScope</p>
+      <h2 class="ho-deep-title" id="deep-search-title">Deep searching hail</h2>
+      <p class="ho-deep-msg" id="deep-search-msg">Pulling NOAA radar and spotter history for this roof…</p>
+      <div class="ho-deep-bar" aria-hidden="true"><span class="ho-deep-bar-fill" id="deep-search-bar"></span></div>
+      <p class="ho-deep-hint">This can take a minute — hang tight while we load more storm data.</p>
+    </div>
+  </div>
+
   <footer class="ho-foot">
     <span class="ho-foot-brand">High Ground</span>
     · HomeScope ·
@@ -188,6 +206,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.300"></script>
+  <script type="module" src="./boot.js?v=0.2.301"></script>
 </body>
 </html>
