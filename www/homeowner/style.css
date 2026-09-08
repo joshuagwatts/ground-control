@@ -26,7 +26,7 @@ body {
   min-height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-family: Outfit, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 16px;
   letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
@@ -390,41 +390,350 @@ a {
 }
 
 .ho-rec {
-  border-left: 3px solid var(--muted);
-  padding: 0.65rem 0.85rem;
-  margin-top: 0.75rem;
-  background: var(--inset);
-  border-radius: 0 10px 10px 0;
-}
-
-.ho-rec.claim {
-  border-left-color: var(--warn);
-}
-
-.ho-rec.ok {
-  border-left-color: var(--ok);
-}
-
-.ho-rec h3 {
-  margin: 0 0 0.25rem;
-  font-size: 14px;
-}
-
-.ho-rec p {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
+  display: none;
 }
 
 .ho-report {
-  white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text);
-  background: var(--inset);
-  border-radius: 10px;
-  padding: 0.85rem;
+  display: none;
+}
+
+/* —— High Ground document report —— */
+.ho-report-panel {
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+}
+
+.hg-doc {
+  background:
+    radial-gradient(ellipse 90% 40% at 50% -5%, rgba(255, 204, 0, 0.1), transparent 55%),
+    linear-gradient(180deg, #121214 0%, #0b0b0d 100%);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.15rem 1.05rem 1.35rem;
+}
+
+.hg-doc-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  padding-bottom: 0.95rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.hg-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1;
+}
+
+.hg-logo-high,
+.hg-logo-ground {
+  font-family: "Cormorant Garamond", Georgia, "Times New Roman", serif;
+  font-weight: 700;
+  font-size: clamp(1.55rem, 5vw, 1.9rem);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.hg-logo-rule {
+  display: block;
+  width: 100%;
+  height: 2px;
+  background: var(--phos);
+  margin: 0.38rem 0 0.32rem;
+}
+
+.hg-logo-sub {
+  font-size: 0.58rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--phos);
+  font-weight: 600;
+}
+
+.hg-doc-mark {
+  text-align: right;
+}
+
+.hg-doc-kicker {
+  display: block;
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+
+.hg-doc-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.hg-doc-lede {
+  margin: 0 0 1.15rem;
+  color: var(--phos);
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.hg-card {
+  background: rgba(22, 22, 24, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem 1.05rem;
+  margin: 0 0 0.85rem;
+}
+
+.hg-section-label {
+  margin: 0 0 0.4rem;
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.hg-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.hg-count {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.hg-addr {
+  margin: 0 0 0.75rem;
+  font-size: 1.12rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.hg-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem 0.85rem;
+  margin: 0;
+}
+
+.hg-meta-grid dt {
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hg-meta-grid dd {
+  margin: 0.12rem 0 0;
+  font-size: 0.9rem;
+}
+
+.hg-verdict {
+  border-radius: 14px;
+  padding: 1.15rem 1.05rem;
+  margin: 0 0 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--phos) 35%, transparent);
+  background:
+    linear-gradient(155deg, rgba(255, 204, 0, 0.14), rgba(18, 18, 20, 0.96) 55%);
+}
+
+.hg-verdict-title {
+  margin: 0.15rem 0 0.45rem;
+  font-size: clamp(1.2rem, 4vw, 1.45rem);
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.hg-verdict-body {
+  margin: 0 0 0.95rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.hg-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.hg-cta-primary {
+  display: inline-block;
+  background: var(--phos);
+  color: #1c1400;
+  font-weight: 700;
+  text-decoration: none;
+  padding: 0.78rem 1.15rem;
+  border-radius: 10px;
+  letter-spacing: 0.02em;
+  touch-action: manipulation;
+}
+
+.hg-cta-call {
+  display: inline-block;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  color: var(--text);
+  text-decoration: none;
+  padding: 0.78rem 1rem;
+  border-radius: 10px;
+  font-weight: 600;
+  touch-action: manipulation;
+}
+
+.hg-secondary-cta {
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  color: var(--phos);
+}
+
+.hg-storm-list {
+  list-style: none;
+  margin: 0.65rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.hg-storm {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.55rem 0.75rem;
+  align-items: center;
+  padding: 0.7rem 0.8rem;
+  background: var(--inset);
+  border-radius: 12px;
+  border: 1px solid transparent;
+}
+
+.hg-storm.on {
+  border-color: color-mix(in srgb, var(--phos) 40%, transparent);
+}
+
+.hg-storm-size {
+  font-weight: 700;
+  color: var(--phos);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.08rem;
+}
+
+.hg-storm-size span {
+  font-size: 0.78rem;
+}
+
+.hg-storm-body strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.hg-storm-meta {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 0.12rem;
+}
+
+.hg-storm-flag {
+  font-size: 0.68rem;
+  color: var(--phos);
+  font-weight: 600;
+}
+
+.hg-trust p {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.hg-trust-line {
+  color: var(--phos) !important;
+  font-weight: 600;
+  font-size: 0.85rem !important;
+}
+
+.hg-doc-foot {
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.hg-doc-foot a {
+  color: var(--phos);
+}
+
+.hg-disclaimer {
+  margin: 0.85rem 0 0;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
+.ho-report-actions {
+  margin-top: 0.85rem;
+}
+
+.ho-foot-brand {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+@media (max-width: 520px) {
+  .hg-meta-grid {
+    grid-template-columns: 1fr;
+  }
+  .hg-doc-top {
+    flex-direction: column;
+  }
+  .hg-doc-mark {
+    text-align: left;
+  }
+}
+
+@media print {
+  .no-print,
+  .ho-top,
+  .ho-steps,
+  .ho-hero,
+  .ho-foot,
+  .ho-report-actions,
+  #panel-gate,
+  #panel-address,
+  #panel-roof,
+  #panel-storms {
+    display: none !important;
+  }
+  body {
+    background: #0b0b0d !important;
+    color: #f5f5f7 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #panel-report,
+  .ho-report-panel,
+  .hg-doc {
+    display: block !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+  .hg-doc {
+    padding: 0 !important;
+  }
 }
 
 .ho-lab {
@@ -508,30 +817,4 @@ a {
 
 .ho-foot a {
   color: var(--muted);
-}
-
-@media print {
-  .ho-top,
-  .ho-steps,
-  .ho-goto button,
-  .ho-actions,
-  .ho-foot,
-  .ho-chips,
-  .ho-suggest {
-    display: none !important;
-  }
-  body {
-    background: #fff;
-    color: #111;
-  }
-  .ho-panel {
-    break-inside: avoid;
-    border-color: #ccc;
-    background: #fff;
-  }
-  .ho-report,
-  .ho-disclaimer,
-  .ho-rec p {
-    color: #222;
-  }
 }

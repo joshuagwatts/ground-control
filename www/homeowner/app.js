@@ -459,41 +459,129 @@ async function refreshStorms() {
 }
 refreshStorms._gen = 0;
 
+function escHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function buildReportText(rec) {
-  const lines = [];
-  lines.push(`${PRODUCT.name} — Oklahoma Hail Report`);
-  lines.push(`Generated: ${new Date().toLocaleString()}`);
-  if (state.lead?.email) lines.push(`Prepared for: ${state.lead.name || ""} <${state.lead.email}>`.trim());
-  lines.push(`Address: ${state.address}`);
-  lines.push(`Coordinates: ${state.lat?.toFixed(5)}, ${state.lon?.toFixed(5)}`);
-  lines.push(
-    `Roof last replaced: ${
-      state.roofReplacedOn ||
-      `Unknown (using ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown}-year window)`
-    }`,
-  );
-  lines.push(`History filter: ${state.years} years · Min hail: ${state.minHailIn}″`);
-  lines.push(`Review window: ${rec.windowStart} → ${rec.windowEnd}`);
-  lines.push("");
-  lines.push("Storms covering this home:");
-  if (!state.storms.length) lines.push("  (none)");
-  else {
-    for (const s of state.storms) {
-      const mark = state.selected.has(s.date) ? "[x]" : "[ ]";
-      const how = [s.coversNear ? "near" : null, s.coversPolygon ? "polygon" : null].filter(Boolean).join("+");
-      lines.push(`  ${mark} ${s.date} · max ${Number(s.maxSizeIn).toFixed(2)}″ · ${s.sources} · ${how}`);
-    }
+  // Plain-text fallback for share / clipboard — not shown in the UI.
+  const b = PRODUCT.brand;
+  const lines = [
+    `${b.company} · ${PRODUCT.name}`,
+    `Hail Report — ${state.address}`,
+    `Generated ${new Date().toLocaleString()}`,
+    "",
+    rec.headline,
+    rec.reason,
+    "",
+    `Next step: ${rec.primaryCta}`,
+    rec.secondaryCta ? `Also: ${rec.secondaryCta}` : "",
+    `Call ${b.phone} · ${b.webLabel}`,
+    "",
+    "Storms covering this home:",
+  ].filter((x) => x !== "");
+  for (const s of state.storms) {
+    lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
   }
-  lines.push("");
-  lines.push(`Recommendation: ${rec.headline}`);
-  lines.push(`  ${rec.reason}`);
-  lines.push(`Primary next step: ${rec.primaryCta}`);
-  if (rec.secondaryCta) lines.push(`Also: ${rec.secondaryCta}`);
-  lines.push("");
-  lines.push("Sources: NOAA SWDI radar, NOAA SPC / IEM LSR spotter reports.");
-  lines.push("");
-  lines.push(PRODUCT.disclaimer);
+  if (!state.storms.length) lines.push("• None in the selected filters");
+  lines.push("", PRODUCT.disclaimer);
   return lines.join("\n");
+}
+
+function renderReportDocument(rec) {
+  const b = PRODUCT.brand;
+  const roofLabel = state.roofReplacedOn
+    ? state.roofReplacedOn.slice(0, 7)
+    : `Unknown (last ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown} years)`;
+  const prepared = state.lead?.name || state.lead?.email || "Homeowner";
+  const tone = rec.considerClaim ? "claim" : rec.talkToRoofer ? "roofer" : "ok";
+
+  const stormRows = state.storms.length
+    ? state.storms
+        .map((s) => {
+          const on = state.selected.has(s.date);
+          const cover = [s.coversNear ? "Near roof" : null, s.coversPolygon ? "Zone over home" : null]
+            .filter(Boolean)
+            .join(" · ");
+          return `<li class="hg-storm${on ? " on" : ""}">
+            <div class="hg-storm-size">${escHtml(Number(s.maxSizeIn).toFixed(2))}<span>″</span></div>
+            <div class="hg-storm-body">
+              <strong>${escHtml(s.pretty || s.date)}</strong>
+              <span class="hg-storm-meta">${escHtml(s.sources)}${cover ? " · " + escHtml(cover) : ""}</span>
+            </div>
+            <div class="hg-storm-flag">${on ? "On map" : ""}</div>
+          </li>`;
+        })
+        .join("")
+    : `<li class="hg-storm empty"><div class="hg-storm-body"><strong>No covering storms in this filter</strong>
+        <span class="hg-storm-meta">Widen the year window or lower the hail size, then regenerate.</span></div></li>`;
+
+  return `<header class="hg-doc-top">
+      <div class="hg-logo" aria-label="${escHtml(b.company)}">
+        <span class="hg-logo-high">High</span>
+        <span class="hg-logo-ground">Ground</span>
+        <span class="hg-logo-rule" aria-hidden="true"></span>
+        <span class="hg-logo-sub">${escHtml(b.tagline)}</span>
+      </div>
+      <div class="hg-doc-mark">
+        <span class="hg-doc-kicker">HomeScope</span>
+        <span class="hg-doc-title">Hail Report</span>
+      </div>
+    </header>
+
+    <p class="hg-doc-lede">Stronger proof for claims. Clear storm history for your Oklahoma roof.</p>
+
+    <section class="hg-card hg-property">
+      <h2 class="hg-section-label">Property</h2>
+      <p class="hg-addr">${escHtml(state.address)}</p>
+      <dl class="hg-meta-grid">
+        <div><dt>Prepared for</dt><dd>${escHtml(prepared)}</dd></div>
+        <div><dt>Roof last replaced</dt><dd>${escHtml(roofLabel)}</dd></div>
+        <div><dt>History window</dt><dd>${escHtml(String(state.years))} years · ≥ ${escHtml(String(state.minHailIn))}″</dd></div>
+        <div><dt>Review period</dt><dd>${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)}</dd></div>
+        <div><dt>Generated</dt><dd>${escHtml(new Date().toLocaleString())}</dd></div>
+        <div><dt>Sources</dt><dd>NOAA SWDI · SPC · IEM LSR</dd></div>
+      </dl>
+    </section>
+
+    <section class="hg-verdict hg-verdict-${tone}">
+      <p class="hg-section-label">Recommendation</p>
+      <h3 class="hg-verdict-title">${escHtml(rec.headline)}</h3>
+      <p class="hg-verdict-body">${escHtml(rec.reason)}</p>
+      <div class="hg-cta-row">
+        <a class="hg-cta-primary" href="${escHtml(b.ctaUrl)}" target="_blank" rel="noopener">${escHtml(b.cta)}</a>
+        <a class="hg-cta-call" href="tel:${escHtml(b.phoneTel)}">Call ${escHtml(b.phone)}</a>
+      </div>
+      ${rec.secondaryCta ? `<p class="hg-secondary-cta">${escHtml(rec.secondaryCta)} — High Ground can walk you through next steps.</p>` : ""}
+    </section>
+
+    <section class="hg-card">
+      <div class="hg-section-head">
+        <h2 class="hg-section-label">Storms over this home</h2>
+        <span class="hg-count">${state.storms.length} date${state.storms.length === 1 ? "" : "s"}</span>
+      </div>
+      <ul class="hg-storm-list">${stormRows}</ul>
+    </section>
+
+    <section class="hg-card hg-trust">
+      <h2 class="hg-section-label">Why this matters</h2>
+      <p>Oklahoma hail regularly totals roofs. High Ground uses drone and AI documentation to strengthen your position — and we stand with you when insurance is involved.</p>
+      <p class="hg-trust-line">Family-run · Edmond &amp; surrounding · Honesty over scare tactics</p>
+    </section>
+
+    <footer class="hg-doc-foot">
+      <div>
+        <strong>${escHtml(b.company)} Roofing &amp; Construction</strong><br/>
+        <a href="${escHtml(b.web)}" target="_blank" rel="noopener">${escHtml(b.webLabel)}</a>
+        · <a href="tel:${escHtml(b.phoneTel)}">${escHtml(b.phone)}</a><br/>
+        <span>${escHtml(b.address)}</span>
+      </div>
+      <p class="hg-disclaimer">${escHtml(PRODUCT.disclaimer)}</p>
+    </footer>`;
 }
 
 function generateReport() {
@@ -503,28 +591,10 @@ function generateReport() {
   });
   state.lastRec = rec;
   state.reportText = buildReportText(rec);
-
-  const box = $("#ho-rec");
-  const title = $("#ho-rec-title");
-  const body = $("#ho-rec-body");
-  const cta = $("#ho-cta");
-  if (box && title && body) {
-    box.hidden = false;
-    box.classList.toggle("claim", rec.considerClaim || rec.talkToRoofer);
-    box.classList.toggle("ok", !rec.considerClaim && !rec.talkToRoofer);
-    title.textContent = rec.headline;
-    body.textContent = rec.reason;
-  }
-  if (cta) {
-    cta.textContent = rec.secondaryCta
-      ? `${rec.primaryCta} · ${rec.secondaryCta}`
-      : rec.primaryCta;
-  }
-  const report = $("#ho-report");
-  if (report) report.textContent = state.reportText;
-  const disc = $("#ho-disclaimer");
-  if (disc) disc.textContent = PRODUCT.disclaimer;
+  const doc = $("#hg-doc");
+  if (doc) doc.innerHTML = renderReportDocument(rec);
   setStep("report");
+  requestAnimationFrame(() => doc?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
 }
 
 function downloadBlob(filename, mime, text) {
@@ -538,22 +608,57 @@ function downloadBlob(filename, mime, text) {
 }
 
 function reportHtmlDoc() {
-  const esc = (s) =>
-    String(s || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(PRODUCT.name)} Report</title>
-  <style>body{font:14px/1.45 system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#111}
-  h1{font-size:1.4rem} pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem;border-radius:8px}</style></head>
-  <body><h1>${esc(PRODUCT.name)} — Hail Report</h1>
-  <p><strong>${esc(state.lastRec?.headline || "")}</strong></p>
-  <p>${esc(state.lastRec?.reason || "")}</p>
-  <p><strong>${esc(state.lastRec?.primaryCta || "Get a free inspection")}</strong>
-  ${state.lastRec?.secondaryCta ? " · " + esc(state.lastRec.secondaryCta) : ""}</p>
-  <pre>${esc(state.reportText)}</pre>
-  <p style="font-size:12px;color:#555">${esc(PRODUCT.disclaimer)}</p>
-  </body></html>`;
+  const inner = $("#hg-doc")?.innerHTML || "";
+  const b = PRODUCT.brand;
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>${escHtml(b.company)} · HomeScope Hail Report</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+  :root{--bg:#0b0b0d;--panel:#141416;--inset:#1c1c1e;--line:rgba(255,204,0,.22);--phos:#ffcc00;--text:#f5f5f7;--muted:#8e8e93}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Outfit,system-ui,sans-serif}
+  .hg-doc{max-width:720px;margin:0 auto;padding:1.5rem 1.1rem 2.5rem}
+  .hg-logo{display:flex;flex-direction:column;align-items:flex-start;line-height:1}
+  .hg-logo-high,.hg-logo-ground{font-family:Cormorant Garamond,Georgia,serif;font-weight:700;font-size:1.85rem;letter-spacing:.04em;text-transform:uppercase}
+  .hg-logo-rule{display:block;width:100%;height:2px;background:var(--phos);margin:.35rem 0 .3rem}
+  .hg-logo-sub{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--phos);font-weight:600}
+  .hg-doc-top{display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;margin-bottom:1.1rem;padding-bottom:1rem;border-bottom:1px solid var(--line)}
+  .hg-doc-kicker{display:block;font-size:.65rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .hg-doc-title{font-size:1.35rem;font-weight:700;letter-spacing:-.02em}
+  .hg-doc-lede{color:var(--phos);font-size:1.05rem;font-weight:600;margin:0 0 1.25rem}
+  .hg-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1rem 1.05rem;margin:0 0 1rem}
+  .hg-section-label{margin:0 0 .45rem;font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .hg-addr{margin:0 0 .75rem;font-size:1.15rem;font-weight:650;letter-spacing:-.02em}
+  .hg-meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:.65rem .85rem;margin:0}
+  .hg-meta-grid dt{font-size:.65rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .hg-meta-grid dd{margin:.15rem 0 0;font-size:.92rem}
+  .hg-verdict{border-radius:14px;padding:1.15rem 1.1rem;margin:0 0 1rem;border:1px solid var(--line);background:linear-gradient(160deg,rgba(255,204,0,.12),rgba(20,20,22,.95))}
+  .hg-verdict-title{margin:.2rem 0 .45rem;font-size:1.35rem;letter-spacing:-.02em;line-height:1.2}
+  .hg-verdict-body{margin:0 0 .9rem;color:var(--muted);font-size:.95rem}
+  .hg-cta-row{display:flex;flex-wrap:wrap;gap:.5rem}
+  .hg-cta-primary{display:inline-block;background:var(--phos);color:#1c1400;font-weight:700;text-decoration:none;padding:.75rem 1.1rem;border-radius:10px;letter-spacing:.02em}
+  .hg-cta-call{display:inline-block;border:1px solid rgba(255,255,255,.35);color:var(--text);text-decoration:none;padding:.75rem 1rem;border-radius:10px;font-weight:600}
+  .hg-secondary-cta{margin:.75rem 0 0;font-size:.9rem;color:var(--phos)}
+  .hg-section-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem}
+  .hg-count{font-size:.75rem;color:var(--muted)}
+  .hg-storm-list{list-style:none;margin:.65rem 0 0;padding:0;display:flex;flex-direction:column;gap:.4rem}
+  .hg-storm{display:grid;grid-template-columns:auto 1fr auto;gap:.55rem .75rem;align-items:center;padding:.65rem .75rem;background:var(--inset);border-radius:12px;border:1px solid transparent}
+  .hg-storm.on{border-color:rgba(255,204,0,.35)}
+  .hg-storm-size{font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;font-size:1.05rem}
+  .hg-storm-size span{font-size:.8rem}
+  .hg-storm-body strong{display:block;font-size:.95rem}
+  .hg-storm-meta{display:block;font-size:.78rem;color:var(--muted);margin-top:.1rem}
+  .hg-storm-flag{font-size:.7rem;color:var(--phos)}
+  .hg-trust p{margin:0 0 .5rem;color:var(--muted);font-size:.92rem}
+  .hg-trust-line{color:var(--phos)!important;font-weight:600;font-size:.85rem!important}
+  .hg-doc-foot{margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--line);font-size:.85rem;color:var(--muted)}
+  .hg-doc-foot a{color:var(--phos)}
+  .hg-disclaimer{margin:.85rem 0 0;font-size:.72rem;line-height:1.4;opacity:.85}
+  @media print{body{background:#0b0b0d;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head><body><article class="hg-doc">${inner}</article></body></html>`;
 }
 
 function shareableLink() {
@@ -597,11 +702,10 @@ function unlockFromLead(lead) {
 
 function boot() {
   $("#ho-brand").textContent = PRODUCT.name;
-  document.title = PRODUCT.name;
-  // version label set in boot.js; keep in sync if boot skipped
+  document.title = `${PRODUCT.brand.company} · ${PRODUCT.name}`;
   if ($("#ho-ver") && !$("#ho-ver").textContent) $("#ho-ver").textContent = `v${APP_VERSION}`;
-  $("#ho-disclaimer").textContent = PRODUCT.disclaimer;
-  $("#ho-disclaimer-gate").textContent = PRODUCT.disclaimer;
+  const gateDisc = $("#ho-disclaimer-gate");
+  if (gateDisc) gateDisc.textContent = PRODUCT.disclaimer;
 
   const existing = readLead();
   if (existing?.email) unlockFromLead(existing);
@@ -714,14 +818,7 @@ function boot() {
   $("#make-report")?.addEventListener("click", generateReport);
   $("#print-report")?.addEventListener("click", () => window.print());
   $("#dl-html")?.addEventListener("click", () => {
-    downloadBlob("homescope-report.html", "text/html;charset=utf-8", reportHtmlDoc());
-  });
-  $("#dl-doc")?.addEventListener("click", () => {
-    // Word opens HTML-as-.doc reliably for simple reports.
-    downloadBlob("homescope-report.doc", "application/msword", reportHtmlDoc());
-  });
-  $("#dl-txt")?.addEventListener("click", () => {
-    downloadBlob("homescope-report.txt", "text/plain;charset=utf-8", state.reportText || "");
+    downloadBlob("highground-homescope-hail-report.html", "text/html;charset=utf-8", reportHtmlDoc());
   });
   $("#share-report")?.addEventListener("click", async () => {
     const url = shareableLink();

@@ -8,8 +8,11 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="HomeScope" />
   <title>HomeScope</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.256" />
+  <link rel="stylesheet" href="./style.css?v=0.2.257" />
 </head>
 <body>
   <header class="ho-top">
@@ -122,34 +125,28 @@
       </div>
     </section>
 
-    <section class="ho-panel" id="panel-report" data-panel="report" hidden>
-      <h2>Hail report</h2>
-      <p class="lead">Itemized storms, sources, and next steps. Print to PDF, download a simple file, or share.</p>
-      <div class="ho-rec" id="ho-rec" hidden>
-        <h3 id="ho-rec-title"></h3>
-        <p id="ho-rec-body"></p>
-        <p class="ho-cta" id="ho-cta"></p>
-      </div>
-      <pre class="ho-report" id="ho-report"></pre>
-      <div class="ho-actions">
+    <section class="ho-panel ho-report-panel" id="panel-report" data-panel="report" hidden>
+      <article class="hg-doc" id="hg-doc" aria-label="Hail report document">
+        <!-- filled by generateReport() -->
+      </article>
+      <div class="ho-actions ho-report-actions no-print">
         <button type="button" class="primary" id="print-report">Print / Save PDF</button>
-        <button type="button" id="dl-html">Download HTML</button>
-        <button type="button" id="dl-doc">Download Word</button>
-        <button type="button" id="dl-txt">Download text</button>
+        <button type="button" id="dl-html">Download report</button>
         <button type="button" id="share-report">Share link</button>
       </div>
-      <p class="ho-status" id="share-status" role="status"></p>
-      <p class="ho-disclaimer" id="ho-disclaimer"></p>
+      <p class="ho-status no-print" id="share-status" role="status"></p>
     </section>
   </main>
 
   <footer class="ho-foot">
-    HomeScope · Oklahoma homeowners · Separate from the
-    <a href="../index.html">Ground Control</a>
-    field app
+    <span class="ho-foot-brand">High Ground</span>
+    · HomeScope ·
+    <a href="https://www.highgroundokc.com/" target="_blank" rel="noopener">highgroundokc.com</a>
+    ·
+    <a href="tel:+14052520058">(405) 252-0058</a>
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.256"></script>
+  <script type="module" src="./boot.js?v=0.2.257"></script>
 </body>
 </html>

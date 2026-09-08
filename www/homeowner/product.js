@@ -7,8 +7,19 @@ export const PRODUCT = {
   name: "HomeScope",
   path: "/ground-control/homeowner/",
   geography: "Oklahoma",
+  brand: {
+    company: "High Ground",
+    tagline: "Roofing & Construction",
+    phone: "(405) 252-0058",
+    phoneTel: "+14052520058",
+    web: "https://www.highgroundokc.com/",
+    webLabel: "highgroundokc.com",
+    address: "449 NE 144th Pl, Edmond, OK 73013",
+    cta: "Get a Free Inspection",
+    ctaUrl: "https://www.highgroundokc.com/",
+  },
   disclaimer:
-    "HomeScope summarizes public NOAA / SPC / IEM hail records for Oklahoma addresses. In Oklahoma, severe hail regularly totals roofs — insurers often call it an act of God. This report helps you see what hit your property and decide next steps. It is not a formal insurance decision, appraisal, or substitute for a licensed adjuster.",
+    "HomeScope summarizes public NOAA / SPC / IEM hail records for Oklahoma addresses. In Oklahoma, severe hail regularly totals roofs — insurers often call it an act of God. This report helps you see what hit your property and decide next steps with High Ground. It is not a formal insurance decision, appraisal, or substitute for a licensed adjuster.",
 };
 
 /** Locked claim / CTA rules. */
@@ -113,13 +124,13 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
     windowStart,
     windowEnd,
     /** Always the primary CTA. */
-    primaryCta: "Get a free inspection",
+    primaryCta: PRODUCT.brand.cta,
     secondaryCta: talkToRoofer ? "Talk to a roofer" : null,
     headline: considerClaim
       ? "Look into a claim — and get a free inspection"
       : talkToRoofer
         ? "Talk to a roofer — and get a free inspection"
-        : "Get a free inspection",
+        : PRODUCT.brand.cta,
     reason: lines.join(" "),
   };
 }

@@ -16,7 +16,7 @@ test("claim: IDK roof uses 2-year window and needs 2+ storms ≥1\"", () => {
   const rec = homescopeRecommendation({ storms, roofReplacedOn: null, asOf });
   assert.equal(rec.considerClaim, true);
   assert.equal(rec.qualifying.length, 2);
-  assert.equal(rec.primaryCta, "Get a free inspection");
+  assert.equal(rec.primaryCta, "Get a Free Inspection");
   assert.match(rec.windowStart, /^2024-/);
 });
 
@@ -47,7 +47,7 @@ test("talk to roofer: recent roof + one 1\"+ storm", () => {
   assert.equal(rec.talkToRoofer, true);
   assert.equal(rec.considerClaim, false);
   assert.equal(rec.secondaryCta, "Talk to a roofer");
-  assert.equal(rec.primaryCta, "Get a free inspection");
+  assert.equal(rec.primaryCta, "Get a Free Inspection");
 });
 
 test("no talk-to-roofer when roof older than 2 years", () => {
