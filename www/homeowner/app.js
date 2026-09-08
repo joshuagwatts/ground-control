@@ -4,15 +4,14 @@
 import { APP_VERSION } from "../version.js";
 import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
 import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
-import { loadHomeStorms } from "./hail-load.js";
+import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache } from "./hail-load.js";
 import { buildHailSwathRings } from "../wx.js";
 
 const LEAD_KEY = "homescope_lead_v1";
 
 const state = {
-  unlocked: false,
   lead: null,
-  step: "gate",
+  step: "address",
   address: "",
   lat: null,
   lon: null,
@@ -59,20 +58,60 @@ function saveLead(lead) {
 
 function setStep(step) {
   state.step = step;
-  const gated = !state.unlocked;
-  $("#panel-gate").hidden = !gated;
-  $("#ho-hero").hidden = gated;
-  if (gated) return;
-
   $$("#ho-steps [data-step]").forEach((li) => li.classList.toggle("on", li.dataset.step === step));
-  const order = ["address", "roof", "storms", "report"];
+  const order = ["address", "storms", "report"];
   const idx = order.indexOf(step);
   $$("[data-panel]").forEach((panel) => {
-    if (panel.id === "panel-gate") return;
     const p = panel.dataset.panel;
     const pIdx = order.indexOf(p);
+    // Keep address visible once we've started; storms/report unlock in sequence.
+    if (p === "address") {
+      panel.hidden = false;
+      return;
+    }
     panel.hidden = pIdx < 0 || pIdx > idx;
   });
+  if (step === "storms" || step === "report") {
+    requestAnimationFrame(() => {
+      ensureMap()?.invalidateSize?.();
+      if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
+      paintOverlays();
+    });
+  }
+}
+
+function openReportGate() {
+  const gate = $("#report-gate");
+  if (!gate) return;
+  gate.hidden = false;
+  if (state.lead) {
+    if ($("#gate-name") && state.lead.name) $("#gate-name").value = state.lead.name;
+    if ($("#gate-email") && state.lead.email) $("#gate-email").value = state.lead.email;
+    if ($("#gate-phone") && state.lead.phone) $("#gate-phone").value = state.lead.phone;
+  }
+  $("#gate-name")?.focus?.();
+}
+
+function closeReportGate() {
+  const gate = $("#report-gate");
+  if (gate) gate.hidden = true;
+}
+
+function syncRoofFromUi() {
+  if (state.roofMode === "idk") {
+    state.roofReplacedOn = null;
+    return true;
+  }
+  if (state.roofMode === "month") {
+    const m = $("#roof-month")?.value;
+    if (!m) return false;
+    state.roofReplacedOn = `${m}-01`;
+    return true;
+  }
+  const y = Number($("#roof-year")?.value);
+  if (!Number.isFinite(y) || y < 1970 || y > 2030) return false;
+  state.roofReplacedOn = `${y}-01-01`;
+  return true;
 }
 
 function ensureMap() {
@@ -119,9 +158,31 @@ function pinHome(lat, lon) {
 function paintOverlays() {
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
+  const homeLat = state.lat;
+  const homeLon = state.lon;
+  let maxHomeRadiusM = 0;
+  let anySelected = false;
+
   for (const s of state.storms) {
     if (!state.selected.has(s.date)) continue;
-    const pts = s.zone_pts || s.raw?.zone_pts || [];
+    anySelected = true;
+    const sz = Number(s.maxSizeIn) || 1;
+    // Always draw a home-centered footprint so the zone visibly covers the pin.
+    if (Number.isFinite(homeLat) && Number.isFinite(homeLon)) {
+      const rM = Math.max(1200, Math.min(3200, 900 + sz * 600));
+      maxHomeRadiusM = Math.max(maxHomeRadiusM, rM);
+      window.L.circle([homeLat, homeLon], {
+        radius: rM,
+        color: "#ffcc00",
+        weight: 2,
+        fillColor: "#ffcc00",
+        fillOpacity: 0.28,
+      }).addTo(state.overlay);
+    }
+
+    const pts = (s.zone_pts || s.raw?.zone_pts || []).filter(
+      (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && (Number(p.distance_km) || 999) <= 8,
+    );
     let rings = [];
     try {
       rings = buildHailSwathRings(pts, s.raw || s, { includeSpotters: true }) || [];
@@ -133,34 +194,48 @@ function paintOverlays() {
         if (!band?.ring?.length) continue;
         window.L.polygon(band.ring, {
           color: "#ffcc00",
-          weight: 1.5,
+          weight: 1.25,
           fillColor: "#ffcc00",
-          fillOpacity: 0.2,
+          fillOpacity: 0.14,
         }).addTo(state.overlay);
       }
     } else {
-      for (const p of pts) {
-        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+      for (const p of pts.slice(0, 24)) {
+        const rad = Math.max(350, (Number(p.size_in) || sz) * 400);
         window.L.circle([p.lat, p.lon], {
-          radius: Math.max(400, (Number(p.size_in) || 1) * 350),
+          radius: rad,
           color: "#ffcc00",
           weight: 1,
-          fillOpacity: 0.12,
+          fillOpacity: 0.1,
         }).addTo(state.overlay);
       }
+    }
+  }
+
+  // Keep the camera on the home — remote swaths used to yank zoom away from the pin.
+  if (anySelected && state.map && Number.isFinite(homeLat) && Number.isFinite(homeLon)) {
+    const r = Math.max(maxHomeRadiusM, 1600);
+    try {
+      const pad = r * 1.15;
+      const south = homeLat - pad / 111320;
+      const north = homeLat + pad / 111320;
+      const east = homeLon + pad / (111320 * Math.cos((homeLat * Math.PI) / 180));
+      const west = homeLon - pad / (111320 * Math.cos((homeLat * Math.PI) / 180));
+      state.map.fitBounds(
+        [
+          [south, west],
+          [north, east],
+        ],
+        { padding: [28, 28], maxZoom: 15 },
+      );
+    } catch {
+      state.map.setView([homeLat, homeLon], 14);
     }
   }
 }
 
 function hitLabel(hit) {
   return String(hit?.address || hit?.label || "").trim();
-}
-
-function hitMeta(hit) {
-  const bits = [];
-  if (hit?.addrType) bits.push(String(hit.addrType).replace(/([a-z])([A-Z])/g, "$1 $2"));
-  if (hit?.source) bits.push(String(hit.source));
-  return bits.join(" · ");
 }
 
 function escapeHtml(s) {
@@ -274,15 +349,21 @@ async function selectAddressHit(hit) {
     const label = hitLabel(resolved) || hitLabel(hit) || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
     const input = $("#addr-q");
     if (input) input.value = label;
+    const moved =
+      !Number.isFinite(state.lat) ||
+      Math.abs(state.lat - lat) > 1e-5 ||
+      Math.abs(state.lon - lon) > 1e-5;
+    if (moved) clearHomeHailCache();
     state.address = label;
     state.lat = lat;
     state.lon = lon;
     state.storms = [];
     state.selected.clear();
     setStatus(status, label);
-    setStep("roof");
+    setStep("storms");
     pinHome(lat, lon);
-    paintStormList();
+    paintStormList({ loading: true });
+    await refreshStorms({ force: moved });
   } catch (err) {
     setStatus(status, err?.message || "Address lookup failed", true);
   }
@@ -337,17 +418,6 @@ function scheduleSuggest(raw) {
   }, 180);
 }
 
-function roofDateFromInputs() {
-  if (state.roofMode === "idk") return null;
-  if (state.roofMode === "month") {
-    const m = $("#roof-month")?.value;
-    return m ? `${m}-01` : null;
-  }
-  const y = Number($("#roof-year")?.value);
-  if (!Number.isFinite(y) || y < 1970 || y > 2030) return null;
-  return `${y}-01-01`;
-}
-
 function paintStormList({ loading = false } = {}) {
   const list = $("#storm-list");
   const btn = $("#make-report");
@@ -369,7 +439,11 @@ function paintStormList({ loading = false } = {}) {
     const on = state.selected.has(s.date);
     const li = document.createElement("li");
     li.className = on ? "on" : "";
-    const how = [s.coversNear ? "near roof" : null, s.coversPolygon ? "zone over home" : null]
+    const how = [
+      s.coversNear ? "near roof" : null,
+      s.coversPolygon ? "zone over home" : null,
+      s.softNear ? "nearby storm" : null,
+    ]
       .filter(Boolean)
       .join(" · ");
     li.innerHTML = `<span class="sz">${Number(s.maxSizeIn).toFixed(2)}″</span>
@@ -386,57 +460,33 @@ function paintStormList({ loading = false } = {}) {
   paintOverlays();
 }
 
-async function refreshStorms() {
+async function refreshStorms({ force = false } = {}) {
   if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
   const status = $("#storm-status");
   const gen = ++refreshStorms._gen;
+  syncRoofFromUi();
   setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
   $("#make-report").disabled = true;
-  state.storms = [];
-  state.selected.clear();
-  paintStormList({ loading: true });
-  try {
-    const result = await loadHomeStorms(state.lat, state.lon, {
-      address: state.address,
-      years: state.years,
-      minHailIn: state.minHailIn,
-      onPartial: (part) => {
-        if (gen !== refreshStorms._gen) return;
-        state.storms = part.storms || [];
-        if (state.selected.size === 0 && state.storms.length) {
-          state.selected = new Set(state.storms.slice(0, Math.min(4, state.storms.length)).map((s) => s.date));
-        } else {
-          for (const s of state.storms) {
-            if (state.selected.size >= 4) break;
-            state.selected.add(s.date);
-          }
-        }
-        // Drop selections that vanished after a filter refresh.
-        for (const d of [...state.selected]) {
-          if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
-        }
-        paintStormList({ loading: Boolean(part.loading) });
-        const n = state.storms.length;
-        const rows = part.hailRowCount || 0;
-        setStatus(
-          status,
-          part.loading
-            ? `Loading… ${n} covering storm(s) · ${rows} hail reports`
-            : n
-              ? `${n} storm date(s) covering this home`
-              : part.note || "Still searching…",
-        );
-      },
-    });
+
+  const cache = getHomeHailCache();
+  const needDays = Math.min(Math.max(Math.round(state.years * 365.25), 30), 3650);
+  const canFilterOnly =
+    !force &&
+    cache.key &&
+    cache.hail?.length &&
+    (cache.fetchedDays || 0) >= Math.min(needDays, 730);
+
+  const applyResult = (result, { loading = false } = {}) => {
     if (gen !== refreshStorms._gen) return;
     state.storms = result.storms || [];
-    if (!state.selected.size && state.storms.length) {
-      state.selected = new Set(state.storms.slice(0, Math.min(4, state.storms.length)).map((s) => s.date));
-    }
+    // Keep prior selections when possible; seed a few if empty.
     for (const d of [...state.selected]) {
       if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
     }
-    paintStormList({ loading: false });
+    if (state.selected.size === 0 && state.storms.length) {
+      state.selected = new Set(state.storms.slice(0, Math.min(4, state.storms.length)).map((s) => s.date));
+    }
+    paintStormList({ loading });
     ensureMap();
     if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
     paintOverlays();
@@ -447,10 +497,36 @@ async function refreshStorms() {
     }
     setStatus(
       status,
-      state.storms.length
-        ? `${state.storms.length} storm date(s) covering this home · sources: NOAA / SPC / IEM.${note}`
-        : `No storms ≥${state.minHailIn}″ covering this home in ~${state.years} years.${note}`,
+      loading
+        ? `Loading… ${state.storms.length} covering · ${result.hailRowCount || 0} reports${note}`
+        : state.storms.length
+          ? `${state.storms.length} storm date(s) covering this home · NOAA / SPC / IEM.${note}`
+          : `No storms ≥${state.minHailIn}″ covering this home in ~${state.years} years.${note}`,
     );
+  };
+
+  if (canFilterOnly && needDays <= (cache.fetchedDays || 0)) {
+    applyResult(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), { loading: false });
+    return;
+  }
+
+  if (canFilterOnly) {
+    // Show cached immediately, then deepen.
+    applyResult(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), { loading: true });
+  } else {
+    state.storms = [];
+    paintStormList({ loading: true });
+  }
+
+  try {
+    const result = await loadHomeStorms(state.lat, state.lon, {
+      address: state.address,
+      years: state.years,
+      minHailIn: state.minHailIn,
+      force,
+      onPartial: (part) => applyResult(part, { loading: Boolean(part.loading) }),
+    });
+    applyResult(result, { loading: Boolean(result.loading) });
   } catch (err) {
     if (gen !== refreshStorms._gen) return;
     paintStormList({ loading: false });
@@ -458,6 +534,33 @@ async function refreshStorms() {
   }
 }
 refreshStorms._gen = 0;
+
+function applyFiltersFromChips() {
+  if (!Number.isFinite(state.lat)) return;
+  const cache = getHomeHailCache();
+  const needDays = Math.min(Math.max(Math.round(state.years * 365.25), 30), 3650);
+  if (cache.hail?.length && (cache.fetchedDays || 0) >= Math.min(needDays, 730)) {
+    const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
+    state.storms = result.storms || [];
+    for (const d of [...state.selected]) {
+      if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
+    }
+    if (!state.selected.size && state.storms.length) {
+      state.selected = new Set(state.storms.slice(0, Math.min(4, state.storms.length)).map((s) => s.date));
+    }
+    paintStormList({ loading: Boolean(result.loading) });
+    paintOverlays();
+    setStatus(
+      $("#storm-status"),
+      state.storms.length
+        ? `${state.storms.length} storm date(s) · ≥${state.minHailIn}″ · ~${state.years}y${result.note ? " · " + result.note : ""}`
+        : `No covering storms for ≥${state.minHailIn}″ in ~${state.years}y`,
+    );
+    if (needDays > (cache.fetchedDays || 0)) void refreshStorms({ force: false });
+    return;
+  }
+  void refreshStorms({ force: false });
+}
 
 function escHtml(s) {
   return String(s || "")
@@ -585,6 +688,7 @@ function renderReportDocument(rec) {
 }
 
 function generateReport() {
+  syncRoofFromUi();
   const rec = homescopeRecommendation({
     storms: state.storms,
     roofReplacedOn: state.roofReplacedOn,
@@ -594,6 +698,7 @@ function generateReport() {
   const doc = $("#hg-doc");
   if (doc) doc.innerHTML = renderReportDocument(rec);
   setStep("report");
+  closeReportGate();
   requestAnimationFrame(() => doc?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
 }
 
@@ -694,12 +799,6 @@ function bindChips(rootSel, attr, onPick) {
   });
 }
 
-function unlockFromLead(lead) {
-  state.lead = lead;
-  state.unlocked = true;
-  setStep("address");
-}
-
 function boot() {
   $("#ho-brand").textContent = PRODUCT.name;
   document.title = `${PRODUCT.brand.company} · ${PRODUCT.name}`;
@@ -708,15 +807,23 @@ function boot() {
   if (gateDisc) gateDisc.textContent = PRODUCT.disclaimer;
 
   const existing = readLead();
-  if (existing?.email) unlockFromLead(existing);
+  if (existing?.email) state.lead = existing;
 
   $("#gate-form")?.addEventListener("submit", (e) => {
     e.preventDefault();
     const name = $("#gate-name")?.value?.trim() || "";
     const email = $("#gate-email")?.value?.trim() || "";
     const phone = $("#gate-phone")?.value?.trim() || "";
+    if (!name) {
+      setStatus($("#gate-status"), "Enter your name", true);
+      return;
+    }
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setStatus($("#gate-status"), "Enter a valid email to continue", true);
+      setStatus($("#gate-status"), "Enter a valid email", true);
+      return;
+    }
+    if (!phone || phone.replace(/\D/g, "").length < 10) {
+      setStatus($("#gate-status"), "Enter a phone number", true);
       return;
     }
     const lead = {
@@ -724,20 +831,22 @@ function boot() {
       email,
       phone,
       capturedAt: new Date().toISOString(),
-      source: "homescope_gate",
+      source: "homescope_report_gate",
       crm: "pending",
+      address: state.address,
     };
     saveLead(lead);
-    setStatus($("#gate-status"), "You’re in — loading HomeScope…");
-    unlockFromLead(lead);
+    state.lead = lead;
+    setStatus($("#gate-status"), "Building your report…");
+    generateReport();
   });
+  $("#gate-scrim")?.addEventListener("click", closeReportGate);
 
   $("#addr-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const status = $("#addr-status");
     const go = $("#addr-go");
     const q = $("#addr-q")?.value || "";
-    // If a suggestion is highlighted, take that.
     if (state.suggestHits.length && state.suggestIdx >= 0) {
       await selectAddressHit(state.suggestHits[state.suggestIdx]);
       return;
@@ -773,7 +882,6 @@ function boot() {
       clearSuggestions();
     }
   });
-  // Don't clear on blur immediately — mobile taps need the dropdown to stay.
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest?.("#addr-form")) return;
     clearSuggestions();
@@ -787,35 +895,32 @@ function boot() {
     if (inputs) inputs.hidden = mode === "idk";
     if (year) year.hidden = mode !== "year";
     if (month) month.hidden = mode !== "month";
+    syncRoofFromUi();
   });
+  $("#roof-year")?.addEventListener("change", () => syncRoofFromUi());
+  $("#roof-month")?.addEventListener("change", () => syncRoofFromUi());
 
-  $("#roof-continue")?.addEventListener("click", async () => {
-    if (state.roofMode !== "idk") {
-      const d = roofDateFromInputs();
-      if (!d) {
-        setStatus($("#storm-status"), "Enter a valid roof date, or pick “I don’t know”.", true);
-        return;
-      }
-      state.roofReplacedOn = d;
-    } else {
-      state.roofReplacedOn = null;
-    }
-    setStep("storms");
-    ensureMap();
-    if (Number.isFinite(state.lat) && Number.isFinite(state.lon)) pinHome(state.lat, state.lon);
-    await refreshStorms();
-  });
-
-  bindChips("#filter-years", "years", async (v) => {
+  bindChips("#filter-years", "years", (v) => {
     state.years = Number(v) || 2;
-    if (state.step === "storms" || state.step === "report") await refreshStorms();
+    if (Number.isFinite(state.lat)) applyFiltersFromChips();
   });
-  bindChips("#filter-hail", "hail", async (v) => {
+  bindChips("#filter-hail", "hail", (v) => {
     state.minHailIn = Number(v) || 1;
-    if (state.step === "storms" || state.step === "report") await refreshStorms();
+    if (Number.isFinite(state.lat)) applyFiltersFromChips();
   });
 
-  $("#make-report")?.addEventListener("click", generateReport);
+  $("#make-report")?.addEventListener("click", () => {
+    if (!state.storms.length && !getHomeHailCache().hail?.length) {
+      setStatus($("#storm-status"), "Load hail for an address first", true);
+      return;
+    }
+    syncRoofFromUi();
+    if (state.lead?.email && state.lead?.phone && state.lead?.name) {
+      generateReport();
+      return;
+    }
+    openReportGate();
+  });
   $("#print-report")?.addEventListener("click", () => window.print());
   $("#dl-html")?.addEventListener("click", () => {
     downloadBlob("highground-homescope-hail-report.html", "text/html;charset=utf-8", reportHtmlDoc());
@@ -843,7 +948,7 @@ function boot() {
     }
   });
 
-  if (!state.unlocked) setStep("gate");
+  setStep("address");
 }
 
 boot();

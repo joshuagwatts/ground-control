@@ -1512,6 +1512,7 @@ function parseIemLsrCsv(body, lat, lon, km) {
 }
 
 const lsrHailCache = new Map();
+const lsrHailInflight = new Map();
 
 /** First LSR window — keep the CSV small so iPhone Safari can paint dates before the 2-year dump. */
 export function lsrFirstDays(requested = 730) {
@@ -1559,31 +1560,59 @@ async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
 
 /**
  * Deep LSR archive for HomeScope (up to 10 years). Field HailScope keeps using fetchIemLsrHail (≤730d).
+ * Chunks run with limited concurrency so Pages doesn't hang on a 10y serial crawl.
  */
 export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack = 730, { onChunk } = {}) {
   const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
   const days = Math.min(Math.max(Number(daysBack) || 730, 7), 3650);
   const cacheKey = `arch|${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
   if (lsrHailCache.has(cacheKey)) return lsrHailCache.get(cacheKey);
-  const byKey = new Map();
-  const end0 = new Date();
-  const chunk = 400;
-  for (let offset = 0; offset < days; offset += chunk) {
-    const windowEnd = new Date(end0);
-    windowEnd.setUTCDate(windowEnd.getUTCDate() - offset);
-    const span = Math.min(chunk, days - offset);
-    const windowStart = new Date(windowEnd);
-    windowStart.setUTCDate(windowStart.getUTCDate() - span);
-    const rows = await fetchIemLsrHailRange(lat, lon, km, windowStart, windowEnd);
-    for (const r of rows) {
-      const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
-      byKey.set(k, r);
+  // In-flight dedupe — HomeScope filter flips must not stack parallel 10y crawls.
+  if (lsrHailInflight.has(cacheKey)) return lsrHailInflight.get(cacheKey);
+  const job = (async () => {
+    const byKey = new Map();
+    const end0 = new Date();
+    const chunk = 365;
+    const windows = [];
+    for (let offset = 0; offset < days; offset += chunk) {
+      const windowEnd = new Date(end0);
+      windowEnd.setUTCDate(windowEnd.getUTCDate() - offset);
+      const span = Math.min(chunk, days - offset);
+      const windowStart = new Date(windowEnd);
+      windowStart.setUTCDate(windowStart.getUTCDate() - span);
+      windows.push({ windowStart, windowEnd, offset, span });
     }
-    if (onChunk) onChunk([...byKey.values()], { offset, days, chunkSize: rows.length });
+    const concurrency = 5;
+    let covered = 0;
+    for (let i = 0; i < windows.length; i += concurrency) {
+      const batch = windows.slice(i, i + concurrency);
+      const parts = await Promise.all(
+        batch.map(({ windowStart, windowEnd }) => fetchIemLsrHailRange(lat, lon, km, windowStart, windowEnd)),
+      );
+      for (const rows of parts) {
+        for (const r of rows) {
+          const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
+          byKey.set(k, r);
+        }
+      }
+      covered = Math.max(
+        covered,
+        ...batch.map((w) => w.offset + w.span),
+      );
+      if (onChunk) {
+        onChunk([...byKey.values()], { offset: covered, days, coveredDays: covered, chunkSize: byKey.size });
+      }
+    }
+    const out = [...byKey.values()];
+    lsrHailCache.set(cacheKey, out);
+    return out;
+  })();
+  lsrHailInflight.set(cacheKey, job);
+  try {
+    return await job;
+  } finally {
+    lsrHailInflight.delete(cacheKey);
   }
-  const out = [...byKey.values()];
-  lsrHailCache.set(cacheKey, out);
-  return out;
 }
 
 function hailZoneColor(sizeIn) {

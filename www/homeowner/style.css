@@ -760,6 +760,74 @@ a {
   color: var(--muted);
 }
 
+.ho-mini-label {
+  margin: 0.85rem 0 0.35rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.ho-gate-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: end center;
+  padding: 0;
+}
+
+.ho-gate-modal[hidden] {
+  display: none !important;
+}
+
+.ho-gate-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(0, 0, 0, 0.62);
+  cursor: pointer;
+}
+
+.ho-gate-sheet {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 440px);
+  max-height: min(92vh, 640px);
+  overflow: auto;
+  margin: 0;
+  padding: 1.25rem 1.15rem calc(1.35rem + var(--safe-bottom));
+  border-radius: 18px 18px 0 0;
+  background: var(--panel, #141416);
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.ho-gate-sheet h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.ho-gate-sheet .lead {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+@media (min-width: 640px) {
+  .ho-gate-modal {
+    place-items: center;
+    padding: 1.5rem;
+  }
+  .ho-gate-sheet {
+    border-radius: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
 .ho-gate {
   display: flex;
   flex-direction: column;

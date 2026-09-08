@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.257" />
+  <link rel="stylesheet" href="./style.css?v=0.2.258" />
 </head>
 <body>
   <header class="ho-top">
@@ -21,46 +21,22 @@
   </header>
 
   <main class="ho-main">
-    <!-- Gate: email CRM capture before tool -->
-    <section class="ho-panel" id="panel-gate" data-panel="gate">
-      <h2>Oklahoma hail history for your home</h2>
-      <p class="lead">
-        HomeScope shows the last years of hail that hit <strong>your</strong> address — with public sources —
-        then builds a shareable report. Enter your email to continue (we’ll connect this to our CRM).
-      </p>
-      <form id="gate-form" class="ho-gate">
-        <label class="ho-lab">Full name
-          <input type="text" id="gate-name" name="name" autocomplete="name" required placeholder="Jordan Smith" />
-        </label>
-        <label class="ho-lab">Email
-          <input type="email" id="gate-email" name="email" autocomplete="email" required placeholder="you@email.com" />
-        </label>
-        <label class="ho-lab">Phone <span class="ho-opt">(optional)</span>
-          <input type="tel" id="gate-phone" name="phone" autocomplete="tel" placeholder="(405) 555-0100" />
-        </label>
-        <button type="submit" class="primary ho-gate-btn">Continue to HomeScope</button>
-      </form>
-      <p class="ho-status" id="gate-status" role="status"></p>
-      <p class="ho-disclaimer" id="ho-disclaimer-gate"></p>
-    </section>
-
-    <section class="ho-hero" id="ho-hero" hidden>
+    <section class="ho-hero" id="ho-hero">
       <ol class="ho-steps" id="ho-steps" aria-label="Progress">
         <li data-step="address" class="on">Address</li>
-        <li data-step="roof">Roof age</li>
-        <li data-step="storms">Storms</li>
+        <li data-step="storms">Hail</li>
         <li data-step="report">Report</li>
       </ol>
       <h1>See the hail that hit your roof</h1>
       <p>
-        Oklahoma addresses only. Filter history, select storm dates whose zones cover your home, overlay them,
-        and generate a report you can print as PDF or share.
+        Enter your Oklahoma address, review storm dates over your home, then unlock a free High Ground hail report
+        with your name, email, and phone.
       </p>
     </section>
 
-    <section class="ho-panel" id="panel-address" data-panel="address" hidden>
+    <section class="ho-panel" id="panel-address" data-panel="address">
       <h2>Your Oklahoma address</h2>
-      <p class="lead">Start typing your street — a dropdown of matches appears. Tap the right one.</p>
+      <p class="lead">Start typing — tap a suggestion to load hail over that home.</p>
       <form class="ho-goto" id="addr-form" autocomplete="off">
         <div class="ho-goto-row">
           <input
@@ -86,49 +62,45 @@
       <p class="ho-status" id="addr-status" role="status"></p>
     </section>
 
-    <section class="ho-panel" id="panel-roof" data-panel="roof" hidden>
-      <h2>When was the roof last replaced?</h2>
-      <p class="lead">Used for the claim window. Pick “I don’t know” if you’re unsure — we’ll use the last 2 years.</p>
+    <section class="ho-panel" id="panel-storms" data-panel="storms" hidden>
+      <h2>Storms over your home</h2>
+      <p class="lead">Change filters anytime — the list and map refresh. Tap dates to overlay zones.</p>
+
+      <p class="ho-mini-label">Roof last replaced</p>
       <div class="ho-chips" id="roof-mode" role="group" aria-label="Roof age">
         <button type="button" class="ho-chip on" data-roof="idk">I don’t know</button>
-        <button type="button" class="ho-chip" data-roof="year">I know the year</button>
+        <button type="button" class="ho-chip" data-roof="year">Year</button>
         <button type="button" class="ho-chip" data-roof="month">Year + month</button>
       </div>
-      <div class="ho-row" id="roof-inputs" hidden style="margin-top: 0.65rem">
+      <div class="ho-row" id="roof-inputs" hidden style="margin-top: 0.55rem">
         <input type="number" id="roof-year" min="1970" max="2030" placeholder="Year (e.g. 2019)" />
         <input type="month" id="roof-month" hidden />
       </div>
-      <div class="ho-actions">
-        <button type="button" class="primary" id="roof-continue">Load storm history</button>
-      </div>
-    </section>
 
-    <section class="ho-panel" id="panel-storms" data-panel="storms" hidden>
-      <h2>Storms over your home</h2>
-      <p class="lead">Only dates whose hail zone covers this roof. Tap to overlay multiple storms.</p>
+      <p class="ho-mini-label">History</p>
       <div class="ho-chips" id="filter-years" role="group" aria-label="History window">
         <button type="button" class="ho-chip on" data-years="2">2 years</button>
         <button type="button" class="ho-chip" data-years="5">5 years</button>
         <button type="button" class="ho-chip" data-years="10">10 years</button>
       </div>
+      <p class="ho-mini-label">Min hail size</p>
       <div class="ho-chips" id="filter-hail" role="group" aria-label="Minimum hail size">
         <button type="button" class="ho-chip" data-hail="0.75">≥ ¾″</button>
         <button type="button" class="ho-chip on" data-hail="1">≥ 1″</button>
         <button type="button" class="ho-chip" data-hail="1.5">≥ 1½″</button>
         <button type="button" class="ho-chip" data-hail="2">≥ 2″</button>
       </div>
+
       <div class="ho-map" id="ho-map" aria-label="Home map"></div>
       <p class="ho-status" id="storm-status" role="status">Waiting for address…</p>
       <ul class="ho-storm-list" id="storm-list"></ul>
       <div class="ho-actions">
-        <button type="button" class="primary" id="make-report" disabled>Generate hail report</button>
+        <button type="button" class="primary" id="make-report" disabled>Get free hail report</button>
       </div>
     </section>
 
     <section class="ho-panel ho-report-panel" id="panel-report" data-panel="report" hidden>
-      <article class="hg-doc" id="hg-doc" aria-label="Hail report document">
-        <!-- filled by generateReport() -->
-      </article>
+      <article class="hg-doc" id="hg-doc" aria-label="Hail report document"></article>
       <div class="ho-actions ho-report-actions no-print">
         <button type="button" class="primary" id="print-report">Print / Save PDF</button>
         <button type="button" id="dl-html">Download report</button>
@@ -137,6 +109,29 @@
       <p class="ho-status no-print" id="share-status" role="status"></p>
     </section>
   </main>
+
+  <!-- Report unlock — only when they ask for the free report -->
+  <div class="ho-gate-modal" id="report-gate" hidden>
+    <button type="button" class="ho-gate-scrim" id="gate-scrim" aria-label="Close"></button>
+    <div class="ho-gate-sheet" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+      <h2 id="gate-title">Unlock your free hail report</h2>
+      <p class="lead">Drop your info and we’ll generate a High Ground HomeScope report you can print or share.</p>
+      <form id="gate-form" class="ho-gate">
+        <label class="ho-lab">Full name
+          <input type="text" id="gate-name" name="name" autocomplete="name" required placeholder="Jordan Smith" />
+        </label>
+        <label class="ho-lab">Email
+          <input type="email" id="gate-email" name="email" autocomplete="email" required placeholder="you@email.com" />
+        </label>
+        <label class="ho-lab">Phone
+          <input type="tel" id="gate-phone" name="phone" autocomplete="tel" required placeholder="(405) 555-0100" />
+        </label>
+        <button type="submit" class="primary ho-gate-btn">Show my report</button>
+      </form>
+      <p class="ho-status" id="gate-status" role="status"></p>
+      <p class="ho-disclaimer" id="ho-disclaimer-gate"></p>
+    </div>
+  </div>
 
   <footer class="ho-foot">
     <span class="ho-foot-brand">High Ground</span>
@@ -147,6 +142,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.257"></script>
+  <script type="module" src="./boot.js?v=0.2.258"></script>
 </body>
 </html>
