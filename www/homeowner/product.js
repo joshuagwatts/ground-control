@@ -55,8 +55,8 @@ export const ROOF_HAIL_EDUCATION = {
     "Damage is often invisible from the street. Bruises hide under granules; soft spots and fractured mats show up on the roof deck or with drone / on-roof inspection.",
     "Soft metal nearby (vents, gutters, downspouts, AC fins) can show matching impact marks that help corroborate a hail event — useful context, not a substitute for shingle inspection.",
     "One big storm can matter. Several covering storms over a few years can compound wear even when each event looked “fine” from the curb.",
-    "A newer roof can still need repair after qualifying hail — full replacement is less automatic, which is why documenting condition early still matters.",
-    "Public weather history shows storms that covered this pin. Only a free High Ground inspection can say what happened to these shingles.",
+    "A newer roof can still need repair after serious hail — full replacement is less automatic, which is why documenting condition early still matters.",
+    "Public weather history shows storms with verified cover at this pin. Only a free High Ground inspection can say what happened to these shingles.",
   ],
 };
 
@@ -156,34 +156,36 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
   const considerClaim = multiInch; // kept for CRM / older callers — means “strong hail pattern”
 
   const lines = [];
-  if (qualifying.length >= 1 && agingRoof) {
+  const stormN = Math.max(covering.length, qualifying.length);
+  const sizeBit =
+    maxInWindow > 0 ? ` Largest size in the review window ~${formatSize(maxInWindow)}″.` : "";
+
+  if (stormN >= 2 || qualifying.length >= 1) {
     lines.push(
-      `Since this roof was last replaced (~${ageY.toFixed(0)} years on), ${qualifying.length} storm date${qualifying.length === 1 ? "" : "s"} brought ${CLAIM_RULES.minHailInches}″+ hail over the home (largest ~${maxInWindow.toFixed(2)}″). Hail that size can total an asphalt roof — the only way to know is an on-roof / drone inspection.`,
+      `Over ${stormN} storm${stormN === 1 ? "" : "s"} with verified near-roof or zone cover at this address${
+        qualifying.length
+          ? ` — including ${qualifying.length} at ${CLAIM_RULES.minHailInches}″+`
+          : ""
+      }. That kind of hail history carries a high probability of significant functional damage to the roof.${sizeBit} A free High Ground inspection is how you confirm what the shingles actually show.`,
     );
-  } else if (multiInch) {
+  } else if (covering.length === 1) {
     lines.push(
-      `${qualifying.length} dates with ${CLAIM_RULES.minHailInches}″+ hail covered this home in the review window (${windowStart} → ${windowEnd}). That is a clear signal to get the roof documented — 1″+ impacts are the ones Oklahoma roofers watch for.`,
-    );
-  } else if (qualifying.length === 1) {
-    lines.push(
-      `At least one ${CLAIM_RULES.minHailInches}″+ storm covered this home in the review window. Even a single serious hail day can bruise shingles in ways you cannot see from the yard.`,
-    );
-  } else if (covering.length) {
-    lines.push(
-      `${covering.length} covering storm date${covering.length === 1 ? "" : "s"} in the review window (largest ~${maxInWindow.toFixed(2)}″). Smaller hail still strips granules over time — a free inspection separates “weathered” from “impacted.”`,
+      `One verified covering storm is on record for this address in the review window.${sizeBit} Even a single serious hail day can leave functional damage that is hard to see from the street — a free inspection documents the condition.`,
     );
   } else {
     lines.push(
-      `No verified near-roof / zone-cover storms in the review window (${windowStart} → ${windowEnd}). A free inspection can still catch wear that is not obvious from the street.`,
+      `No verified near-roof or zone-cover storms in the review window (${windowStart} → ${windowEnd}). A free inspection can still catch wear that is not obvious from the curb.`,
     );
   }
 
   if (talkToRoofer) {
     lines.push(
-      `This roof is still relatively new (~${ageY.toFixed(1)} years) and already has ${CLAIM_RULES.minHailInches}″+ cover history — talk with High Ground before assuming “new” means “untouched.”`,
+      `This roof is still relatively new (~${ageY.toFixed(1)} years) with serious hail dates already in its life — talk with High Ground before assuming “new” means untouched.`,
     );
-  } else if (recentRoof && !qualifying.length) {
-    lines.push(`Newer roof (~${ageY.toFixed(1)} years) with little qualifying hail in-window — good time for a baseline inspection if you want a clean record.`);
+  } else if (recentRoof && !qualifying.length && !covering.length) {
+    lines.push(
+      `Newer roof (~${ageY.toFixed(1)} years) with little covering hail in-window — a baseline inspection still gives you a clean record.`,
+    );
   }
 
   const roofQuality = estimateRoofQuality({
@@ -194,12 +196,13 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
   });
 
   let headline = PRODUCT.brand.cta;
-  if (qualifying.length >= 1 && (agingRoof || multiInch)) {
-    headline = "Serious hail over this roof — get a free inspection";
+  if (stormN >= 2 || qualifying.length >= 1) {
+    headline =
+      stormN >= 3
+        ? `${stormN} storms over this home — high chance of functional damage`
+        : `Hail storms over this home — get it inspected`;
   } else if (talkToRoofer) {
     headline = "Newer roof with hail history — still get it checked";
-  } else if (qualifying.length === 1) {
-    headline = "Qualifying hail covered this home — document it";
   }
 
   return {
@@ -207,6 +210,7 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
     talkToRoofer,
     recentRoof,
     agingRoof,
+    roofAgeConfirmed: ageY != null && Number.isFinite(ageY) && ageY >= 0,
     roofAgeYears: ageY,
     roofQuality,
     qualifying,
@@ -215,18 +219,26 @@ export function homescopeRecommendation({ storms, roofReplacedOn, asOf = new Dat
     windowStart,
     windowEnd,
     primaryCta: PRODUCT.brand.cta,
-    secondaryCta: talkToRoofer || multiInch || qualifying.length ? "Schedule with High Ground" : null,
+    secondaryCta: talkToRoofer || multiInch || qualifying.length || covering.length ? "Schedule with High Ground" : null,
     headline,
     reason: lines.join(" "),
     education: ROOF_HAIL_EDUCATION,
   };
 }
 
+function formatSize(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  let s = (Math.round(x * 100) / 100).toFixed(2).replace(/\.?0+$/, "");
+  if (s.startsWith("0.")) s = s.slice(1);
+  return s;
+}
+
 /** Rough condition read from roof age + covering hail — not an inspection. */
 export function estimateRoofQuality({ ageY, qualifyingCount = 0, considerClaim = false, maxSizeIn = 0 } = {}) {
   const maxBit =
     maxSizeIn >= CLAIM_RULES.minHailInches
-      ? ` Largest covering hail in review ~${Number(maxSizeIn).toFixed(2)}″ — size that can total shingles after inspection.`
+      ? ` Largest covering hail in review ~${formatSize(maxSizeIn)}″ — size that can leave serious functional damage after inspection.`
       : "";
   if (ageY == null || !Number.isFinite(ageY) || ageY < 0) {
     return {
@@ -238,7 +250,7 @@ export function estimateRoofQuality({ ageY, qualifyingCount = 0, considerClaim =
   if (ageY <= 2) {
     return {
       label: qualifyingCount ? "Newer roof — hail still matters" : "Newer roof",
-      detail: `About ${ageY.toFixed(1)} years old. New does not mean immune — qualifying hail can still need repair; replacement is less automatic.${maxBit}`,
+      detail: `About ${ageY.toFixed(1)} years old. New does not mean immune — serious hail can still leave functional damage; full replacement is less automatic.${maxBit}`,
     };
   }
   if (ageY <= 5) {

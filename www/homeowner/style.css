@@ -738,6 +738,18 @@ a {
   color: var(--text);
 }
 
+.hg-addr-line {
+  margin: 0 0 1rem;
+  font-size: 1.02rem;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.hg-addr-line strong {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
 .hg-property-line {
   margin: 0 0 0.35rem;
   font-size: 0.88rem;
