@@ -5623,18 +5623,48 @@ function zoneHitPool(zone, rawPts) {
 function buildDetailedZoneRings(zone, rawPts) {
   // Storm-date mode: radar swaths drawn once in drawStormRadarSwathLayers; spotters are dots only.
   if (hasSelectedStormDates()) return [];
-  const pool = capRadarPtsForMesh(zoneHitPool(zone, rawPts));
+  return buildHomeHailZoneBands(zone, rawPts);
+}
+
+/**
+ * HomeScope / pin-mode zone bands — same geometry path as HailScope fills.
+ * Uses the full day’s raw hail rows (not just collapsed near-roof points) so MESH/SWDI swaths actually draw.
+ */
+export function buildHomeHailZoneBands(zone = {}, dayRows = []) {
+  const pool = capRadarPtsForMesh(zoneHitPool(zone, dayRows));
   if (!pool.length) {
-    return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: 1, confirmed: false }];
+    if (!Number.isFinite(Number(zone.lat)) || !Number.isFinite(Number(zone.lon))) return [];
+    return [
+      {
+        ring: topoZoneRing(zone, []),
+        maxSize: parseFloat(zone.max_size || zone.size_in) || 0.75,
+        hits: 1,
+        confirmed: false,
+        source: "hail",
+      },
+    ];
   }
   const radar = pool.filter(isRadarHail);
-  if (radar.length) return buildHailSwathRings(radar, zone);
+  if (radar.length) {
+    const rings = buildHailSwathRings(radar, zone, { includeSpotters: false }) || [];
+    return rings.map((r) => ({
+      ...r,
+      source: r.source || "radar",
+      maxSize: Number(r.maxSize) || parseFloat(zone.max_size || zone.size_in) || 0.75,
+    }));
+  }
   const spots = pool.filter(isSpotterHail);
   if (!spots.length) return [];
   return [
     {
-      ring: topoZoneRing(zone, spots),
-      maxSize: Math.max(...spots.map((p) => parseFloat(p.size_in) || 0), parseFloat(zone.size_in) || 0.75),
+      ring: topoZoneRing(
+        { ...zone, size_in: zone.size_in || zone.max_size || spots[0].size_in },
+        spots,
+      ),
+      maxSize: Math.max(
+        ...spots.map((p) => parseFloat(p.size_in) || 0),
+        parseFloat(zone.max_size || zone.size_in) || 0.75,
+      ),
       hits: spots.length,
       confirmed: true,
       source: "spotter",

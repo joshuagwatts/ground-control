@@ -8,7 +8,7 @@ import {
   collapseHailByDate,
   HOUSE_HAIL_KM,
   HOUSE_ZONE_KM,
-  buildHailSwathRings,
+  buildHomeHailZoneBands,
   fetchIemLsrHailArchive,
   mergeHailRows,
 } from "../wx.js";
@@ -34,10 +34,10 @@ function pointInLatLonRing(lat, lon, ring) {
 }
 
 /**
- * Honest cover: near-roof hits and/or radar/spotter swath polygon over the pin.
- * Soft “nearby” reports are tracked but never claimed as covering the home.
+ * Honest cover: near-roof hits and/or HailScope zone polygon over the pin.
+ * Soft “nearby” reports are never claimed as covering the home.
  */
-function stormCoversHome(row, lat, lon) {
+function stormCoversHome(row, lat, lon, dayRows = []) {
   const pts = row.zone_pts || [];
   const minDist = Number(row.min_dist);
   const coversNear =
@@ -47,9 +47,8 @@ function stormCoversHome(row, lat, lon) {
 
   let coversPolygon = false;
   try {
-    // Radar swaths only for polygon cover — spotters are point reports, not filled zones.
-    const rings = buildHailSwathRings(pts, row, { includeSpotters: false }) || [];
-    for (const band of rings) {
+    const bands = buildHomeHailZoneBands(row, dayRows) || [];
+    for (const band of bands) {
       if (band?.ring && pointInLatLonRing(lat, lon, band.ring)) {
         coversPolygon = true;
         break;
@@ -136,13 +135,20 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   const cutoffIso = cutoff.toISOString().slice(0, 10);
 
   const collapsed = collapseHailByDate(hailRows || []);
+  const byDay = new Map();
+  for (const h of hailRows || []) {
+    const d = String(h?.date || "").slice(0, 10);
+    if (!d) continue;
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(h);
+  }
   const storms = [];
   for (const row of collapsed) {
     const date = String(row.date || "");
     if (!date || date < cutoffIso) continue;
     const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
-    const cover = stormCoversHome(row, lat, lon);
+    const cover = stormCoversHome(row, lat, lon, byDay.get(date) || []);
     // Only list storms that actually cover the home — nearby-only is noted, not claimed.
     if (!cover.coversHome) continue;
     storms.push({

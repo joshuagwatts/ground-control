@@ -5,7 +5,13 @@ import { APP_VERSION } from "../version.js";
 import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
 import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
 import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache } from "./hail-load.js";
-import { buildHailSwathRings, hailRadarBandColor, hailSpotterZoneColor, hailMeshBandOpacity, isSpotterHail, isSwdiHail } from "../wx.js";
+import {
+  buildHomeHailZoneBands,
+  hailRadarBandColor,
+  hailSpotterZoneColor,
+  hailMeshBandOpacity,
+  isSpotterHail,
+} from "../wx.js";
 import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
 
 const LEAD_KEY = "homescope_lead_v1";
@@ -250,61 +256,68 @@ function paintOverlays() {
   const bounds = [];
   if (Number.isFinite(homeLat) && Number.isFinite(homeLon)) bounds.push([homeLat, homeLon]);
   let anySelected = false;
+  const dayPool = getHomeHailCache().hail || [];
 
   for (const s of rankedStorms()) {
     if (!state.selected.has(s.date)) continue;
     anySelected = true;
-    const pts = (s.zone_pts || s.raw?.zone_pts || []).filter(
-      (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon),
-    );
-    const radarPts = pts.filter((p) => !isSpotterHail(p));
-    const spotPts = pts.filter((p) => isSpotterHail(p));
+    const zone = {
+      ...(s.raw || {}),
+      date: s.date,
+      lat: s.raw?.lat ?? homeLat,
+      lon: s.raw?.lon ?? homeLon,
+      size_in: s.maxSizeIn,
+      max_size: s.maxSizeIn,
+      zone_pts: s.zone_pts || s.raw?.zone_pts || [],
+      zone_r_km: s.raw?.zone_r_km,
+      source: s.raw?.source,
+    };
+    const day = String(s.date || "").slice(0, 10);
+    const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
 
-    // Radar / MESH swaths — real geometry, colored by band size (not all yellow).
-    let rings = [];
+    let bands = [];
     try {
-      rings = buildHailSwathRings(radarPts.length ? radarPts : [], s.raw || s, { includeSpotters: false }) || [];
-    } catch {
-      rings = [];
+      // Same HailScope fill path — full-day SWDI/MESH rows, not collapsed near-roof crumbs.
+      bands = buildHomeHailZoneBands(zone, dayRows) || [];
+    } catch (err) {
+      console.warn("[HomeScope] zone bands failed", s.date, err);
+      bands = [];
     }
-    for (const band of rings) {
+
+    for (const band of bands) {
       if (!band?.ring?.length) continue;
       const sz = Number(band.maxSize) || Number(s.maxSizeIn) || 1;
-      const col = colorForHailSize(sz, { radar: true });
-      const fillOp = Math.min(0.55, Math.max(0.22, hailMeshBandOpacity(sz) * 0.72));
+      const src = String(band.source || "");
+      const isSpot = src === "spotter" || (band.confirmed === true && !/radar|swdi|mesh/i.test(src));
+      const isRadar = /radar|swdi|mesh/i.test(src) || (!isSpot && src !== "hail");
+      const col = isSpot ? hailSpotterZoneColor(sz) : hailRadarBandColor(sz);
+      const fillOp = isSpot
+        ? Math.min(0.42, 0.22 + sz * 0.06)
+        : Math.min(0.58, Math.max(0.28, hailMeshBandOpacity(sz) * 0.85));
       window.L.polygon(band.ring, {
         color: col.stroke,
-        weight: 1.4,
+        weight: isSpot ? 1.6 : 1.2,
         fillColor: col.fill,
         fillOpacity: fillOp,
-        opacity: 0.85,
+        opacity: isRadar ? 0.75 : 0.9,
+        dashArray: isSpot ? "5 4" : null,
       }).addTo(state.overlay);
       for (const ll of band.ring) {
         if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
       }
     }
 
-    // Spotter / LSR reports are points with uncertainty — never invent a home-centered zone.
-    const spotDraw = spotPts.length
-      ? spotPts
-      : !rings.length
-        ? pts.filter((p) => (Number(p.distance_km) || 999) <= 12).slice(0, 40)
-        : [];
-    for (const p of spotDraw.slice(0, 48)) {
+    // Spotter dots on top of swaths (HailTrace-style) — never a substitute for zones.
+    const spotPts = [...(zone.zone_pts || []), ...dayRows]
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p))
+      .filter((p) => (Number(p.distance_km) || 999) <= 25);
+    const seen = new Set();
+    for (const p of spotPts.slice(0, 60)) {
+      const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const pSz = Number(p.size_in) || Number(s.maxSizeIn) || 1;
-      const spot = isSpotterHail(p) || !isSwdiHail(p);
-      const col = colorForHailSize(pSz, { spotter: spot, radar: !spot });
-      // ~0.6–1.4 km point uncertainty, scaled lightly by size — honest LSR location, not roof paint.
-      const rM = Math.max(450, Math.min(1400, 400 + pSz * 280));
-      window.L.circle([p.lat, p.lon], {
-        radius: rM,
-        color: col.stroke,
-        weight: 1.5,
-        fillColor: col.fill,
-        fillOpacity: 0.2,
-        opacity: 0.9,
-        dashArray: spot ? "4 3" : null,
-      }).addTo(state.overlay);
+      const col = hailSpotterZoneColor(pSz);
       window.L.circleMarker([p.lat, p.lon], {
         radius: 5,
         color: "#fff",
@@ -316,9 +329,9 @@ function paintOverlays() {
     }
   }
 
-  if (anySelected && state.map && bounds.length) {
+  if (anySelected && state.map && bounds.length >= 2) {
     try {
-      state.map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+      state.map.fitBounds(bounds, { padding: [44, 44], maxZoom: 14 });
     } catch {
       if (Number.isFinite(homeLat)) state.map.setView([homeLat, homeLon], 13);
     }
