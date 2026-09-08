@@ -486,7 +486,48 @@ function activateStormDate(date) {
     }
   }
   state.mapFocusDate = d;
-  paintStormList();
+  paintStormList({ skipMap: true });
+  scheduleOverlayPaint({ immediate: true });
+}
+
+/** Throttle HailTrace while years stream — but always show auto-selected dates without a tap. */
+let overlayPaintTimer = 0;
+let lastOverlayPaintAt = 0;
+let lastOverlaySig = "";
+
+function overlaySelectionSig() {
+  return [...state.selected].sort().join("|");
+}
+
+function scheduleOverlayPaint({ immediate = false } = {}) {
+  if (!state.overlay || !window.L) {
+    ensureMap();
+  }
+  if (!state.selected.size && !state.storms.length) return;
+
+  const run = () => {
+    overlayPaintTimer = 0;
+    lastOverlayPaintAt = Date.now();
+    lastOverlaySig = overlaySelectionSig();
+    paintOverlays();
+  };
+
+  if (immediate) {
+    if (overlayPaintTimer) {
+      clearTimeout(overlayPaintTimer);
+      overlayPaintTimer = 0;
+    }
+    run();
+    return;
+  }
+
+  const sig = overlaySelectionSig();
+  const changed = sig !== lastOverlaySig;
+  const since = Date.now() - (lastOverlayPaintAt || 0);
+  // First paint ASAP; later stream updates at most ~1.2s so Trace doesn't freeze the list.
+  const wait = !lastOverlayPaintAt || changed ? 0 : Math.max(0, 1200 - since);
+  if (overlayPaintTimer) return;
+  overlayPaintTimer = setTimeout(run, wait);
 }
 
 function paintOverlays() {
@@ -700,6 +741,12 @@ async function selectAddressHit(hit, { force = true } = {}) {
       state.mapFocusDate = null;
       state.overlayCollection = true;
       state.listLimit = LIST_PAGE;
+      if (overlayPaintTimer) {
+        clearTimeout(overlayPaintTimer);
+        overlayPaintTimer = 0;
+      }
+      lastOverlayPaintAt = 0;
+      lastOverlaySig = "";
     }
     state.address = label;
     state.lat = lat;
@@ -884,12 +931,16 @@ function applyStormResult(result, { loading = false, reseatSelection = true, ski
       autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     }
   }
-  // While streaming: update the list every time new dates arrive; defer heavy map meshes.
-  const deferMap = skipMap || still;
-  paintStormList({ loading: still, skipMap: deferMap });
+  // List always; map uses the scheduler so auto-selected dates show without a tap.
+  paintStormList({ loading: still, skipMap: true });
   ensureMap();
   if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
-  if (!deferMap) paintOverlays();
+  if (!skipMap && !still) {
+    scheduleOverlayPaint({ immediate: true });
+  } else if (state.selected.size) {
+    const firstBatch = prevCount === 0 && state.storms.length > 0;
+    scheduleOverlayPaint({ immediate: firstBatch });
+  }
 
   const status = $("#storm-status");
   const note = result.note ? ` ${result.note}` : "";
