@@ -731,6 +731,45 @@ a {
   gap: 0.4rem;
 }
 
+.hg-roof-quality {
+  margin: 0.55rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.hg-property-line {
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.hg-property-line strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.hg-edu-list {
+  margin: 0.45rem 0 0;
+  padding: 0 0 0 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.hg-edu-list li::marker {
+  color: var(--phos);
+}
+
+.hg-foot-meta {
+  margin: 0.45rem 0 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .hg-storm-blurb {
   margin: 0.35rem 0 0;
   font-size: 0.85rem;
@@ -1048,13 +1087,6 @@ body.ho-gate-open {
 
 .ho-gate-sheet .ho-row {
   margin: 0 0 0.65rem;
-}
-
-.hg-roof-quality {
-  margin: 0.85rem 0 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-  line-height: 1.45;
 }
 
 .ho-gate-btn {

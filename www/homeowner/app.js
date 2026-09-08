@@ -3,7 +3,7 @@
  */
 import { APP_VERSION } from "../version.js";
 import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
-import { PRODUCT, CLAIM_RULES, homescopeRecommendation, hailWindowSummaries } from "./product.js";
+import { PRODUCT, CLAIM_RULES, homescopeRecommendation, hailWindowSummaries, ROOF_HAIL_EDUCATION } from "./product.js";
 import {
   buildHailTraceDayBands,
   hailRadarBandColor,
@@ -99,8 +99,11 @@ function openReportGate() {
     $("#gate-roof-year").value = state.lead.roofYear;
   }
   setStatus($("#gate-status"), "");
-  // Delay focus so iOS keyboard doesn't jump the sheet off-screen before paint.
-  setTimeout(() => $("#gate-name")?.focus?.({ preventScroll: true }), 280);
+  // Prefer roof-age question first; fall back to name.
+  setTimeout(() => {
+    const roofOn = $("#gate-roof-mode .ho-chip.on");
+    (roofOn || $("#gate-name"))?.focus?.({ preventScroll: true });
+  }, 280);
 }
 
 function closeReportGate() {
@@ -1341,13 +1344,13 @@ function buildReportText(rec) {
     const d = String(s?.date || "");
     return d >= rec.windowStart && d <= rec.windowEnd;
   });
-  const earlier = (state.storms || []).filter((s) => String(s?.date || "") < rec.windowStart);
   const extreme = rankedStorms(inReview, "intense").slice(0, REPORT_LIST_N);
   const recent = rankedStorms(inReview, "recent").slice(0, REPORT_LIST_N);
-  const historyExtreme = rankedStorms(earlier, "intense").slice(0, REPORT_LIST_N);
+  const inchPlus = (rec.qualifying || []).slice(0, REPORT_LIST_N);
   const lines = [
     `${b.company} · ${PRODUCT.name}`,
     `Hail Report — ${state.address}`,
+    `Prepared for ${state.lead?.name || "Homeowner"} · Roof age: ${state.roofAgeLabel || "Not sure"}`,
     `Generated ${new Date().toLocaleString()}`,
     "",
     rec.headline,
@@ -1357,8 +1360,11 @@ function buildReportText(rec) {
     rec.secondaryCta ? `Also: ${rec.secondaryCta}` : "",
     `Call ${b.phone} · ${b.webLabel}`,
     "",
-    `Review period: ${rec.windowStart} → ${rec.windowEnd} · ${inReview.length} covering (≥ ${state.minHailIn}″)`,
-    `Full history loaded: ${state.years} years · ${state.storms.length} covering total`,
+    "What homeowners should know:",
+    ...(ROOF_HAIL_EDUCATION.bullets || []).map((x) => `• ${x}`),
+    "",
+    `Review window (matches roof age when known): ${rec.windowStart} → ${rec.windowEnd}`,
+    `Covering: ${(rec.covering || []).length} · ${CLAIM_RULES.minHailInches}″+: ${(rec.qualifying || []).length}`,
     "",
     "Hail summary (2 / 5 / 10 years):",
   ].filter((x) => x !== "");
@@ -1373,27 +1379,27 @@ function buildReportText(rec) {
       `• ${w.years}y${partial}: ${w.count} covering ≥${state.minHailIn}″ · ${w.inchPlus} at ${CLAIM_RULES.minHailInches}″+ · largest ${maxLabel} · latest ${w.latestPretty || "—"}`,
     );
   }
-  lines.push("", `Top ${REPORT_LIST_N} most extreme (review period):`);
+  if (inchPlus.length) {
+    lines.push("", `${CLAIM_RULES.minHailInches}″+ storms in review window:`);
+    for (const s of inchPlus) {
+      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+    }
+  }
+  lines.push("", `Most extreme (review window):`);
   if (extreme.length) {
     for (const s of extreme) {
       lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
     }
   } else {
-    lines.push("• None in the review period");
+    lines.push("• None in the review window");
   }
-  lines.push("", `Top ${REPORT_LIST_N} most recent (review period):`);
+  lines.push("", `Most recent (review window):`);
   if (recent.length) {
     for (const s of recent) {
       lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
     }
   } else {
-    lines.push("• None in the review period");
-  }
-  if (historyExtreme.length) {
-    lines.push("", `Earlier history (before review window):`);
-    for (const s of historyExtreme) {
-      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
-    }
+    lines.push("• None in the review window");
   }
   lines.push("", PRODUCT.disclaimer);
   return lines.join("\n");
@@ -1446,6 +1452,12 @@ function hailSummaryRowsHtml(summaries, minHailIn) {
     .join("");
 }
 
+function educationBulletsHtml(edu = ROOF_HAIL_EDUCATION) {
+  const bullets = edu?.bullets || [];
+  if (!bullets.length) return "";
+  return `<ul class="hg-edu-list">${bullets.map((b) => `<li>${escHtml(b)}</li>`).join("")}</ul>`;
+}
+
 function renderReportDocument(rec) {
   const b = PRODUCT.brand;
   const roofLabel =
@@ -1453,10 +1465,14 @@ function renderReportDocument(rec) {
       ? state.roofAgeLabel
       : state.roofReplacedOn
         ? state.roofReplacedOn.slice(0, 7)
-        : `Unknown (last ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown} years)`;
+        : `Not sure (used last ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown} years for recommendation)`;
   const quality = rec.roofQuality || {};
   const prepared = state.lead?.name || state.lead?.email || "Homeowner";
-  const tone = rec.talkToRoofer ? "roofer" : rec.considerClaim ? "review" : "ok";
+  const tone = rec.talkToRoofer
+    ? "roofer"
+    : rec.qualifying?.length
+      ? "review"
+      : "ok";
   const allCovering = state.storms || [];
   const windowSummaries = hailWindowSummaries(allCovering, {
     loadedYears: state.years,
@@ -1466,12 +1482,12 @@ function renderReportDocument(rec) {
     const d = String(s?.date || "");
     return d >= rec.windowStart && d <= rec.windowEnd;
   });
-  const earlierHistory = allCovering.filter((s) => String(s?.date || "") < rec.windowStart);
+  const inchPlusReview = (rec.qualifying || []).slice().sort((a, b) => (b.maxSizeIn || 0) - (a.maxSizeIn || 0));
   const extreme = rankedStorms(inReview, "intense").slice(0, REPORT_LIST_N);
   const recent = rankedStorms(inReview, "recent").slice(0, REPORT_LIST_N);
-  const historyExtreme = rankedStorms(earlierHistory, "intense").slice(0, REPORT_LIST_N);
-  const yearsLabel = `${state.years} year${state.years === 1 ? "" : "s"}`;
-  const reviewBlurb = `Recommendation review period: ${rec.windowStart} → ${rec.windowEnd} (${inReview.length} covering date${inReview.length === 1 ? "" : "s"}).`;
+  const edu = rec.education || ROOF_HAIL_EDUCATION;
+  const inchN = inchPlusReview.length;
+  const coverN = (rec.covering || inReview).length;
 
   return `<header class="hg-doc-top">
       <div class="hg-logo" aria-label="${escHtml(b.company)}">
@@ -1486,21 +1502,33 @@ function renderReportDocument(rec) {
       </div>
     </header>
 
-    <p class="hg-doc-lede">Clear storm history for your Oklahoma roof — from public NOAA / SPC / IEM records.</p>
+    <p class="hg-doc-lede">Storm history for this Oklahoma roof — built to support a clear, honest conversation about hail risk and next steps.</p>
 
     <section class="hg-card hg-property">
-      <h2 class="hg-section-label">Property</h2>
+      <h2 class="hg-section-label">This roof</h2>
       <p class="hg-addr">${escHtml(state.address)}</p>
-      <dl class="hg-meta-grid">
-        <div><dt>Prepared for</dt><dd>${escHtml(prepared)}</dd></div>
-        <div><dt>Roof age</dt><dd>${escHtml(roofLabel)}</dd></div>
-        <div><dt>Roof estimate</dt><dd>${escHtml(quality.label || "—")}</dd></div>
-        <div><dt>History loaded</dt><dd>${escHtml(String(state.years))} years · ≥ ${escHtml(String(state.minHailIn))}″ · ${allCovering.length} covering</dd></div>
-        <div><dt>Review period</dt><dd>${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)} · ${inReview.length} covering</dd></div>
-        <div><dt>Generated</dt><dd>${escHtml(new Date().toLocaleString())}</dd></div>
-        <div><dt>Sources</dt><dd>NOAA SWDI · SPC · IEM LSR</dd></div>
-      </dl>
-      ${quality.detail ? `<p class="hg-roof-quality">${escHtml(quality.detail)}</p>` : ""}
+      <p class="hg-property-line">Prepared for <strong>${escHtml(prepared)}</strong> · Roof age <strong>${escHtml(roofLabel)}</strong></p>
+      <p class="hg-roof-quality"><strong>${escHtml(quality.label || "—")}</strong> — ${escHtml(quality.detail || "")}</p>
+      <p class="hg-storm-blurb">Recommendation window matches this roof’s life when age is known (${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)}): <strong>${coverN}</strong> covering date${coverN === 1 ? "" : "s"}, <strong>${inchN}</strong> at ${escHtml(String(CLAIM_RULES.minHailInches))}″+.</p>
+    </section>
+
+    <section class="hg-verdict hg-verdict-${tone}">
+      <p class="hg-section-label">What this means</p>
+      <h3 class="hg-verdict-title">${escHtml(rec.headline)}</h3>
+      <p class="hg-verdict-body">${escHtml(rec.reason)}</p>
+      <div class="hg-cta-row">
+        <a class="hg-cta-primary" href="${escHtml(b.ctaUrl)}" target="_blank" rel="noopener">${escHtml(b.cta)}</a>
+        <a class="hg-cta-call" href="tel:${escHtml(b.phoneTel)}">Call ${escHtml(b.phone)}</a>
+      </div>
+      ${rec.secondaryCta ? `<p class="hg-secondary-cta">${escHtml(rec.secondaryCta)} — High Ground documents with drone + AI and keeps it straight with you.</p>` : ""}
+    </section>
+
+    <section class="hg-card">
+      <div class="hg-section-head">
+        <h2 class="hg-section-label">${escHtml(edu.title || "What homeowners should know")}</h2>
+      </div>
+      ${educationBulletsHtml(edu)}
+      <p class="hg-storm-blurb" style="margin-top:0.75rem">Bottom line: <strong>hail around 1″ and up can total an asphalt roof</strong> after a real inspection — weather history shows the events; High Ground shows the shingles.</p>
     </section>
 
     <section class="hg-card">
@@ -1508,50 +1536,38 @@ function renderReportDocument(rec) {
         <h2 class="hg-section-label">Hail summary</h2>
         <span class="hg-count">2 · 5 · 10 years</span>
       </div>
-      <p class="hg-storm-blurb">Covering dates at this pin (near-roof or zone) for the common lookbacks — same filter as the list (≥ ${escHtml(String(state.minHailIn))}″).</p>
+      <p class="hg-storm-blurb">Covering dates at this pin (near-roof or zone). The <strong>${escHtml(String(CLAIM_RULES.minHailInches))}″+</strong> line is the serious-impact count roofers watch.</p>
       <div class="hg-hail-windows">${hailSummaryRowsHtml(windowSummaries, state.minHailIn)}</div>
     </section>
 
-    <section class="hg-verdict hg-verdict-${tone}">
-      <p class="hg-section-label">Recommendation</p>
-      <h3 class="hg-verdict-title">${escHtml(rec.headline)}</h3>
-      <p class="hg-verdict-body">${escHtml(rec.reason)}</p>
-      <div class="hg-cta-row">
-        <a class="hg-cta-primary" href="${escHtml(b.ctaUrl)}" target="_blank" rel="noopener">${escHtml(b.cta)}</a>
-        <a class="hg-cta-call" href="tel:${escHtml(b.phoneTel)}">Call ${escHtml(b.phone)}</a>
-      </div>
-      ${rec.secondaryCta ? `<p class="hg-secondary-cta">${escHtml(rec.secondaryCta)} — High Ground can walk you through next steps.</p>` : ""}
-    </section>
-
-    <section class="hg-card">
-      <div class="hg-section-head">
-        <h2 class="hg-section-label">Storms in review period</h2>
-        <span class="hg-count">${inReview.length} verified</span>
-      </div>
-      <p class="hg-storm-blurb">${escHtml(reviewBlurb)} Highlights below use that same window (≥ ${escHtml(String(state.minHailIn))}″, near-roof or zone cover).</p>
-      <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most extreme</h3>
-      <ul class="hg-storm-list">${reportStormRowsHtml(extreme, "Extreme")}</ul>
-      <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most recent</h3>
-      <ul class="hg-storm-list">${reportStormRowsHtml(recent, "Recent")}</ul>
-    </section>
-
     ${
-      historyExtreme.length
+      inchPlusReview.length
         ? `<section class="hg-card">
       <div class="hg-section-head">
-        <h2 class="hg-section-label">Earlier history (${escHtml(yearsLabel)} lookback)</h2>
-        <span class="hg-count">${earlierHistory.length} before review window</span>
+        <h2 class="hg-section-label">${escHtml(String(CLAIM_RULES.minHailInches))}″+ storms over this home</h2>
+        <span class="hg-count">${inchPlusReview.length} in review window</span>
       </div>
-      <p class="hg-storm-blurb">Loaded for context — not used in the recommendation above.</p>
-      <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most extreme (earlier)</h3>
-      <ul class="hg-storm-list">${reportStormRowsHtml(historyExtreme, "History")}</ul>
+      <p class="hg-storm-blurb">These are the dates most useful in a pitch: verified cover plus hail large enough to seriously impact asphalt.</p>
+      <ul class="hg-storm-list">${reportStormRowsHtml(inchPlusReview.slice(0, REPORT_LIST_N), "1″+")}</ul>
     </section>`
         : ""
     }
 
+    <section class="hg-card">
+      <div class="hg-section-head">
+        <h2 class="hg-section-label">Storms since this roof’s age</h2>
+        <span class="hg-count">${inReview.length} verified</span>
+      </div>
+      <p class="hg-storm-blurb">All verified covering dates in the recommendation window (≥ ${escHtml(String(state.minHailIn))}″).</p>
+      <h3 class="hg-storm-group">Most extreme</h3>
+      <ul class="hg-storm-list">${reportStormRowsHtml(extreme, "Extreme")}</ul>
+      <h3 class="hg-storm-group">Most recent</h3>
+      <ul class="hg-storm-list">${reportStormRowsHtml(recent, "Recent")}</ul>
+    </section>
+
     <section class="hg-card hg-trust">
       <h2 class="hg-section-label">About High Ground</h2>
-      <p>Oklahoma weather is hard on roofs. High Ground uses drone and AI documentation for clear, honest inspections — family-run, serving Edmond and surrounding communities.</p>
+      <p>Oklahoma weather is hard on roofs. High Ground uses drone and AI documentation for clear, honest inspections — family-run, serving Edmond and surrounding communities. We would rather tell you the roof looks fine than invent a problem.</p>
       <p class="hg-trust-line">Honesty over scare tactics · Free inspections</p>
     </section>
 
@@ -1561,6 +1577,7 @@ function renderReportDocument(rec) {
         <a href="${escHtml(b.web)}" target="_blank" rel="noopener">${escHtml(b.webLabel)}</a>
         · <a href="tel:${escHtml(b.phoneTel)}">${escHtml(b.phone)}</a><br/>
         <span>${escHtml(b.address)}</span>
+        <p class="hg-foot-meta">Generated ${escHtml(new Date().toLocaleString())} · NOAA SWDI · SPC · IEM LSR · ${escHtml(String(state.years))}y history loaded</p>
       </div>
       <p class="hg-disclaimer">${escHtml(PRODUCT.disclaimer)}</p>
     </footer>`;
@@ -1709,7 +1726,7 @@ async function generateReport({ emailViaCrm = true } = {}) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = prevBtn || "Get free hail report";
+      btn.textContent = prevBtn || "Answer questions · Get report";
     }
   }
 
@@ -1890,7 +1907,7 @@ function boot() {
     };
     saveLead(lead);
     state.lead = lead;
-    setStatus($("#gate-status"), "Building your report and queuing CRM email…");
+    setStatus($("#gate-status"), "Deep searching hail, then building your report…");
     await generateReport({ emailViaCrm: true });
   });
   $("#gate-scrim")?.addEventListener("click", closeReportGate);
@@ -1992,15 +2009,7 @@ function boot() {
       setStatus($("#storm-status"), "Load hail for an address first", true);
       return;
     }
-    if (leadReadyForReport(state.lead)) {
-      if (state.lead.roofMode) {
-        state.roofMode = state.lead.roofMode;
-        state.roofReplacedOn = state.lead.roofReplacedOn || null;
-        state.roofAgeLabel = state.lead.roofAgeLabel || state.roofAgeLabel;
-      }
-      void generateReport({ emailViaCrm: true });
-      return;
-    }
+    // Always ask roof-age + contact questions before generating — never skip the gate.
     openReportGate();
   });
   $("#print-report")?.addEventListener("click", () => window.print());
