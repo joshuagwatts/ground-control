@@ -609,7 +609,6 @@ function paintOverlays() {
     state.overlayCollection = true;
   }
   if (!days.length) {
-    if (Number.isFinite(homeLat) && state.map) state.map.setView([homeLat, homeLon], 14);
     return;
   }
   // Oldest first so newer / focused swaths paint on top.
@@ -666,16 +665,7 @@ function paintOverlays() {
   }
 
   if (needHatch && state.hailSvg?._container) ensureHomeHailHatch(state.hailSvg._container);
-
-  if (state.map && bounds.length >= 2) {
-    try {
-      state.map.fitBounds(bounds, { padding: [48, 48], maxZoom: 13 });
-    } catch {
-      if (Number.isFinite(homeLat)) state.map.setView([homeLat, homeLon], 12);
-    }
-  } else if (Number.isFinite(homeLat) && state.map) {
-    state.map.setView([homeLat, homeLon], 13);
-  }
+  // Keep the user's pin zoom — draw zones in place; they can zoom out to see the full swath.
 }
 
 function hitLabel(hit) {
