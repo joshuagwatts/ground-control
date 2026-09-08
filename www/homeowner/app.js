@@ -28,7 +28,7 @@ const state = {
   roofAgeLabel: "Not sure",
   roofReplacedOn: null,
   years: 10,
-  minHailIn: 1,
+  minHailIn: 0.75,
   stormSort: "intense",
   storms: [],
   selected: new Set(),
@@ -1445,7 +1445,7 @@ function boot() {
     if (Number.isFinite(state.lat)) applyFiltersFromChips({ reseatSelection: true });
   });
   bindChips("#filter-hail", "hail", (v) => {
-    state.minHailIn = Number(v) || 1;
+    state.minHailIn = Number(v) || 0.75;
     if (Number.isFinite(state.lat)) applyFiltersFromChips({ reseatSelection: true });
   });
   bindChips("#filter-sort", "sort", (v) => {
