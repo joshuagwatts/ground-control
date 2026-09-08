@@ -200,13 +200,6 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   const collapsed = collapseHailByDate(hailRows || []).sort((a, b) =>
     String(b.date || "").localeCompare(String(a.date || "")),
   );
-  const byDay = new Map();
-  for (const h of hailRows || []) {
-    const d = String(h?.date || "").slice(0, 10);
-    if (!d) continue;
-    if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d).push(h);
-  }
 
   const storms = [];
   for (const row of collapsed) {
@@ -214,7 +207,8 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     if (!date || date < cutoffIso) continue;
     const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
-    const cover = stormCoversHome(row, lat, lon, byDay.get(date) || []);
+    // zone_pts from collapse is enough for hull cover — skip rebuilding per-day maps each chunk.
+    const cover = stormCoversHome(row, lat, lon, row.zone_pts || []);
     if (!cover.coversHome) continue;
     storms.push({
       date,
@@ -359,19 +353,23 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
 }
 
 /**
- * Load hail for a home. Streams partials as radar + archive arrive.
+ * Load hail for a home. Archive years start immediately (parallel with dossier)
+ * so covering dates appear without waiting on SWDI first.
  */
 export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHailIn = 1, onPartial, force = false } = {}) {
   const days = Math.min(Math.max(Math.round(Number(years) * 365.25), 30), 3650);
   const key = pinKey(lat, lon);
 
-  await ensureWebProxyReady(8000);
+  // Don't block the whole load on a slow service-worker handshake.
+  await Promise.race([
+    ensureWebProxyReady(8000).catch(() => false),
+    new Promise((r) => setTimeout(r, 1200)),
+  ]);
   setWxPin(lat, lon);
 
   pinCache.uiNotify = onPartial || pinCache.uiNotify;
 
   if (!force && pinCache.key === key) {
-    if (pinCache.dossierPromise) await pinCache.dossierPromise;
     if (days > (pinCache.fetchedDays || 0) || pinCache.deepenPromise) {
       await deepenArchive(lat, lon, days, onPartial, minHailIn, years, pinCache.loadSeq);
     }
@@ -396,6 +394,12 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
   };
   const seq = pinCache.loadSeq;
 
+  pushPartial(onPartial, lat, lon, minHailIn, days, years, true, "Starting hail history…");
+
+  // PRIMARY: 10y LSR archive right away — this fills the storm date list.
+  const deepenP = deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq);
+
+  // SECONDARY: dossier/SWDI in parallel for map detail — must never gate the archive.
   const dossierJob = (async () => {
     try {
       return await pinDossier({}, lat, lon, {
@@ -406,10 +410,6 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
               if (pinCache.key !== key || seq !== pinCache.loadSeq) return;
               const hail = part?.hail || [];
               pinCache.hail = mergeHailRows(pinCache.hail, hail);
-              pinCache.fetchedDays = Math.max(
-                pinCache.fetchedDays,
-                Math.min(730, Number(part?._meta?.fetchedDays) || 400),
-              );
               pushPartial(
                 onPartial,
                 lat,
@@ -429,49 +429,31 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
   })();
   pinCache.dossierPromise = dossierJob;
 
-  let dossier;
-  try {
-    dossier = await dossierJob;
-  } catch (err) {
-    const empty = {
-      ok: false,
-      address,
-      lat,
-      lon,
-      years,
-      fetchedDays: 0,
-      note: String(err?.message || err || "Hail fetch failed"),
-      storms: [],
-      hailRowCount: 0,
-      loading: false,
-      error: true,
-    };
-    if (onPartial) onPartial(empty);
-    emitHailCache();
-    return empty;
+  const dossierWait = dossierJob
+    .then((dossier) => {
+      if (pinCache.key !== key || seq !== pinCache.loadSeq) return;
+      pinCache.hail = mergeHailRows(pinCache.hail, dossier?.hail || []);
+      pinCache.address = dossier?.address || address || pinCache.address;
+      pushPartial(
+        onPartial,
+        lat,
+        lon,
+        minHailIn,
+        days,
+        years,
+        Boolean(pinCache.loadingDeep || pinCache.deepenPromise),
+        "Radar dossier merged…",
+      );
+    })
+    .catch((err) => {
+      console.warn("[HomeScope] dossier", err);
+    });
+
+  await deepenP;
+  await dossierWait;
+  if (pinCache.key !== key || seq !== pinCache.loadSeq) {
+    return filterCachedHomeStorms({ years, minHailIn });
   }
-
-  if (pinCache.key !== key || seq !== pinCache.loadSeq) return filterCachedHomeStorms({ years, minHailIn });
-
-  pinCache.hail = mergeHailRows(pinCache.hail, dossier?.hail || []);
-  pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(730, Number(dossier?._meta?.fetchedDays) || 730));
-  pinCache.address = dossier?.address || address || pinCache.address;
-
-  pushPartial(
-    onPartial,
-    lat,
-    lon,
-    minHailIn,
-    days,
-    years,
-    days > pinCache.fetchedDays,
-    days > pinCache.fetchedDays ? "Recent years ready · loading older history…" : null,
-  );
-
-  if (days > pinCache.fetchedDays) {
-    await deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq);
-  }
-
   return filterCachedHomeStorms({ years, minHailIn });
 }
 

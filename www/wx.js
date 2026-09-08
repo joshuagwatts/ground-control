@@ -1626,8 +1626,8 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
       windowStart.setUTCDate(windowStart.getUTCDate() - span);
       windows.push({ windowStart, windowEnd, offset, span });
     }
-    // Parallel fetch (3) but notify as EACH year finishes — don't wait on a 5y batch.
-    const concurrency = 3;
+    // Parallel fetch (5) — notify as EACH year finishes so dates drop in ASAP.
+    const concurrency = 5;
     let coveredMax = 0;
     let cursor = 0;
     const worker = async () => {
