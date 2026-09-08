@@ -522,6 +522,7 @@ let lastOverlaySig = "";
 let lastOverlayHailN = -1;
 let swdiEnrichGen = 0;
 const swdiEnrichedDays = new Set();
+let lastZoneRevealSig = "";
 const MAP_STREAM_DAYS = 1;
 const MAP_COLLECTION_DAYS = 5;
 const SWDI_DAY_MIN = 8;
@@ -602,6 +603,60 @@ async function ensureStatewideSwdiForDays(days) {
   return false;
 }
 
+/** If the pin zoom shows no hail fill, ease out so the nearest zone is in view (OK roofs aren't "safe"). */
+function revealNearestHailIfOutOfView({ force = false } = {}) {
+  const map = state.map;
+  if (!map || !state.overlay || !window.L) return;
+  if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
+
+  const home = window.L.latLng(state.lat, state.lon);
+  const view = map.getBounds?.();
+  if (!view) return;
+
+  let anyInView = false;
+  let best = null;
+  state.overlay.eachLayer((layer) => {
+    let b = null;
+    try {
+      if (typeof layer.getBounds === "function") b = layer.getBounds();
+      else if (typeof layer.getLatLng === "function") b = window.L.latLngBounds([layer.getLatLng()]);
+    } catch {
+      return;
+    }
+    if (!b || (typeof b.isValid === "function" && !b.isValid())) return;
+    try {
+      if (view.intersects(b)) anyInView = true;
+    } catch {
+      /* ignore */
+    }
+    const center = b.getCenter?.() || home;
+    const dist = home.distanceTo(center);
+    if (!best || dist < best.dist) best = { dist, bounds: b };
+  });
+
+  const sig = `${Number(state.lat).toFixed(4)}|${Number(state.lon).toFixed(4)}|${overlaySelectionSig()}`;
+  if (anyInView) {
+    lastZoneRevealSig = sig;
+    return;
+  }
+  if (!best) return;
+  if (!force && sig === lastZoneRevealSig) return;
+  lastZoneRevealSig = sig;
+
+  try {
+    const fit = window.L.latLngBounds([home]);
+    fit.extend(best.bounds);
+    map.fitBounds(fit, {
+      padding: [48, 48],
+      maxZoom: 12,
+      animate: true,
+      duration: 0.55,
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 async function paintOverlays() {
   ensureMap();
   if (!state.overlay || !window.L) return;
@@ -676,10 +731,14 @@ async function paintOverlays() {
   };
 
   paintDays(days);
+  revealNearestHailIfOutOfView({ force: true });
 
   // After local paint, pull statewide radar for these days (zoom-out Trace like field GC).
   const grew = await ensureStatewideSwdiForDays(days);
-  if (grew) paintDays(days);
+  if (grew) {
+    paintDays(days);
+    revealNearestHailIfOutOfView({ force: true });
+  }
 }
 
 function hitLabel(hit) {
@@ -821,6 +880,7 @@ async function selectAddressHit(hit, { force = true } = {}) {
       lastOverlayHailN = -1;
       swdiEnrichGen += 1;
       swdiEnrichedDays.clear();
+      lastZoneRevealSig = "";
     }
     state.address = label;
     state.lat = lat;
