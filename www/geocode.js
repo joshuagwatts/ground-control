@@ -111,6 +111,84 @@ export function biasAddressQuery(query, { city = "" } = {}) {
   return `${raw}, OK`;
 }
 
+/**
+ * Fast typeahead suggestions (ArcGIS Suggest) — OK-biased, clickable dropdown rows.
+ * Returns lightweight stubs; call resolveAddressSuggestion() when the user picks one.
+ */
+export async function suggestOklahomaAddresses(query, { max = 8 } = {}) {
+  const raw = String(query || "").trim();
+  if (raw.length < 3) return [];
+  const text = biasAddressQuery(raw);
+  const e = OKLAHOMA_EXTENT;
+  const url =
+    `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/suggest?f=json` +
+    `&text=${encodeURIComponent(text)}` +
+    `&maxSuggestions=${Math.min(Math.max(Number(max) || 8, 1), 10)}` +
+    `&countryCode=USA&category=Address` +
+    `&searchExtent=${e.west},${e.south},${e.east},${e.north}` +
+    `&location=-97.5164,35.4676&distance=200000`;
+  const data = await getJson(url, 7000);
+  const rows = Array.isArray(data?.suggestions) ? data.suggestions : [];
+  return rows
+    .filter((s) => s && !s.isCollection && String(s.text || "").trim())
+    .map((s) => ({
+      text: String(s.text).trim(),
+      magicKey: String(s.magicKey || ""),
+      source: "arcgis-suggest",
+      address: String(s.text).trim(),
+      label: String(s.text).trim(),
+    }))
+    .slice(0, max);
+}
+
+/** Turn a suggest row into a lat/lon house hit. */
+export async function resolveAddressSuggestion(suggestion) {
+  const text = String(suggestion?.text || suggestion?.address || suggestion?.label || "").trim();
+  const magicKey = String(suggestion?.magicKey || "").trim();
+  if (!text && !magicKey) throw new Error("pick a suggested address");
+  const e = OKLAHOMA_EXTENT;
+  let url =
+    `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json` +
+    `&outFields=Match_addr,Addr_type,StName,AddNum,StAddr,City,RegionAbbr,Postal&maxLocations=1` +
+    `&sourceCountry=USA&category=Address` +
+    `&searchExtent=${e.west},${e.south},${e.east},${e.north}`;
+  if (magicKey) {
+    url += `&magicKey=${encodeURIComponent(magicKey)}`;
+    if (text) url += `&SingleLine=${encodeURIComponent(text)}`;
+  } else {
+    url += `&SingleLine=${encodeURIComponent(biasAddressQuery(text))}`;
+  }
+  const data = await getJson(url, 9000);
+  const c = (data.candidates || [])[0];
+  if (!c?.location) {
+    const ranked = await geocodeCandidates(text || biasAddressQuery(text));
+    if (!ranked[0]) throw new Error("address not found");
+    return ranked[0];
+  }
+  const a = c.attributes || {};
+  const stAddr = String(a.StAddr || "").trim();
+  const house = String(a.AddNum || "").trim();
+  const street = stAddr.replace(/^\d+\s+/, "").trim() || String(a.StName || "").trim();
+  const region = String(a.RegionAbbr || "").trim();
+  const city = String(a.City || "").trim();
+  const postal = String(a.Postal || "").trim();
+  const match = a.Match_addr || c.address || text;
+  const address =
+    match.includes(",") || !city
+      ? match
+      : [match, city, region || "OK", postal].filter(Boolean).join(", ");
+  return {
+    lat: Number(c.location.y),
+    lon: Number(c.location.x),
+    address,
+    city,
+    house,
+    street,
+    addrType: String(a.Addr_type || "PointAddress"),
+    source: "arcgis",
+  };
+}
+
 export function scoreGeocodeHit(hit, query) {
   const want = parseStreetAddress(query);
   const got = parseStreetAddress(hit.address || "");

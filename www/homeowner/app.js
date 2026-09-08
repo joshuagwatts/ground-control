@@ -2,7 +2,7 @@
  * HomeScope — Oklahoma homeowner hail report (isolated from Ground Control field UX).
  */
 import { APP_VERSION } from "../version.js";
-import { geocodeCandidates, biasAddressQuery, inOklahoma } from "../geocode.js";
+import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
 import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
 import { loadHomeStorms } from "./hail-load.js";
 import { buildHailSwathRings } from "../wx.js";
@@ -172,11 +172,17 @@ function escapeHtml(s) {
 }
 
 async function fetchSuggestions(query) {
-  const q = biasAddressQuery(String(query || "").trim());
-  if (q.length < 4) return [];
+  const q = String(query || "").trim();
+  if (q.length < 3) return [];
   try {
-    const hits = await geocodeCandidates(q, { city: "Oklahoma" });
-    return (hits || []).filter((h) => inOklahoma(h)).slice(0, 6);
+    const hits = await suggestOklahomaAddresses(q, { max: 8 });
+    if (hits.length) return hits;
+  } catch {
+    /* fall through to full geocode */
+  }
+  try {
+    const ranked = await geocodeCandidates(q, { city: "Oklahoma" });
+    return (ranked || []).filter((h) => inOklahoma(h)).slice(0, 6);
   } catch {
     return [];
   }
@@ -185,12 +191,11 @@ async function fetchSuggestions(query) {
 function clearSuggestions() {
   state.suggestHits = [];
   state.suggestIdx = -1;
+  const wrap = $("#addr-suggest-wrap");
   const box = $("#addr-suggest");
   const input = $("#addr-q");
-  if (box) {
-    box.innerHTML = "";
-    box.hidden = true;
-  }
+  if (box) box.innerHTML = "";
+  if (wrap) wrap.hidden = true;
   if (input) {
     input.setAttribute("aria-expanded", "false");
     input.removeAttribute("aria-activedescendant");
@@ -198,24 +203,25 @@ function clearSuggestions() {
 }
 
 function paintSuggestions(hits, { emptyMsg = "" } = {}) {
+  const wrap = $("#addr-suggest-wrap");
   const box = $("#addr-suggest");
   const input = $("#addr-q");
-  if (!box) return;
+  if (!box || !wrap) return;
   state.suggestHits = hits || [];
   state.suggestIdx = state.suggestHits.length ? 0 : -1;
   box.innerHTML = "";
   if (!state.suggestHits.length) {
     if (emptyMsg) {
-      box.hidden = false;
+      wrap.hidden = false;
       box.innerHTML = `<li class="ho-suggest-empty">${escapeHtml(emptyMsg)}</li>`;
       if (input) input.setAttribute("aria-expanded", "true");
     } else {
-      box.hidden = true;
+      wrap.hidden = true;
       if (input) input.setAttribute("aria-expanded", "false");
     }
     return;
   }
-  box.hidden = false;
+  wrap.hidden = false;
   if (input) input.setAttribute("aria-expanded", "true");
   state.suggestHits.forEach((hit, i) => {
     const li = document.createElement("li");
@@ -224,10 +230,12 @@ function paintSuggestions(hits, { emptyMsg = "" } = {}) {
     btn.type = "button";
     btn.className = `ho-suggest-item${i === state.suggestIdx ? " active" : ""}`;
     btn.id = `addr-opt-${i}`;
-    btn.innerHTML = `<span class="ho-suggest-main">${escapeHtml(hitLabel(hit))}</span>
-      <span class="ho-suggest-meta">${escapeHtml(hitMeta(hit) || "Oklahoma")}</span>`;
-    btn.addEventListener("mousedown", (e) => e.preventDefault());
-    btn.addEventListener("click", () => {
+    const main = hitLabel(hit);
+    btn.innerHTML = `<span class="ho-suggest-main">${escapeHtml(main)}</span>
+      <span class="ho-suggest-meta">Tap to use this address</span>`;
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       void selectAddressHit(hit);
     });
     li.appendChild(btn);
@@ -244,29 +252,40 @@ function highlightSuggest(idx) {
 }
 
 async function selectAddressHit(hit) {
-  const lat = Number(hit?.lat);
-  const lon = Number(hit?.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-    setStatus($("#addr-status"), "Pick a suggested address", true);
-    return;
-  }
-  if (!inOklahoma(hit)) {
-    setStatus($("#addr-status"), "HomeScope is Oklahoma-only — pick an OK address", true);
-    return;
-  }
-  const label = hitLabel(hit) || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  const input = $("#addr-q");
-  if (input) input.value = label;
+  const status = $("#addr-status");
+  setStatus(status, "Locking address…");
   clearSuggestions();
-  state.address = label;
-  state.lat = lat;
-  state.lon = lon;
-  state.storms = [];
-  state.selected.clear();
-  setStatus($("#addr-status"), label);
-  setStep("roof");
-  pinHome(lat, lon);
-  paintStormList();
+  try {
+    let resolved = hit;
+    // Suggest stubs need magicKey resolve; full geocode hits already have coords.
+    if (!Number.isFinite(Number(hit?.lat)) || !Number.isFinite(Number(hit?.lon)) || hit?.magicKey) {
+      resolved = await resolveAddressSuggestion(hit);
+    }
+    const lat = Number(resolved?.lat);
+    const lon = Number(resolved?.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setStatus(status, "Couldn’t pin that address — try another suggestion", true);
+      return;
+    }
+    if (!inOklahoma(resolved) && !inOklahoma({ lat, lon })) {
+      setStatus(status, "HomeScope is Oklahoma-only — pick an OK address", true);
+      return;
+    }
+    const label = hitLabel(resolved) || hitLabel(hit) || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    const input = $("#addr-q");
+    if (input) input.value = label;
+    state.address = label;
+    state.lat = lat;
+    state.lon = lon;
+    state.storms = [];
+    state.selected.clear();
+    setStatus(status, label);
+    setStep("roof");
+    pinHome(lat, lon);
+    paintStormList();
+  } catch (err) {
+    setStatus(status, err?.message || "Address lookup failed", true);
+  }
 }
 
 async function lookupAddress(query) {
@@ -296,24 +315,26 @@ async function lookupAddress(query) {
 function scheduleSuggest(raw) {
   clearTimeout(state.suggestTimer);
   const q = String(raw || "").trim();
-  if (q.length < 4) {
+  if (q.length < 3) {
     clearSuggestions();
-    setStatus($("#addr-status"), q ? "Keep typing for suggestions…" : "");
+    setStatus($("#addr-status"), q ? "Keep typing — suggestions appear after 3 letters" : "");
     return;
   }
   const gen = ++state.suggestGen;
+  // Show dropdown shell immediately so it feels instant.
+  paintSuggestions([], { emptyMsg: "Finding addresses…" });
+  setStatus($("#addr-status"), "Finding addresses…");
   state.suggestTimer = setTimeout(async () => {
-    setStatus($("#addr-status"), "Finding addresses…");
     const hits = await fetchSuggestions(q);
     if (gen !== state.suggestGen) return;
     if (!hits.length) {
-      paintSuggestions([], { emptyMsg: "No Oklahoma matches yet — try street, city, OK" });
+      paintSuggestions([], { emptyMsg: "No matches yet — keep typing street + city" });
       setStatus($("#addr-status"), "No suggestions yet");
       return;
     }
     paintSuggestions(hits);
-    setStatus($("#addr-status"), `${hits.length} suggestion${hits.length === 1 ? "" : "s"} — tap one`);
-  }, 280);
+    setStatus($("#addr-status"), "Tap a suggestion below");
+  }, 180);
 }
 
 function roofDateFromInputs() {
@@ -632,6 +653,10 @@ function boot() {
   $("#addr-q")?.addEventListener("input", (e) => {
     scheduleSuggest(e.target.value);
   });
+  $("#addr-q")?.addEventListener("focus", (e) => {
+    const q = String(e.target.value || "").trim();
+    if (q.length >= 3 && !state.suggestHits.length) scheduleSuggest(q);
+  });
   $("#addr-q")?.addEventListener("keydown", (e) => {
     if (!state.suggestHits.length) return;
     if (e.key === "ArrowDown") {
@@ -644,11 +669,10 @@ function boot() {
       clearSuggestions();
     }
   });
-  $("#addr-q")?.addEventListener("blur", () => {
-    // Delay so suggestion click can fire first.
-    setTimeout(() => {
-      if (!document.activeElement?.closest?.("#addr-suggest")) clearSuggestions();
-    }, 180);
+  // Don't clear on blur immediately — mobile taps need the dropdown to stay.
+  document.addEventListener("pointerdown", (e) => {
+    if (e.target.closest?.("#addr-form")) return;
+    clearSuggestions();
   });
 
   bindChips("#roof-mode", "roof", (mode) => {

@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="HomeScope" />
   <title>HomeScope</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.255" />
+  <link rel="stylesheet" href="./style.css?v=0.2.256" />
 </head>
 <body>
   <header class="ho-top">
@@ -57,7 +57,7 @@
 
     <section class="ho-panel" id="panel-address" data-panel="address" hidden>
       <h2>Your Oklahoma address</h2>
-      <p class="lead">Start typing — tap a suggestion, or search. We’ll keep storms that cover this home.</p>
+      <p class="lead">Start typing your street — a dropdown of matches appears. Tap the right one.</p>
       <form class="ho-goto" id="addr-form" autocomplete="off">
         <div class="ho-goto-row">
           <input
@@ -68,7 +68,7 @@
             autocorrect="off"
             spellcheck="false"
             enterkeyhint="search"
-            placeholder="Address in Oklahoma"
+            placeholder="Start typing an Oklahoma address…"
             aria-autocomplete="list"
             aria-controls="addr-suggest"
             aria-expanded="false"
@@ -76,7 +76,9 @@
           />
           <button type="submit" class="primary" id="addr-go">Search</button>
         </div>
-        <ul class="ho-suggest" id="addr-suggest" role="listbox" hidden aria-label="Suggested addresses"></ul>
+        <div class="ho-suggest-wrap" id="addr-suggest-wrap" hidden>
+          <ul class="ho-suggest" id="addr-suggest" role="listbox" aria-label="Suggested addresses"></ul>
+        </div>
       </form>
       <p class="ho-status" id="addr-status" role="status"></p>
     </section>
@@ -148,6 +150,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.255"></script>
+  <script type="module" src="./boot.js?v=0.2.256"></script>
 </body>
 </html>

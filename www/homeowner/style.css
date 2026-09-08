@@ -144,6 +144,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: 0;
+  z-index: 5;
 }
 
 .ho-goto-row {
@@ -190,20 +191,33 @@ a {
   cursor: not-allowed;
 }
 
-.ho-suggest {
-  list-style: none;
-  margin: 0.4rem 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  max-height: min(50vh, 320px);
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
+.ho-suggest-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  border: 1px solid color-mix(in srgb, var(--phos) 40%, transparent);
+  border-radius: 12px;
+  background: rgba(22, 22, 24, 0.98);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
 }
 
-.ho-suggest[hidden] {
+.ho-suggest-wrap[hidden] {
   display: none !important;
+}
+
+.ho-suggest {
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: min(52vh, 340px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .ho-suggest-item {
@@ -216,8 +230,8 @@ a {
   color: var(--text);
   font: inherit;
   font-size: 14px;
-  padding: 0.7rem 0.8rem;
-  border-radius: var(--radius);
+  padding: 0.75rem 0.85rem;
+  border-radius: 10px;
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -225,8 +239,8 @@ a {
 .ho-suggest-item:hover,
 .ho-suggest-item:focus-visible,
 .ho-suggest-item.active {
-  border-color: color-mix(in srgb, var(--phos) 45%, transparent);
-  background: rgba(255, 204, 0, 0.08);
+  border-color: color-mix(in srgb, var(--phos) 50%, transparent);
+  background: rgba(255, 204, 0, 0.12);
   outline: none;
 }
 
@@ -237,14 +251,14 @@ a {
 
 .ho-suggest-item .ho-suggest-meta {
   display: block;
-  margin-top: 0.15rem;
+  margin-top: 0.2rem;
   font-size: 12px;
-  color: var(--muted);
-  font-weight: 400;
+  color: var(--phos);
+  font-weight: 500;
 }
 
 .ho-suggest-empty {
-  padding: 0.55rem 0.2rem;
+  padding: 0.75rem 0.85rem;
   font-size: 13px;
   color: var(--muted);
 }
