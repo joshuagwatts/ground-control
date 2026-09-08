@@ -67,6 +67,44 @@ function hailQualifies(sizeIn) {
   return CLAIM_RULES.minHailInchesExclusive ? n > CLAIM_RULES.minHailInches : n >= CLAIM_RULES.minHailInches;
 }
 
+/**
+ * At-a-glance covering hail for fixed lookbacks (2 / 5 / 10 years).
+ * Uses near-roof or zone cover only — same bar as the recommendation.
+ */
+export function hailWindowSummaries(storms, { asOf = new Date(), windows = [2, 5, 10], loadedYears = 10 } = {}) {
+  const end = asOf instanceof Date ? asOf : new Date(asOf);
+  const endIso = isoDay(end);
+  const covering = (storms || []).filter((s) => s && (s.coversNear || s.coversPolygon));
+
+  return windows.map((years) => {
+    const start = new Date(end);
+    start.setFullYear(start.getFullYear() - years);
+    const startIso = isoDay(start);
+    const inWin = covering.filter((s) => {
+      const d = String(s.date || "");
+      return d >= startIso && d <= endIso;
+    });
+    const inchPlus = inWin.filter((s) => hailQualifies(s.maxSizeIn));
+    const maxSize = inWin.reduce((m, s) => Math.max(m, Number(s.maxSizeIn) || 0), 0);
+    const latest = [...inWin].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0] || null;
+    const biggest = [...inWin].sort((a, b) => (Number(b.maxSizeIn) || 0) - (Number(a.maxSizeIn) || 0))[0] || null;
+    const partial = Number(loadedYears) > 0 && Number(loadedYears) + 1e-6 < years;
+    return {
+      years,
+      startIso,
+      endIso,
+      count: inWin.length,
+      inchPlus: inchPlus.length,
+      maxSize,
+      latestDate: latest?.date || null,
+      latestPretty: latest?.pretty || latest?.date || null,
+      biggestPretty: biggest?.pretty || biggest?.date || null,
+      partial,
+      loadedYears: Number(loadedYears) || years,
+    };
+  });
+}
+
 function roofAgeYears(roofReplacedOn, asOf) {
   if (!roofReplacedOn) return null;
   const r = new Date(`${roofReplacedOn}T12:00:00`);

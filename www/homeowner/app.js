@@ -3,7 +3,7 @@
  */
 import { APP_VERSION } from "../version.js";
 import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
-import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
+import { PRODUCT, CLAIM_RULES, homescopeRecommendation, hailWindowSummaries } from "./product.js";
 import {
   buildHailTraceDayBands,
   hailRadarBandColor,
@@ -1360,8 +1360,20 @@ function buildReportText(rec) {
     `Review period: ${rec.windowStart} → ${rec.windowEnd} · ${inReview.length} covering (≥ ${state.minHailIn}″)`,
     `Full history loaded: ${state.years} years · ${state.storms.length} covering total`,
     "",
-    `Top ${REPORT_LIST_N} most extreme (review period):`,
+    "Hail summary (2 / 5 / 10 years):",
   ].filter((x) => x !== "");
+  const windowSummaries = hailWindowSummaries(state.storms, {
+    loadedYears: state.years,
+    windows: [2, 5, 10],
+  });
+  for (const w of windowSummaries) {
+    const maxLabel = w.maxSize > 0 ? `${Number(w.maxSize).toFixed(2)}″` : "—";
+    const partial = w.partial ? ` (loaded ${w.loadedYears}y)` : "";
+    lines.push(
+      `• ${w.years}y${partial}: ${w.count} covering ≥${state.minHailIn}″ · ${w.inchPlus} at ${CLAIM_RULES.minHailInches}″+ · largest ${maxLabel} · latest ${w.latestPretty || "—"}`,
+    );
+  }
+  lines.push("", `Top ${REPORT_LIST_N} most extreme (review period):`);
   if (extreme.length) {
     for (const s of extreme) {
       lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
@@ -1417,6 +1429,23 @@ function reportStormRowsHtml(storms, flag) {
     .join("");
 }
 
+function hailSummaryRowsHtml(summaries, minHailIn) {
+  if (!summaries?.length) return "";
+  return summaries
+    .map((w) => {
+      const maxLabel = w.maxSize > 0 ? `${Number(w.maxSize).toFixed(2)}″` : "—";
+      const latest = w.latestPretty || "—";
+      const partial = w.partial ? ` · loaded ${w.loadedYears}y` : "";
+      return `<div class="hg-hail-window">
+        <p class="hg-hail-window-years">${escHtml(String(w.years))} year${w.years === 1 ? "" : "s"}</p>
+        <p class="hg-hail-window-stat"><strong>${escHtml(String(w.count))}</strong> covering ≥ ${escHtml(String(minHailIn))}″</p>
+        <p class="hg-hail-window-stat"><strong>${escHtml(String(w.inchPlus))}</strong> at ${escHtml(String(CLAIM_RULES.minHailInches))}″+</p>
+        <p class="hg-hail-window-meta">Largest ${escHtml(maxLabel)} · Latest ${escHtml(latest)}${escHtml(partial)}</p>
+      </div>`;
+    })
+    .join("");
+}
+
 function renderReportDocument(rec) {
   const b = PRODUCT.brand;
   const roofLabel =
@@ -1429,6 +1458,10 @@ function renderReportDocument(rec) {
   const prepared = state.lead?.name || state.lead?.email || "Homeowner";
   const tone = rec.talkToRoofer ? "roofer" : rec.considerClaim ? "review" : "ok";
   const allCovering = state.storms || [];
+  const windowSummaries = hailWindowSummaries(allCovering, {
+    loadedYears: state.years,
+    windows: [2, 5, 10],
+  });
   const inReview = allCovering.filter((s) => {
     const d = String(s?.date || "");
     return d >= rec.windowStart && d <= rec.windowEnd;
@@ -1468,6 +1501,15 @@ function renderReportDocument(rec) {
         <div><dt>Sources</dt><dd>NOAA SWDI · SPC · IEM LSR</dd></div>
       </dl>
       ${quality.detail ? `<p class="hg-roof-quality">${escHtml(quality.detail)}</p>` : ""}
+    </section>
+
+    <section class="hg-card">
+      <div class="hg-section-head">
+        <h2 class="hg-section-label">Hail summary</h2>
+        <span class="hg-count">2 · 5 · 10 years</span>
+      </div>
+      <p class="hg-storm-blurb">Covering dates at this pin (near-roof or zone) for the common lookbacks — same filter as the list (≥ ${escHtml(String(state.minHailIn))}″).</p>
+      <div class="hg-hail-windows">${hailSummaryRowsHtml(windowSummaries, state.minHailIn)}</div>
     </section>
 
     <section class="hg-verdict hg-verdict-${tone}">
