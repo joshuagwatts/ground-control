@@ -1520,24 +1520,31 @@ export function lsrFirstDays(requested = 730) {
   return isSlowBrowserNet() ? Math.min(days, 120) : Math.min(days, 400);
 }
 
-async function fetchIemLsrHailRange(lat, lon, km, start, end) {
+async function fetchIemLsrHailRange(lat, lon, km, start, end, { state = "" } = {}) {
   const sts = `${start.toISOString().slice(0, 19)}Z`;
   const ets = `${end.toISOString().slice(0, 19)}Z`;
   const box = iemBboxQuery(lat, lon, km);
   const range = `sts=${encodeURIComponent(sts)}&ets=${encodeURIComponent(ets)}`;
+  const stateQ = state ? `&state=${encodeURIComponent(state)}` : "";
+  // CSV first. Do NOT treat an empty hail year as failure — that used to burn
+  // 2–3 full proxy timeouts per quiet window and made HomeScope feel stuck on 1 date.
   const urls = [
-    `https://mesonet.agron.iastate.edu/cgi-bin/request/gis/lsr.py?${range}&type=HAIL&fmt=csv&${box}`,
-    `https://mesonet.agron.iastate.edu/geojson/lsr.py?${range}&${box}`,
-    `https://mesonet.agron.iastate.edu/geojson/lsr.geojson?${range}&${box}`,
+    `https://mesonet.agron.iastate.edu/cgi-bin/request/gis/lsr.py?${range}&type=HAIL&fmt=csv&justcsv=1${stateQ}&${box}`,
+    `https://mesonet.agron.iastate.edu/cgi-bin/request/gis/lsr.py?${range}&type=HAIL&fmt=csv${stateQ}&${box}`,
+    `https://mesonet.agron.iastate.edu/geojson/lsr.py?${range}${stateQ}&${box}`,
   ];
-  const timeout = isSlowBrowserNet() ? 9000 : 20000;
+  const timeout = isSlowBrowserNet() ? 8000 : 12000;
   for (const url of urls) {
     try {
       const { body } = await httpGet(url, timeout);
-      const rows = /"features"|FeatureCollection/i.test(body || "")
-        ? parseIemLsrGeojson(body, lat, lon, km)
-        : parseIemLsrCsv(body, lat, lon, km);
-      if (rows.length) return rows;
+      const text = String(body || "");
+      if (/"features"|FeatureCollection/i.test(text)) {
+        return parseIemLsrGeojson(text, lat, lon, km);
+      }
+      const head = text.slice(0, 240);
+      if (/VALID/i.test(head) && /LAT/i.test(head)) {
+        return parseIemLsrCsv(text, lat, lon, km);
+      }
     } catch {
       /* try next */
     }
@@ -1560,30 +1567,29 @@ async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
 
 /**
  * Deep LSR archive for HomeScope (up to 10 years). Field HailScope keeps using fetchIemLsrHail (≤730d).
- * Chunks run with limited concurrency so Pages doesn't hang on a 10y serial crawl.
+ * Recent slice first, then year windows newest→oldest. Serial (not burst-5) so CORS proxies
+ * don't stall after the first date.
  */
-export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack = 730, { onChunk } = {}) {
+export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack = 730, { onChunk, state = "OK" } = {}) {
   const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
   const days = Math.min(Math.max(Number(daysBack) || 730, 7), 3650);
-  const cacheKey = `arch|${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
-  const notify = async (rows, covered) => {
+  const stateKey = state ? String(state).toUpperCase() : "ALL";
+  const cacheKey = `arch|${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}|${stateKey}`;
+  const notify = (rows, covered) => {
     if (!onChunk) return;
     try {
-      // Fire UI update without blocking the next year fetch.
       const ret = onChunk(rows, { offset: covered, days, coveredDays: covered, chunkSize: rows.length });
-      if (ret && typeof ret.then === "function") {
-        ret.catch(() => {});
-      }
+      if (ret && typeof ret.then === "function") ret.catch(() => {});
     } catch {
       /* ignore */
     }
   };
 
-  /** Drop cached rows year-by-year (newest first) so the UI never waits on a full 10y dump. */
+  /** Drop cached rows newest-first so a warm cache still paints progressively. */
   const streamRowsProgressively = async (allRows) => {
     const sorted = [...(allRows || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
     if (!sorted.length) {
-      await notify([], days);
+      notify([], days);
       return;
     }
     const byYear = new Map();
@@ -1599,10 +1605,10 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
     for (const y of years) {
       acc.push(...byYear.get(y));
       covered = Math.min(days, covered + yearSpan);
-      await notify([...acc], covered);
+      notify([...acc], covered);
       await new Promise((r) => setTimeout(r, 0));
     }
-    await notify([...acc], days);
+    notify([...acc], days);
   };
 
   if (lsrHailCache.has(cacheKey)) {
@@ -1610,7 +1616,6 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
     await streamRowsProgressively(out);
     return out;
   }
-  // In-flight dedupe — joiners still get progressive onChunks when the leader finishes.
   if (lsrHailInflight.has(cacheKey)) {
     const out = await lsrHailInflight.get(cacheKey);
     await streamRowsProgressively(out);
@@ -1619,36 +1624,38 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
   const job = (async () => {
     const byKey = new Map();
     const end0 = new Date();
+    const mergeNotify = (rows, covered) => {
+      for (const r of rows || []) {
+        const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
+        byKey.set(k, r);
+      }
+      notify([...byKey.values()], Math.min(days, covered));
+    };
+
+    // 1) Tiny recent slice first — first covering date(s) in ~1 proxy round-trip.
+    const firstDays = Math.min(days, isSlowBrowserNet() ? 90 : 150);
+    {
+      const windowEnd = new Date(end0);
+      const windowStart = new Date(end0);
+      windowStart.setUTCDate(windowStart.getUTCDate() - firstDays);
+      const rows = await fetchIemLsrHailRange(lat, lon, km, windowStart, windowEnd, { state });
+      mergeNotify(rows, firstDays);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // 2) Remaining history newest→oldest, one window at a time (proxy-friendly).
     const chunk = 365;
-    // Newest year first — homeowners see recent covering dates ASAP.
-    const windows = [];
-    for (let offset = 0; offset < days; offset += chunk) {
+    for (let offset = firstDays; offset < days; offset += chunk) {
       const windowEnd = new Date(end0);
       windowEnd.setUTCDate(windowEnd.getUTCDate() - offset);
       const span = Math.min(chunk, days - offset);
       const windowStart = new Date(windowEnd);
       windowStart.setUTCDate(windowStart.getUTCDate() - span);
-      windows.push({ windowStart, windowEnd, offset, span });
+      const rows = await fetchIemLsrHailRange(lat, lon, km, windowStart, windowEnd, { state });
+      mergeNotify(rows, Math.min(days, offset + span));
+      await new Promise((r) => setTimeout(r, 0));
     }
-    // Parallel fetch (5) — notify as EACH year finishes so dates drop in ASAP.
-    const concurrency = 5;
-    let coveredMax = 0;
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < windows.length) {
-        const idx = cursor++;
-        const w = windows[idx];
-        const rows = await fetchIemLsrHailRange(lat, lon, km, w.windowStart, w.windowEnd);
-        for (const r of rows || []) {
-          const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
-          byKey.set(k, r);
-        }
-        coveredMax = Math.max(coveredMax, w.offset + w.span);
-        await notify([...byKey.values()], Math.min(days, coveredMax));
-        await new Promise((r) => setTimeout(r, 0));
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, windows.length) }, () => worker()));
+
     const out = [...byKey.values()];
     lsrHailCache.set(cacheKey, out);
     return out;

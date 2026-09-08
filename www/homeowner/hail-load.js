@@ -85,11 +85,40 @@ function convexHullLatLon(points) {
   return ring;
 }
 
+/** Expand a lat/lon ring outward from its centroid by ~km (cheap list-cover pad). */
+function expandRingByKm(ring, km) {
+  if (!ring || ring.length < 3 || !(km > 0)) return ring;
+  let cLat = 0;
+  let cLon = 0;
+  const n = ring.length - (ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? 1 : 0);
+  if (n < 3) return ring;
+  for (let i = 0; i < n; i++) {
+    cLat += ring[i][0];
+    cLon += ring[i][1];
+  }
+  cLat /= n;
+  cLon /= n;
+  const dLat = km / 111;
+  const dLon = km / (111 * Math.max(0.25, Math.cos((cLat * Math.PI) / 180)));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const lat = ring[i][0];
+    const lon = ring[i][1];
+    const vLat = lat - cLat;
+    const vLon = lon - cLon;
+    const len = Math.hypot(vLat / dLat, vLon / dLon) || 1;
+    out.push([lat + (vLat / len) * dLat, lon + (vLon / len) * dLon]);
+  }
+  out.push([out[0][0], out[0][1]]);
+  return out;
+}
+
 /**
  * List cover — near-roof OR home in/near the day's hail swath.
  * Map drawing still uses HailTrace; this stays cheap so dates stream in.
  *
- * Multi-hit days use a 4km swath radius (not a lone soft 5.5km spotter claim).
+ * Soft lone 5.5km spotter claims stay out. 4km nearest + padded hull covers
+ * sparse LSR days that used to leave the list stuck on one near-roof hit.
  */
 function stormCoversHome(row, lat, lon, dayRows = []) {
   const pts = [];
@@ -114,12 +143,17 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
   }
 
   const hull = convexHullLatLon(pts);
-  if (hull && pointInLatLonRing(lat, lon, hull)) {
-    return { coversNear: false, coversPolygon: true, coversHome: true };
+  if (hull) {
+    if (pointInLatLonRing(lat, lon, hull)) {
+      return { coversNear: false, coversPolygon: true, coversHome: true };
+    }
+    const padded = expandRingByKm(hull, COVER_NEAR_KM);
+    if (padded && pointInLatLonRing(lat, lon, padded)) {
+      return { coversNear: false, coversPolygon: true, coversHome: true };
+    }
   }
-  // Sparse LSR lines often miss the pin with a raw hull — if the day has multiple
-  // reports and one is within swath range, treat as zone-over-home for the list.
-  if (pts.length >= 2 && Number.isFinite(nearest) && nearest <= COVER_SWATH_KM) {
+  // Sparse LSR: nearest report within swath pad ⇒ zone-over-home for the list.
+  if (Number.isFinite(nearest) && nearest <= COVER_SWATH_KM) {
     return { coversNear: false, coversPolygon: true, coversHome: true };
   }
   return { coversNear: false, coversPolygon: false, coversHome: false };
@@ -286,9 +320,10 @@ function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note)
     loading,
     note,
   });
-  emitHailCache();
   const fn = onPartial || pinCache.uiNotify;
+  // Prefer the live onPartial path — also emitting caused a double list paint per year.
   if (fn) fn(result);
+  else emitHailCache();
   return result;
 }
 
@@ -316,13 +351,14 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   const run = (async () => {
     try {
       const deep = await fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
+        state: "OK",
         onChunk: (rows, meta) => {
           if (pinCache.key !== key) return;
-          pinCache.hail = mergeHailRows(pinCache.hail, [], rows || []);
+          // rows = full archive accumulator; merge keeps any dossier/SWDI rows already present.
+          pinCache.hail = mergeHailRows(pinCache.hail, rows || []);
           const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
           if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
           const ySoFar = Math.max(1, Math.round((pinCache.fetchedDays || 0) / 365));
-          // Do not await UI work — archive workers must keep fetching older years.
           pushPartial(
             pinCache.uiNotify,
             lat,
@@ -336,12 +372,15 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
         },
       });
       if (pinCache.key !== key) return;
-      pinCache.hail = mergeHailRows(pinCache.hail, [], deep);
+      pinCache.hail = mergeHailRows(pinCache.hail, deep);
       pinCache.fetchedDays = Math.max(pinCache.fetchedDays, days);
     } catch (err) {
       console.warn("[HomeScope] deepen archive", err);
     } finally {
-      if (pinCache.key === key) pinCache.loadingDeep = false;
+      if (pinCache.key === key) {
+        pinCache.loadingDeep = false;
+        emitHailCache();
+      }
       if (pinCache.deepenPromise === run) pinCache.deepenPromise = null;
     }
   })();
