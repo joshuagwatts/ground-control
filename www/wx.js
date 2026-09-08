@@ -1569,7 +1569,11 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
   const notify = async (rows, covered) => {
     if (!onChunk) return;
     try {
-      await onChunk(rows, { offset: covered, days, coveredDays: covered, chunkSize: rows.length });
+      // Fire UI update without blocking the next year fetch.
+      const ret = onChunk(rows, { offset: covered, days, coveredDays: covered, chunkSize: rows.length });
+      if (ret && typeof ret.then === "function") {
+        ret.catch(() => {});
+      }
     } catch {
       /* ignore */
     }

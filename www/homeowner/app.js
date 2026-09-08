@@ -1470,17 +1470,21 @@ function boot() {
     });
   });
 
-  // Progressive list updates as the pin cache grows — do not wait for a filter flip.
+  // Progressive list updates as the pin cache grows — always paint the latest snapshot.
   let hailUiFlush = 0;
+  let hailUiDirty = false;
   onHomeHailCache(() => {
     if (!Number.isFinite(state.lat)) return;
     const cache = getHomeHailCache();
     if (!cache.key) return;
     const key = `${Number(state.lat).toFixed(4)}|${Number(state.lon).toFixed(4)}`;
     if (cache.key !== key) return;
+    hailUiDirty = true;
     if (hailUiFlush) return;
-    hailUiFlush = requestAnimationFrame(() => {
+    const flush = () => {
       hailUiFlush = 0;
+      if (!hailUiDirty) return;
+      hailUiDirty = false;
       const c = getHomeHailCache();
       if (!c.hail?.length && !c.loadingDeep) return;
       const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
@@ -1490,7 +1494,9 @@ function boot() {
         reseatSelection: state.overlayCollection,
         skipMap: loading,
       });
-    });
+      if (hailUiDirty) hailUiFlush = requestAnimationFrame(flush);
+    };
+    hailUiFlush = requestAnimationFrame(flush);
   });
 
   $("#make-report")?.addEventListener("click", () => {

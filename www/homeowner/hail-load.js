@@ -15,6 +15,8 @@ import {
 
 const HOME_DEEP_KM = 40;
 const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM);
+/** Multi-hit storm days: home within this of any report counts as swath-over-home for the list. */
+const COVER_SWATH_KM = 4.0;
 
 function pinKey(lat, lon) {
   return `${Number(lat).toFixed(4)}|${Number(lon).toFixed(4)}`;
@@ -84,8 +86,10 @@ function convexHullLatLon(points) {
 }
 
 /**
- * List cover — near-roof OR home inside the day's hail-point swath hull.
- * Map drawing still uses HailTrace; this path stays cheap so dates stream in.
+ * List cover — near-roof OR home in/near the day's hail swath.
+ * Map drawing still uses HailTrace; this stays cheap so dates stream in.
+ *
+ * Multi-hit days use a 4km swath radius (not a lone soft 5.5km spotter claim).
  */
 function stormCoversHome(row, lat, lon, dayRows = []) {
   const pts = [];
@@ -95,15 +99,15 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
   for (const p of dayRows || []) {
     if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) pts.push(p);
   }
-  const minDist = Number(row.min_dist);
+  const dists = pts.map((p) => {
+    const d = Number(p.distance_km);
+    if (Number.isFinite(d) && d < 900) return d;
+    return haversineKm(lat, lon, p.lat, p.lon);
+  });
+  const nearest = dists.length ? Math.min(...dists) : Number(row.min_dist);
   const coversNear =
     (Number(row.near_hits) || 0) > 0 ||
-    (Number.isFinite(minDist) && minDist <= COVER_NEAR_KM) ||
-    pts.some((p) => {
-      const d = Number(p.distance_km);
-      if (Number.isFinite(d) && d <= COVER_NEAR_KM) return true;
-      return haversineKm(lat, lon, p.lat, p.lon) <= COVER_NEAR_KM;
-    });
+    (Number.isFinite(nearest) && nearest <= COVER_NEAR_KM);
 
   if (coversNear) {
     return { coversNear: true, coversPolygon: false, coversHome: true };
@@ -111,6 +115,11 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
 
   const hull = convexHullLatLon(pts);
   if (hull && pointInLatLonRing(lat, lon, hull)) {
+    return { coversNear: false, coversPolygon: true, coversHome: true };
+  }
+  // Sparse LSR lines often miss the pin with a raw hull — if the day has multiple
+  // reports and one is within swath range, treat as zone-over-home for the list.
+  if (pts.length >= 2 && Number.isFinite(nearest) && nearest <= COVER_SWATH_KM) {
     return { coversNear: false, coversPolygon: true, coversHome: true };
   }
   return { coversNear: false, coversPolygon: false, coversHome: false };
@@ -307,12 +316,13 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   const run = (async () => {
     try {
       const deep = await fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
-        onChunk: async (rows, meta) => {
+        onChunk: (rows, meta) => {
           if (pinCache.key !== key) return;
-          pinCache.hail = mergeHailRows(pinCache.hail, [], rows);
+          pinCache.hail = mergeHailRows(pinCache.hail, [], rows || []);
           const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
           if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
           const ySoFar = Math.max(1, Math.round((pinCache.fetchedDays || 0) / 365));
+          // Do not await UI work — archive workers must keep fetching older years.
           pushPartial(
             pinCache.uiNotify,
             lat,
@@ -321,9 +331,8 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
             days,
             years,
             true,
-            `Loading… ~${ySoFar}y in · dates appear as each year lands`,
+            `Loading… ~${ySoFar}y in · ${pinCache.hail.length} reports`,
           );
-          await new Promise((r) => setTimeout(r, 0));
         },
       });
       if (pinCache.key !== key) return;
