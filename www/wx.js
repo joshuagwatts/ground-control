@@ -1683,7 +1683,7 @@ export function hailZoneColor(sizeIn) {
 
 /**
  * Radar swath ramp — purple only on truly large hail.
- * 0.75 pale → 1″ yellow → 1.5″ orange → 2″ red → 2.5″+ purple.
+ * 0.5 pale → 0.75 fringe → 1″ yellow → 1.5″ orange → 2″ red → 2.5″+ purple.
  */
 export function hailRadarBandColor(sizeIn) {
   const sz = parseFloat(sizeIn);
@@ -1696,8 +1696,9 @@ export function hailRadarBandColor(sizeIn) {
   if (sz >= 1.5) return { stroke: "#f57c00", fill: "#ffa726", core: "#ffe0b2" };
   if (sz >= 1.25) return { stroke: "#f9a825", fill: "#ffc107", core: "#ffe082" };
   if (sz >= 1) return { stroke: "#c5b358", fill: "#fff59d", core: "#fffde7" };
-  // 0.75″ fringe — translucent white / pale grey
-  return { stroke: "#b0bec5", fill: "#f5f5f5", core: "#fafafa" };
+  if (sz >= 0.75) return { stroke: "#b0bec5", fill: "#eceff1", core: "#fafafa" };
+  // 0.5″ fringe
+  return { stroke: "#cfd8dc", fill: "#fafafa", core: "#ffffff" };
 }
 
 /** Nested fills — translucent so satellite stays readable. */
@@ -4839,12 +4840,13 @@ function hailFootprintM(sizeIn, source) {
  */
 /**
  * HailTrace / algorithm-map style nested size contours.
- * Starts at 0.75″, steps ~0.25″ — continuous swath corridors, not disks.
+ * Starts at 0.5″, steps ~0.25″ — continuous swath corridors, not disks.
  */
-/** HailTrace algorithm maps: 0.75″ start, then meaningful steps (purple reserved for 2.5″+). */
-const HAIL_SWATH_THRESHOLDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+/** HailTrace algorithm maps: 0.5″ start, then meaningful steps (purple reserved for 2.5″+). */
+const HAIL_SWATH_THRESHOLDS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 /** Morph-close bridges scan gaps into continuous corridors (tight on cores). */
-const HAIL_CLOSE_KM = (thr) => (thr <= 0.75 ? 3.4 : thr <= 1 ? 2.6 : thr <= 1.5 ? 1.8 : thr <= 2 ? 1.15 : 0.7);
+const HAIL_CLOSE_KM = (thr) =>
+  thr <= 0.5 ? 3.8 : thr <= 0.75 ? 3.4 : thr <= 1 ? 2.6 : thr <= 1.5 ? 1.8 : thr <= 2 ? 1.15 : 0.7;
 /** Separate storm cores beyond this stay separate overlapping swaths. */
 const HAIL_LOBE_SPLIT_KM = 14;
 
@@ -5145,7 +5147,7 @@ export function buildHailSwathRings(rawPts, zone = {}, opts = {}) {
   const asCluster = (cluster) => {
     if (cluster.length === 1 && !(cluster[0].swdi_ring?.length >= 3)) {
       const p = cluster[0];
-      let sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.75);
+      let sz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.5, 0.5);
       if (!isSpotterHail(p)) {
         sz = calibrateRadarSizeIn(sz, p.lat, p.lon, zone.date || p.date, []);
       }
@@ -5220,18 +5222,30 @@ function ringRadiusCv(ring) {
 }
 
 function softCircleBands(lat, lon, sizeIn, p) {
-  const sz = Math.max(parseFloat(sizeIn) || 0.75, 0.75);
+  const sz = Math.max(parseFloat(sizeIn) || 0.5, 0.5);
   const baseM = hailFootprintM(sz, p?.source);
   const bands = [];
   for (const thr of HAIL_SWATH_THRESHOLDS) {
     if (sz + 0.01 < thr) continue;
     const scale =
-      thr <= 0.75 ? 1.35 : thr <= 1 ? 1.12 : thr <= 1.25 ? 0.95 : thr <= 1.5 ? 0.8 : thr <= 2 ? 0.62 : 0.45;
+      thr <= 0.5
+        ? 1.5
+        : thr <= 0.75
+          ? 1.35
+          : thr <= 1
+            ? 1.12
+            : thr <= 1.25
+              ? 0.95
+              : thr <= 1.5
+                ? 0.8
+                : thr <= 2
+                  ? 0.62
+                  : 0.45;
     bands.push({
       ring: relaxRing(chaikinSmoothRing(ringPolygon(lat, lon, baseM * scale, 32), 2), 1),
       maxSize: thr,
       hits: 1,
-      confirmed: thr >= 0.75,
+      confirmed: thr >= 0.5,
       source: "mesh-swath",
     });
   }
@@ -5320,11 +5334,11 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
     maxX = Math.max(maxX, x + rKm * 1.5);
     minY = Math.min(minY, y - rKm * 1.5);
     maxY = Math.max(maxY, y + rKm * 1.5);
-    kernels.push({ x, y, rKm, size: Math.max(size, 0.75), spot: false });
+    kernels.push({ x, y, rKm, size: Math.max(size, 0.5), spot: false });
   };
 
   for (const p of pts) {
-    const rawSz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.75, 0.75);
+    const rawSz = Math.max(parseFloat(p.size_in) || parseFloat(zone.size_in) || 0.5, 0.5);
     const sz = isSpotterHail(p)
       ? rawSz
       : calibrateRadarSizeIn(rawSz, p.lat, p.lon, day, spotters);
@@ -5430,7 +5444,7 @@ function buildHailSwathRingsCluster(pts, zone = {}) {
       let smooth = relaxRing(chaikinSmoothRing(ring, 3), 2);
       if (isAxisBoxRing(smooth)) smooth = relaxRing(chaikinSmoothRing(ring, 4), 2);
       out.push({
-        ring: padPolygon(smooth, thr <= 0.75 ? 60 : thr <= 1 ? 36 : 20),
+        ring: padPolygon(smooth, thr <= 0.5 ? 72 : thr <= 0.75 ? 60 : thr <= 1 ? 36 : 20),
         maxSize: thr,
         hits: kernels.filter((k) => k.size >= thr).length,
         confirmed: thr >= 1,
@@ -5702,7 +5716,7 @@ export function buildHailTraceDayBands(dayKey, dayRows = []) {
     date: key,
     lat: meshPts.reduce((s, p) => s + p.lat, 0) / meshPts.length,
     lon: meshPts.reduce((s, p) => s + p.lon, 0) / meshPts.length,
-    size_in: Math.max(...meshPts.map((p) => parseFloat(p.size_in) || 0), 0.75),
+    size_in: Math.max(...meshPts.map((p) => parseFloat(p.size_in) || 0), 0.5),
   };
   const bands = cachedStormSwathBands(key || "day", meshPts, anchor);
   return bands.map((b) => ({
