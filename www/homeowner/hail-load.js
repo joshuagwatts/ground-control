@@ -91,6 +91,9 @@ let pinCache = {
   loadingDeep: false,
   deepTarget: 0,
   loadSeq: 0,
+  uiNotify: null,
+  deepenPromise: null,
+  dossierPromise: null,
 };
 
 const hailListeners = new Set();
@@ -120,7 +123,10 @@ export function clearHomeHailCache() {
     fetchedDays: 0,
     loadingDeep: false,
     deepTarget: 0,
-    loadSeq: 0,
+    loadSeq: (pinCache.loadSeq || 0) + 1,
+    uiNotify: null,
+    deepenPromise: null,
+    dossierPromise: null,
   };
   emitHailCache();
 }
@@ -215,8 +221,9 @@ export function filterCachedHomeStorms({ years = 2, minHailIn = 1 } = {}) {
 
 function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note) {
   emitHailCache();
-  if (!onPartial) return;
-  onPartial(
+  const fn = onPartial || pinCache.uiNotify;
+  if (!fn) return;
+  fn(
     summarizeHailRows(pinCache.hail, lat, lon, {
       minHailIn,
       days,
@@ -228,47 +235,76 @@ function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note)
 }
 
 async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
-  if ((pinCache.fetchedDays || 0) >= days) return;
-  pinCache.loadingDeep = true;
+  const key = pinKey(lat, lon);
+  pinCache.uiNotify = onPartial || pinCache.uiNotify;
   pinCache.deepTarget = Math.max(pinCache.deepTarget || 0, days);
-  emitHailCache();
-  try {
-    const deep = await fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
-      onChunk: (rows, meta) => {
-        if (seq !== pinCache.loadSeq) return;
-        pinCache.hail = mergeHailRows(pinCache.hail, [], rows);
-        const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
-        if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
-        pushPartial(
-          onPartial,
-          lat,
-          lon,
-          minHailIn,
-          days,
-          years,
-          true,
-          `Loading older storm years… (~${Math.round((pinCache.fetchedDays || 0) / 365)}y so far)`,
-        );
-      },
-    });
-    if (seq !== pinCache.loadSeq) return;
-    pinCache.hail = mergeHailRows(pinCache.hail, [], deep);
-    pinCache.fetchedDays = Math.max(pinCache.fetchedDays, days);
-  } catch (err) {
-    console.warn("[HomeScope] deepen archive", err);
-  } finally {
-    if (seq === pinCache.loadSeq) pinCache.loadingDeep = false;
+
+  // Same pin already deepening — await it instead of aborting / stacking crawls.
+  if (pinCache.deepenPromise && pinCache.key === key) {
+    await pinCache.deepenPromise;
+    if ((pinCache.fetchedDays || 0) >= days) {
+      pushPartial(
+        onPartial,
+        lat,
+        lon,
+        minHailIn,
+        days,
+        years,
+        false,
+        null,
+      );
+      return;
+    }
   }
-  if (seq !== pinCache.loadSeq) return;
+
+  if ((pinCache.fetchedDays || 0) >= days) return;
+
+  pinCache.loadingDeep = true;
+  emitHailCache();
+
+  const run = (async () => {
+    try {
+      const deep = await fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
+        onChunk: (rows, meta) => {
+          if (pinCache.key !== key) return;
+          pinCache.hail = mergeHailRows(pinCache.hail, [], rows);
+          const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
+          if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
+          pushPartial(
+            pinCache.uiNotify,
+            lat,
+            lon,
+            minHailIn,
+            days,
+            years,
+            true,
+            `Loading older storm years… (~${Math.round((pinCache.fetchedDays || 0) / 365)}y so far)`,
+          );
+        },
+      });
+      if (pinCache.key !== key) return;
+      pinCache.hail = mergeHailRows(pinCache.hail, [], deep);
+      pinCache.fetchedDays = Math.max(pinCache.fetchedDays, days);
+    } catch (err) {
+      console.warn("[HomeScope] deepen archive", err);
+    } finally {
+      if (pinCache.key === key) pinCache.loadingDeep = false;
+      if (pinCache.deepenPromise === run) pinCache.deepenPromise = null;
+    }
+  })();
+
+  pinCache.deepenPromise = run;
+  await run;
+  if (pinCache.key !== key) return;
   pushPartial(
-    onPartial,
+    pinCache.uiNotify,
     lat,
     lon,
     minHailIn,
     days,
     years,
     false,
-    pinCache.fetchedDays >= days ? null : "Older years partially loaded — flip a filter or wait for retry.",
+    pinCache.fetchedDays >= days ? null : "Older years partially loaded — keep this tab open to retry.",
   );
 }
 
@@ -283,61 +319,71 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
   await ensureWebProxyReady(8000);
   setWxPin(lat, lon);
 
-  if (!force && pinCache.key === key && (pinCache.fetchedDays || 0) >= Math.min(days, 730) && pinCache.hail.length) {
-    if (days > pinCache.fetchedDays && !pinCache.loadingDeep) {
-      const seq = pinCache.loadSeq;
-      await deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq);
+  pinCache.uiNotify = onPartial || pinCache.uiNotify;
+
+  // Same pin already loading or cached — join that work instead of aborting it.
+  if (!force && pinCache.key === key) {
+    if (pinCache.dossierPromise) await pinCache.dossierPromise;
+    if (days > (pinCache.fetchedDays || 0) || pinCache.deepenPromise) {
+      await deepenArchive(lat, lon, days, onPartial, minHailIn, years, pinCache.loadSeq);
     }
-    return filterCachedHomeStorms({ years, minHailIn });
+    if (pinCache.hail.length || pinCache.fetchedDays) {
+      return filterCachedHomeStorms({ years, minHailIn });
+    }
   }
 
-  if (pinCache.key !== key) {
-    pinCache = {
-      key,
-      lat,
-      lon,
-      address,
-      hail: [],
-      fetchedDays: 0,
-      loadingDeep: false,
-      deepTarget: 0,
-      loadSeq: (pinCache.loadSeq || 0) + 1,
-    };
-  } else {
-    pinCache.address = address || pinCache.address;
-    pinCache.lat = lat;
-    pinCache.lon = lon;
-    pinCache.loadSeq += 1;
-  }
+  pinCache = {
+    key,
+    lat,
+    lon,
+    address,
+    hail: [],
+    fetchedDays: 0,
+    loadingDeep: false,
+    deepTarget: 0,
+    loadSeq: (pinCache.loadSeq || 0) + 1,
+    uiNotify: onPartial || null,
+    deepenPromise: null,
+    dossierPromise: null,
+  };
   const seq = pinCache.loadSeq;
+
+  const dossierJob = (async () => {
+    try {
+      return await pinDossier({}, lat, lon, {
+        address,
+        deep: false,
+        onPartial: onPartial
+          ? (part) => {
+              if (pinCache.key !== key || seq !== pinCache.loadSeq) return;
+              const hail = part?.hail || [];
+              pinCache.hail = mergeHailRows(pinCache.hail, hail);
+              pinCache.fetchedDays = Math.max(
+                pinCache.fetchedDays,
+                Math.min(730, Number(part?._meta?.fetchedDays) || 400),
+              );
+              pushPartial(
+                onPartial,
+                lat,
+                lon,
+                minHailIn,
+                days,
+                years,
+                true,
+                "Loading NOAA radar + spotter reports…",
+              );
+            }
+          : undefined,
+      });
+    } finally {
+      if (pinCache.dossierPromise === dossierJob) pinCache.dossierPromise = null;
+    }
+  })();
+  pinCache.dossierPromise = dossierJob;
 
   let dossier;
   try {
-    dossier = await pinDossier({}, lat, lon, {
-      address,
-      deep: false,
-      onPartial: onPartial
-        ? (part) => {
-            if (seq !== pinCache.loadSeq) return;
-            const hail = part?.hail || [];
-            pinCache.hail = mergeHailRows(pinCache.hail, hail);
-            pinCache.fetchedDays = Math.max(
-              pinCache.fetchedDays,
-              Math.min(730, Number(part?._meta?.fetchedDays) || 400),
-            );
-            pushPartial(
-              onPartial,
-              lat,
-              lon,
-              minHailIn,
-              days,
-              years,
-              true,
-              "Loading NOAA radar + spotter reports…",
-            );
-          }
-        : undefined,
-    });
+    dossier = await dossierJob;
   } catch (err) {
     const empty = {
       ok: false,
@@ -357,7 +403,7 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
     return empty;
   }
 
-  if (seq !== pinCache.loadSeq) return filterCachedHomeStorms({ years, minHailIn });
+  if (pinCache.key !== key || seq !== pinCache.loadSeq) return filterCachedHomeStorms({ years, minHailIn });
 
   pinCache.hail = mergeHailRows(pinCache.hail, dossier?.hail || []);
   pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(730, Number(dossier?._meta?.fetchedDays) || 730));

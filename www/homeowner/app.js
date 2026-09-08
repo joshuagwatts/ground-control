@@ -290,17 +290,22 @@ function autoSelectTopStorms(storms = state.storms, sort = state.stormSort, n = 
   return new Set(ranked.slice(0, n).map((s) => s.date));
 }
 
-/** Tap a list date: first tap isolates from the starter pack; later taps toggle overlays. */
+/** Tap a list date: toggle it on the map. Starter-pack tap on an already-on date solos it. */
 function activateStormDate(date) {
   const d = String(date || "").slice(0, 10);
   if (!d) return;
-  if (state.overlayCollection) {
+  if (state.overlayCollection && state.selected.has(d) && state.selected.size > 1) {
+    // Opening stack still intact — tapping one of those dates solos it.
     state.overlayCollection = false;
     state.selected = new Set([d]);
-  } else if (state.selected.has(d)) {
-    if (state.selected.size > 1) state.selected.delete(d);
   } else {
-    state.selected.add(d);
+    // Add / remove freely (including dates from Load more).
+    state.overlayCollection = false;
+    if (state.selected.has(d)) {
+      if (state.selected.size > 1) state.selected.delete(d);
+    } else {
+      state.selected.add(d);
+    }
   }
   state.mapFocusDate = d;
   paintStormList();
@@ -638,7 +643,7 @@ function paintStormList({ loading = false } = {}) {
       .join(" · ");
     li.innerHTML = `<span class="sz" style="color:${col.fill}">${Number(s.maxSizeIn).toFixed(2)}″</span>
       <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"} · nearest ${Number(s.minDist).toFixed(1)} km</span></span>
-      <span class="meta">${on ? (focused && state.selected.size === 1 ? "This day" : "On map") : "Tap to add"}</span>`;
+      <span class="meta">${on ? (state.selected.size > 1 ? "On map" : "Solo") : "Tap to add"}</span>`;
     const activate = () => activateStormDate(s.date);
     li.addEventListener("click", activate);
     li.addEventListener("keydown", (e) => {
@@ -703,7 +708,7 @@ function applyStormResult(result, { loading = false, reseatSelection = true } = 
   const still = loading || result.loading;
   const overlayN = state.selected.size;
   const mapLabel = state.overlayCollection
-    ? `${overlayN} dates overlaid (tap one to isolate)`
+    ? `${overlayN} dates overlaid (tap one to solo · tap others to add)`
     : overlayN > 1
       ? `${overlayN} dates overlaid · last: ${focus || "—"}`
       : `map: ${focus || "—"}`;
@@ -786,7 +791,9 @@ function applyFiltersFromChips({ reseatSelection = true } = {}) {
   const needDays = Math.min(Math.max(Math.round(state.years * 365.25), 30), 3650);
   const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
   applyStormResult(result, { loading: Boolean(result.loading), reseatSelection });
-  if (needDays > (cache.fetchedDays || 0) || cache.loadingDeep) {
+  // Only kick a new fetch when history is incomplete AND nothing is already streaming.
+  // Re-entering refresh while loadingDeep used to abort the deepen (needed a filter flip).
+  if (needDays > (cache.fetchedDays || 0) && !cache.loadingDeep && !cache.deepenPromise) {
     void refreshStorms({ force: false });
   }
 }

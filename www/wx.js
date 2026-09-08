@@ -1566,9 +1566,25 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
   const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
   const days = Math.min(Math.max(Number(daysBack) || 730, 7), 3650);
   const cacheKey = `arch|${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
-  if (lsrHailCache.has(cacheKey)) return lsrHailCache.get(cacheKey);
-  // In-flight dedupe — HomeScope filter flips must not stack parallel 10y crawls.
-  if (lsrHailInflight.has(cacheKey)) return lsrHailInflight.get(cacheKey);
+  const notify = (rows, covered) => {
+    if (!onChunk) return;
+    try {
+      onChunk(rows, { offset: covered, days, coveredDays: covered, chunkSize: rows.length });
+    } catch {
+      /* ignore */
+    }
+  };
+  if (lsrHailCache.has(cacheKey)) {
+    const out = lsrHailCache.get(cacheKey);
+    notify(out, days);
+    return out;
+  }
+  // In-flight dedupe — joiners still get a final onChunk so HomeScope UI can catch up.
+  if (lsrHailInflight.has(cacheKey)) {
+    const out = await lsrHailInflight.get(cacheKey);
+    notify(out, days);
+    return out;
+  }
   const job = (async () => {
     const byKey = new Map();
     const end0 = new Date();
@@ -1599,9 +1615,7 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
         covered,
         ...batch.map((w) => w.offset + w.span),
       );
-      if (onChunk) {
-        onChunk([...byKey.values()], { offset: covered, days, coveredDays: covered, chunkSize: byKey.size });
-      }
+      notify([...byKey.values()], covered);
     }
     const out = [...byKey.values()];
     lsrHailCache.set(cacheKey, out);
