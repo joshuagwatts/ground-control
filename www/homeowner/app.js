@@ -8,6 +8,7 @@ import {
   buildHailTraceDayBands,
   hailRadarBandColor,
   hailMeshBandOpacity,
+  reverseGeocode,
 } from "../wx.js";
 import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
 import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache, onHomeHailCache } from "./hail-load.js";
@@ -169,10 +170,14 @@ function setStep(step) {
   $$("[data-panel]").forEach((panel) => {
     const p = panel.dataset.panel;
     const pIdx = order.indexOf(p);
-    // Address stays available. On report, hide the map/storms panel so Leaflet
-    // is not stacked on top of the hail report document.
+    // Address + map stay available while exploring hail. Hide map on the report
+    // so Leaflet is not stacked on top of the document.
     if (p === "address") {
-      panel.hidden = false;
+      panel.hidden = step === "report";
+      return;
+    }
+    if (p === "map") {
+      panel.hidden = step === "report";
       return;
     }
     if (step === "report") {
@@ -181,11 +186,12 @@ function setStep(step) {
     }
     panel.hidden = pIdx < 0 || pIdx > idx;
   });
-  if (step === "storms") {
+  if (step === "address" || step === "storms") {
     requestAnimationFrame(() => {
-      ensureMap()?.invalidateSize?.();
+      const map = ensureMap();
+      map?.invalidateSize?.();
       if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
-      paintOverlays();
+      if (step === "storms") paintOverlays();
     });
   }
 }
@@ -212,10 +218,13 @@ function ensureMap() {
   window.L.control.zoom({ position: "bottomright" }).addTo(state.map);
   state.hailSvg = window.L.svg({ padding: 0.85 });
   state.overlay = window.L.layerGroup().addTo(state.map);
+  state.map.on("click", (e) => {
+    void selectHomeFromMap(e.latlng.lat, e.latlng.lng, { zoom: false });
+  });
   return state.map;
 }
 
-function pinHome(lat, lon) {
+function pinHome(lat, lon, { fly = false, zoom = null } = {}) {
   const map = ensureMap();
   if (!map) return;
   if (state.marker) state.marker.setLatLng([lat, lon]);
@@ -229,7 +238,87 @@ function pinHome(lat, lon) {
       fillOpacity: 1,
     }).addTo(map);
   }
+  if (Number.isFinite(zoom)) {
+    if (fly) map.flyTo([lat, lon], zoom, { duration: 0.85 });
+    else map.setView([lat, lon], zoom);
+  }
   requestAnimationFrame(() => map.invalidateSize());
+}
+
+/** Map tap or GPS — reverse-geocode, then same search path as the Search button. */
+let mapPickGen = 0;
+async function selectHomeFromMap(lat, lon, { zoom = true, fly = false, zoomLevel = 18 } = {}) {
+  const status = $("#addr-status");
+  const go = $("#addr-go");
+  const locateBtn = $("#addr-locate");
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const gen = ++mapPickGen;
+  if (!inOklahoma({ lat, lon })) {
+    setStatus(status, "HomeScope is Oklahoma-only — pick a home in OK", true);
+    pinHome(lat, lon, { zoom: zoom ? Math.min(zoomLevel, 12) : null, fly });
+    return;
+  }
+  if (go) go.disabled = true;
+  if (locateBtn) locateBtn.disabled = true;
+  setStatus(status, "Finding address for that pin…");
+  pinHome(lat, lon, { zoom: zoom ? zoomLevel : null, fly });
+  try {
+    const geo = await reverseGeocode(lat, lon);
+    if (gen !== mapPickGen) return;
+    const label =
+      hitLabel(geo) ||
+      (geo?.ok && geo.address) ||
+      `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    const hit = {
+      lat: Number(geo?.lat) || lat,
+      lon: Number(geo?.lon) || lon,
+      address: label,
+      label,
+    };
+    if (!inOklahoma(hit) && !inOklahoma({ lat: hit.lat, lon: hit.lon })) {
+      setStatus(status, "HomeScope is Oklahoma-only — pick a home in OK", true);
+      return;
+    }
+    await selectAddressHit(hit, { force: true });
+  } catch (err) {
+    if (gen !== mapPickGen) return;
+    setStatus(status, err?.message || "Couldn’t read that map pin", true);
+  } finally {
+    if (gen === mapPickGen) {
+      if (go) go.disabled = false;
+      if (locateBtn) locateBtn.disabled = false;
+    }
+  }
+}
+
+function useMyLocation() {
+  const status = $("#addr-status");
+  const locateBtn = $("#addr-locate");
+  if (!navigator.geolocation) {
+    setStatus(status, "Location isn’t available in this browser — search or tap the map", true);
+    return;
+  }
+  if (locateBtn) locateBtn.disabled = true;
+  setStatus(status, "Asking for your location…");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = Number(pos?.coords?.latitude);
+      const lon = Number(pos?.coords?.longitude);
+      void selectHomeFromMap(lat, lon, { zoom: true, fly: true, zoomLevel: 18 });
+    },
+    (err) => {
+      if (locateBtn) locateBtn.disabled = false;
+      const denied = err?.code === 1;
+      setStatus(
+        status,
+        denied
+          ? "Location blocked — allow GPS for this site, or search / tap the map"
+          : "Couldn’t get GPS — try again, search, or tap the map",
+        true,
+      );
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 30_000 },
+  );
 }
 
 function colorForHailSize(sizeIn) {
@@ -534,7 +623,7 @@ async function selectAddressHit(hit, { force = true } = {}) {
     state.selected.clear();
     setStatus(status, label);
     setStep("storms");
-    pinHome(lat, lon);
+    pinHome(lat, lon, { fly: true, zoom: 17 });
     paintStormList({ loading: true });
     await refreshStorms({ force: moved || force });
   } catch (err) {
@@ -1215,6 +1304,7 @@ function boot() {
     e.preventDefault();
     await submitAddressSearch();
   });
+  $("#addr-locate")?.addEventListener("click", () => useMyLocation());
 
   $("#addr-q")?.addEventListener("input", (e) => {
     scheduleSuggest(e.target.value);
@@ -1331,6 +1421,9 @@ function boot() {
   });
 
   setStep("address");
+  requestAnimationFrame(() => {
+    ensureMap()?.invalidateSize?.();
+  });
 }
 
 boot();
