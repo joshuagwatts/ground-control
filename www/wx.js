@@ -133,7 +133,7 @@ function kmToMi(km) {
 
 export function formatDistance(km) {
   const n = Number(km);
-  if (!Number.isFinite(n)) return "—";
+  if (!Number.isFinite(n) || n >= 900) return "—";
   if (wxUnits === "metric") {
     const s = Math.abs(n) >= 10 ? n.toFixed(0) : n.toFixed(1);
     return `${s} km`;
@@ -1860,6 +1860,10 @@ export function collapseHailByDate(rows) {
       size_far: farHit ? Number(farHit.size_in).toFixed(2) : "",
       far_km: farHit ? Number(farHit.distance_km) : null,
       near_hits: near.length,
+      max_size: Number(row.max_size) || size || 0,
+      min_dist: Number.isFinite(Number(nearest?.distance_km))
+        ? Number(nearest.distance_km)
+        : Number(row.min_dist),
       location: row.location || "Hail zone",
       county: row.county || "",
       state: row.state || "",

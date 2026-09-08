@@ -816,6 +816,8 @@ async function paintOverlays() {
   if (grew || radarAfter > radarBefore) {
     rings = paintDays(days);
     reveal(rings, true);
+    // Radar merge changes sizes/sources — refresh list/report without re-entering paint.
+    refreshStormListFromCache();
     const nRadar = days.reduce((acc, d) => {
       const n = (getHomeHailCache().hail || []).filter(
         (h) => String(h?.date || "").slice(0, 10) === d && isSwdiHail(h),
@@ -832,6 +834,16 @@ async function paintOverlays() {
   } else if (!rings.length) {
     reveal([], true);
   }
+}
+
+/** Re-summarize storms after SWDI merge so list sizes/sources match the map. */
+function refreshStormListFromCache() {
+  const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
+  state.storms = result.storms || [];
+  for (const d of [...state.selected]) {
+    if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
+  }
+  paintStormList({ loading: Boolean(result.loading), skipMap: true });
 }
 
 function hitLabel(hit) {
@@ -1082,7 +1094,7 @@ function paintStormList({ loading = false, skipMap = false } = {}) {
     li.style.opacity = "0.75";
     li.innerHTML = loading
       ? `<span class="sz">…</span><span>Loading verified hail cover…<br/><span class="meta">NOAA SWDI radar + SPC / IEM — keep this tab open</span></span><span></span>`
-      : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤2.5 km) or HailTrace zone over this pin</span></span><span></span>`;
+      : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤1.6 km) or storm footprint over this pin</span></span><span></span>`;
     list.appendChild(li);
     if (btn) btn.disabled = true;
     if (!skipMap) paintOverlays();
@@ -1102,7 +1114,11 @@ function paintStormList({ loading = false, skipMap = false } = {}) {
     li.setAttribute("role", "button");
     li.tabIndex = 0;
     const col = colorForHailSize(s.maxSizeIn);
-    const how = [s.coversNear ? "near roof" : null, s.coversPolygon ? "zone over home" : null]
+    const how = [
+      s.coversNear ? "near roof" : null,
+      s.coversPolygon ? "zone over home" : null,
+      s.coversNearby ? "nearby report" : null,
+    ]
       .filter(Boolean)
       .join(" · ");
     const distMeta =
@@ -1361,11 +1377,15 @@ function buildReportText(rec) {
 function reportStormRowsHtml(storms, flag) {
   if (!storms.length) {
     return `<li class="hg-storm empty"><div class="hg-storm-body"><strong>No verified covering storms in this filter</strong>
-        <span class="hg-storm-meta">Listed only when near-roof (≤2.5 km) or a zone polygon covers this pin.</span></div></li>`;
+        <span class="hg-storm-meta">Listed only when near-roof (≤1.6 km) or a storm footprint covers this pin.</span></div></li>`;
   }
   return storms
     .map((s, idx) => {
-      const cover = [s.coversNear ? "Near roof" : null, s.coversPolygon ? "Zone over home" : null]
+      const cover = [
+        s.coversNear ? "Near roof" : null,
+        s.coversPolygon ? "Zone over home" : null,
+        s.coversNearby ? "Nearby report" : null,
+      ]
         .filter(Boolean)
         .join(" · ");
       const dist =

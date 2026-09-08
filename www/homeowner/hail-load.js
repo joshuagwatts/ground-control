@@ -14,7 +14,8 @@ import {
 } from "../wx.js";
 
 const HOME_DEEP_KM = 40;
-const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM);
+/** Near-roof for list badges — matches field HOUSE_HAIL_KM (not the 2.5 km zone pad). */
+const COVER_NEAR_KM = HOUSE_HAIL_KM;
 /** Multi-hit storm days: home within this of any report counts as swath-over-home for the list. */
 const COVER_SWATH_KM = 4.0;
 
@@ -117,8 +118,8 @@ function expandRingByKm(ring, km) {
  * List cover — near-roof OR home in/near the day's hail swath.
  * Map drawing still uses HailTrace; this stays cheap so dates stream in.
  *
- * Soft lone 5.5km spotter claims stay out. 4km nearest + padded hull covers
- * sparse LSR days that used to leave the list stuck on one near-roof hit.
+ * Near-roof = ≤ HOUSE_HAIL_KM (1.6) / near_hits — not the 2.5 km zone pad.
+ * Soft lone spotter claims beyond COVER_SWATH_KM stay out.
  */
 function stormCoversHome(row, lat, lon, dayRows = []) {
   const pts = [];
@@ -141,27 +142,57 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
       })();
   const coversNear =
     (Number(row.near_hits) || 0) > 0 ||
-    (Number.isFinite(nearest) && nearest <= COVER_NEAR_KM);
+    (Number.isFinite(nearest) && nearest <= HOUSE_HAIL_KM);
 
   if (coversNear) {
-    return { coversNear: true, coversPolygon: false, coversHome: true, nearestKm: nearest };
+    return {
+      coversNear: true,
+      coversPolygon: false,
+      coversNearby: false,
+      coversHome: true,
+      nearestKm: nearest,
+    };
   }
 
   const hull = convexHullLatLon(pts);
   if (hull) {
     if (pointInLatLonRing(lat, lon, hull)) {
-      return { coversNear: false, coversPolygon: true, coversHome: true, nearestKm: nearest };
+      return {
+        coversNear: false,
+        coversPolygon: true,
+        coversNearby: false,
+        coversHome: true,
+        nearestKm: nearest,
+      };
     }
-    const padded = expandRingByKm(hull, COVER_NEAR_KM);
+    const padded = expandRingByKm(hull, HOUSE_ZONE_KM);
     if (padded && pointInLatLonRing(lat, lon, padded)) {
-      return { coversNear: false, coversPolygon: true, coversHome: true, nearestKm: nearest };
+      return {
+        coversNear: false,
+        coversPolygon: true,
+        coversNearby: false,
+        coversHome: true,
+        nearestKm: nearest,
+      };
     }
   }
-  // Sparse LSR: nearest report within swath pad ⇒ zone-over-home for the list.
+  // Sparse LSR: nearest report within swath pad — list only, not labeled as a Trace zone.
   if (Number.isFinite(nearest) && nearest <= COVER_SWATH_KM) {
-    return { coversNear: false, coversPolygon: true, coversHome: true, nearestKm: nearest };
+    return {
+      coversNear: false,
+      coversPolygon: false,
+      coversNearby: true,
+      coversHome: true,
+      nearestKm: nearest,
+    };
   }
-  return { coversNear: false, coversPolygon: false, coversHome: false, nearestKm: nearest };
+  return {
+    coversNear: false,
+    coversPolygon: false,
+    coversNearby: false,
+    coversHome: false,
+    nearestKm: nearest,
+  };
 }
 
 function sourceLabel(row) {
@@ -253,7 +284,10 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   for (const row of collapsed) {
     const date = String(row.date || "");
     if (!date || date < cutoffIso) continue;
-    const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
+    // Day max from zone points — collapse used to drop max_size and leave nearest-only size_in.
+    const ptMax = (row.zone_pts || []).reduce((m, p) => Math.max(m, Number(p.size_in) || 0), 0);
+    const maxSizeIn =
+      Math.max(Number(row.max_size) || 0, parseFloat(row.size_in) || 0, ptMax, parseFloat(row.size_far) || 0) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
     // zone_pts from collapse is enough for hull cover — skip rebuilding per-day maps each chunk.
     const cover = stormCoversHome(row, lat, lon, row.zone_pts || []);
@@ -267,8 +301,9 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       coversHome: true,
       coversNear: cover.coversNear,
       coversPolygon: cover.coversPolygon,
+      coversNearby: cover.coversNearby,
       nearHits: Number(row.near_hits) || 0,
-      // collapseHailByDate exposes distance_km, not min_dist — never show the 999 sentinel.
+      // collapseHailByDate now also returns min_dist; still clamp the 999 sentinel.
       minDist: Number.isFinite(nearestKm) && nearestKm < 900 ? nearestKm : null,
       hits: Number(row.hits) || 0,
       zone_pts: row.zone_pts || [],
