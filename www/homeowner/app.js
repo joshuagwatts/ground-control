@@ -222,6 +222,8 @@ function ensureMap() {
   } catch {
     /* ignore */
   }
+  // Canvas for hail fills — SVG km-scale circles at roof zoom bring phones to their knees.
+  state.hailCanvas = window.L.canvas({ padding: 0.65 });
   state.overlay = window.L.layerGroup().addTo(state.map);
   state.map.on("click", (e) => {
     void selectHomeFromMap(e.latlng.lat, e.latlng.lng, { zoom: false });
@@ -229,7 +231,7 @@ function ensureMap() {
   return state.map;
 }
 
-function pinHome(lat, lon, { fly = false, zoom = null } = {}) {
+function pinHome(lat, lon, { fly = false, zoom = null, invalidate = true } = {}) {
   const map = ensureMap();
   if (!map) return;
   if (state.marker) state.marker.setLatLng([lat, lon]);
@@ -244,10 +246,10 @@ function pinHome(lat, lon, { fly = false, zoom = null } = {}) {
     }).addTo(map);
   }
   if (Number.isFinite(zoom)) {
-    if (fly) map.flyTo([lat, lon], zoom, { duration: 0.85 });
+    if (fly) map.flyTo([lat, lon], zoom, { duration: 0.55 });
     else map.setView([lat, lon], zoom);
   }
-  requestAnimationFrame(() => map.invalidateSize());
+  if (invalidate) requestAnimationFrame(() => map.invalidateSize());
 }
 
 /** Lightweight reverse for HomeScope — don't hang the GPS path on field Nominatim/ArcGIS races. */
@@ -390,7 +392,7 @@ async function useMyLocation() {
       return;
     }
     setStatus(status, `Located ${lat.toFixed(4)}, ${lon.toFixed(4)} — loading home…`);
-    await selectHomeFromMap(lat, lon, { zoom: true, fly: true, zoomLevel: 18 });
+    await selectHomeFromMap(lat, lon, { zoom: true, fly: false, zoomLevel: 17 });
   } catch (err) {
     const denied = err?.code === 1;
     const timedOut = err?.code === 3;
@@ -500,9 +502,19 @@ let overlayPaintTimer = 0;
 let lastOverlayPaintAt = 0;
 let lastOverlaySig = "";
 let lastOverlayHailN = -1;
+const MAP_STREAM_DAYS = 1;
+const MAP_COLLECTION_DAYS = 3;
 
 function overlaySelectionSig() {
   return [...state.selected].sort().join("|");
+}
+
+function hailFillRenderer() {
+  ensureMap();
+  if (state.map && window.L && !state.hailCanvas) {
+    state.hailCanvas = window.L.canvas({ padding: 0.65 });
+  }
+  return state.hailCanvas || undefined;
 }
 
 function scheduleOverlayPaint({ immediate = false } = {}) {
@@ -515,26 +527,28 @@ function scheduleOverlayPaint({ immediate = false } = {}) {
     lastOverlayPaintAt = Date.now();
     lastOverlaySig = overlaySelectionSig();
     lastOverlayHailN = getHomeHailCache().hail?.length || 0;
-    paintOverlays();
-    try {
-      state.map?.invalidateSize?.();
-    } catch {
-      /* ignore */
-    }
+    const loading = Boolean(getHomeHailCache().loadingDeep);
+    paintOverlays({ light: loading || state.overlayCollection });
   };
 
   const sig = overlaySelectionSig();
   const hailN = getHomeHailCache().hail?.length || 0;
   const first = lastOverlayPaintAt === 0;
+  const loading = Boolean(getHomeHailCache().loadingDeep);
   const changed = sig !== lastOverlaySig || hailN !== lastOverlayHailN;
   if (!immediate && !first && !changed) return;
+
+  // While archive streams, never rebuild the map more than ~every 2s (except first paint).
+  if (loading && !first && lastOverlayPaintAt && Date.now() - lastOverlayPaintAt < 2000 && sig === lastOverlaySig) {
+    if (!overlayPaintTimer) overlayPaintTimer = setTimeout(run, 2000);
+    return;
+  }
 
   if (overlayPaintTimer) {
     clearTimeout(overlayPaintTimer);
     overlayPaintTimer = 0;
   }
-  // Short defer on first paint so Leaflet has layout after pin/fly; throttle later Trace rebuilds.
-  const delay = immediate || first || sig !== lastOverlaySig ? 40 : 900;
+  const delay = first ? 60 : immediate && !loading ? 40 : loading ? 1800 : 800;
   overlayPaintTimer = setTimeout(run, delay);
 }
 
@@ -595,76 +609,42 @@ function collectDayCoverPts(dayRows, storm) {
 }
 
 /**
- * Draw zones that match the list claim. If we say "zone over home" / near-roof,
- * the fill must reach the pin — not just sit on a distant spotter.
+ * One home-centered cover disk — cheap at roof zoom, and matches "zone over home".
  */
 function paintDayCoverZones(dayRows, storm, { focused, multi, bounds, homeLat, homeLon }) {
+  if (!(Number.isFinite(homeLat) && Number.isFinite(homeLon))) return false;
   const pts = collectDayCoverPts(dayRows, storm);
-  if (!pts.length && !(Number.isFinite(homeLat) && storm?.coversHome)) return false;
+  if (!pts.length && !storm?.coversHome) return false;
   const sz = Number(storm?.maxSizeIn) || 1;
   const col = hailRadarBandColor(sz);
-  const style = {
-    color: col.stroke,
-    weight: focused ? 1.15 : 0.7,
-    fillColor: col.fill,
-    fillOpacity: multi && !focused ? 0.3 : 0.42,
-    opacity: focused ? 0.75 : 0.5,
-    renderer: state.hailSvg || undefined,
-    className: "wx-hail-topo wx-hail-home-cover",
-  };
-
-  // Circles from each report sized to reach the home pin (+ pad).
-  if (Number.isFinite(homeLat) && Number.isFinite(homeLon) && pts.length) {
-    for (const p of pts) {
-      const distKm = Number.isFinite(Number(p.distance_km)) && Number(p.distance_km) < 900
+  let nearest = Number(storm?.minDist);
+  if (!Number.isFinite(nearest) || nearest >= 900) nearest = 2.5;
+  for (const p of pts) {
+    const d =
+      Number.isFinite(Number(p.distance_km)) && Number(p.distance_km) < 900
         ? Number(p.distance_km)
         : haversineKmHome(homeLat, homeLon, p.lat, p.lon);
-      const radiusM = Math.max(1200, Math.min(7000, (distKm + 1.25) * 1000));
-      window.L.circle([p.lat, p.lon], { radius: radiusM, ...style }).addTo(state.overlay);
-      bounds.push([p.lat, p.lon]);
-    }
-    bounds.push([homeLat, homeLon]);
-    return true;
+    if (Number.isFinite(d)) nearest = Math.min(nearest, d);
   }
-
-  // Near-roof with no points left — soft disk on the pin.
-  if (Number.isFinite(homeLat) && Number.isFinite(homeLon) && storm?.coversHome) {
-    const nearest = Number(storm.minDist);
-    const radiusM = Math.max(
-      1600,
-      Math.min(5500, (Number.isFinite(nearest) ? nearest + 1.25 : 2.5) * 1000),
-    );
-    window.L.circle([homeLat, homeLon], { radius: radiusM, ...style }).addTo(state.overlay);
-    bounds.push([homeLat, homeLon]);
-    return true;
-  }
-
-  for (const p of pts) {
-    window.L.circle([p.lat, p.lon], { radius: 2200, ...style }).addTo(state.overlay);
-    bounds.push([p.lat, p.lon]);
-  }
-  return pts.length > 0;
+  const radiusM = Math.max(1400, Math.min(4200, (nearest + 1.0) * 1000));
+  window.L.circle([homeLat, homeLon], {
+    radius: radiusM,
+    color: col.stroke,
+    weight: focused ? 1.1 : 0.65,
+    fillColor: col.fill,
+    fillOpacity: multi && !focused ? 0.28 : 0.4,
+    opacity: focused ? 0.7 : 0.45,
+    renderer: hailFillRenderer(),
+    className: "wx-hail-topo wx-hail-home-cover",
+  }).addTo(state.overlay);
+  bounds.push([homeLat, homeLon]);
+  return true;
 }
 
-function paintOverlays() {
+function paintOverlays({ light = false } = {}) {
   ensureMap();
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
-  if (state.map && state.hailSvg && !state.map.hasLayer(state.hailSvg)) {
-    try {
-      state.hailSvg.addTo(state.map);
-    } catch {
-      /* ignore */
-    }
-  }
-  if (state.map && !state.hailSvg) {
-    state.hailSvg = window.L.svg({ padding: 0.85 });
-    try {
-      state.hailSvg.addTo(state.map);
-    } catch {
-      /* ignore */
-    }
-  }
   const homeLat = state.lat;
   const homeLon = state.lon;
   const bounds = [];
@@ -678,68 +658,72 @@ function paintOverlays() {
     state.mapFocusDate = days[0];
     state.overlayCollection = true;
   }
-  if (!days.length) {
-    return;
-  }
-  // Oldest first so newer / focused swaths paint on top.
-  days.sort((a, b) => a.localeCompare(b));
+  if (!days.length) return;
+
   if (!state.mapFocusDate || !days.includes(state.mapFocusDate)) {
-    state.mapFocusDate = days[days.length - 1];
+    state.mapFocusDate = ranked.find((s) => days.includes(s.date))?.date || days[0];
   }
 
+  const loading = Boolean(getHomeHailCache().loadingDeep);
+  const useLight = light || loading;
+  // Cap how many dates we mesh — 10× HailTrace at roof zoom is what made GPS feel mad laggy.
+  const cap = useLight ? MAP_STREAM_DAYS : state.overlayCollection ? MAP_COLLECTION_DAYS : Math.min(days.length, 5);
+  const preferred = ranked.filter((s) => days.includes(s.date)).map((s) => s.date);
+  if (state.mapFocusDate && preferred.includes(state.mapFocusDate)) {
+    days = [state.mapFocusDate, ...preferred.filter((d) => d !== state.mapFocusDate)].slice(0, cap);
+  } else {
+    days = preferred.slice(0, cap);
+  }
+  days.sort((a, b) => a.localeCompare(b));
+
   const dayPool = getHomeHailCache().hail || [];
-  let needHatch = false;
+  const renderer = hailFillRenderer();
 
   for (const day of days) {
     const storm = ranked.find((s) => s.date === day);
     const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
-    let bands = [];
-    try {
-      bands = buildHailTraceDayBands(day, dayRows) || [];
-    } catch (err) {
-      console.warn("[HomeScope] HailTrace bands failed", day, err);
-      bands = [];
-    }
-
     const focused = day === state.mapFocusDate;
     const multi = days.length > 1;
+
+    let bands = [];
     let drew = false;
-    for (const band of bands) {
-      if (!band?.ring?.length) continue;
-      const sz = Number(band.maxSize) || Number(storm?.maxSizeIn) || 1;
-      const col = hailRadarBandColor(sz);
-      const isolated = Boolean(band.isolated);
-      if (isolated) needHatch = true;
-      const fillOp = isolated
-        ? 0.72
-        : hailMeshBandOpacity(sz) * (multi && !focused ? 0.72 : 1);
-      const latLngs = [band.ring, ...(band.holes || [])];
-      window.L.polygon(latLngs, {
-        color: col.stroke,
-        weight: isolated ? 0.9 : focused ? 0.75 : 0.55,
-        fillColor: isolated ? "url(#gc-hail-hatch)" : col.fill,
-        fillOpacity: fillOp,
-        opacity: isolated ? 0.65 : focused ? 0.5 : 0.35,
-        stroke: true,
-        smoothFactor: 1.8,
-        renderer: state.hailSvg || undefined,
-        className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
-      }).addTo(state.overlay);
-      drew = true;
-      for (const ll of band.ring) {
-        if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
+    // Full Trace only when idle / solo — light mode uses a single cover disk.
+    if (!useLight) {
+      try {
+        bands = buildHailTraceDayBands(day, dayRows) || [];
+      } catch (err) {
+        console.warn("[HomeScope] HailTrace bands failed", day, err);
+        bands = [];
+      }
+      for (const band of bands) {
+        if (!band?.ring?.length) continue;
+        const sz = Number(band.maxSize) || Number(storm?.maxSizeIn) || 1;
+        const col = hailRadarBandColor(sz);
+        const isolated = Boolean(band.isolated);
+        const fillOp = isolated
+          ? 0.55
+          : hailMeshBandOpacity(sz) * (multi && !focused ? 0.72 : 1);
+        window.L.polygon([band.ring, ...(band.holes || [])], {
+          color: col.stroke,
+          weight: isolated ? 0.9 : focused ? 0.75 : 0.55,
+          fillColor: col.fill,
+          fillOpacity: fillOp,
+          opacity: isolated ? 0.55 : focused ? 0.5 : 0.35,
+          stroke: true,
+          smoothFactor: 2.2,
+          renderer,
+          className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
+        }).addTo(state.overlay);
+        drew = true;
       }
     }
 
-    // List said cover — Trace must visually include the pin, or paint a home-reaching zone.
     const claimsCover = Boolean(storm?.coversHome || storm?.coversNear || storm?.coversPolygon);
-    const pinCovered = homeInsideBands(homeLat, homeLon, bands);
-    if (!drew || (claimsCover && !pinCovered)) {
+    const pinCovered = !useLight && homeInsideBands(homeLat, homeLon, bands);
+    if (!drew || (claimsCover && !pinCovered) || useLight) {
       paintDayCoverZones(dayRows, storm, { focused, multi, bounds, homeLat, homeLon });
     }
   }
-
-  if (needHatch && state.hailSvg?._container) ensureHomeHailHatch(state.hailSvg._container);
   // Keep the user's pin zoom — draw zones in place; they can zoom out to see the full swath.
 }
 
@@ -1064,14 +1048,16 @@ function applyStormResult(result, { loading = false, reseatSelection = true, ski
       autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     }
   }
-  // List always; map shows auto-selected dates as soon as they exist (no tap required).
+  // List always; map shows cover without thrashing Trace on every archive chunk.
   paintStormList({ loading: still, skipMap: true });
   ensureMap();
-  if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
+  if (Number.isFinite(state.lat)) {
+    if (!state.marker) pinHome(state.lat, state.lon, { invalidate: false });
+    else state.marker.setLatLng([state.lat, state.lon]);
+  }
   if (state.selected.size) {
     const firstBatch = prevCount === 0 && state.storms.length > 0;
-    const grew = state.storms.length > prevCount;
-    scheduleOverlayPaint({ immediate: firstBatch || grew || !still });
+    scheduleOverlayPaint({ immediate: firstBatch || !still });
   }
 
   const status = $("#storm-status");
