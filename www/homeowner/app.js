@@ -573,7 +573,9 @@ function scheduleOverlayPaint({ immediate = false } = {}) {
   overlayPaintTimer = setTimeout(run, delay);
 }
 
-/** Pull NOAA SWDI for selected days across Oklahoma so zoom-out shows full swaths (field GC behavior). */
+/** Pull NOAA SWDI per storm day (OK bbox) — one day at a time like field GC.
+ * Do NOT request one giant date range across years (that times out / returns empty).
+ */
 async function ensureStatewideSwdiForDays(days) {
   if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return false;
   const cache = getHomeHailCache();
@@ -585,22 +587,43 @@ async function ensureStatewideSwdiForDays(days) {
     return n < SWDI_DAY_MIN;
   });
   if (!need.length) return false;
+
   const gen = ++swdiEnrichGen;
-  try {
-    const { rows } = await fetchSwdiHailForDays(state.lat, state.lon, 450, need, {
-      bbox: OK_SWDI_BBOX,
-    });
-    if (gen !== swdiEnrichGen) return false;
-    for (const d of need) swdiEnrichedDays.add(d);
-    if (rows?.length) {
-      cache.hail = mergeHailRows(cache.hail || [], rows);
-      return true;
+  let grew = false;
+  const status = $("#storm-status");
+  // Newest first — map focus / recent storms get radar ASAP.
+  const queue = [...need].sort((a, b) => b.localeCompare(a));
+
+  for (let i = 0; i < queue.length; i++) {
+    if (gen !== swdiEnrichGen) return grew;
+    const d = queue[i];
+    if (status && !status.classList.contains("err")) {
+      setStatus(
+        status,
+        `Loading NOAA radar swath for ${d} (${i + 1}/${queue.length})…`,
+      );
     }
-  } catch (err) {
-    console.warn("[HomeScope] SWDI day enrich", err);
-    for (const d of need) swdiEnrichedDays.add(d);
+    try {
+      // Ingest from OK center so the full statewide bbox survives the 450 km cap
+      // (pin-centered ingest drops far corners of Oklahoma).
+      const { rows, err } = await fetchSwdiHailForDays(35.4676, -97.5164, 450, [d], {
+        bbox: OK_SWDI_BBOX,
+      });
+      if (gen !== swdiEnrichGen) return grew;
+      if (rows?.length) {
+        cache.hail = mergeHailRows(cache.hail || [], rows);
+        swdiEnrichedDays.add(d);
+        grew = true;
+      } else if (!err || err === "empty") {
+        // Genuine empty radar day — don't keep retrying.
+        swdiEnrichedDays.add(d);
+      }
+      // "filtered" / network errors: leave unmarked so a later paint can retry.
+    } catch (err) {
+      console.warn("[HomeScope] SWDI day enrich", d, err);
+    }
   }
-  return false;
+  return grew;
 }
 
 /** Point-in-ring for [lat, lon] Trace rings. */
@@ -786,10 +809,26 @@ async function paintOverlays() {
   let rings = paintDays(days);
   reveal(rings, true);
 
+  // Radar swaths (SWDI) — without this, Trace is spotter-only soft disks.
+  const radarBefore = (getHomeHailCache().hail || []).filter(isSwdiHail).length;
   const grew = await ensureStatewideSwdiForDays(days);
-  if (grew) {
+  const radarAfter = (getHomeHailCache().hail || []).filter(isSwdiHail).length;
+  if (grew || radarAfter > radarBefore) {
     rings = paintDays(days);
     reveal(rings, true);
+    const nRadar = days.reduce((acc, d) => {
+      const n = (getHomeHailCache().hail || []).filter(
+        (h) => String(h?.date || "").slice(0, 10) === d && isSwdiHail(h),
+      ).length;
+      return acc + n;
+    }, 0);
+    const status = $("#storm-status");
+    if (status && !status.classList.contains("err") && state.storms.length) {
+      setStatus(
+        status,
+        `${state.storms.length} covering date(s) · map: ${days.length} day Trace · ${nRadar} radar sigs on overlay`,
+      );
+    }
   } else if (!rings.length) {
     reveal([], true);
   }
@@ -1099,6 +1138,21 @@ function paintStormList({ loading = false, skipMap = false } = {}) {
   if (!skipMap) paintOverlays();
 }
 
+/** Background SWDI for all selected covering dates (beyond map paint cap). */
+function scheduleRadarEnrichForSelection() {
+  if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
+  const ranked = rankedStorms();
+  const days = [...state.selected]
+    .filter((d) => ranked.some((s) => s.date === d))
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, TOP_STORM_N);
+  if (!days.length) return;
+  void (async () => {
+    const grew = await ensureStatewideSwdiForDays(days);
+    if (grew) scheduleOverlayPaint({ immediate: true });
+  })();
+}
+
 function applyStormResult(result, { loading = false, reseatSelection = true, skipMap = false } = {}) {
   const still = loading || Boolean(result.loading);
   const prevCount = state.storms.length;
@@ -1129,6 +1183,8 @@ function applyStormResult(result, { loading = false, reseatSelection = true, ski
   if (state.selected.size) {
     const firstBatch = prevCount === 0 && state.storms.length > 0;
     scheduleOverlayPaint({ immediate: firstBatch || !still });
+    // After archive settles, pull radar for every selected date (not just the 1–5 painted).
+    if (!still) scheduleRadarEnrichForSelection();
   }
 
   const status = $("#storm-status");
