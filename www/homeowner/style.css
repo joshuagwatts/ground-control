@@ -1118,18 +1118,23 @@ body.ho-gate-open {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  display: grid;
+  display: none;
   place-items: center;
   padding: 1.25rem;
   background:
     radial-gradient(ellipse at 50% 30%, rgba(255, 204, 0, 0.12), transparent 55%),
-    rgba(8, 8, 10, 0.82);
+    rgba(8, 8, 10, 0.88);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
 
-.ho-deep-modal[hidden] {
-  display: none;
+.ho-deep-modal.is-on,
+.ho-deep-modal:not([hidden]) {
+  display: grid !important;
+}
+
+.ho-deep-modal[hidden]:not(.is-on) {
+  display: none !important;
 }
 
 .ho-deep-card {

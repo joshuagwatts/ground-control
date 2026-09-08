@@ -113,10 +113,36 @@ function closeReportGate() {
   document.body.classList.remove("ho-gate-open");
 }
 
+function ensureDeepSearchEl() {
+  let el = $("#deep-search");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "deep-search";
+  el.className = "ho-deep-modal";
+  el.setAttribute("aria-live", "polite");
+  el.innerHTML = `<div class="ho-deep-card" role="status">
+      <div class="ho-deep-radar" aria-hidden="true">
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-beam"></span>
+        <span class="ho-deep-core"></span>
+      </div>
+      <p class="ho-deep-kicker">High Ground · HomeScope</p>
+      <h2 class="ho-deep-title" id="deep-search-title">Deep searching hail</h2>
+      <p class="ho-deep-msg" id="deep-search-msg">Pulling NOAA radar and spotter history for this roof…</p>
+      <div class="ho-deep-bar" aria-hidden="true"><span class="ho-deep-bar-fill" id="deep-search-bar"></span></div>
+      <p class="ho-deep-hint">This can take a minute — hang tight while we load more storm data.</p>
+    </div>`;
+  document.body.appendChild(el);
+  return el;
+}
+
 function showDeepSearchOverlay({ title, msg, progress = 0.12 } = {}) {
-  const el = $("#deep-search");
-  if (!el) return;
+  const el = ensureDeepSearchEl();
   el.hidden = false;
+  el.removeAttribute("hidden");
+  el.classList.add("is-on");
   el.setAttribute("aria-busy", "true");
   document.documentElement.classList.add("ho-deep-open");
   document.body.classList.add("ho-deep-open");
@@ -124,6 +150,7 @@ function showDeepSearchOverlay({ title, msg, progress = 0.12 } = {}) {
 }
 
 function updateDeepSearchOverlay({ title, msg, progress } = {}) {
+  ensureDeepSearchEl();
   if (title && $("#deep-search-title")) $("#deep-search-title").textContent = title;
   if (msg && $("#deep-search-msg")) $("#deep-search-msg").textContent = msg;
   const bar = $("#deep-search-bar");
@@ -137,12 +164,24 @@ function hideDeepSearchOverlay() {
   const el = $("#deep-search");
   if (el) {
     el.hidden = true;
+    el.setAttribute("hidden", "");
+    el.classList.remove("is-on");
     el.setAttribute("aria-busy", "false");
   }
   document.documentElement.classList.remove("ho-deep-open");
   document.body.classList.remove("ho-deep-open");
   const bar = $("#deep-search-bar");
   if (bar) bar.style.width = "18%";
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Let the browser paint the overlay before heavy network work. */
+async function paintSoon() {
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  await sleepMs(40);
 }
 
 function paintGateRoofMode(mode) {
@@ -1617,162 +1656,213 @@ function renderReportDocument(rec) {
 
 async function generateReport({ emailViaCrm = true } = {}) {
   syncRoofFromGate();
-  const statusEl = $("#storm-status") || $("#share-status");
+  const statusEl = $("#storm-status") || $("#share-status") || $("#gate-status");
   const btn = $("#make-report");
   const prevBtn = btn?.textContent || "";
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "Deep searching hail…";
+    btn.textContent = "Building report…";
   }
 
   closeReportGate();
   showDeepSearchOverlay({
     title: "Deep searching hail",
-    msg: "Finishing spotter archive + NOAA radar for this roof…",
-    progress: 0.12,
+    msg: "Hang tight — loading more NOAA radar + spotter history for this roof…",
+    progress: 0.1,
   });
   setStatus(statusEl, "Deep searching hail for your report…");
+  // Critical on phones: paint the overlay before awaiting network.
+  await paintSoon();
 
   const bumpDeep = (msg, progress, title) => {
     updateDeepSearchOverlay({ title, msg, progress });
     if (msg) setStatus(statusEl, msg);
   };
 
+  const reportYears = Math.max(Number(state.years) || 10, CLAIM_RULES.maxHistoryYears || 10);
+  let finalReportStorms = state.storms || [];
+
   try {
     if (Number.isFinite(state.lat) && Number.isFinite(state.lon)) {
-      const reportYears = Math.max(Number(state.years) || 10, CLAIM_RULES.maxHistoryYears || 10);
-      const deep = await deepenHomeHailForReport(state.lat, state.lon, {
-        address: state.address,
-        years: reportYears,
-        minHailIn: state.minHailIn,
-        onPartial: (result) => {
-          const filtered = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
-          applyStormResult(
-            { ...filtered, loading: Boolean(result.loading), note: result.note },
-            { loading: Boolean(result.loading), reseatSelection: false, skipMap: true },
-          );
-          const swdiHave = getHomeHailCache().swdiFetchedDays || 0;
-          const daysTarget = Math.round(reportYears * 365.25);
-          const prog = 0.15 + 0.45 * Math.min(1, swdiHave / Math.max(daysTarget, 1));
-          bumpDeep(result.note || "Loading more hail history…", prog, "Deep searching hail");
-        },
-      });
-      applyStormResult(
-        filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }),
-        { loading: false, reseatSelection: false, skipMap: true },
-      );
-      const reportStorms =
-        filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms || deep.storms || [];
+      const deepWork = (async () => {
+        bumpDeep("Refreshing hail history for your report…", 0.22, "Deep searching hail");
+        const deep = await deepenHomeHailForReport(state.lat, state.lon, {
+          address: state.address,
+          years: reportYears,
+          minHailIn: state.minHailIn,
+          onPartial: (result) => {
+            const filtered = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
+            applyStormResult(
+              { ...filtered, loading: Boolean(result.loading), note: result.note },
+              { loading: Boolean(result.loading), reseatSelection: false, skipMap: true },
+            );
+            const swdiHave = getHomeHailCache().swdiFetchedDays || 0;
+            const daysTarget = Math.round(reportYears * 365.25);
+            const prog = 0.22 + 0.4 * Math.min(1, swdiHave / Math.max(daysTarget, 1));
+            bumpDeep(result.note || "Loading more hail history…", prog, "Deep searching hail");
+          },
+        });
 
-      const reportDays = rankedStorms(reportStorms, "intense")
-        .map((s) => s.date)
-        .slice(0, 30);
-      for (const d of reportDays) {
-        const n = (getHomeHailCache().hail || []).filter(
-          (h) => String(h?.date || "").slice(0, 10) === d && isSwdiHail(h),
-        ).length;
-        if (n < SWDI_DAY_MIN) swdiEnrichedDays.delete(d);
-      }
-      if (reportDays.length) {
-        bumpDeep(
-          `Pulling statewide radar swaths for ${reportDays.length} storm date(s)…`,
-          0.72,
-          "Mapping radar swaths",
+        applyStormResult(
+          filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }),
+          { loading: false, reseatSelection: false, skipMap: true },
         );
-        const grew = await ensureStatewideSwdiForDays(reportDays);
-        if (grew) refreshStormListFromCache();
-      }
 
-      bumpDeep("Building your High Ground hail report…", 0.9, "Almost ready");
+        let reportStorms =
+          filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms ||
+          deep?.storms ||
+          [];
 
-      const finalReportStorms =
-        filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms || reportStorms;
-
-      const rec = homescopeRecommendation({
-        storms: finalReportStorms,
-        roofReplacedOn: state.roofReplacedOn,
-      });
-      state.lastRec = rec;
-      const listStorms = state.storms;
-      const prevYears = state.years;
-      state.storms = finalReportStorms;
-      state.years = reportYears;
-      state.reportText = buildReportText(rec);
-      const doc = $("#hg-doc");
-      if (doc) doc.innerHTML = renderReportDocument(rec);
-      state.years = prevYears;
-      state.storms = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }).storms || listStorms;
-      paintStormList({ loading: false, skipMap: true });
-
-      setStep("report");
-      hideDeepSearchOverlay();
-
-      const html = reportHtmlDoc();
-      if (emailViaCrm && state.lead?.email) {
-        const email = buildCrmEmailPackage({
-          lead: {
-            ...state.lead,
-            roofLabel: state.roofAgeLabel,
-            address: state.address,
-          },
-          reportHtml: html,
-          reportText: state.reportText,
-          rec,
-        });
-        const crmResult = await submitHomescopeLeadToCrm({
-          type: "homescope_report_lead",
-          action: "create_contact_and_email_report",
-          lead: {
-            ...state.lead,
-            lat: state.lat,
-            lon: state.lon,
-            address: state.address,
-            roofMode: state.roofMode,
-            roofReplacedOn: state.roofReplacedOn,
-            roofAgeLabel: state.roofAgeLabel,
-            years: reportYears,
-            minHailIn: state.minHailIn,
-          },
-          recommendation: {
-            headline: rec.headline,
-            reason: rec.reason,
-            considerClaim: rec.considerClaim,
-            talkToRoofer: rec.talkToRoofer,
-            roofQuality: rec.roofQuality,
-            windowStart: rec.windowStart,
-            windowEnd: rec.windowEnd,
-          },
-          storms: finalReportStorms.map((s) => ({
-            date: s.date,
-            maxSizeIn: s.maxSizeIn,
-            sources: s.sources,
-            coversNear: s.coversNear,
-            coversPolygon: s.coversPolygon,
-          })),
-          email,
-        });
-        if (state.lead) {
-          state.lead.crm = crmResult.status;
-          state.lead.crmAt = new Date().toISOString();
-          saveLead(state.lead);
+        // Cap statewide day enrich — 30 serial SWDI fetches hung phones with no report.
+        const reportDays = rankedStorms(reportStorms, "intense")
+          .map((s) => s.date)
+          .slice(0, 6);
+        for (const d of reportDays) {
+          const n = (getHomeHailCache().hail || []).filter(
+            (h) => String(h?.date || "").slice(0, 10) === d && isSwdiHail(h),
+          ).length;
+          if (n < SWDI_DAY_MIN) swdiEnrichedDays.delete(d);
         }
-        setStatus(
-          $("#share-status"),
-          crmResult.status === "sent"
-            ? `Report emailed to ${state.lead.email} via High Ground CRM`
-            : `Report ready — High Ground CRM will email ${state.lead.email}`,
-        );
-      } else {
-        setStatus($("#share-status"), "Report ready — deep hail search complete");
-      }
+        if (reportDays.length) {
+          bumpDeep(
+            `Mapping radar swaths for ${reportDays.length} key storm date(s)…`,
+            0.72,
+            "Mapping radar swaths",
+          );
+          await Promise.race([
+            ensureStatewideSwdiForDays(reportDays).then((grew) => {
+              if (grew) refreshStormListFromCache();
+            }),
+            sleepMs(12000),
+          ]);
+          reportStorms =
+            filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms ||
+            reportStorms;
+        }
+        return reportStorms;
+      })();
 
-      requestAnimationFrame(() => doc?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
-      return;
+      // Never leave the homeowner staring at a blank phone — time-box the deep search.
+      finalReportStorms = await Promise.race([
+        deepWork,
+        sleepMs(24000).then(() => {
+          bumpDeep("Taking longer than usual — building your report with what we have…", 0.86, "Almost ready");
+          return (
+            filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms ||
+            state.storms ||
+            []
+          );
+        }),
+      ]);
     }
   } catch (err) {
     console.warn("[HomeScope] report deep search", err);
     bumpDeep("Deep search hit a snag — building with what we have…", 0.85, "Finishing report");
     setStatus(statusEl, "Deep search hit a snag — building report with what we have.", true);
+    finalReportStorms =
+      filterCachedHomeStorms({ years: reportYears, minHailIn: state.minHailIn }).storms ||
+      state.storms ||
+      [];
+  }
+
+  bumpDeep("Building your High Ground hail report…", 0.94, "Almost ready");
+  await paintSoon();
+
+  try {
+    const rec = homescopeRecommendation({
+      storms: finalReportStorms,
+      roofReplacedOn: state.roofReplacedOn,
+    });
+    state.lastRec = rec;
+    const listStorms = state.storms;
+    const prevYears = state.years;
+    state.storms = finalReportStorms;
+    state.years = reportYears;
+    state.reportText = buildReportText(rec);
+    const doc = $("#hg-doc");
+    if (doc) doc.innerHTML = renderReportDocument(rec);
+    state.years = prevYears;
+    state.storms =
+      filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }).storms || listStorms;
+    paintStormList({ loading: false, skipMap: true });
+
+    setStep("report");
+    hideDeepSearchOverlay();
+
+    const html = reportHtmlDoc();
+    if (emailViaCrm && state.lead?.email) {
+      void (async () => {
+        try {
+          const email = buildCrmEmailPackage({
+            lead: {
+              ...state.lead,
+              roofLabel: state.roofAgeLabel,
+              address: state.address,
+            },
+            reportHtml: html,
+            reportText: state.reportText,
+            rec,
+          });
+          const crmResult = await submitHomescopeLeadToCrm({
+            type: "homescope_report_lead",
+            action: "create_contact_and_email_report",
+            lead: {
+              ...state.lead,
+              lat: state.lat,
+              lon: state.lon,
+              address: state.address,
+              roofMode: state.roofMode,
+              roofReplacedOn: state.roofReplacedOn,
+              roofAgeLabel: state.roofAgeLabel,
+              years: reportYears,
+              minHailIn: state.minHailIn,
+            },
+            recommendation: {
+              headline: rec.headline,
+              reason: rec.reason,
+              considerClaim: rec.considerClaim,
+              talkToRoofer: rec.talkToRoofer,
+              roofQuality: rec.roofQuality,
+              windowStart: rec.windowStart,
+              windowEnd: rec.windowEnd,
+            },
+            storms: finalReportStorms.map((s) => ({
+              date: s.date,
+              maxSizeIn: s.maxSizeIn,
+              sources: s.sources,
+              coversNear: s.coversNear,
+              coversPolygon: s.coversPolygon,
+            })),
+            email,
+          });
+          if (state.lead) {
+            state.lead.crm = crmResult.status;
+            state.lead.crmAt = new Date().toISOString();
+            saveLead(state.lead);
+          }
+          setStatus(
+            $("#share-status"),
+            crmResult.status === "sent"
+              ? `Report emailed to ${state.lead.email} via High Ground CRM`
+              : `Report ready — High Ground CRM will email ${state.lead.email}`,
+          );
+        } catch (err) {
+          console.warn("[HomeScope] CRM email", err);
+          setStatus($("#share-status"), "Report ready (email queue skipped)");
+        }
+      })();
+    } else {
+      setStatus($("#share-status"), "Report ready");
+    }
+
+    requestAnimationFrame(() => {
+      doc?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+      window.scrollTo?.({ top: 0, behavior: "smooth" });
+    });
+  } catch (err) {
+    console.warn("[HomeScope] report render", err);
+    setStatus(statusEl, "Couldn’t render the report — try again", true);
+    setStep("storms");
   } finally {
     hideDeepSearchOverlay();
     if (btn) {
@@ -1780,19 +1870,6 @@ async function generateReport({ emailViaCrm = true } = {}) {
       btn.textContent = prevBtn || "Answer questions · Get report";
     }
   }
-
-  // Fallback if pin missing / deep path returned early.
-  const rec = homescopeRecommendation({
-    storms: state.storms,
-    roofReplacedOn: state.roofReplacedOn,
-  });
-  state.lastRec = rec;
-  state.reportText = buildReportText(rec);
-  const doc = $("#hg-doc");
-  if (doc) doc.innerHTML = renderReportDocument(rec);
-  setStep("report");
-  closeReportGate();
-  requestAnimationFrame(() => doc?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
 }
 
 function downloadBlob(filename, mime, text) {
