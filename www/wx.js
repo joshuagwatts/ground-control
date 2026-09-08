@@ -1519,14 +1519,7 @@ export function lsrFirstDays(requested = 730) {
   return isSlowBrowserNet() ? Math.min(days, 120) : Math.min(days, 400);
 }
 
-async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
-  const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
-  const days = Math.min(Math.max(Number(daysBack) || 365, 7), 730);
-  const cacheKey = `${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
-  if (lsrHailCache.has(cacheKey)) return lsrHailCache.get(cacheKey);
-  const end = new Date();
-  const start = new Date();
-  start.setUTCDate(start.getUTCDate() - days);
+async function fetchIemLsrHailRange(lat, lon, km, start, end) {
   const sts = `${start.toISOString().slice(0, 19)}Z`;
   const ets = `${end.toISOString().slice(0, 19)}Z`;
   const box = iemBboxQuery(lat, lon, km);
@@ -1543,15 +1536,54 @@ async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
       const rows = /"features"|FeatureCollection/i.test(body || "")
         ? parseIemLsrGeojson(body, lat, lon, km)
         : parseIemLsrCsv(body, lat, lon, km);
-      if (rows.length) {
-        lsrHailCache.set(cacheKey, rows);
-        return rows;
-      }
+      if (rows.length) return rows;
     } catch {
       /* try next */
     }
   }
   return [];
+}
+
+async function fetchIemLsrHail(lat, lon, radiusKm = 40, daysBack = 365) {
+  const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
+  const days = Math.min(Math.max(Number(daysBack) || 365, 7), 730);
+  const cacheKey = `${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
+  if (lsrHailCache.has(cacheKey)) return lsrHailCache.get(cacheKey);
+  const end = new Date();
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - days);
+  const rows = await fetchIemLsrHailRange(lat, lon, km, start, end);
+  if (rows.length) lsrHailCache.set(cacheKey, rows);
+  return rows;
+}
+
+/**
+ * Deep LSR archive for HomeScope (up to 10 years). Field HailScope keeps using fetchIemLsrHail (≤730d).
+ */
+export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack = 730, { onChunk } = {}) {
+  const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
+  const days = Math.min(Math.max(Number(daysBack) || 730, 7), 3650);
+  const cacheKey = `arch|${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
+  if (lsrHailCache.has(cacheKey)) return lsrHailCache.get(cacheKey);
+  const byKey = new Map();
+  const end0 = new Date();
+  const chunk = 400;
+  for (let offset = 0; offset < days; offset += chunk) {
+    const windowEnd = new Date(end0);
+    windowEnd.setUTCDate(windowEnd.getUTCDate() - offset);
+    const span = Math.min(chunk, days - offset);
+    const windowStart = new Date(windowEnd);
+    windowStart.setUTCDate(windowStart.getUTCDate() - span);
+    const rows = await fetchIemLsrHailRange(lat, lon, km, windowStart, windowEnd);
+    for (const r of rows) {
+      const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
+      byKey.set(k, r);
+    }
+    if (onChunk) onChunk([...byKey.values()], { offset, days, chunkSize: rows.length });
+  }
+  const out = [...byKey.values()];
+  lsrHailCache.set(cacheKey, out);
+  return out;
 }
 
 function hailZoneColor(sizeIn) {

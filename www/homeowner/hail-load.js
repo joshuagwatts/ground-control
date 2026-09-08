@@ -1,6 +1,7 @@
 /**
  * HomeScope hail load — uses Ground Control hail engines without field UI.
  * Prefer setWxPin → pinDossier → collapseHailByDate so near_hits stay accurate.
+ * Years > 2 deepen with chunked IEM LSR archive (field app stays ≤2y).
  */
 import {
   setWxPin,
@@ -9,6 +10,8 @@ import {
   HOUSE_HAIL_KM,
   buildHailSwathRings,
   PIN_FETCH_WIDE_KM,
+  fetchIemLsrHailArchive,
+  mergeHailRows,
 } from "../wx.js";
 
 function pointInLatLonRing(lat, lon, ring) {
@@ -80,15 +83,40 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
   setWxPin(lat, lon);
 
   const settings = {};
-  const dossier = await pinDossier(settings, lat, lon, {
+  let dossier = await pinDossier(settings, lat, lon, {
     address,
     deep: false,
     onPartial: onPartial
       ? (part) => {
-          onPartial(summarizeDossier(part, lat, lon, { minHailIn, days }));
+          onPartial(summarizeDossier(part, lat, lon, { minHailIn, days, years }));
         }
       : undefined,
   });
+
+  if (onPartial) onPartial(summarizeDossier(dossier, lat, lon, { minHailIn, days, years }));
+
+  // Deepen beyond field 2-year cap with chunked LSR (spotter history).
+  if (days > 730 && dossier) {
+    try {
+      const deep = await fetchIemLsrHailArchive(lat, lon, PIN_FETCH_WIDE_KM, days, {
+        onChunk: (rows) => {
+          const merged = {
+            ...dossier,
+            hail: mergeHailRows(dossier.hail || [], [], rows),
+            _meta: { ...(dossier._meta || {}), fetchedDays: days, deepArchive: true, loading: true },
+          };
+          if (onPartial) onPartial(summarizeDossier(merged, lat, lon, { minHailIn, days, years }));
+        },
+      });
+      dossier = {
+        ...dossier,
+        hail: mergeHailRows(dossier.hail || [], [], deep),
+        _meta: { ...(dossier._meta || {}), fetchedDays: days, deepArchive: true, loading: false },
+      };
+    } catch {
+      /* keep 2y dossier */
+    }
+  }
 
   return summarizeDossier(dossier, lat, lon, { minHailIn, days, years });
 }
@@ -123,17 +151,21 @@ function summarizeDossier(dossier, lat, lon, { minHailIn = 1, days = 730, years 
   }
   storms.sort((a, b) => b.date.localeCompare(a.date));
 
+  const fetched = Number(dossier?._meta?.fetchedDays) || 0;
+  const deep = Boolean(dossier?._meta?.deepArchive);
   return {
     ok: Boolean(dossier?.ok !== false),
     address: dossier?.address || "",
     lat,
     lon,
     years: years ?? Math.round(days / 365.25),
-    fetchedDays: Number(dossier?._meta?.fetchedDays) || days,
+    fetchedDays: Math.max(fetched, days),
     note:
-      days > 730
-        ? "Deep history beyond ~2 years is still expanding — first pass uses the live 2-year archive; older years follow in a later build."
-        : null,
+      days > 730 && !deep
+        ? "Loading deeper spotter history beyond 2 years…"
+        : days > 730 && deep
+          ? "Years 3–10 use IEM spotter archives; radar mesh is densest in the recent ~2 years."
+          : null,
     storms,
     hailRowCount: (dossier?.hail || []).length,
   };
