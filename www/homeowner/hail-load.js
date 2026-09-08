@@ -16,7 +16,7 @@ import {
 const HOME_DEEP_KM = 40;
 const COVER_NEAR_KM = Math.max(HOUSE_HAIL_KM, HOUSE_ZONE_KM);
 /** Max new HailTrace cover checks per summarize while streaming — keeps the list growing without freezing. */
-const STREAM_POLY_BUDGET = 12;
+const STREAM_POLY_BUDGET = 24;
 
 function pinKey(lat, lon) {
   return `${Number(lat).toFixed(4)}|${Number(lon).toFixed(4)}`;
@@ -174,7 +174,9 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   const cutoffIso = cutoff.toISOString().slice(0, 10);
   resetCoverPolyCache(lat, lon);
 
-  const collapsed = collapseHailByDate(hailRows || []);
+  const collapsed = collapseHailByDate(hailRows || []).sort((a, b) =>
+    String(b.date || "").localeCompare(String(a.date || "")),
+  );
   const byDay = new Map();
   for (const h of hailRows || []) {
     const d = String(h?.date || "").slice(0, 10);
@@ -279,9 +281,9 @@ function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note)
 }
 
 /** Finish remaining zone-cover checks in small batches so the list keeps growing. */
-async function drainCoverChecks(lat, lon, onPartial, minHailIn, days, years) {
+async function drainCoverChecks(lat, lon, onPartial, minHailIn, days, years, { maxRounds = 80, final = true } = {}) {
   const key = pinKey(lat, lon);
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < maxRounds; i++) {
     if (pinCache.key !== key) return;
     const result = pushPartial(
       onPartial,
@@ -291,12 +293,12 @@ async function drainCoverChecks(lat, lon, onPartial, minHailIn, days, years) {
       days,
       years,
       true,
-      `Confirming zone cover… ${i + 1}`,
+      `Confirming zone cover…`,
     );
     if (!result?.deferredCover) break;
     await new Promise((r) => setTimeout(r, 0));
   }
-  if (pinCache.key !== key) return;
+  if (!final || pinCache.key !== key) return;
   pushPartial(onPartial, lat, lon, minHailIn, days, years, false, null);
 }
 
@@ -325,11 +327,12 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   const run = (async () => {
     try {
       const deep = await fetchIemLsrHailArchive(lat, lon, HOME_DEEP_KM, days, {
-        onChunk: (rows, meta) => {
+        onChunk: async (rows, meta) => {
           if (pinCache.key !== key) return;
           pinCache.hail = mergeHailRows(pinCache.hail, [], rows);
           const covered = Number(meta?.coveredDays) || Number(meta?.offset) || 0;
           if (covered > 0) pinCache.fetchedDays = Math.max(pinCache.fetchedDays, Math.min(days, covered));
+          const ySoFar = Math.max(1, Math.round((pinCache.fetchedDays || 0) / 365));
           pushPartial(
             pinCache.uiNotify,
             lat,
@@ -338,8 +341,13 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
             days,
             years,
             true,
-            `Loading older storm years… (~${Math.round((pinCache.fetchedDays || 0) / 365)}y so far)`,
+            `Loading… ~${ySoFar}y in · dropping covering dates as they confirm`,
           );
+          // Confirm cover for this year's new dates before fetching the next year.
+          await drainCoverChecks(lat, lon, pinCache.uiNotify, minHailIn, days, years, {
+            maxRounds: 4,
+            final: false,
+          });
         },
       });
       if (pinCache.key !== key) return;

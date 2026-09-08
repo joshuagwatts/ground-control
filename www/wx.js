@@ -1566,29 +1566,57 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
   const km = Math.min(Math.max(radiusKm, 5), MAP_HAIL_MAX_KM);
   const days = Math.min(Math.max(Number(daysBack) || 730, 7), 3650);
   const cacheKey = `arch|${lat.toFixed(2)}|${lon.toFixed(2)}|${Math.round(km / 10) * 10}|${days}`;
-  const notify = (rows, covered) => {
+  const notify = async (rows, covered) => {
     if (!onChunk) return;
     try {
-      onChunk(rows, { offset: covered, days, coveredDays: covered, chunkSize: rows.length });
+      await onChunk(rows, { offset: covered, days, coveredDays: covered, chunkSize: rows.length });
     } catch {
       /* ignore */
     }
   };
+
+  /** Drop cached rows year-by-year (newest first) so the UI never waits on a full 10y dump. */
+  const streamRowsProgressively = async (allRows) => {
+    const sorted = [...(allRows || [])].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    if (!sorted.length) {
+      await notify([], days);
+      return;
+    }
+    const byYear = new Map();
+    for (const r of sorted) {
+      const y = String(r.date || "").slice(0, 4) || "0000";
+      if (!byYear.has(y)) byYear.set(y, []);
+      byYear.get(y).push(r);
+    }
+    const years = [...byYear.keys()].sort((a, b) => b.localeCompare(a));
+    const acc = [];
+    let covered = 0;
+    const yearSpan = Math.max(1, Math.round(days / Math.max(years.length, 1)));
+    for (const y of years) {
+      acc.push(...byYear.get(y));
+      covered = Math.min(days, covered + yearSpan);
+      await notify([...acc], covered);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await notify([...acc], days);
+  };
+
   if (lsrHailCache.has(cacheKey)) {
     const out = lsrHailCache.get(cacheKey);
-    notify(out, days);
+    await streamRowsProgressively(out);
     return out;
   }
-  // In-flight dedupe — joiners still get a final onChunk so HomeScope UI can catch up.
+  // In-flight dedupe — joiners still get progressive onChunks when the leader finishes.
   if (lsrHailInflight.has(cacheKey)) {
     const out = await lsrHailInflight.get(cacheKey);
-    notify(out, days);
+    await streamRowsProgressively(out);
     return out;
   }
   const job = (async () => {
     const byKey = new Map();
     const end0 = new Date();
     const chunk = 365;
+    // Newest year first — homeowners see recent covering dates ASAP.
     const windows = [];
     for (let offset = 0; offset < days; offset += chunk) {
       const windowEnd = new Date(end0);
@@ -1598,25 +1626,15 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
       windowStart.setUTCDate(windowStart.getUTCDate() - span);
       windows.push({ windowStart, windowEnd, offset, span });
     }
-    const concurrency = 5;
-    let covered = 0;
-    for (let i = 0; i < windows.length; i += concurrency) {
-      const batch = windows.slice(i, i + concurrency);
-      const parts = await Promise.all(
-        batch.map(({ windowStart, windowEnd }) => fetchIemLsrHailRange(lat, lon, km, windowStart, windowEnd)),
-      );
-      for (const rows of parts) {
-        for (const r of rows) {
-          const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
-          byKey.set(k, r);
-        }
+    // One year at a time so each onChunk can paint before the next fetch.
+    for (const w of windows) {
+      const rows = await fetchIemLsrHailRange(lat, lon, km, w.windowStart, w.windowEnd);
+      for (const r of rows || []) {
+        const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
+        byKey.set(k, r);
       }
-      covered = Math.max(
-        covered,
-        ...batch.map((w) => w.offset + w.span),
-      );
-      notify([...byKey.values()], covered);
-      // Let the UI paint progressive storm rows between year batches.
+      const covered = Math.min(days, w.offset + w.span);
+      await notify([...byKey.values()], covered);
       await new Promise((r) => setTimeout(r, 0));
     }
     const out = [...byKey.values()];
