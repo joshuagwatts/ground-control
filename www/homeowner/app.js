@@ -191,7 +191,7 @@ function setStep(step) {
       const map = ensureMap();
       map?.invalidateSize?.();
       if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
-      if (step === "storms") paintOverlays();
+      if (step === "storms" && state.selected.size) scheduleOverlayPaint({ immediate: true });
     });
   }
 }
@@ -217,6 +217,11 @@ function ensureMap() {
   }).addTo(state.map);
   window.L.control.zoom({ position: "bottomright" }).addTo(state.map);
   state.hailSvg = window.L.svg({ padding: 0.85 });
+  try {
+    state.hailSvg.addTo(state.map);
+  } catch {
+    /* ignore */
+  }
   state.overlay = window.L.layerGroup().addTo(state.map);
   state.map.on("click", (e) => {
     void selectHomeFromMap(e.latlng.lat, e.latlng.lng, { zoom: false });
@@ -494,46 +499,102 @@ function activateStormDate(date) {
 let overlayPaintTimer = 0;
 let lastOverlayPaintAt = 0;
 let lastOverlaySig = "";
+let lastOverlayHailN = -1;
 
 function overlaySelectionSig() {
   return [...state.selected].sort().join("|");
 }
 
 function scheduleOverlayPaint({ immediate = false } = {}) {
-  if (!state.overlay || !window.L) {
-    ensureMap();
-  }
-  if (!state.selected.size && !state.storms.length) return;
+  ensureMap();
+  if (!state.overlay || !window.L) return;
+  if (!state.selected.size) return;
 
   const run = () => {
     overlayPaintTimer = 0;
     lastOverlayPaintAt = Date.now();
     lastOverlaySig = overlaySelectionSig();
+    lastOverlayHailN = getHomeHailCache().hail?.length || 0;
     paintOverlays();
+    try {
+      state.map?.invalidateSize?.();
+    } catch {
+      /* ignore */
+    }
   };
 
-  if (immediate) {
-    if (overlayPaintTimer) {
-      clearTimeout(overlayPaintTimer);
-      overlayPaintTimer = 0;
-    }
-    run();
-    return;
-  }
-
   const sig = overlaySelectionSig();
-  const changed = sig !== lastOverlaySig;
-  const since = Date.now() - (lastOverlayPaintAt || 0);
-  // First paint ASAP; later stream updates at most ~1.2s so Trace doesn't freeze the list.
-  const wait = !lastOverlayPaintAt || changed ? 0 : Math.max(0, 1200 - since);
-  if (overlayPaintTimer) return;
-  overlayPaintTimer = setTimeout(run, wait);
+  const hailN = getHomeHailCache().hail?.length || 0;
+  const first = lastOverlayPaintAt === 0;
+  const changed = sig !== lastOverlaySig || hailN !== lastOverlayHailN;
+  if (!immediate && !first && !changed) return;
+
+  if (overlayPaintTimer) {
+    clearTimeout(overlayPaintTimer);
+    overlayPaintTimer = 0;
+  }
+  // Short defer on first paint so Leaflet has layout after pin/fly; throttle later Trace rebuilds.
+  const delay = immediate || first || sig !== lastOverlaySig ? 40 : 900;
+  overlayPaintTimer = setTimeout(run, delay);
+}
+
+/** When HailTrace has no mesh yet (LSR-only day), still show something over the map. */
+function paintFallbackDayMarkers(day, dayRows, storm, { focused, multi, bounds }) {
+  const pts = [];
+  for (const p of dayRows || []) {
+    if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) pts.push(p);
+  }
+  for (const p of storm?.zone_pts || []) {
+    if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) pts.push(p);
+  }
+  if (!pts.length && Number.isFinite(storm?.raw?.lat) && Number.isFinite(storm?.raw?.lon)) {
+    pts.push({
+      lat: storm.raw.lat,
+      lon: storm.raw.lon,
+      size_in: storm.maxSizeIn,
+      distance_km: storm.minDist,
+    });
+  }
+  if (!pts.length) return false;
+  for (const p of pts) {
+    const sz = Number(p.size_in) || Number(storm?.maxSizeIn) || 1;
+    const col = hailRadarBandColor(sz);
+    const near = Number(p.distance_km);
+    const radius = Math.max(900, Math.min(5000, Number.isFinite(near) && near < 3 ? 1500 : 2800));
+    window.L.circle([p.lat, p.lon], {
+      radius,
+      color: col.stroke,
+      weight: focused ? 1.2 : 0.7,
+      fillColor: col.fill,
+      fillOpacity: multi && !focused ? 0.28 : 0.4,
+      opacity: focused ? 0.7 : 0.45,
+      renderer: state.hailSvg || undefined,
+      className: "wx-hail-topo wx-hail-fallback",
+    }).addTo(state.overlay);
+    bounds.push([p.lat, p.lon]);
+  }
+  return true;
 }
 
 function paintOverlays() {
+  ensureMap();
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
-  if (state.map && !state.hailSvg) state.hailSvg = window.L.svg({ padding: 0.85 });
+  if (state.map && state.hailSvg && !state.map.hasLayer(state.hailSvg)) {
+    try {
+      state.hailSvg.addTo(state.map);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (state.map && !state.hailSvg) {
+    state.hailSvg = window.L.svg({ padding: 0.85 });
+    try {
+      state.hailSvg.addTo(state.map);
+    } catch {
+      /* ignore */
+    }
+  }
   const homeLat = state.lat;
   const homeLon = state.lon;
   const bounds = [];
@@ -542,9 +603,10 @@ function paintOverlays() {
   const ranked = rankedStorms();
   let days = [...state.selected].filter((d) => ranked.some((s) => s.date === d));
   if (!days.length && ranked[0]) {
-    days = [ranked[0].date];
+    days = ranked.slice(0, TOP_STORM_N).map((s) => s.date);
     state.selected = new Set(days);
     state.mapFocusDate = days[0];
+    state.overlayCollection = true;
   }
   if (!days.length) {
     if (Number.isFinite(homeLat) && state.map) state.map.setView([homeLat, homeLon], 14);
@@ -560,6 +622,7 @@ function paintOverlays() {
   let needHatch = false;
 
   for (const day of days) {
+    const storm = ranked.find((s) => s.date === day);
     const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
     let bands = [];
     try {
@@ -571,6 +634,10 @@ function paintOverlays() {
 
     const focused = day === state.mapFocusDate;
     const multi = days.length > 1;
+    if (!bands.length) {
+      paintFallbackDayMarkers(day, dayRows, storm, { focused, multi, bounds });
+      continue;
+    }
     for (const band of bands) {
       if (!band?.ring?.length) continue;
       const sz = Number(band.maxSize) || 1;
@@ -747,6 +814,7 @@ async function selectAddressHit(hit, { force = true } = {}) {
       }
       lastOverlayPaintAt = 0;
       lastOverlaySig = "";
+      lastOverlayHailN = -1;
     }
     state.address = label;
     state.lat = lat;
@@ -931,15 +999,14 @@ function applyStormResult(result, { loading = false, reseatSelection = true, ski
       autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     }
   }
-  // List always; map uses the scheduler so auto-selected dates show without a tap.
+  // List always; map shows auto-selected dates as soon as they exist (no tap required).
   paintStormList({ loading: still, skipMap: true });
   ensureMap();
   if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
-  if (!skipMap && !still) {
-    scheduleOverlayPaint({ immediate: true });
-  } else if (state.selected.size) {
+  if (state.selected.size) {
     const firstBatch = prevCount === 0 && state.storms.length > 0;
-    scheduleOverlayPaint({ immediate: firstBatch });
+    const grew = state.storms.length > prevCount;
+    scheduleOverlayPaint({ immediate: firstBatch || grew || !still });
   }
 
   const status = $("#storm-status");
