@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0c1210" />
+  <meta name="theme-color" content="#0b0b0d" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="HomeScope" />
   <title>HomeScope</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.253" />
+  <link rel="stylesheet" href="./style.css?v=0.2.254" />
 </head>
 <body>
   <header class="ho-top">
@@ -57,17 +57,26 @@
 
     <section class="ho-panel" id="panel-address" data-panel="address" hidden>
       <h2>Your Oklahoma address</h2>
-      <p class="lead">We’ll pull public hail records and keep storms that cover this home (near-roof and/or zone over the pin).</p>
-      <form class="ho-row" id="addr-form">
-        <input
-          type="search"
-          id="addr-q"
-          name="address"
-          autocomplete="street-address"
-          placeholder="123 Main St, Oklahoma City, OK"
-          required
-        />
-        <button type="submit" class="primary" id="addr-go">Look up</button>
+      <p class="lead">Start typing — tap a suggestion, or search. We’ll keep storms that cover this home.</p>
+      <form class="ho-goto" id="addr-form" autocomplete="off">
+        <div class="ho-goto-row">
+          <input
+            type="search"
+            id="addr-q"
+            name="address"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            enterkeyhint="search"
+            placeholder="Address in Oklahoma"
+            aria-autocomplete="list"
+            aria-controls="addr-suggest"
+            aria-expanded="false"
+            required
+          />
+          <button type="submit" class="primary" id="addr-go">Search</button>
+        </div>
+        <ul class="ho-suggest" id="addr-suggest" role="listbox" hidden aria-label="Suggested addresses"></ul>
       </form>
       <p class="ho-status" id="addr-status" role="status"></p>
     </section>
@@ -139,6 +148,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./app.js?v=0.2.253"></script>
+  <script type="module" src="./app.js?v=0.2.254"></script>
 </body>
 </html>

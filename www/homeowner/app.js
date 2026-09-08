@@ -27,6 +27,10 @@ const state = {
   overlay: null,
   lastRec: null,
   reportText: "",
+  suggestHits: [],
+  suggestIdx: -1,
+  suggestTimer: 0,
+  suggestGen: 0,
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -101,10 +105,10 @@ function pinHome(lat, lon) {
   else {
     state.marker = window.L.circleMarker([lat, lon], {
       radius: 8,
-      color: "#c8e06a",
+      color: "#ffcc00",
       weight: 2,
-      fillColor: "#c8e06a",
-      fillOpacity: 0.85,
+      fillColor: "#ffcc00",
+      fillOpacity: 0.9,
     }).addTo(map);
   }
   requestAnimationFrame(() => map.invalidateSize());
@@ -126,10 +130,10 @@ function paintOverlays() {
       for (const band of rings) {
         if (!band?.ring?.length) continue;
         window.L.polygon(band.ring, {
-          color: "#c8e06a",
+          color: "#ffcc00",
           weight: 1.5,
-          fillColor: "#c8e06a",
-          fillOpacity: 0.22,
+          fillColor: "#ffcc00",
+          fillOpacity: 0.2,
         }).addTo(state.overlay);
       }
     } else {
@@ -137,20 +141,141 @@ function paintOverlays() {
         if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
         window.L.circle([p.lat, p.lon], {
           radius: Math.max(400, (Number(p.size_in) || 1) * 350),
-          color: "#c8e06a",
+          color: "#ffcc00",
           weight: 1,
-          fillOpacity: 0.15,
+          fillOpacity: 0.12,
         }).addTo(state.overlay);
       }
     }
   }
 }
 
+function hitLabel(hit) {
+  return String(hit?.address || hit?.label || "").trim();
+}
+
+function hitMeta(hit) {
+  const bits = [];
+  if (hit?.addrType) bits.push(String(hit.addrType).replace(/([a-z])([A-Z])/g, "$1 $2"));
+  if (hit?.source) bits.push(String(hit.source));
+  return bits.join(" · ");
+}
+
+function escapeHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function fetchSuggestions(query) {
+  const q = biasAddressQuery(String(query || "").trim());
+  if (q.length < 4) return [];
+  try {
+    const hits = await geocodeCandidates(q, { city: "Oklahoma" });
+    return (hits || []).filter((h) => inOklahoma(h)).slice(0, 6);
+  } catch {
+    return [];
+  }
+}
+
+function clearSuggestions() {
+  state.suggestHits = [];
+  state.suggestIdx = -1;
+  const box = $("#addr-suggest");
+  const input = $("#addr-q");
+  if (box) {
+    box.innerHTML = "";
+    box.hidden = true;
+  }
+  if (input) {
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function paintSuggestions(hits, { emptyMsg = "" } = {}) {
+  const box = $("#addr-suggest");
+  const input = $("#addr-q");
+  if (!box) return;
+  state.suggestHits = hits || [];
+  state.suggestIdx = state.suggestHits.length ? 0 : -1;
+  box.innerHTML = "";
+  if (!state.suggestHits.length) {
+    if (emptyMsg) {
+      box.hidden = false;
+      box.innerHTML = `<li class="ho-suggest-empty">${escapeHtml(emptyMsg)}</li>`;
+      if (input) input.setAttribute("aria-expanded", "true");
+    } else {
+      box.hidden = true;
+      if (input) input.setAttribute("aria-expanded", "false");
+    }
+    return;
+  }
+  box.hidden = false;
+  if (input) input.setAttribute("aria-expanded", "true");
+  state.suggestHits.forEach((hit, i) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `ho-suggest-item${i === state.suggestIdx ? " active" : ""}`;
+    btn.id = `addr-opt-${i}`;
+    btn.innerHTML = `<span class="ho-suggest-main">${escapeHtml(hitLabel(hit))}</span>
+      <span class="ho-suggest-meta">${escapeHtml(hitMeta(hit) || "Oklahoma")}</span>`;
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", () => {
+      void selectAddressHit(hit);
+    });
+    li.appendChild(btn);
+    box.appendChild(li);
+  });
+  if (input && state.suggestIdx >= 0) input.setAttribute("aria-activedescendant", `addr-opt-${state.suggestIdx}`);
+}
+
+function highlightSuggest(idx) {
+  state.suggestIdx = idx;
+  $$(".ho-suggest-item").forEach((el, i) => el.classList.toggle("active", i === idx));
+  const input = $("#addr-q");
+  if (input && idx >= 0) input.setAttribute("aria-activedescendant", `addr-opt-${idx}`);
+}
+
+async function selectAddressHit(hit) {
+  const lat = Number(hit?.lat);
+  const lon = Number(hit?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    setStatus($("#addr-status"), "Pick a suggested address", true);
+    return;
+  }
+  if (!inOklahoma(hit)) {
+    setStatus($("#addr-status"), "HomeScope is Oklahoma-only — pick an OK address", true);
+    return;
+  }
+  const label = hitLabel(hit) || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const input = $("#addr-q");
+  if (input) input.value = label;
+  clearSuggestions();
+  state.address = label;
+  state.lat = lat;
+  state.lon = lon;
+  state.storms = [];
+  state.selected.clear();
+  setStatus($("#addr-status"), label);
+  setStep("roof");
+  pinHome(lat, lon);
+  paintStormList();
+}
+
 async function lookupAddress(query) {
   const q = biasAddressQuery(String(query || "").trim());
   if (!q) throw new Error("Enter a street address");
-  const hits = await geocodeCandidates(q, { limit: 8 });
+  const hits = await geocodeCandidates(q, { city: "Oklahoma" });
   const okHits = (hits || []).filter((h) => inOklahoma(h));
+  if (okHits.length > 1) {
+    paintSuggestions(okHits.slice(0, 6));
+    throw new Error("Pick an address from the suggestions");
+  }
   const hit = okHits[0] || hits?.[0];
   if (!hit || !Number.isFinite(hit.lat) || !Number.isFinite(hit.lon)) {
     throw new Error("Couldn’t find that address — try city + OK");
@@ -161,8 +286,32 @@ async function lookupAddress(query) {
   return {
     lat: hit.lat,
     lon: hit.lon,
-    label: hit.label || hit.address || q,
+    label: hitLabel(hit) || q,
+    hit,
   };
+}
+
+function scheduleSuggest(raw) {
+  clearTimeout(state.suggestTimer);
+  const q = String(raw || "").trim();
+  if (q.length < 4) {
+    clearSuggestions();
+    setStatus($("#addr-status"), q ? "Keep typing for suggestions…" : "");
+    return;
+  }
+  const gen = ++state.suggestGen;
+  state.suggestTimer = setTimeout(async () => {
+    setStatus($("#addr-status"), "Finding addresses…");
+    const hits = await fetchSuggestions(q);
+    if (gen !== state.suggestGen) return;
+    if (!hits.length) {
+      paintSuggestions([], { emptyMsg: "No Oklahoma matches yet — try street, city, OK" });
+      setStatus($("#addr-status"), "No suggestions yet");
+      return;
+    }
+    paintSuggestions(hits);
+    setStatus($("#addr-status"), `${hits.length} suggestion${hits.length === 1 ? "" : "s"} — tap one`);
+  }, 280);
 }
 
 function roofDateFromInputs() {
@@ -419,24 +568,43 @@ function boot() {
     const status = $("#addr-status");
     const go = $("#addr-go");
     const q = $("#addr-q")?.value || "";
+    // If a suggestion is highlighted, take that.
+    if (state.suggestHits.length && state.suggestIdx >= 0) {
+      await selectAddressHit(state.suggestHits[state.suggestIdx]);
+      return;
+    }
     if (go) go.disabled = true;
     setStatus(status, "Looking up Oklahoma address…");
     try {
       const hit = await lookupAddress(q);
-      state.address = hit.label;
-      state.lat = hit.lat;
-      state.lon = hit.lon;
-      state.storms = [];
-      state.selected.clear();
-      setStatus(status, hit.label);
-      setStep("roof");
-      pinHome(hit.lat, hit.lon);
-      paintStormList();
+      await selectAddressHit(hit.hit || hit);
     } catch (err) {
       setStatus(status, err?.message || "Lookup failed", true);
     } finally {
       if (go) go.disabled = false;
     }
+  });
+
+  $("#addr-q")?.addEventListener("input", (e) => {
+    scheduleSuggest(e.target.value);
+  });
+  $("#addr-q")?.addEventListener("keydown", (e) => {
+    if (!state.suggestHits.length) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      highlightSuggest(Math.min(state.suggestHits.length - 1, state.suggestIdx + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      highlightSuggest(Math.max(0, state.suggestIdx - 1));
+    } else if (e.key === "Escape") {
+      clearSuggestions();
+    }
+  });
+  $("#addr-q")?.addEventListener("blur", () => {
+    // Delay so suggestion click can fire first.
+    setTimeout(() => {
+      if (!document.activeElement?.closest?.("#addr-suggest")) clearSuggestions();
+    }, 180);
   });
 
   bindChips("#roof-mode", "roof", (mode) => {
