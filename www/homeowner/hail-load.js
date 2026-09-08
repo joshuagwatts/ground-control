@@ -10,7 +10,10 @@ import {
   HOUSE_HAIL_KM,
   HOUSE_ZONE_KM,
   fetchIemLsrHailArchive,
+  fetchSwdiHailSpan,
   mergeHailRows,
+  buildHailTraceDayBands,
+  isSwdiHail,
 } from "../wx.js";
 
 const HOME_DEEP_KM = 40;
@@ -18,6 +21,8 @@ const HOME_DEEP_KM = 40;
 const COVER_NEAR_KM = HOUSE_HAIL_KM;
 /** Multi-hit storm days: home within this of any report counts as swath-over-home for the list. */
 const COVER_SWATH_KM = 4.0;
+/** Radar discovery radius around the pin (wider than LSR list so radar-only cover days appear). */
+const HOME_SWDI_KM = 100;
 
 function pinKey(lat, lon) {
   return `${Number(lat).toFixed(4)}|${Number(lon).toFixed(4)}`;
@@ -116,12 +121,9 @@ function expandRingByKm(ring, km) {
 
 /**
  * List cover — near-roof OR home in/near the day's hail swath.
- * Map drawing still uses HailTrace; this stays cheap so dates stream in.
- *
- * Near-roof = ≤ HOUSE_HAIL_KM (1.6) / near_hits — not the 2.5 km zone pad.
- * Soft lone spotter claims beyond COVER_SWATH_KM stay out.
+ * Cheap hull while streaming; Trace / swdi_ring when useTrace (after radar lands).
  */
-function stormCoversHome(row, lat, lon, dayRows = []) {
+function stormCoversHome(row, lat, lon, dayRows = [], { useTrace = false } = {}) {
   const pts = [];
   for (const p of row.zone_pts || []) {
     if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) pts.push(p);
@@ -152,6 +154,45 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
       coversHome: true,
       nearestKm: nearest,
     };
+  }
+
+  // Native SWDI polygons — cheap and authoritative when present.
+  for (const p of pts) {
+    const ring = p.swdi_ring;
+    if (Array.isArray(ring) && ring.length >= 3 && pointInLatLonRing(lat, lon, ring)) {
+      return {
+        coversNear: false,
+        coversPolygon: true,
+        coversNearby: false,
+        coversHome: true,
+        nearestKm: nearest,
+      };
+    }
+  }
+
+  // HailTrace mesh (same as map) — only after streaming so year chunks stay fast.
+  if (useTrace && pts.length) {
+    try {
+      const meshRows = pts.map((p) => ({
+        ...p,
+        date: p.date || row.date,
+        source: p.source || (isSwdiHail(p) ? "noaa-swdi-radar" : "noaa-spc"),
+      }));
+      const bands = buildHailTraceDayBands(row.date, meshRows) || [];
+      for (const b of bands) {
+        if (b?.ring?.length >= 3 && pointInLatLonRing(lat, lon, b.ring)) {
+          return {
+            coversNear: false,
+            coversPolygon: true,
+            coversNearby: false,
+            coversHome: true,
+            nearestKm: nearest,
+          };
+        }
+      }
+    } catch {
+      /* keep cheap cover */
+    }
   }
 
   const hull = convexHullLatLon(pts);
@@ -224,12 +265,15 @@ let pinCache = {
   address: "",
   hail: [],
   fetchedDays: 0,
+  swdiFetchedDays: 0,
   loadingDeep: false,
+  loadingSwdi: false,
   deepTarget: 0,
   loadSeq: 0,
   uiNotify: null,
   deepenPromise: null,
   dossierPromise: null,
+  swdiPromise: null,
 };
 
 const hailListeners = new Set();
@@ -257,12 +301,15 @@ export function clearHomeHailCache() {
     address: "",
     hail: [],
     fetchedDays: 0,
+    swdiFetchedDays: 0,
     loadingDeep: false,
+    loadingSwdi: false,
     deepTarget: 0,
     loadSeq: (pinCache.loadSeq || 0) + 1,
     uiNotify: null,
     deepenPromise: null,
     dossierPromise: null,
+    swdiPromise: null,
   };
   emitHailCache();
 }
@@ -275,22 +322,33 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
   const cutoffIso = cutoff.toISOString().slice(0, 10);
+  // Trace is expensive — skip only while LSR archive is streaming year chunks.
+  const useTrace = !pinCache.loadingDeep;
 
   const collapsed = collapseHailByDate(hailRows || []).sort((a, b) =>
     String(b.date || "").localeCompare(String(a.date || "")),
   );
+
+  // Index raw rows by day so Trace/SWDI cover sees full radar+spotter, not just collapsed zone_pts.
+  const byDay = new Map();
+  for (const h of hailRows || []) {
+    const d = String(h?.date || "").slice(0, 10);
+    if (!d) continue;
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(h);
+  }
 
   const storms = [];
   for (const row of collapsed) {
     const date = String(row.date || "");
     if (!date || date < cutoffIso) continue;
     // Day max from zone points — collapse used to drop max_size and leave nearest-only size_in.
-    const ptMax = (row.zone_pts || []).reduce((m, p) => Math.max(m, Number(p.size_in) || 0), 0);
+    const dayPool = byDay.get(date) || row.zone_pts || [];
+    const ptMax = dayPool.reduce((m, p) => Math.max(m, Number(p.size_in) || 0), 0);
     const maxSizeIn =
       Math.max(Number(row.max_size) || 0, parseFloat(row.size_in) || 0, ptMax, parseFloat(row.size_far) || 0) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
-    // zone_pts from collapse is enough for hull cover — skip rebuilding per-day maps each chunk.
-    const cover = stormCoversHome(row, lat, lon, row.zone_pts || []);
+    const cover = stormCoversHome(row, lat, lon, dayPool, { useTrace });
     if (!cover.coversHome) continue;
     const nearestKm = Number(cover.nearestKm);
     storms.push({
@@ -303,7 +361,6 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       coversPolygon: cover.coversPolygon,
       coversNearby: cover.coversNearby,
       nearHits: Number(row.near_hits) || 0,
-      // collapseHailByDate now also returns min_dist; still clamp the 999 sentinel.
       minDist: Number.isFinite(nearestKm) && nearestKm < 900 ? nearestKm : null,
       hits: Number(row.hits) || 0,
       zone_pts: row.zone_pts || [],
@@ -326,10 +383,11 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     lon,
     years: years ?? Math.round(days / 365.25),
     fetchedDays: pinCache.fetchedDays || 0,
+    swdiDays: pinCache.swdiFetchedDays || 0,
     note: msg,
     storms,
     hailRowCount: (hailRows || []).length,
-    loading: Boolean(loading || pinCache.loadingDeep),
+    loading: Boolean(loading || pinCache.loadingDeep || pinCache.loadingSwdi),
   };
 }
 
@@ -339,18 +397,23 @@ export function filterCachedHomeStorms({ years = 2, minHailIn = 1 } = {}) {
   }
   const days = Math.min(Math.max(Math.round(Number(years) * 365.25), 30), 3650);
   const have = pinCache.fetchedDays || 0;
-  const loading = Boolean(pinCache.loadingDeep || pinCache.deepenPromise || pinCache.dossierPromise);
+  const swdiHave = pinCache.swdiFetchedDays || 0;
+  const loading = Boolean(
+    pinCache.loadingDeep || pinCache.loadingSwdi || pinCache.deepenPromise || pinCache.dossierPromise || pinCache.swdiPromise,
+  );
   return summarizeHailRows(pinCache.hail, pinCache.lat, pinCache.lon, {
     minHailIn,
     days,
     years,
     loading,
     note:
-      days > have && loading
-        ? `Still loading history… ~${Math.max(1, Math.round(have / 365))}y in · ${pinCache.hail?.length || 0} reports`
-        : days > have
-          ? `Showing ~${Math.round(have / 365)}y loaded — older years incomplete`
-          : null,
+      days > have && (pinCache.loadingDeep || pinCache.deepenPromise)
+        ? `Still loading spotter history… ~${Math.max(1, Math.round(have / 365))}y in · ${pinCache.hail?.length || 0} reports`
+        : days > swdiHave && (pinCache.loadingSwdi || pinCache.swdiPromise)
+          ? `Spotter list ready · loading NOAA radar history (~${Math.max(1, Math.round(swdiHave / 365))}y of ${Math.round(days / 365)}y)…`
+          : days > have
+            ? `Showing ~${Math.round(have / 365)}y loaded — older years incomplete`
+            : null,
   });
 }
 
@@ -442,6 +505,85 @@ async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {
   );
 }
 
+/** Year-by-year NOAA SWDI around the pin — finds radar-only cover days LSR missed. */
+async function deepenSwdiHistory(lat, lon, days, onPartial, minHailIn, years, seq) {
+  const key = pinKey(lat, lon);
+  pinCache.uiNotify = onPartial || pinCache.uiNotify;
+
+  if (pinCache.swdiPromise && pinCache.key === key) {
+    await pinCache.swdiPromise;
+    return;
+  }
+  if ((pinCache.swdiFetchedDays || 0) >= days) {
+    pushPartial(onPartial, lat, lon, minHailIn, days, years, false, null);
+    return;
+  }
+
+  const run = (async () => {
+    pinCache.loadingSwdi = true;
+    emitHailCache();
+    try {
+      const end = new Date();
+      const startLimit = new Date();
+      startLimit.setDate(startLimit.getDate() - days);
+      const startLimitIso = startLimit.toISOString().slice(0, 10);
+      const endIso = end.toISOString().slice(0, 10);
+      const yearEnd = end.getFullYear();
+      const yearStart = startLimit.getFullYear();
+
+      for (let y = yearEnd; y >= yearStart; y--) {
+        if (pinCache.key !== key || seq !== pinCache.loadSeq) return;
+        let spanStart = `${y}-01-01`;
+        let spanEnd = `${y}-12-31`;
+        if (spanStart < startLimitIso) spanStart = startLimitIso;
+        if (spanEnd > endIso) spanEnd = endIso;
+        if (spanEnd < spanStart) continue;
+
+        try {
+          const { rows } = await fetchSwdiHailSpan(lat, lon, HOME_SWDI_KM, spanStart, spanEnd);
+          if (pinCache.key !== key || seq !== pinCache.loadSeq) return;
+          if (rows?.length) {
+            pinCache.hail = mergeHailRows(pinCache.hail, rows);
+          }
+          // Progress: newest year done ⇒ roughly (yearEnd - y + 1) years of radar.
+          const yearsDone = yearEnd - y + 1;
+          const totalYears = Math.max(1, yearEnd - yearStart + 1);
+          pinCache.swdiFetchedDays = Math.max(
+            pinCache.swdiFetchedDays || 0,
+            Math.min(days, Math.round((yearsDone / totalYears) * days)),
+          );
+          pushPartial(
+            pinCache.uiNotify,
+            lat,
+            lon,
+            minHailIn,
+            days,
+            years,
+            true,
+            `Loading NOAA radar ${y}… ${pinCache.hail.length} reports`,
+          );
+        } catch (err) {
+          console.warn("[HomeScope] SWDI year", y, err);
+        }
+      }
+      if (pinCache.key === key && seq === pinCache.loadSeq) {
+        pinCache.swdiFetchedDays = Math.max(pinCache.swdiFetchedDays || 0, days);
+      }
+    } finally {
+      if (pinCache.key === key) {
+        pinCache.loadingSwdi = false;
+        emitHailCache();
+      }
+      if (pinCache.swdiPromise === run) pinCache.swdiPromise = null;
+    }
+  })();
+
+  pinCache.swdiPromise = run;
+  await run;
+  if (pinCache.key !== key || seq !== pinCache.loadSeq) return;
+  pushPartial(pinCache.uiNotify, lat, lon, minHailIn, days, years, false, null);
+}
+
 /**
  * Load hail for a home. Archive years start immediately (parallel with dossier)
  * so covering dates appear without waiting on SWDI first.
@@ -463,6 +605,9 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
     if (days > (pinCache.fetchedDays || 0) || pinCache.deepenPromise) {
       await deepenArchive(lat, lon, days, onPartial, minHailIn, years, pinCache.loadSeq);
     }
+    if (days > (pinCache.swdiFetchedDays || 0) || pinCache.swdiPromise) {
+      await deepenSwdiHistory(lat, lon, days, onPartial, minHailIn, years, pinCache.loadSeq);
+    }
     if (pinCache.hail.length || pinCache.fetchedDays) {
       return filterCachedHomeStorms({ years, minHailIn });
     }
@@ -475,12 +620,15 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
     address,
     hail: [],
     fetchedDays: 0,
+    swdiFetchedDays: 0,
     loadingDeep: false,
+    loadingSwdi: false,
     deepTarget: 0,
     loadSeq: (pinCache.loadSeq || 0) + 1,
     uiNotify: onPartial || null,
     deepenPromise: null,
     dossierPromise: null,
+    swdiPromise: null,
   };
   const seq = pinCache.loadSeq;
 
@@ -531,7 +679,7 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
         minHailIn,
         days,
         years,
-        Boolean(pinCache.loadingDeep || pinCache.deepenPromise),
+        Boolean(pinCache.loadingDeep || pinCache.deepenPromise || pinCache.loadingSwdi),
         "Radar dossier merged…",
       );
     })
@@ -541,6 +689,8 @@ export async function loadHomeStorms(lat, lon, { address = "", years = 2, minHai
 
   await deepenP;
   await dossierWait;
+  // TERTIARY: year-by-year SWDI around the pin — radar-only cover days + Trace membership.
+  await deepenSwdiHistory(lat, lon, days, onPartial, minHailIn, years, seq);
   if (pinCache.key !== key || seq !== pinCache.loadSeq) {
     return filterCachedHomeStorms({ years, minHailIn });
   }

@@ -1337,8 +1337,14 @@ function escHtml(s) {
 function buildReportText(rec) {
   // Plain-text fallback for share / clipboard — not shown in the UI.
   const b = PRODUCT.brand;
-  const extreme = rankedStorms(state.storms, "intense").slice(0, REPORT_LIST_N);
-  const recent = rankedStorms(state.storms, "recent").slice(0, REPORT_LIST_N);
+  const inReview = (state.storms || []).filter((s) => {
+    const d = String(s?.date || "");
+    return d >= rec.windowStart && d <= rec.windowEnd;
+  });
+  const earlier = (state.storms || []).filter((s) => String(s?.date || "") < rec.windowStart);
+  const extreme = rankedStorms(inReview, "intense").slice(0, REPORT_LIST_N);
+  const recent = rankedStorms(inReview, "recent").slice(0, REPORT_LIST_N);
+  const historyExtreme = rankedStorms(earlier, "intense").slice(0, REPORT_LIST_N);
   const lines = [
     `${b.company} · ${PRODUCT.name}`,
     `Hail Report — ${state.address}`,
@@ -1351,24 +1357,31 @@ function buildReportText(rec) {
     rec.secondaryCta ? `Also: ${rec.secondaryCta}` : "",
     `Call ${b.phone} · ${b.webLabel}`,
     "",
-    `History window: ${state.years} years · ≥ ${state.minHailIn}″ · ${state.storms.length} verified covering date(s)`,
+    `Review period: ${rec.windowStart} → ${rec.windowEnd} · ${inReview.length} covering (≥ ${state.minHailIn}″)`,
+    `Full history loaded: ${state.years} years · ${state.storms.length} covering total`,
     "",
-    `Top ${REPORT_LIST_N} most extreme:`,
+    `Top ${REPORT_LIST_N} most extreme (review period):`,
   ].filter((x) => x !== "");
   if (extreme.length) {
     for (const s of extreme) {
       lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
     }
   } else {
-    lines.push("• None in the selected filters");
+    lines.push("• None in the review period");
   }
-  lines.push("", `Top ${REPORT_LIST_N} most recent:`);
+  lines.push("", `Top ${REPORT_LIST_N} most recent (review period):`);
   if (recent.length) {
     for (const s of recent) {
       lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
     }
   } else {
-    lines.push("• None in the selected filters");
+    lines.push("• None in the review period");
+  }
+  if (historyExtreme.length) {
+    lines.push("", `Earlier history (before review window):`);
+    for (const s of historyExtreme) {
+      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+    }
   }
   lines.push("", PRODUCT.disclaimer);
   return lines.join("\n");
@@ -1416,9 +1429,16 @@ function renderReportDocument(rec) {
   const prepared = state.lead?.name || state.lead?.email || "Homeowner";
   const tone = rec.talkToRoofer ? "roofer" : rec.considerClaim ? "review" : "ok";
   const allCovering = state.storms || [];
-  const extreme = rankedStorms(allCovering, "intense").slice(0, REPORT_LIST_N);
-  const recent = rankedStorms(allCovering, "recent").slice(0, REPORT_LIST_N);
+  const inReview = allCovering.filter((s) => {
+    const d = String(s?.date || "");
+    return d >= rec.windowStart && d <= rec.windowEnd;
+  });
+  const earlierHistory = allCovering.filter((s) => String(s?.date || "") < rec.windowStart);
+  const extreme = rankedStorms(inReview, "intense").slice(0, REPORT_LIST_N);
+  const recent = rankedStorms(inReview, "recent").slice(0, REPORT_LIST_N);
+  const historyExtreme = rankedStorms(earlierHistory, "intense").slice(0, REPORT_LIST_N);
   const yearsLabel = `${state.years} year${state.years === 1 ? "" : "s"}`;
+  const reviewBlurb = `Recommendation review period: ${rec.windowStart} → ${rec.windowEnd} (${inReview.length} covering date${inReview.length === 1 ? "" : "s"}).`;
 
   return `<header class="hg-doc-top">
       <div class="hg-logo" aria-label="${escHtml(b.company)}">
@@ -1442,8 +1462,8 @@ function renderReportDocument(rec) {
         <div><dt>Prepared for</dt><dd>${escHtml(prepared)}</dd></div>
         <div><dt>Roof age</dt><dd>${escHtml(roofLabel)}</dd></div>
         <div><dt>Roof estimate</dt><dd>${escHtml(quality.label || "—")}</dd></div>
-        <div><dt>History window</dt><dd>${escHtml(String(state.years))} years · ≥ ${escHtml(String(state.minHailIn))}″</dd></div>
-        <div><dt>Review period</dt><dd>${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)}</dd></div>
+        <div><dt>History loaded</dt><dd>${escHtml(String(state.years))} years · ≥ ${escHtml(String(state.minHailIn))}″ · ${allCovering.length} covering</dd></div>
+        <div><dt>Review period</dt><dd>${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)} · ${inReview.length} covering</dd></div>
         <div><dt>Generated</dt><dd>${escHtml(new Date().toLocaleString())}</dd></div>
         <div><dt>Sources</dt><dd>NOAA SWDI · SPC · IEM LSR</dd></div>
       </dl>
@@ -1463,15 +1483,29 @@ function renderReportDocument(rec) {
 
     <section class="hg-card">
       <div class="hg-section-head">
-        <h2 class="hg-section-label">Storms over this home</h2>
-        <span class="hg-count">${allCovering.length} verified in ${escHtml(yearsLabel)}</span>
+        <h2 class="hg-section-label">Storms in review period</h2>
+        <span class="hg-count">${inReview.length} verified</span>
       </div>
-      <p class="hg-storm-blurb">Highlights from your selected history window (≥ ${escHtml(String(state.minHailIn))}″, verified cover only).</p>
+      <p class="hg-storm-blurb">${escHtml(reviewBlurb)} Highlights below use that same window (≥ ${escHtml(String(state.minHailIn))}″, near-roof or zone cover).</p>
       <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most extreme</h3>
       <ul class="hg-storm-list">${reportStormRowsHtml(extreme, "Extreme")}</ul>
       <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most recent</h3>
       <ul class="hg-storm-list">${reportStormRowsHtml(recent, "Recent")}</ul>
     </section>
+
+    ${
+      historyExtreme.length
+        ? `<section class="hg-card">
+      <div class="hg-section-head">
+        <h2 class="hg-section-label">Earlier history (${escHtml(yearsLabel)} lookback)</h2>
+        <span class="hg-count">${earlierHistory.length} before review window</span>
+      </div>
+      <p class="hg-storm-blurb">Loaded for context — not used in the recommendation above.</p>
+      <h3 class="hg-storm-group">Top ${REPORT_LIST_N} most extreme (earlier)</h3>
+      <ul class="hg-storm-list">${reportStormRowsHtml(historyExtreme, "History")}</ul>
+    </section>`
+        : ""
+    }
 
     <section class="hg-card hg-trust">
       <h2 class="hg-section-label">About High Ground</h2>

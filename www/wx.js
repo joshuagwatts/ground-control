@@ -1110,6 +1110,40 @@ export async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: 
   return { rows: [], raw: 0, err: lastErr || "fetch failed" };
 }
 
+/** SWDI for an inclusive date span (not a sparse day set). HomeScope uses this for multi-year radar discovery. */
+export async function fetchSwdiHailSpan(lat, lon, radiusKm, startIso, endIso, { bbox: bboxOverride } = {}) {
+  const start = String(startIso || "").slice(0, 10);
+  const end = String(endIso || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+    return { rows: [], raw: 0, err: "bad-days" };
+  }
+  const km = Math.min(Math.max(radiusKm, 3), MAP_HAIL_MAX_KM);
+  const bbox = bboxOverride || bboxForKm(lat, lon, km);
+  const ingestKm = bboxOverride ? ingestKmForBbox({ lat, lon }, bbox) : km;
+  const fmt = (iso) => iso.replace(/-/g, "");
+  const endExclusive = addIsoDay(end, 1);
+  const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(endExclusive)}?bbox=${bbox}`;
+  const slow = isSlowBrowserNet();
+  const timeout = slow ? 20000 : 28000;
+  let lastErr = "";
+  for (let attempt = 0; attempt < (slow ? 2 : 3); attempt++) {
+    try {
+      const { body } = await httpGet(url, timeout);
+      const data = JSON.parse(body || "{}");
+      const raw = Array.isArray(data.result) ? data.result : [];
+      const rows = [...ingestSwdiItems(raw, lat, lon, ingestKm).values()].filter((h) => {
+        const d = String(h.date || "").slice(0, 10);
+        return d >= start && d <= end;
+      });
+      return { rows, raw: raw.length, err: rows.length ? "" : raw.length ? "filtered" : "empty" };
+    } catch (e) {
+      lastErr = String(e?.message || e || "fetch failed");
+      if (attempt >= (slow ? 1 : 2)) break;
+    }
+  }
+  return { rows: [], raw: 0, err: lastErr || "fetch failed" };
+}
+
 function pinHailPack(hail) {
   const pin = pinCoords();
   return {

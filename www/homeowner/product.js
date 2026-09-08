@@ -20,7 +20,7 @@ export const PRODUCT = {
     ctaUrl: "https://www.highgroundokc.com/",
   },
   disclaimer:
-    "HomeScope summarizes public NOAA SWDI / SPC / IEM hail records for Oklahoma addresses. A storm is listed only when a near-roof report (≤1.6 km) or a storm footprint covers this pin — distant nearby-only reports are not treated as hitting your roof. This is informational storm history only, not a roof inspection or damage appraisal.",
+    "HomeScope summarizes public NOAA SWDI / SPC / IEM hail records for Oklahoma addresses. A storm is listed when a near-roof report (≤1.6 km) or a HailTrace / radar zone covers this pin. Soft nearby-only reports are labeled separately and are not treated as hitting your roof. This is informational storm history only, not a roof inspection or damage appraisal.",
   /** Internal CRM intake — set webhookUrl so HomeScope can create the contact and email the report. */
   crm: {
     webhookUrl: "",
