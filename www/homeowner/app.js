@@ -22,6 +22,16 @@ const TOP_STORM_N = 10;
 const LIST_PAGE = 10;
 const REPORT_LIST_N = 5;
 
+/** Hail size for UI — .5 / .75 / 1.5 instead of ½ / ¾ / 1½. */
+function formatHailIn(n, { inchMark = false } = {}) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  let s = (Math.round(x * 100) / 100).toFixed(2).replace(/\.?0+$/, "");
+  if (s === "-0") s = "0";
+  if (s.startsWith("0.")) s = s.slice(1);
+  return inchMark ? `${s}″` : s;
+}
+
 const state = {
   lead: null,
   step: "address",
@@ -1199,7 +1209,7 @@ function paintStormList({ loading = false, skipMap = false } = {}) {
       Number.isFinite(s.minDist) && s.minDist < 900
         ? ` · nearest ${Number(s.minDist).toFixed(1)} km`
         : "";
-    li.innerHTML = `<span class="sz" style="color:${col.fill}">${Number(s.maxSizeIn).toFixed(2)}″</span>
+    li.innerHTML = `<span class="sz" style="color:${col.fill}">${formatHailIn(s.maxSizeIn, { inchMark: true })}</span>
       <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"}${distMeta}</span></span>
       <span class="meta">${on ? (state.selected.size > 1 ? "On map" : "Solo") : "Tap to add"}</span>`;
     const activate = () => activateStormDate(s.date);
@@ -1304,7 +1314,7 @@ function applyStormResult(result, { loading = false, reseatSelection = true, ski
       ? `Loading… ${state.storms.length} covering date(s) so far${grew ? " (+)" : ""} · ${result.hailRowCount || 0} reports.${note}`
       : state.storms.length
         ? `${state.storms.length} verified covering · ${mapLabel} (${sortLabel}) · NOAA SWDI / SPC / IEM.${note}`
-        : `No storms ≥${state.minHailIn}″ with verified cover in ~${state.years} years.${note}`,
+        : `No storms ≥${formatHailIn(state.minHailIn)}″ with verified cover in ~${state.years} years.${note}`,
   );
 }
 
@@ -1314,7 +1324,7 @@ async function refreshStorms({ force = false } = {}) {
   const gen = ++refreshStorms._gen;
   const pinLat = state.lat;
   const pinLon = state.lon;
-  setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
+  setStatus(status, `Loading ~${state.years}y of hail (≥${formatHailIn(state.minHailIn)}″)…`);
   $("#make-report").disabled = true;
 
   const stillThisPin = () =>
@@ -1435,7 +1445,7 @@ function buildReportText(rec) {
     ...(ROOF_HAIL_EDUCATION.bullets || []).map((x) => `• ${x}`),
     "",
     `Review window (matches roof age when known): ${rec.windowStart} → ${rec.windowEnd}`,
-    `Covering: ${(rec.covering || []).length} · ${CLAIM_RULES.minHailInches}″+: ${(rec.qualifying || []).length}`,
+    `Covering: ${(rec.covering || []).length} · ${formatHailIn(CLAIM_RULES.minHailInches)}″+: ${(rec.qualifying || []).length}`,
     "",
     "Hail summary (2 / 5 / 10 years):",
   ].filter((x) => x !== "");
@@ -1444,22 +1454,22 @@ function buildReportText(rec) {
     windows: [2, 5, 10],
   });
   for (const w of windowSummaries) {
-    const maxLabel = w.maxSize > 0 ? `${Number(w.maxSize).toFixed(2)}″` : "—";
+    const maxLabel = w.maxSize > 0 ? formatHailIn(w.maxSize, { inchMark: true }) : "—";
     const partial = w.partial ? ` (loaded ${w.loadedYears}y)` : "";
     lines.push(
-      `• ${w.years}y${partial}: ${w.count} covering ≥${state.minHailIn}″ · ${w.inchPlus} at ${CLAIM_RULES.minHailInches}″+ · largest ${maxLabel} · latest ${w.latestPretty || "—"}`,
+      `• ${w.years}y${partial}: ${w.count} covering ≥${formatHailIn(state.minHailIn)}″ · ${w.inchPlus} at ${formatHailIn(CLAIM_RULES.minHailInches)}″+ · largest ${maxLabel} · latest ${w.latestPretty || "—"}`,
     );
   }
   if (inchPlus.length) {
-    lines.push("", `${CLAIM_RULES.minHailInches}″+ storms in review window:`);
+    lines.push("", `${formatHailIn(CLAIM_RULES.minHailInches)}″+ storms in review window:`);
     for (const s of inchPlus) {
-      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+      lines.push(`• ${s.pretty || s.date} — ${formatHailIn(s.maxSizeIn, { inchMark: true })} — ${s.sources}`);
     }
   }
   lines.push("", `Most extreme (review window):`);
   if (extreme.length) {
     for (const s of extreme) {
-      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+      lines.push(`• ${s.pretty || s.date} — ${formatHailIn(s.maxSizeIn, { inchMark: true })} — ${s.sources}`);
     }
   } else {
     lines.push("• None in the review window");
@@ -1467,7 +1477,7 @@ function buildReportText(rec) {
   lines.push("", `Most recent (review window):`);
   if (recent.length) {
     for (const s of recent) {
-      lines.push(`• ${s.pretty || s.date} — ${Number(s.maxSizeIn).toFixed(2)}″ — ${s.sources}`);
+      lines.push(`• ${s.pretty || s.date} — ${formatHailIn(s.maxSizeIn, { inchMark: true })} — ${s.sources}`);
     }
   } else {
     lines.push("• None in the review window");
@@ -1495,7 +1505,7 @@ function reportStormRowsHtml(storms, flag) {
           ? ` · ${Number(s.minDist).toFixed(1)} km`
           : "";
       return `<li class="hg-storm">
-            <div class="hg-storm-size">${escHtml(Number(s.maxSizeIn).toFixed(2))}<span>″</span></div>
+            <div class="hg-storm-size">${escHtml(formatHailIn(s.maxSizeIn))}<span>″</span></div>
             <div class="hg-storm-body">
               <strong>${escHtml(s.pretty || s.date)}</strong>
               <span class="hg-storm-meta">${escHtml(s.sources)}${cover ? " · " + escHtml(cover) : ""}${escHtml(dist)}</span>
@@ -1510,13 +1520,13 @@ function hailSummaryRowsHtml(summaries, minHailIn) {
   if (!summaries?.length) return "";
   return summaries
     .map((w) => {
-      const maxLabel = w.maxSize > 0 ? `${Number(w.maxSize).toFixed(2)}″` : "—";
+      const maxLabel = w.maxSize > 0 ? formatHailIn(w.maxSize, { inchMark: true }) : "—";
       const latest = w.latestPretty || "—";
       const partial = w.partial ? ` · loaded ${w.loadedYears}y` : "";
       return `<div class="hg-hail-window">
         <p class="hg-hail-window-years">${escHtml(String(w.years))} year${w.years === 1 ? "" : "s"}</p>
-        <p class="hg-hail-window-stat"><strong>${escHtml(String(w.count))}</strong> covering ≥ ${escHtml(String(minHailIn))}″</p>
-        <p class="hg-hail-window-stat"><strong>${escHtml(String(w.inchPlus))}</strong> at ${escHtml(String(CLAIM_RULES.minHailInches))}″+</p>
+        <p class="hg-hail-window-stat"><strong>${escHtml(String(w.count))}</strong> covering ≥ ${escHtml(formatHailIn(minHailIn))}″</p>
+        <p class="hg-hail-window-stat"><strong>${escHtml(String(w.inchPlus))}</strong> at ${escHtml(formatHailIn(CLAIM_RULES.minHailInches))}″+</p>
         <p class="hg-hail-window-meta">Largest ${escHtml(maxLabel)} · Latest ${escHtml(latest)}${escHtml(partial)}</p>
       </div>`;
     })
@@ -1580,7 +1590,7 @@ function renderReportDocument(rec) {
       <p class="hg-addr">${escHtml(state.address)}</p>
       <p class="hg-property-line">Prepared for <strong>${escHtml(prepared)}</strong> · Roof age <strong>${escHtml(roofLabel)}</strong></p>
       <p class="hg-roof-quality"><strong>${escHtml(quality.label || "—")}</strong> — ${escHtml(quality.detail || "")}</p>
-      <p class="hg-storm-blurb">Recommendation window matches this roof’s life when age is known (${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)}): <strong>${coverN}</strong> covering date${coverN === 1 ? "" : "s"}, <strong>${inchN}</strong> at ${escHtml(String(CLAIM_RULES.minHailInches))}″+.</p>
+      <p class="hg-storm-blurb">Recommendation window matches this roof’s life when age is known (${escHtml(rec.windowStart)} → ${escHtml(rec.windowEnd)}): <strong>${coverN}</strong> covering date${coverN === 1 ? "" : "s"}, <strong>${inchN}</strong> at ${escHtml(formatHailIn(CLAIM_RULES.minHailInches))}″+.</p>
     </section>
 
     <section class="hg-verdict hg-verdict-${tone}">
@@ -1607,7 +1617,7 @@ function renderReportDocument(rec) {
         <h2 class="hg-section-label">Hail summary</h2>
         <span class="hg-count">2 · 5 · 10 years</span>
       </div>
-      <p class="hg-storm-blurb">Covering dates at this pin (near-roof or zone). The <strong>${escHtml(String(CLAIM_RULES.minHailInches))}″+</strong> line is the serious-impact count roofers watch.</p>
+      <p class="hg-storm-blurb">Covering dates at this pin (near-roof or zone). The <strong>${escHtml(formatHailIn(CLAIM_RULES.minHailInches))}″+</strong> line is the serious-impact count roofers watch.</p>
       <div class="hg-hail-windows">${hailSummaryRowsHtml(windowSummaries, state.minHailIn)}</div>
     </section>
 
@@ -1615,7 +1625,7 @@ function renderReportDocument(rec) {
       inchPlusReview.length
         ? `<section class="hg-card">
       <div class="hg-section-head">
-        <h2 class="hg-section-label">${escHtml(String(CLAIM_RULES.minHailInches))}″+ storms over this home</h2>
+        <h2 class="hg-section-label">${escHtml(formatHailIn(CLAIM_RULES.minHailInches))}″+ storms over this home</h2>
         <span class="hg-count">${inchPlusReview.length} in review window</span>
       </div>
       <p class="hg-storm-blurb">These are the dates most useful in a pitch: verified cover plus hail large enough to seriously impact asphalt.</p>
@@ -1629,7 +1639,7 @@ function renderReportDocument(rec) {
         <h2 class="hg-section-label">Storms since this roof’s age</h2>
         <span class="hg-count">${inReview.length} verified</span>
       </div>
-      <p class="hg-storm-blurb">All verified covering dates in the recommendation window (≥ ${escHtml(String(state.minHailIn))}″).</p>
+      <p class="hg-storm-blurb">All verified covering dates in the recommendation window (≥ ${escHtml(formatHailIn(state.minHailIn))}″).</p>
       <h3 class="hg-storm-group">Most extreme</h3>
       <ul class="hg-storm-list">${reportStormRowsHtml(extreme, "Extreme")}</ul>
       <h3 class="hg-storm-group">Most recent</h3>
