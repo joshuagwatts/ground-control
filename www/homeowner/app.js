@@ -1,0 +1,516 @@
+/**
+ * HomeScope — Oklahoma homeowner hail report (isolated from Ground Control field UX).
+ */
+import { APP_VERSION } from "../version.js";
+import { geocodeCandidates, biasAddressQuery, inOklahoma } from "../geocode.js";
+import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
+import { loadHomeStorms } from "./hail-load.js";
+import { buildHailSwathRings } from "../wx.js";
+
+const LEAD_KEY = "homescope_lead_v1";
+
+const state = {
+  unlocked: false,
+  lead: null,
+  step: "gate",
+  address: "",
+  lat: null,
+  lon: null,
+  roofMode: "idk",
+  roofReplacedOn: null,
+  years: 2,
+  minHailIn: 1,
+  storms: [],
+  selected: new Set(),
+  map: null,
+  marker: null,
+  overlay: null,
+  lastRec: null,
+  reportText: "",
+};
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+function setStatus(el, text, isErr = false) {
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("err", Boolean(isErr));
+}
+
+function readLead() {
+  try {
+    return JSON.parse(localStorage.getItem(LEAD_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveLead(lead) {
+  localStorage.setItem(LEAD_KEY, JSON.stringify(lead));
+  // CRM hook — replace with your endpoint later.
+  window.dispatchEvent(new CustomEvent("homescope:lead", { detail: lead }));
+  console.info("[HomeScope] lead captured (CRM stub)", lead);
+}
+
+function setStep(step) {
+  state.step = step;
+  const gated = !state.unlocked;
+  $("#panel-gate").hidden = !gated;
+  $("#ho-hero").hidden = gated;
+  if (gated) return;
+
+  $$("#ho-steps [data-step]").forEach((li) => li.classList.toggle("on", li.dataset.step === step));
+  const order = ["address", "roof", "storms", "report"];
+  const idx = order.indexOf(step);
+  $$("[data-panel]").forEach((panel) => {
+    if (panel.id === "panel-gate") return;
+    const p = panel.dataset.panel;
+    const pIdx = order.indexOf(p);
+    panel.hidden = pIdx < 0 || pIdx > idx;
+  });
+}
+
+function ensureMap() {
+  const el = $("#ho-map");
+  if (!el || !window.L) return null;
+  if (state.map) {
+    state.map.invalidateSize();
+    return state.map;
+  }
+  state.map = window.L.map(el, {
+    zoomControl: false,
+    attributionControl: true,
+    scrollWheelZoom: true,
+  }).setView([35.4676, -97.5164], 11);
+  window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: "&copy; OpenStreetMap &copy; CARTO",
+    maxZoom: 19,
+    subdomains: "abcd",
+  }).addTo(state.map);
+  window.L.control.zoom({ position: "bottomright" }).addTo(state.map);
+  state.overlay = window.L.layerGroup().addTo(state.map);
+  return state.map;
+}
+
+function pinHome(lat, lon) {
+  const map = ensureMap();
+  if (!map) return;
+  map.setView([lat, lon], 15);
+  if (state.marker) state.marker.setLatLng([lat, lon]);
+  else {
+    state.marker = window.L.circleMarker([lat, lon], {
+      radius: 8,
+      color: "#c8e06a",
+      weight: 2,
+      fillColor: "#c8e06a",
+      fillOpacity: 0.85,
+    }).addTo(map);
+  }
+  requestAnimationFrame(() => map.invalidateSize());
+}
+
+function paintOverlays() {
+  if (!state.overlay || !window.L) return;
+  state.overlay.clearLayers();
+  for (const s of state.storms) {
+    if (!state.selected.has(s.date)) continue;
+    const pts = s.zone_pts || s.raw?.zone_pts || [];
+    let rings = [];
+    try {
+      rings = buildHailSwathRings(pts, s.raw || s, { includeSpotters: true }) || [];
+    } catch {
+      rings = [];
+    }
+    if (rings.length) {
+      for (const band of rings) {
+        if (!band?.ring?.length) continue;
+        window.L.polygon(band.ring, {
+          color: "#c8e06a",
+          weight: 1.5,
+          fillColor: "#c8e06a",
+          fillOpacity: 0.22,
+        }).addTo(state.overlay);
+      }
+    } else {
+      for (const p of pts) {
+        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+        window.L.circle([p.lat, p.lon], {
+          radius: Math.max(400, (Number(p.size_in) || 1) * 350),
+          color: "#c8e06a",
+          weight: 1,
+          fillOpacity: 0.15,
+        }).addTo(state.overlay);
+      }
+    }
+  }
+}
+
+async function lookupAddress(query) {
+  const q = biasAddressQuery(String(query || "").trim());
+  if (!q) throw new Error("Enter a street address");
+  const hits = await geocodeCandidates(q, { limit: 8 });
+  const okHits = (hits || []).filter((h) => inOklahoma(h));
+  const hit = okHits[0] || hits?.[0];
+  if (!hit || !Number.isFinite(hit.lat) || !Number.isFinite(hit.lon)) {
+    throw new Error("Couldn’t find that address — try city + OK");
+  }
+  if (!inOklahoma(hit)) {
+    throw new Error("HomeScope is Oklahoma-only for now — enter an OK address");
+  }
+  return {
+    lat: hit.lat,
+    lon: hit.lon,
+    label: hit.label || hit.address || q,
+  };
+}
+
+function roofDateFromInputs() {
+  if (state.roofMode === "idk") return null;
+  if (state.roofMode === "month") {
+    const m = $("#roof-month")?.value;
+    return m ? `${m}-01` : null;
+  }
+  const y = Number($("#roof-year")?.value);
+  if (!Number.isFinite(y) || y < 1970 || y > 2030) return null;
+  return `${y}-01-01`;
+}
+
+function paintStormList() {
+  const list = $("#storm-list");
+  const btn = $("#make-report");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.storms.length) {
+    const li = document.createElement("li");
+    li.style.cursor = "default";
+    li.style.opacity = "0.75";
+    li.innerHTML = `<span class="sz">—</span><span>No covering storms yet<br/><span class="meta">Try a wider year window or lower hail size</span></span><span></span>`;
+    list.appendChild(li);
+    if (btn) btn.disabled = true;
+    paintOverlays();
+    return;
+  }
+  for (const s of state.storms) {
+    const on = state.selected.has(s.date);
+    const li = document.createElement("li");
+    li.className = on ? "on" : "";
+    const how = [s.coversNear ? "near roof" : null, s.coversPolygon ? "zone over home" : null]
+      .filter(Boolean)
+      .join(" · ");
+    li.innerHTML = `<span class="sz">${Number(s.maxSizeIn).toFixed(2)}″</span>
+      <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "covers home"}</span></span>
+      <span class="meta">${on ? "On map" : "Tap"}</span>`;
+    li.addEventListener("click", () => {
+      if (state.selected.has(s.date)) state.selected.delete(s.date);
+      else state.selected.add(s.date);
+      paintStormList();
+    });
+    list.appendChild(li);
+  }
+  if (btn) btn.disabled = false;
+  paintOverlays();
+}
+
+async function refreshStorms() {
+  if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
+  const status = $("#storm-status");
+  setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
+  $("#make-report").disabled = true;
+  try {
+    const result = await loadHomeStorms(state.lat, state.lon, {
+      address: state.address,
+      years: state.years,
+      minHailIn: state.minHailIn,
+      onPartial: (part) => {
+        if (part?.storms?.length) {
+          state.storms = part.storms;
+          for (const s of state.storms.slice(0, 3)) state.selected.add(s.date);
+          paintStormList();
+          setStatus(status, `Updating… ${part.storms.length} covering storm(s) so far`);
+        }
+      },
+    });
+    state.storms = result.storms || [];
+    state.selected = new Set(state.storms.slice(0, Math.min(3, state.storms.length)).map((s) => s.date));
+    paintStormList();
+    const note = result.note ? ` ${result.note}` : "";
+    setStatus(
+      status,
+      state.storms.length
+        ? `${state.storms.length} storm date(s) covering this home · sources: NOAA / SPC / IEM.${note}`
+        : `No storms ≥${state.minHailIn}″ covering this home in ~${state.years} years.${note}`,
+    );
+  } catch (err) {
+    setStatus(status, err?.message || "Hail load failed", true);
+  }
+}
+
+function buildReportText(rec) {
+  const lines = [];
+  lines.push(`${PRODUCT.name} — Oklahoma Hail Report`);
+  lines.push(`Generated: ${new Date().toLocaleString()}`);
+  if (state.lead?.email) lines.push(`Prepared for: ${state.lead.name || ""} <${state.lead.email}>`.trim());
+  lines.push(`Address: ${state.address}`);
+  lines.push(`Coordinates: ${state.lat?.toFixed(5)}, ${state.lon?.toFixed(5)}`);
+  lines.push(
+    `Roof last replaced: ${
+      state.roofReplacedOn ||
+      `Unknown (using ${CLAIM_RULES.defaultLookbackYearsIfRoofUnknown}-year window)`
+    }`,
+  );
+  lines.push(`History filter: ${state.years} years · Min hail: ${state.minHailIn}″`);
+  lines.push(`Review window: ${rec.windowStart} → ${rec.windowEnd}`);
+  lines.push("");
+  lines.push("Storms covering this home:");
+  if (!state.storms.length) lines.push("  (none)");
+  else {
+    for (const s of state.storms) {
+      const mark = state.selected.has(s.date) ? "[x]" : "[ ]";
+      const how = [s.coversNear ? "near" : null, s.coversPolygon ? "polygon" : null].filter(Boolean).join("+");
+      lines.push(`  ${mark} ${s.date} · max ${Number(s.maxSizeIn).toFixed(2)}″ · ${s.sources} · ${how}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Recommendation: ${rec.headline}`);
+  lines.push(`  ${rec.reason}`);
+  lines.push(`Primary next step: ${rec.primaryCta}`);
+  if (rec.secondaryCta) lines.push(`Also: ${rec.secondaryCta}`);
+  lines.push("");
+  lines.push("Sources: NOAA SWDI radar, NOAA SPC / IEM LSR spotter reports.");
+  lines.push("");
+  lines.push(PRODUCT.disclaimer);
+  return lines.join("\n");
+}
+
+function generateReport() {
+  const rec = homescopeRecommendation({
+    storms: state.storms,
+    roofReplacedOn: state.roofReplacedOn,
+  });
+  state.lastRec = rec;
+  state.reportText = buildReportText(rec);
+
+  const box = $("#ho-rec");
+  const title = $("#ho-rec-title");
+  const body = $("#ho-rec-body");
+  const cta = $("#ho-cta");
+  if (box && title && body) {
+    box.hidden = false;
+    box.classList.toggle("claim", rec.considerClaim || rec.talkToRoofer);
+    box.classList.toggle("ok", !rec.considerClaim && !rec.talkToRoofer);
+    title.textContent = rec.headline;
+    body.textContent = rec.reason;
+  }
+  if (cta) {
+    cta.textContent = rec.secondaryCta
+      ? `${rec.primaryCta} · ${rec.secondaryCta}`
+      : rec.primaryCta;
+  }
+  const report = $("#ho-report");
+  if (report) report.textContent = state.reportText;
+  const disc = $("#ho-disclaimer");
+  if (disc) disc.textContent = PRODUCT.disclaimer;
+  setStep("report");
+}
+
+function downloadBlob(filename, mime, text) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function reportHtmlDoc() {
+  const esc = (s) =>
+    String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(PRODUCT.name)} Report</title>
+  <style>body{font:14px/1.45 system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#111}
+  h1{font-size:1.4rem} pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem;border-radius:8px}</style></head>
+  <body><h1>${esc(PRODUCT.name)} — Hail Report</h1>
+  <p><strong>${esc(state.lastRec?.headline || "")}</strong></p>
+  <p>${esc(state.lastRec?.reason || "")}</p>
+  <p><strong>${esc(state.lastRec?.primaryCta || "Get a free inspection")}</strong>
+  ${state.lastRec?.secondaryCta ? " · " + esc(state.lastRec.secondaryCta) : ""}</p>
+  <pre>${esc(state.reportText)}</pre>
+  <p style="font-size:12px;color:#555">${esc(PRODUCT.disclaimer)}</p>
+  </body></html>`;
+}
+
+function shareableLink() {
+  const payload = {
+    v: 1,
+    a: state.address,
+    lat: state.lat,
+    lon: state.lon,
+    roof: state.roofReplacedOn,
+    years: state.years,
+    min: state.minHailIn,
+    storms: state.storms.map((s) => ({
+      d: s.date,
+      sz: s.maxSizeIn,
+      src: s.sources,
+      n: s.coversNear,
+      p: s.coversPolygon,
+    })),
+    headline: state.lastRec?.headline,
+  };
+  const hash = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  return `${location.origin}${location.pathname}#r=${hash}`;
+}
+
+function bindChips(rootSel, attr, onPick) {
+  const root = $(rootSel);
+  if (!root) return;
+  root.addEventListener("click", (e) => {
+    const btn = e.target.closest(`[data-${attr}]`);
+    if (!btn) return;
+    $$(`[data-${attr}]`, root).forEach((b) => b.classList.toggle("on", b === btn));
+    onPick(btn.getAttribute(`data-${attr}`));
+  });
+}
+
+function unlockFromLead(lead) {
+  state.lead = lead;
+  state.unlocked = true;
+  setStep("address");
+}
+
+function boot() {
+  $("#ho-brand").textContent = PRODUCT.name;
+  $("#ho-ver").textContent = `v${APP_VERSION}`;
+  document.title = PRODUCT.name;
+  $("#ho-disclaimer").textContent = PRODUCT.disclaimer;
+  $("#ho-disclaimer-gate").textContent = PRODUCT.disclaimer;
+
+  const existing = readLead();
+  if (existing?.email) unlockFromLead(existing);
+
+  $("#gate-form")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = $("#gate-name")?.value?.trim() || "";
+    const email = $("#gate-email")?.value?.trim() || "";
+    const phone = $("#gate-phone")?.value?.trim() || "";
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setStatus($("#gate-status"), "Enter a valid email to continue", true);
+      return;
+    }
+    const lead = {
+      name,
+      email,
+      phone,
+      capturedAt: new Date().toISOString(),
+      source: "homescope_gate",
+      crm: "pending",
+    };
+    saveLead(lead);
+    setStatus($("#gate-status"), "You’re in — loading HomeScope…");
+    unlockFromLead(lead);
+  });
+
+  $("#addr-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const status = $("#addr-status");
+    const go = $("#addr-go");
+    const q = $("#addr-q")?.value || "";
+    if (go) go.disabled = true;
+    setStatus(status, "Looking up Oklahoma address…");
+    try {
+      const hit = await lookupAddress(q);
+      state.address = hit.label;
+      state.lat = hit.lat;
+      state.lon = hit.lon;
+      state.storms = [];
+      state.selected.clear();
+      setStatus(status, hit.label);
+      setStep("roof");
+      pinHome(hit.lat, hit.lon);
+      paintStormList();
+    } catch (err) {
+      setStatus(status, err?.message || "Lookup failed", true);
+    } finally {
+      if (go) go.disabled = false;
+    }
+  });
+
+  bindChips("#roof-mode", "roof", (mode) => {
+    state.roofMode = mode;
+    const inputs = $("#roof-inputs");
+    const year = $("#roof-year");
+    const month = $("#roof-month");
+    if (inputs) inputs.hidden = mode === "idk";
+    if (year) year.hidden = mode !== "year";
+    if (month) month.hidden = mode !== "month";
+  });
+
+  $("#roof-continue")?.addEventListener("click", async () => {
+    if (state.roofMode !== "idk") {
+      const d = roofDateFromInputs();
+      if (!d) {
+        setStatus($("#storm-status"), "Enter a valid roof date, or pick “I don’t know”.", true);
+        return;
+      }
+      state.roofReplacedOn = d;
+    } else {
+      state.roofReplacedOn = null;
+    }
+    setStep("storms");
+    ensureMap();
+    if (Number.isFinite(state.lat) && Number.isFinite(state.lon)) pinHome(state.lat, state.lon);
+    await refreshStorms();
+  });
+
+  bindChips("#filter-years", "years", async (v) => {
+    state.years = Number(v) || 2;
+    if (state.step === "storms" || state.step === "report") await refreshStorms();
+  });
+  bindChips("#filter-hail", "hail", async (v) => {
+    state.minHailIn = Number(v) || 1;
+    if (state.step === "storms" || state.step === "report") await refreshStorms();
+  });
+
+  $("#make-report")?.addEventListener("click", generateReport);
+  $("#print-report")?.addEventListener("click", () => window.print());
+  $("#dl-html")?.addEventListener("click", () => {
+    downloadBlob("homescope-report.html", "text/html;charset=utf-8", reportHtmlDoc());
+  });
+  $("#dl-doc")?.addEventListener("click", () => {
+    // Word opens HTML-as-.doc reliably for simple reports.
+    downloadBlob("homescope-report.doc", "application/msword", reportHtmlDoc());
+  });
+  $("#dl-txt")?.addEventListener("click", () => {
+    downloadBlob("homescope-report.txt", "text/plain;charset=utf-8", state.reportText || "");
+  });
+  $("#share-report")?.addEventListener("click", async () => {
+    const url = shareableLink();
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: `${PRODUCT.name} hail report`,
+          text: state.lastRec?.headline || PRODUCT.name,
+          url,
+        });
+        setStatus($("#share-status"), "Shared");
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus($("#share-status"), "Share link copied to clipboard");
+    } catch {
+      setStatus($("#share-status"), url);
+    }
+  });
+
+  if (!state.unlocked) setStep("gate");
+}
+
+boot();

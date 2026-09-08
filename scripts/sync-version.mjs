@@ -12,8 +12,9 @@ export const CACHE_BUST = "${version}";
 
 fs.writeFileSync(path.join(root, "www/version.js"), versionJs);
 
-for (const rel of ["www/index.html", "www/app.js"]) {
+for (const rel of ["www/index.html", "www/app.js", "www/homeowner/index.html", "www/homeowner/app.js"]) {
   const p = path.join(root, rel);
+  if (!fs.existsSync(p)) continue;
   let s = fs.readFileSync(p, "utf8");
   s = s.replace(/\?v=[0-9.]+/g, `?v=${version}`);
   fs.writeFileSync(p, s);
