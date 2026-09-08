@@ -31,13 +31,23 @@ function pointInLatLonRing(lat, lon, ring) {
   return inside;
 }
 
-function stormCoversHome(row, lat, lon, dayRows = []) {
+function stormCoversHome(row, lat, lon, dayRows = [], { fast = false } = {}) {
   const pts = row.zone_pts || [];
   const minDist = Number(row.min_dist);
   const coversNear =
     (Number(row.near_hits) || 0) > 0 ||
     (Number.isFinite(minDist) && minDist <= COVER_NEAR_KM) ||
     pts.some((p) => (Number(p.distance_km) || 999) <= COVER_NEAR_KM);
+
+  // While history is still streaming, skip HailTrace mesh builds — they freeze the UI
+  // so the list never grows past the first 1–2 dates until a filter flip.
+  if (fast) {
+    return {
+      coversNear: Boolean(coversNear),
+      coversPolygon: false,
+      coversHome: Boolean(coversNear),
+    };
+  }
 
   let coversPolygon = false;
   try {
@@ -143,14 +153,17 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
   const cutoffIso = cutoff.toISOString().slice(0, 10);
+  const fastCover = Boolean(loading);
 
   const collapsed = collapseHailByDate(hailRows || []);
   const byDay = new Map();
-  for (const h of hailRows || []) {
-    const d = String(h?.date || "").slice(0, 10);
-    if (!d) continue;
-    if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d).push(h);
+  if (!fastCover) {
+    for (const h of hailRows || []) {
+      const d = String(h?.date || "").slice(0, 10);
+      if (!d) continue;
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(h);
+    }
   }
   const storms = [];
   for (const row of collapsed) {
@@ -158,7 +171,7 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     if (!date || date < cutoffIso) continue;
     const maxSizeIn = Number(row.max_size) || parseFloat(row.size_in) || 0;
     if (maxSizeIn + 1e-6 < Number(minHailIn)) continue;
-    const cover = stormCoversHome(row, lat, lon, byDay.get(date) || []);
+    const cover = stormCoversHome(row, lat, lon, byDay.get(date) || [], { fast: fastCover });
     if (!cover.coversHome) continue;
     storms.push({
       date,
@@ -179,7 +192,9 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
 
   let msg = note;
   if (!msg && !storms.length && (hailRows || []).length) {
-    msg = `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y.`;
+    msg = fastCover
+      ? `Scanning ${(hailRows || []).length} hail reports…`
+      : `Loaded ${(hailRows || []).length} hail reports nearby — none ≥${minHailIn}″ with near-roof or zone-over-home cover in ~${years || Math.round(days / 365)}y.`;
   } else if (!msg && !storms.length && !(hailRows || []).length && !loading) {
     msg = "No hail rows yet — hard-refresh once so the radar proxy can load.";
   }
@@ -204,14 +219,16 @@ export function filterCachedHomeStorms({ years = 2, minHailIn = 1 } = {}) {
   }
   const days = Math.min(Math.max(Math.round(Number(years) * 365.25), 30), 3650);
   const have = pinCache.fetchedDays || 0;
-  const loading = pinCache.loadingDeep || days > have;
+  // Only treat as "loading" while a deepen job is actually running — not merely because
+  // fetchedDays < requested (that used to keep fast-cover forever after a failed deepen).
+  const loading = Boolean(pinCache.loadingDeep || pinCache.deepenPromise || pinCache.dossierPromise);
   return summarizeHailRows(pinCache.hail, pinCache.lat, pinCache.lon, {
     minHailIn,
     days,
     years,
     loading,
     note:
-      days > have && pinCache.loadingDeep
+      days > have && loading
         ? `Still loading history… ~${Math.max(1, Math.round(have / 365))}y in so far`
         : days > have
           ? `Showing ~${Math.round(have / 365)}y loaded — older years incomplete`
@@ -220,18 +237,18 @@ export function filterCachedHomeStorms({ years = 2, minHailIn = 1 } = {}) {
 }
 
 function pushPartial(onPartial, lat, lon, minHailIn, days, years, loading, note) {
+  // Single summarize → notify. Cache listeners re-filter cheaply; avoid building
+  // HailTrace meshes on every archive chunk (that froze the list at 1–2 dates).
+  const result = summarizeHailRows(pinCache.hail, lat, lon, {
+    minHailIn,
+    days,
+    years,
+    loading,
+    note,
+  });
   emitHailCache();
   const fn = onPartial || pinCache.uiNotify;
-  if (!fn) return;
-  fn(
-    summarizeHailRows(pinCache.hail, lat, lon, {
-      minHailIn,
-      days,
-      years,
-      loading,
-      note,
-    }),
-  );
+  if (fn) fn(result);
 }
 
 async function deepenArchive(lat, lon, days, onPartial, minHailIn, years, seq) {

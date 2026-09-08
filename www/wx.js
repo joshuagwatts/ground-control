@@ -1616,6 +1616,8 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
         ...batch.map((w) => w.offset + w.span),
       );
       notify([...byKey.values()], covered);
+      // Let the UI paint progressive storm rows between year batches.
+      await new Promise((r) => setTimeout(r, 0));
     }
     const out = [...byKey.values()];
     lsrHailCache.set(cacheKey, out);

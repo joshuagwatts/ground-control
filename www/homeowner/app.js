@@ -707,7 +707,7 @@ function scheduleSuggest(raw) {
   }, 180);
 }
 
-function paintStormList({ loading = false } = {}) {
+function paintStormList({ loading = false, skipMap = false } = {}) {
   const list = $("#storm-list");
   const moreWrap = $("#storm-more-wrap");
   const moreBtn = $("#storm-more");
@@ -726,7 +726,7 @@ function paintStormList({ loading = false } = {}) {
       : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤2.5 km) or HailTrace zone over this pin</span></span><span></span>`;
     list.appendChild(li);
     if (btn) btn.disabled = true;
-    paintOverlays();
+    if (!skipMap) paintOverlays();
     return;
   }
 
@@ -776,13 +776,16 @@ function paintStormList({ loading = false } = {}) {
   }
 
   if (btn) btn.disabled = false;
-  paintOverlays();
+  if (!skipMap) paintOverlays();
 }
 
-function applyStormResult(result, { loading = false, reseatSelection = true } = {}) {
+function applyStormResult(result, { loading = false, reseatSelection = true, skipMap = false } = {}) {
+  const still = loading || Boolean(result.loading);
+  const prevCount = state.storms.length;
   state.storms = result.storms || [];
   if (reseatSelection) {
-    state.listLimit = LIST_PAGE;
+    // Don't reset pagination while streaming — only grow the list under the user.
+    if (!still) state.listLimit = LIST_PAGE;
     state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     state.overlayCollection = true;
   } else {
@@ -796,10 +799,13 @@ function applyStormResult(result, { loading = false, reseatSelection = true } = 
       autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     }
   }
-  paintStormList({ loading: loading || Boolean(result.loading) });
+  // While streaming: update the list every time new dates arrive; defer heavy map meshes.
+  const deferMap = skipMap || still;
+  paintStormList({ loading: still, skipMap: deferMap });
   ensureMap();
   if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
-  paintOverlays();
+  if (!deferMap) paintOverlays();
+
   const status = $("#storm-status");
   const note = result.note ? ` ${result.note}` : "";
   const focus = state.mapFocusDate
@@ -810,8 +816,8 @@ function applyStormResult(result, { loading = false, reseatSelection = true } = 
     setStatus(status, result.note || "Hail load failed", true);
     return;
   }
-  const still = loading || result.loading;
   const overlayN = state.selected.size;
+  const grew = state.storms.length > prevCount;
   const mapLabel = state.overlayCollection
     ? `${overlayN} dates overlaid (tap one to solo · tap others to add)`
     : overlayN > 1
@@ -820,7 +826,7 @@ function applyStormResult(result, { loading = false, reseatSelection = true } = 
   setStatus(
     status,
     still
-      ? `Loading… ${state.storms.length} covering date(s) so far · ${result.hailRowCount || 0} reports.${note}`
+      ? `Loading… ${state.storms.length} covering date(s) so far${grew ? " (+)" : ""} · ${result.hailRowCount || 0} reports.${note}`
       : state.storms.length
         ? `${state.storms.length} verified covering · ${mapLabel} (${sortLabel}) · NOAA SWDI / SPC / IEM.${note}`
         : `No storms ≥${state.minHailIn}″ with verified cover in ~${state.years} years.${note}`,
@@ -831,11 +837,21 @@ async function refreshStorms({ force = false } = {}) {
   if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
   const status = $("#storm-status");
   const gen = ++refreshStorms._gen;
+  const pinLat = state.lat;
+  const pinLon = state.lon;
   setStatus(status, `Loading ~${state.years}y of hail (≥${state.minHailIn}″)…`);
   $("#make-report").disabled = true;
 
+  const stillThisPin = () =>
+    Number.isFinite(state.lat) &&
+    Math.abs(state.lat - pinLat) < 1e-4 &&
+    Math.abs(state.lon - pinLon) < 1e-4;
+
   const applyIfCurrent = (result, opts) => {
-    if (gen !== refreshStorms._gen) return;
+    // Accept progressive updates for this pin even if a newer refresh gen started
+    // for the same coordinates (map tap / search retries). Drop only if pin moved.
+    if (!stillThisPin()) return;
+    if (gen !== refreshStorms._gen && opts?.requireLatest) return;
     applyStormResult(result, opts);
   };
 
@@ -851,6 +867,7 @@ async function refreshStorms({ force = false } = {}) {
     applyIfCurrent(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), {
       loading: false,
       reseatSelection: true,
+      requireLatest: true,
     });
     return;
   }
@@ -858,12 +875,13 @@ async function refreshStorms({ force = false } = {}) {
   if (canFilterOnly) {
     applyIfCurrent(filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }), {
       loading: true,
-      reseatSelection: true,
+      reseatSelection: state.overlayCollection,
+      skipMap: true,
     });
   } else {
     state.storms = [];
     state.mapFocusDate = null;
-    paintStormList({ loading: true });
+    paintStormList({ loading: true, skipMap: true });
   }
 
   try {
@@ -874,16 +892,26 @@ async function refreshStorms({ force = false } = {}) {
       force,
       onPartial: (part) =>
         applyIfCurrent(part, {
-          loading: Boolean(part.loading),
+          loading: true,
           reseatSelection: state.overlayCollection,
+          skipMap: true,
         }),
     });
-    applyIfCurrent(result, {
-      loading: Boolean(result.loading),
-      reseatSelection: state.overlayCollection,
-    });
+    // Final pass: full polygon cover + map paint (loading=false in summarize).
+    applyIfCurrent(
+      filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn }),
+      {
+        loading: false,
+        reseatSelection: state.overlayCollection,
+        skipMap: false,
+        requireLatest: true,
+      },
+    );
+    if (result?.error) {
+      applyIfCurrent(result, { loading: false, reseatSelection: false, requireLatest: true });
+    }
   } catch (err) {
-    if (gen !== refreshStorms._gen) return;
+    if (!stillThisPin()) return;
     paintStormList({ loading: false });
     setStatus(status, err?.message || "Hail load failed", true);
   }
@@ -1363,17 +1391,26 @@ function boot() {
     });
   });
 
-  // Keep UI honest if the pin cache grows after a refresh gen advanced (filter flip mid-load).
+  // Progressive list updates as the pin cache grows — do not wait for a filter flip.
+  let hailUiFlush = 0;
   onHomeHailCache(() => {
     if (!Number.isFinite(state.lat)) return;
     const cache = getHomeHailCache();
-    if (!cache.hail?.length) return;
-    const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
-    // While history is still filling, keep reseating the starter pack — but never after the
-    // homeowner has tapped a date (isolate / multi-overlay mode).
-    applyStormResult(result, {
-      loading: Boolean(result.loading),
-      reseatSelection: Boolean(result.loading || cache.loadingDeep) && state.overlayCollection,
+    if (!cache.key) return;
+    const key = `${Number(state.lat).toFixed(4)}|${Number(state.lon).toFixed(4)}`;
+    if (cache.key !== key) return;
+    if (hailUiFlush) return;
+    hailUiFlush = requestAnimationFrame(() => {
+      hailUiFlush = 0;
+      const c = getHomeHailCache();
+      if (!c.hail?.length && !c.loadingDeep) return;
+      const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
+      const loading = Boolean(result.loading || c.loadingDeep);
+      applyStormResult(result, {
+        loading,
+        reseatSelection: state.overlayCollection,
+        skipMap: loading,
+      });
     });
   });
 
