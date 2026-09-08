@@ -356,10 +356,17 @@ a {
   margin-top: 0.55rem;
 }
 
+.ho-locate-hint {
+  margin: 0.35rem 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .ho-locate-btn {
   appearance: none;
   width: 100%;
-  min-height: 44px;
+  min-height: 48px;
   border: 1px solid var(--line);
   background: var(--inset);
   color: var(--text);

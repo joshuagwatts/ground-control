@@ -245,33 +245,64 @@ function pinHome(lat, lon, { fly = false, zoom = null } = {}) {
   requestAnimationFrame(() => map.invalidateSize());
 }
 
+/** Lightweight reverse for HomeScope — don't hang the GPS path on field Nominatim/ArcGIS races. */
+async function reverseHomePin(lat, lon, timeoutMs = 6000) {
+  const fallback = {
+    ok: false,
+    address: `${Number(lat).toFixed(5)}, ${Number(lon).toFixed(5)}`,
+    lat,
+    lon,
+  };
+  const timed = (p) =>
+    Promise.race([
+      p,
+      new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  try {
+    const geo = await timed(reverseGeocode(lat, lon));
+    if (geo && (geo.address || geo.ok)) {
+      return {
+        ok: Boolean(geo.ok || geo.address),
+        address: hitLabel(geo) || geo.address || fallback.address,
+        lat: Number(geo.lat) || lat,
+        lon: Number(geo.lon) || lon,
+      };
+    }
+  } catch {
+    /* use fallback */
+  }
+  return fallback;
+}
+
 /** Map tap or GPS — reverse-geocode, then same search path as the Search button. */
 let mapPickGen = 0;
 async function selectHomeFromMap(lat, lon, { zoom = true, fly = false, zoomLevel = 18 } = {}) {
   const status = $("#addr-status");
   const go = $("#addr-go");
   const locateBtn = $("#addr-locate");
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    setStatus(status, "Couldn’t read that location — try again", true);
+    return;
+  }
   const gen = ++mapPickGen;
   if (!inOklahoma({ lat, lon })) {
     setStatus(status, "HomeScope is Oklahoma-only — pick a home in OK", true);
     pinHome(lat, lon, { zoom: zoom ? Math.min(zoomLevel, 12) : null, fly });
+    if (locateBtn) locateBtn.disabled = false;
     return;
   }
   if (go) go.disabled = true;
   if (locateBtn) locateBtn.disabled = true;
-  setStatus(status, "Finding address for that pin…");
+  setStatus(status, "Got your location — locking the pin…");
+  // Pin + zoom immediately so something always happens on screen.
   pinHome(lat, lon, { zoom: zoom ? zoomLevel : null, fly });
   try {
-    const geo = await reverseGeocode(lat, lon);
+    const geo = await reverseHomePin(lat, lon, 5500);
     if (gen !== mapPickGen) return;
-    const label =
-      hitLabel(geo) ||
-      (geo?.ok && geo.address) ||
-      `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    const label = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
     const hit = {
-      lat: Number(geo?.lat) || lat,
-      lon: Number(geo?.lon) || lon,
+      lat: Number(geo.lat) || lat,
+      lon: Number(geo.lon) || lon,
       address: label,
       label,
     };
@@ -279,46 +310,100 @@ async function selectHomeFromMap(lat, lon, { zoom = true, fly = false, zoomLevel
       setStatus(status, "HomeScope is Oklahoma-only — pick a home in OK", true);
       return;
     }
+    const input = $("#addr-q");
+    if (input) input.value = label;
+    setStatus(status, label);
     await selectAddressHit(hit, { force: true });
   } catch (err) {
     if (gen !== mapPickGen) return;
-    setStatus(status, err?.message || "Couldn’t read that map pin", true);
+    // Still load hail on the raw GPS pin if reverse fails.
+    setStatus(status, "Using GPS pin — loading hail…");
+    await selectAddressHit(
+      { lat, lon, address: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, label: `${lat.toFixed(5)}, ${lon.toFixed(5)}` },
+      { force: true },
+    );
   } finally {
     if (gen === mapPickGen) {
       if (go) go.disabled = false;
-      if (locateBtn) locateBtn.disabled = false;
+      if (locateBtn) {
+        locateBtn.disabled = false;
+        locateBtn.textContent = "Use my location";
+      }
     }
   }
 }
 
-function useMyLocation() {
+function gpsFixOnce(options) {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(Object.assign(new Error("unsupported"), { code: 0 }));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(resolve, reject, options);
+  });
+}
+
+async function useMyLocation() {
   const status = $("#addr-status");
   const locateBtn = $("#addr-locate");
+  if (!window.isSecureContext) {
+    setStatus(status, "GPS needs HTTPS — open the live HomeScope link, or search / tap the map", true);
+    return;
+  }
   if (!navigator.geolocation) {
     setStatus(status, "Location isn’t available in this browser — search or tap the map", true);
     return;
   }
-  if (locateBtn) locateBtn.disabled = true;
-  setStatus(status, "Asking for your location…");
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const lat = Number(pos?.coords?.latitude);
-      const lon = Number(pos?.coords?.longitude);
-      void selectHomeFromMap(lat, lon, { zoom: true, fly: true, zoomLevel: 18 });
-    },
-    (err) => {
-      if (locateBtn) locateBtn.disabled = false;
-      const denied = err?.code === 1;
-      setStatus(
-        status,
-        denied
-          ? "Location blocked — allow GPS for this site, or search / tap the map"
+  if (locateBtn) {
+    locateBtn.disabled = true;
+    locateBtn.textContent = "Locating…";
+  }
+  setStatus(status, "Requesting GPS — allow location when your browser asks…");
+
+  try {
+    // Fast network/Wifi fix first (usually pops the permission prompt), then refine.
+    let pos;
+    try {
+      pos = await gpsFixOnce({
+        enableHighAccuracy: false,
+        timeout: 10000,
+        maximumAge: 60_000,
+      });
+    } catch (firstErr) {
+      if (firstErr?.code === 1) throw firstErr;
+      setStatus(status, "Trying a more precise GPS fix…");
+      pos = await gpsFixOnce({
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      });
+    }
+    const lat = Number(pos?.coords?.latitude);
+    const lon = Number(pos?.coords?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setStatus(status, "GPS returned a bad coordinate — try again or tap the map", true);
+      return;
+    }
+    setStatus(status, `Located ${lat.toFixed(4)}, ${lon.toFixed(4)} — loading home…`);
+    await selectHomeFromMap(lat, lon, { zoom: true, fly: true, zoomLevel: 18 });
+  } catch (err) {
+    const denied = err?.code === 1;
+    const timedOut = err?.code === 3;
+    setStatus(
+      status,
+      denied
+        ? "Location blocked — in your browser site settings, allow location for this page, then try again"
+        : timedOut
+          ? "GPS timed out — try again outdoors, or search / tap the map"
           : "Couldn’t get GPS — try again, search, or tap the map",
-        true,
-      );
-    },
-    { enableHighAccuracy: true, timeout: 20000, maximumAge: 30_000 },
-  );
+      true,
+    );
+  } finally {
+    if (locateBtn) {
+      locateBtn.disabled = false;
+      locateBtn.textContent = "Use my location";
+    }
+  }
 }
 
 function colorForHailSize(sizeIn) {
