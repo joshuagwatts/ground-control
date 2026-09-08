@@ -538,42 +538,112 @@ function scheduleOverlayPaint({ immediate = false } = {}) {
   overlayPaintTimer = setTimeout(run, delay);
 }
 
-/** When HailTrace has no mesh yet (LSR-only day), still show something over the map. */
-function paintFallbackDayMarkers(day, dayRows, storm, { focused, multi, bounds }) {
+function haversineKmHome(lat1, lon1, lat2, lon2) {
+  const toR = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toR;
+  const dLon = (lon2 - lon1) * toR;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function pointInLatLonRingHome(lat, lon, ring) {
+  if (!ring || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0];
+    const xi = ring[i][1];
+    const yj = ring[j][0];
+    const xj = ring[j][1];
+    const denom = yj - yi || 1e-12;
+    const intersect = (yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / denom + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function homeInsideBands(lat, lon, bands) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  for (const b of bands || []) {
+    if (b?.ring?.length && pointInLatLonRingHome(lat, lon, b.ring)) return true;
+  }
+  return false;
+}
+
+function collectDayCoverPts(dayRows, storm) {
   const pts = [];
-  for (const p of dayRows || []) {
-    if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) pts.push(p);
-  }
-  for (const p of storm?.zone_pts || []) {
-    if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) pts.push(p);
-  }
+  const seen = new Set();
+  const push = (p) => {
+    if (!Number.isFinite(p?.lat) || !Number.isFinite(p?.lon)) return;
+    const k = `${p.lat.toFixed(4)}|${p.lon.toFixed(4)}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    pts.push(p);
+  };
+  for (const p of dayRows || []) push(p);
+  for (const p of storm?.zone_pts || []) push(p);
   if (!pts.length && Number.isFinite(storm?.raw?.lat) && Number.isFinite(storm?.raw?.lon)) {
-    pts.push({
+    push({
       lat: storm.raw.lat,
       lon: storm.raw.lon,
       size_in: storm.maxSizeIn,
       distance_km: storm.minDist,
     });
   }
-  if (!pts.length) return false;
+  return pts;
+}
+
+/**
+ * Draw zones that match the list claim. If we say "zone over home" / near-roof,
+ * the fill must reach the pin — not just sit on a distant spotter.
+ */
+function paintDayCoverZones(dayRows, storm, { focused, multi, bounds, homeLat, homeLon }) {
+  const pts = collectDayCoverPts(dayRows, storm);
+  if (!pts.length && !(Number.isFinite(homeLat) && storm?.coversHome)) return false;
+  const sz = Number(storm?.maxSizeIn) || 1;
+  const col = hailRadarBandColor(sz);
+  const style = {
+    color: col.stroke,
+    weight: focused ? 1.15 : 0.7,
+    fillColor: col.fill,
+    fillOpacity: multi && !focused ? 0.3 : 0.42,
+    opacity: focused ? 0.75 : 0.5,
+    renderer: state.hailSvg || undefined,
+    className: "wx-hail-topo wx-hail-home-cover",
+  };
+
+  // Circles from each report sized to reach the home pin (+ pad).
+  if (Number.isFinite(homeLat) && Number.isFinite(homeLon) && pts.length) {
+    for (const p of pts) {
+      const distKm = Number.isFinite(Number(p.distance_km)) && Number(p.distance_km) < 900
+        ? Number(p.distance_km)
+        : haversineKmHome(homeLat, homeLon, p.lat, p.lon);
+      const radiusM = Math.max(1200, Math.min(7000, (distKm + 1.25) * 1000));
+      window.L.circle([p.lat, p.lon], { radius: radiusM, ...style }).addTo(state.overlay);
+      bounds.push([p.lat, p.lon]);
+    }
+    bounds.push([homeLat, homeLon]);
+    return true;
+  }
+
+  // Near-roof with no points left — soft disk on the pin.
+  if (Number.isFinite(homeLat) && Number.isFinite(homeLon) && storm?.coversHome) {
+    const nearest = Number(storm.minDist);
+    const radiusM = Math.max(
+      1600,
+      Math.min(5500, (Number.isFinite(nearest) ? nearest + 1.25 : 2.5) * 1000),
+    );
+    window.L.circle([homeLat, homeLon], { radius: radiusM, ...style }).addTo(state.overlay);
+    bounds.push([homeLat, homeLon]);
+    return true;
+  }
+
   for (const p of pts) {
-    const sz = Number(p.size_in) || Number(storm?.maxSizeIn) || 1;
-    const col = hailRadarBandColor(sz);
-    const near = Number(p.distance_km);
-    const radius = Math.max(900, Math.min(5000, Number.isFinite(near) && near < 3 ? 1500 : 2800));
-    window.L.circle([p.lat, p.lon], {
-      radius,
-      color: col.stroke,
-      weight: focused ? 1.2 : 0.7,
-      fillColor: col.fill,
-      fillOpacity: multi && !focused ? 0.28 : 0.4,
-      opacity: focused ? 0.7 : 0.45,
-      renderer: state.hailSvg || undefined,
-      className: "wx-hail-topo wx-hail-fallback",
-    }).addTo(state.overlay);
+    window.L.circle([p.lat, p.lon], { radius: 2200, ...style }).addTo(state.overlay);
     bounds.push([p.lat, p.lon]);
   }
-  return true;
+  return pts.length > 0;
 }
 
 function paintOverlays() {
@@ -633,13 +703,10 @@ function paintOverlays() {
 
     const focused = day === state.mapFocusDate;
     const multi = days.length > 1;
-    if (!bands.length) {
-      paintFallbackDayMarkers(day, dayRows, storm, { focused, multi, bounds });
-      continue;
-    }
+    let drew = false;
     for (const band of bands) {
       if (!band?.ring?.length) continue;
-      const sz = Number(band.maxSize) || 1;
+      const sz = Number(band.maxSize) || Number(storm?.maxSizeIn) || 1;
       const col = hailRadarBandColor(sz);
       const isolated = Boolean(band.isolated);
       if (isolated) needHatch = true;
@@ -658,9 +725,17 @@ function paintOverlays() {
         renderer: state.hailSvg || undefined,
         className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
       }).addTo(state.overlay);
+      drew = true;
       for (const ll of band.ring) {
         if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
       }
+    }
+
+    // List said cover — Trace must visually include the pin, or paint a home-reaching zone.
+    const claimsCover = Boolean(storm?.coversHome || storm?.coversNear || storm?.coversPolygon);
+    const pinCovered = homeInsideBands(homeLat, homeLon, bands);
+    if (!drew || (claimsCover && !pinCovered)) {
+      paintDayCoverZones(dayRows, storm, { focused, multi, bounds, homeLat, homeLon });
     }
   }
 
