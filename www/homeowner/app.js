@@ -82,6 +82,8 @@ function openReportGate() {
   const gate = $("#report-gate");
   if (!gate) return;
   gate.hidden = false;
+  document.documentElement.classList.add("ho-gate-open");
+  document.body.classList.add("ho-gate-open");
   if (state.lead) {
     if ($("#gate-name") && state.lead.name) $("#gate-name").value = state.lead.name;
     if ($("#gate-email") && state.lead.email) $("#gate-email").value = state.lead.email;
@@ -93,12 +95,15 @@ function openReportGate() {
     $("#gate-roof-year").value = state.lead.roofYear;
   }
   setStatus($("#gate-status"), "");
-  $("#gate-name")?.focus?.();
+  // Delay focus so iOS keyboard doesn't jump the sheet off-screen before paint.
+  setTimeout(() => $("#gate-name")?.focus?.({ preventScroll: true }), 280);
 }
 
 function closeReportGate() {
   const gate = $("#report-gate");
   if (gate) gate.hidden = true;
+  document.documentElement.classList.remove("ho-gate-open");
+  document.body.classList.remove("ho-gate-open");
 }
 
 function paintGateRoofMode(mode) {
@@ -207,6 +212,12 @@ function ensureMap() {
     zoomControl: false,
     attributionControl: true,
     scrollWheelZoom: true,
+    touchZoom: true,
+    doubleClickZoom: true,
+    boxZoom: false,
+    keyboard: false,
+    preferCanvas: true,
+    bounceAtZoomLimits: false,
   }).setView([35.4676, -97.5164], 11);
   // Same Google tiles as field HailScope — Carto dark tiles now require an API key.
   window.L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&hl=en&scale=2&x={x}&y={y}&z={z}", {
@@ -214,6 +225,9 @@ function ensureMap() {
     maxZoom: 21,
     maxNativeZoom: 21,
     subdomains: "0123",
+    detectRetina: true,
+    updateWhenIdle: true,
+    keepBuffer: 1,
   }).addTo(state.map);
   window.L.control.zoom({ position: "bottomright" }).addTo(state.map);
   state.hailSvg = window.L.svg({ padding: 0.85 });
@@ -283,7 +297,7 @@ async function reverseHomePin(lat, lon, timeoutMs = 6000) {
 
 /** Map tap or GPS — reverse-geocode, then same search path as the Search button. */
 let mapPickGen = 0;
-async function selectHomeFromMap(lat, lon, { zoom = true, fly = false, zoomLevel = 18 } = {}) {
+async function selectHomeFromMap(lat, lon, { zoom = true, fly = false, zoomLevel = 17 } = {}) {
   const status = $("#addr-status");
   const go = $("#addr-go");
   const locateBtn = $("#addr-locate");
@@ -1613,8 +1627,19 @@ function boot() {
   });
 
   setStep("address");
-  requestAnimationFrame(() => {
-    ensureMap()?.invalidateSize?.();
+  const refreshMapSize = () => {
+    try {
+      state.map?.invalidateSize?.({ animate: false });
+    } catch {
+      /* ignore */
+    }
+  };
+  requestAnimationFrame(refreshMapSize);
+  window.addEventListener("orientationchange", () => setTimeout(refreshMapSize, 280));
+  window.addEventListener("resize", refreshMapSize);
+  window.visualViewport?.addEventListener?.("resize", refreshMapSize);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") setTimeout(refreshMapSize, 120);
   });
 }
 

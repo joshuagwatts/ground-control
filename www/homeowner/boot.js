@@ -9,15 +9,21 @@ async function registerWebProxy() {
   // Scope must be the www/ root so /homeowner/ shares the CORS proxy.
   const swUrl = new URL(`../sw.js?v=${CACHE_BUST}`, import.meta.url);
   const scope = new URL(`../`, import.meta.url);
+  const withTimeout = (p, ms) =>
+    Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
   try {
-    const reg = await navigator.serviceWorker.register(swUrl, { scope: scope.href, updateViaCache: "none" });
-    await reg.update().catch(() => {});
+    const reg = await withTimeout(
+      navigator.serviceWorker.register(swUrl, { scope: scope.href, updateViaCache: "none" }),
+      4000,
+    );
+    if (!reg) return false;
+    await withTimeout(reg.update().catch(() => {}), 2000);
     if (reg.waiting && navigator.serviceWorker.controller) {
       reg.waiting.postMessage({ type: "GC_SKIP_WAITING" });
     }
-    await navigator.serviceWorker.ready;
+    await withTimeout(navigator.serviceWorker.ready, 3000);
     if (!navigator.serviceWorker.controller) {
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 250));
     }
     return Boolean(navigator.serviceWorker.controller);
   } catch (err) {

@@ -161,9 +161,10 @@ a {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.7rem 0.85rem;
-  font-size: 15px;
   color: var(--text);
   font: inherit;
+  font-size: 16px; /* iOS Safari zooms inputs under 16px */
+  min-height: 48px;
 }
 
 .ho-goto input[type="search"]:focus {
@@ -280,6 +281,8 @@ a {
   background: var(--inset);
   color: var(--text);
   font: inherit;
+  font-size: 16px;
+  min-height: 48px;
 }
 
 .ho-row button,
@@ -330,15 +333,17 @@ a {
 }
 
 .ho-map {
-  height: min(48vh, 420px);
-  min-height: 260px;
+  height: min(52dvh, 440px);
+  min-height: 240px;
   border-radius: 12px;
   border: 1px solid var(--line);
   overflow: hidden;
   background: #000;
   margin-top: 0.35rem;
-  touch-action: manipulation;
+  /* Leaflet owns pan/pinch — manipulation breaks drag on some Android/iOS WebViews */
+  touch-action: none;
   cursor: crosshair;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .ho-map-panel {
@@ -350,6 +355,36 @@ a {
   height: 100%;
   background: #000;
   cursor: crosshair;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 640px) {
+  .ho-map {
+    height: min(46dvh, 380px);
+    min-height: 220px;
+    border-radius: 10px;
+  }
+
+  .ho-chip {
+    min-height: 44px;
+  }
+
+  .ho-goto-row {
+    flex-wrap: wrap;
+  }
+
+  .ho-goto button.primary {
+    min-height: 48px;
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .ho-map {
+    height: min(62dvh, 280px);
+    min-height: 180px;
+  }
 }
 
 .ho-locate-row {
@@ -860,6 +895,8 @@ a {
   background: var(--inset);
   color: var(--text);
   font: inherit;
+  font-size: 16px;
+  min-height: 48px;
 }
 
 .ho-opt {
@@ -916,8 +953,10 @@ a {
   position: relative;
   z-index: 1;
   width: min(100%, 440px);
-  max-height: min(92vh, 640px);
+  max-height: min(92dvh, 640px);
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   margin: 0;
   padding: 1.25rem 1.15rem calc(1.35rem + var(--safe-bottom));
   border-radius: 18px 18px 0 0;
@@ -925,6 +964,12 @@ a {
   border: 1px solid var(--line);
   border-bottom: 0;
   box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+}
+
+html.ho-gate-open,
+body.ho-gate-open {
+  overflow: hidden;
+  touch-action: none;
 }
 
 .ho-gate-sheet h2 {
