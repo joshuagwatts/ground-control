@@ -603,57 +603,100 @@ async function ensureStatewideSwdiForDays(days) {
   return false;
 }
 
-/** If the pin zoom shows no hail fill, ease out so the nearest zone is in view (OK roofs aren't "safe"). */
-function revealNearestHailIfOutOfView({ force = false } = {}) {
+/** Point-in-ring for [lat, lon] Trace rings. */
+function pointInHailRing(lat, lon, ring) {
+  if (!ring || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0];
+    const xi = ring[i][1];
+    const yj = ring[j][0];
+    const xj = ring[j][1];
+    const denom = yj - yi || 1e-12;
+    const intersect = (yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / denom + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * If roof zoom doesn't actually show any Trace vertices (statewide bbox ≠ on-screen),
+ * ease out to the nearest ring edge so homeowners see hail coverage.
+ */
+function revealNearestHailIfOutOfView(rings, { force = false } = {}) {
   const map = state.map;
-  if (!map || !state.overlay || !window.L) return;
+  if (!map || !window.L) return;
   if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return;
 
   const home = window.L.latLng(state.lat, state.lon);
   const view = map.getBounds?.();
   if (!view) return;
 
-  let anyInView = false;
-  let best = null;
-  state.overlay.eachLayer((layer) => {
-    let b = null;
-    try {
-      if (typeof layer.getBounds === "function") b = layer.getBounds();
-      else if (typeof layer.getLatLng === "function") b = window.L.latLngBounds([layer.getLatLng()]);
-    } catch {
-      return;
-    }
-    if (!b || (typeof b.isValid === "function" && !b.isValid())) return;
-    try {
-      if (view.intersects(b)) anyInView = true;
-    } catch {
-      /* ignore */
-    }
-    const center = b.getCenter?.() || home;
-    const dist = home.distanceTo(center);
-    if (!best || dist < best.dist) best = { dist, bounds: b };
-  });
-
+  const list = (rings || []).filter((r) => Array.isArray(r) && r.length >= 3);
   const sig = `${Number(state.lat).toFixed(4)}|${Number(state.lon).toFixed(4)}|${overlaySelectionSig()}`;
+
+  let anyInView = false;
+  let nearest = null;
+  for (const ring of list) {
+    if (pointInHailRing(home.lat, home.lng, ring)) anyInView = true;
+    for (const p of ring) {
+      const lat = Number(p[0]);
+      const lon = Number(p[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const ll = window.L.latLng(lat, lon);
+      try {
+        if (view.contains(ll)) anyInView = true;
+      } catch {
+        /* ignore */
+      }
+      const dist = home.distanceTo(ll);
+      if (!nearest || dist < nearest.dist) nearest = { dist, ll };
+    }
+  }
+
   if (anyInView) {
     lastZoneRevealSig = sig;
     return;
   }
-  if (!best) return;
+
+  // No Trace geometry yet — fall back to storm nearest-report distance.
+  if (!nearest) {
+    const storms = rankedStorms();
+    let minKm = Infinity;
+    for (const s of storms) {
+      if (!state.selected.has(s.date)) continue;
+      const d = Number(s.minDist);
+      if (Number.isFinite(d) && d < minKm) minKm = d;
+    }
+    if (!(minKm < 900)) return;
+    if (!force && sig === lastZoneRevealSig) return;
+    lastZoneRevealSig = sig;
+    const z = minKm < 2 ? 14 : minKm < 5 ? 12 : minKm < 12 ? 11 : minKm < 30 ? 10 : 9;
+    try {
+      map.setView(home, z, { animate: true });
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
   if (!force && sig === lastZoneRevealSig) return;
   lastZoneRevealSig = sig;
 
   try {
-    const fit = window.L.latLngBounds([home]);
-    fit.extend(best.bounds);
+    // Fit home + nearest edge only (not the whole statewide swath bbox).
+    const fit = window.L.latLngBounds([home, nearest.ll]);
     map.fitBounds(fit, {
-      padding: [48, 48],
-      maxZoom: 12,
+      padding: [64, 64],
+      maxZoom: 11,
       animate: true,
-      duration: 0.55,
     });
   } catch {
-    /* ignore */
+    try {
+      map.setView(home, nearest.dist < 5000 ? 12 : nearest.dist < 15000 ? 10 : 9, { animate: true });
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -693,6 +736,7 @@ async function paintOverlays() {
   const paintDays = (dayList) => {
     const dayPool = getHomeHailCache().hail || [];
     const renderer = hailFillRenderer();
+    const rings = [];
     state.overlay.clearLayers();
     for (const day of dayList) {
       const storm = ranked.find((s) => s.date === day);
@@ -709,6 +753,7 @@ async function paintOverlays() {
       const multi = dayList.length > 1;
       for (const band of bands) {
         if (!band?.ring?.length) continue;
+        rings.push(band.ring);
         const sz = Number(band.maxSize) || Number(storm?.maxSizeIn) || 1;
         const col = hailRadarBandColor(sz);
         const isolated = Boolean(band.isolated);
@@ -728,16 +773,25 @@ async function paintOverlays() {
         }).addTo(state.overlay);
       }
     }
+    return rings;
   };
 
-  paintDays(days);
-  revealNearestHailIfOutOfView({ force: true });
+  const reveal = (rings, force) => {
+    // Defer past pin setView / layout so we measure the real viewport.
+    requestAnimationFrame(() => {
+      setTimeout(() => revealNearestHailIfOutOfView(rings, { force }), 80);
+    });
+  };
 
-  // After local paint, pull statewide radar for these days (zoom-out Trace like field GC).
+  let rings = paintDays(days);
+  reveal(rings, true);
+
   const grew = await ensureStatewideSwdiForDays(days);
   if (grew) {
-    paintDays(days);
-    revealNearestHailIfOutOfView({ force: true });
+    rings = paintDays(days);
+    reveal(rings, true);
+  } else if (!rings.length) {
+    reveal([], true);
   }
 }
 
