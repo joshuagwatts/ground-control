@@ -9,6 +9,10 @@ import {
   hailRadarBandColor,
   hailMeshBandOpacity,
   reverseGeocode,
+  fetchSwdiHailForDays,
+  OK_SWDI_BBOX,
+  mergeHailRows,
+  isSwdiHail,
 } from "../wx.js";
 import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
 import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache, onHomeHailCache } from "./hail-load.js";
@@ -236,8 +240,8 @@ function ensureMap() {
   } catch {
     /* ignore */
   }
-  // Canvas for hail fills — SVG km-scale circles at roof zoom bring phones to their knees.
-  state.hailCanvas = window.L.canvas({ padding: 0.65 });
+  // Canvas for hail fills — wide padding so zoomed-out statewide Trace stays visible.
+  state.hailCanvas = window.L.canvas({ padding: 1.25 });
   state.overlay = window.L.layerGroup().addTo(state.map);
   state.map.on("click", (e) => {
     void selectHomeFromMap(e.latlng.lat, e.latlng.lng, { zoom: false });
@@ -511,13 +515,16 @@ function activateStormDate(date) {
   scheduleOverlayPaint({ immediate: true });
 }
 
-/** Throttle map rebuilds while years stream — always draw real HailTrace bands, never fake disks. */
+/** Throttle map rebuilds while years stream — Trace bands from LSR + statewide SWDI (like field GC). */
 let overlayPaintTimer = 0;
 let lastOverlayPaintAt = 0;
 let lastOverlaySig = "";
 let lastOverlayHailN = -1;
+let swdiEnrichGen = 0;
+const swdiEnrichedDays = new Set();
 const MAP_STREAM_DAYS = 1;
-const MAP_COLLECTION_DAYS = 3;
+const MAP_COLLECTION_DAYS = 5;
+const SWDI_DAY_MIN = 8;
 
 function overlaySelectionSig() {
   return [...state.selected].sort().join("|");
@@ -526,7 +533,8 @@ function overlaySelectionSig() {
 function hailFillRenderer() {
   ensureMap();
   if (state.map && window.L && !state.hailCanvas) {
-    state.hailCanvas = window.L.canvas({ padding: 0.65 });
+    // Wide padding so zoomed-out statewide Trace isn't clipped.
+    state.hailCanvas = window.L.canvas({ padding: 1.25 });
   }
   return state.hailCanvas || undefined;
 }
@@ -541,7 +549,7 @@ function scheduleOverlayPaint({ immediate = false } = {}) {
     lastOverlayPaintAt = Date.now();
     lastOverlaySig = overlaySelectionSig();
     lastOverlayHailN = getHomeHailCache().hail?.length || 0;
-    paintOverlays();
+    void paintOverlays();
   };
 
   const sig = overlaySelectionSig();
@@ -564,7 +572,37 @@ function scheduleOverlayPaint({ immediate = false } = {}) {
   overlayPaintTimer = setTimeout(run, delay);
 }
 
-function paintOverlays() {
+/** Pull NOAA SWDI for selected days across Oklahoma so zoom-out shows full swaths (field GC behavior). */
+async function ensureStatewideSwdiForDays(days) {
+  if (!Number.isFinite(state.lat) || !Number.isFinite(state.lon)) return false;
+  const cache = getHomeHailCache();
+  const need = (days || []).filter((d) => {
+    if (!d || swdiEnrichedDays.has(d)) return false;
+    const n = (cache.hail || []).filter(
+      (h) => String(h?.date || "").slice(0, 10) === d && isSwdiHail(h),
+    ).length;
+    return n < SWDI_DAY_MIN;
+  });
+  if (!need.length) return false;
+  const gen = ++swdiEnrichGen;
+  try {
+    const { rows } = await fetchSwdiHailForDays(state.lat, state.lon, 450, need, {
+      bbox: OK_SWDI_BBOX,
+    });
+    if (gen !== swdiEnrichGen) return false;
+    for (const d of need) swdiEnrichedDays.add(d);
+    if (rows?.length) {
+      cache.hail = mergeHailRows(cache.hail || [], rows);
+      return true;
+    }
+  } catch (err) {
+    console.warn("[HomeScope] SWDI day enrich", err);
+    for (const d of need) swdiEnrichedDays.add(d);
+  }
+  return false;
+}
+
+async function paintOverlays() {
   ensureMap();
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
@@ -584,7 +622,6 @@ function paintOverlays() {
   }
 
   const loading = Boolean(getHomeHailCache().loadingDeep);
-  // Cap date count for perf — still real Trace bands, just fewer days while streaming.
   const cap = loading
     ? MAP_STREAM_DAYS
     : state.overlayCollection
@@ -598,48 +635,51 @@ function paintOverlays() {
   }
   days.sort((a, b) => a.localeCompare(b));
 
-  const dayPool = getHomeHailCache().hail || [];
-  const renderer = hailFillRenderer();
-  let needHatch = false;
-
-  for (const day of days) {
-    const storm = ranked.find((s) => s.date === day);
-    const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
-    const seed = dayRows.length ? dayRows : storm?.zone_pts || [];
-    let bands = [];
-    try {
-      bands = buildHailTraceDayBands(day, seed) || [];
-    } catch (err) {
-      console.warn("[HomeScope] HailTrace bands failed", day, err);
-      bands = [];
+  const paintDays = (dayList) => {
+    const dayPool = getHomeHailCache().hail || [];
+    const renderer = hailFillRenderer();
+    state.overlay.clearLayers();
+    for (const day of dayList) {
+      const storm = ranked.find((s) => s.date === day);
+      const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
+      const seed = dayRows.length ? dayRows : storm?.zone_pts || [];
+      let bands = [];
+      try {
+        bands = buildHailTraceDayBands(day, seed) || [];
+      } catch (err) {
+        console.warn("[HomeScope] HailTrace bands failed", day, err);
+        bands = [];
+      }
+      const focused = day === state.mapFocusDate;
+      const multi = dayList.length > 1;
+      for (const band of bands) {
+        if (!band?.ring?.length) continue;
+        const sz = Number(band.maxSize) || Number(storm?.maxSizeIn) || 1;
+        const col = hailRadarBandColor(sz);
+        const isolated = Boolean(band.isolated);
+        const fillOp = isolated
+          ? 0.55
+          : hailMeshBandOpacity(sz) * (multi && !focused ? 0.72 : 1);
+        window.L.polygon([band.ring, ...(band.holes || [])], {
+          color: col.stroke,
+          weight: isolated ? 0.9 : focused ? 0.75 : 0.55,
+          fillColor: col.fill,
+          fillOpacity: fillOp,
+          opacity: isolated ? 0.55 : focused ? 0.5 : 0.35,
+          stroke: true,
+          smoothFactor: 1.8,
+          renderer,
+          className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
+        }).addTo(state.overlay);
+      }
     }
+  };
 
-    const focused = day === state.mapFocusDate;
-    const multi = days.length > 1;
-    for (const band of bands) {
-      if (!band?.ring?.length) continue;
-      const sz = Number(band.maxSize) || Number(storm?.maxSizeIn) || 1;
-      const col = hailRadarBandColor(sz);
-      const isolated = Boolean(band.isolated);
-      if (isolated) needHatch = true;
-      const fillOp = isolated
-        ? 0.55
-        : hailMeshBandOpacity(sz) * (multi && !focused ? 0.72 : 1);
-      window.L.polygon([band.ring, ...(band.holes || [])], {
-        color: col.stroke,
-        weight: isolated ? 0.9 : focused ? 0.75 : 0.55,
-        fillColor: col.fill,
-        fillOpacity: fillOp,
-        opacity: isolated ? 0.55 : focused ? 0.5 : 0.35,
-        stroke: true,
-        smoothFactor: 1.8,
-        renderer,
-        className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
-      }).addTo(state.overlay);
-    }
-  }
+  paintDays(days);
 
-  if (needHatch && state.hailSvg?._container) ensureHomeHailHatch(state.hailSvg._container);
+  // After local paint, pull statewide radar for these days (zoom-out Trace like field GC).
+  const grew = await ensureStatewideSwdiForDays(days);
+  if (grew) paintDays(days);
 }
 
 function hitLabel(hit) {
@@ -779,6 +819,8 @@ async function selectAddressHit(hit, { force = true } = {}) {
       lastOverlayPaintAt = 0;
       lastOverlaySig = "";
       lastOverlayHailN = -1;
+      swdiEnrichGen += 1;
+      swdiEnrichedDays.clear();
     }
     state.address = label;
     state.lat = lat;

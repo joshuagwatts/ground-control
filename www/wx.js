@@ -1080,7 +1080,7 @@ export function spotterSwdiBbox(days, pool, anchor = null) {
   return `${(minLon - pad).toFixed(4)},${(minLat - pad).toFixed(4)},${(maxLon + pad).toFixed(4)},${(maxLat + pad).toFixed(4)}`;
 }
 
-async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOverride } = {}) {
+export async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: bboxOverride } = {}) {
   const range = swdiApiDateRange(isoDays);
   if (!range) return { rows: [], raw: 0, err: "bad-days" };
   const { start, end, days } = range;
