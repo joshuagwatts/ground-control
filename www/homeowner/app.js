@@ -32,6 +32,8 @@ const state = {
   storms: [],
   selected: new Set(),
   mapFocusDate: null,
+  /** True until the homeowner taps a date — starter pack overlays all top-N together. */
+  overlayCollection: true,
   listLimit: LIST_PAGE,
   map: null,
   marker: null,
@@ -287,6 +289,22 @@ function autoSelectTopStorms(storms = state.storms, sort = state.stormSort, n = 
   return new Set(ranked.slice(0, n).map((s) => s.date));
 }
 
+/** Tap a list date: first tap isolates from the starter pack; later taps toggle overlays. */
+function activateStormDate(date) {
+  const d = String(date || "").slice(0, 10);
+  if (!d) return;
+  if (state.overlayCollection) {
+    state.overlayCollection = false;
+    state.selected = new Set([d]);
+  } else if (state.selected.has(d)) {
+    if (state.selected.size > 1) state.selected.delete(d);
+  } else {
+    state.selected.add(d);
+  }
+  state.mapFocusDate = d;
+  paintStormList();
+}
+
 function paintOverlays() {
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
@@ -297,65 +315,83 @@ function paintOverlays() {
   if (Number.isFinite(homeLat) && Number.isFinite(homeLon)) bounds.push([homeLat, homeLon]);
 
   const ranked = rankedStorms();
-  // HailScope Trace draw is a single storm-day swath — not 10 metro meshes stacked.
-  const focus =
-    state.mapFocusDate && ranked.some((s) => s.date === state.mapFocusDate)
-      ? state.mapFocusDate
-      : ranked[0]?.date || null;
-  if (!focus) {
+  let days = [...state.selected].filter((d) => ranked.some((s) => s.date === d));
+  if (!days.length && ranked[0]) {
+    days = [ranked[0].date];
+    state.selected = new Set(days);
+    state.mapFocusDate = days[0];
+  }
+  if (!days.length) {
     if (Number.isFinite(homeLat) && state.map) state.map.setView([homeLat, homeLon], 14);
     return;
   }
-  state.mapFocusDate = focus;
+  // Oldest first so newer / focused swaths paint on top.
+  days.sort((a, b) => a.localeCompare(b));
+  if (!state.mapFocusDate || !days.includes(state.mapFocusDate)) {
+    state.mapFocusDate = days[days.length - 1];
+  }
 
   const dayPool = getHomeHailCache().hail || [];
-  const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === focus);
-  let bands = [];
-  try {
-    bands = buildHailTraceDayBands(focus, dayRows) || [];
-  } catch (err) {
-    console.warn("[HomeScope] HailTrace bands failed", focus, err);
-    bands = [];
-  }
-
   let needHatch = false;
-  for (const band of bands) {
-    if (!band?.ring?.length) continue;
-    const sz = Number(band.maxSize) || 1;
-    const col = hailRadarBandColor(sz);
-    const isolated = Boolean(band.isolated);
-    if (isolated) needHatch = true;
-    const latLngs = [band.ring, ...(band.holes || [])];
-    window.L.polygon(latLngs, {
-      color: col.stroke,
-      weight: isolated ? 0.9 : 0.65,
-      fillColor: isolated ? "url(#gc-hail-hatch)" : col.fill,
-      fillOpacity: isolated ? 0.72 : hailMeshBandOpacity(sz),
-      opacity: isolated ? 0.65 : 0.45,
-      stroke: true,
-      smoothFactor: 1.8,
-      renderer: state.hailSvg || undefined,
-      className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
-    }).addTo(state.overlay);
-    for (const ll of band.ring) {
-      if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
-    }
-  }
+  const seenSpot = new Set();
+  let spotBudget = 120;
 
-  const spotPts = dayRows.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p));
-  const seen = new Set();
-  for (const p of spotPts.slice(0, 100)) {
-    const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    window.L.circleMarker([p.lat, p.lon], {
-      radius: 5,
-      color: "#ffffff",
-      weight: 1.4,
-      fillColor: "#ff2d2d",
-      fillOpacity: 0.95,
-    }).addTo(state.overlay);
-    bounds.push([p.lat, p.lon]);
+  for (const day of days) {
+    const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
+    let bands = [];
+    try {
+      bands = buildHailTraceDayBands(day, dayRows) || [];
+    } catch (err) {
+      console.warn("[HomeScope] HailTrace bands failed", day, err);
+      bands = [];
+    }
+
+    const focused = day === state.mapFocusDate;
+    const multi = days.length > 1;
+    for (const band of bands) {
+      if (!band?.ring?.length) continue;
+      const sz = Number(band.maxSize) || 1;
+      const col = hailRadarBandColor(sz);
+      const isolated = Boolean(band.isolated);
+      if (isolated) needHatch = true;
+      const fillOp = isolated
+        ? 0.72
+        : hailMeshBandOpacity(sz) * (multi && !focused ? 0.72 : 1);
+      const latLngs = [band.ring, ...(band.holes || [])];
+      window.L.polygon(latLngs, {
+        color: col.stroke,
+        weight: isolated ? 0.9 : focused ? 0.75 : 0.55,
+        fillColor: isolated ? "url(#gc-hail-hatch)" : col.fill,
+        fillOpacity: fillOp,
+        opacity: isolated ? 0.65 : focused ? 0.5 : 0.35,
+        stroke: true,
+        smoothFactor: 1.8,
+        renderer: state.hailSvg || undefined,
+        className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
+      }).addTo(state.overlay);
+      for (const ll of band.ring) {
+        if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
+      }
+    }
+
+    const spotPts = dayRows.filter(
+      (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p),
+    );
+    for (const p of spotPts) {
+      if (spotBudget <= 0) break;
+      const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
+      if (seenSpot.has(key)) continue;
+      seenSpot.add(key);
+      spotBudget -= 1;
+      window.L.circleMarker([p.lat, p.lon], {
+        radius: 5,
+        color: "#ffffff",
+        weight: 1.4,
+        fillColor: "#ff2d2d",
+        fillOpacity: 0.95,
+      }).addTo(state.overlay);
+      bounds.push([p.lat, p.lon]);
+    }
   }
 
   if (needHatch && state.hailSvg?._container) ensureHomeHailHatch(state.hailSvg._container);
@@ -493,6 +529,7 @@ async function selectAddressHit(hit) {
     if (moved) {
       clearHomeHailCache();
       state.mapFocusDate = null;
+      state.overlayCollection = true;
       state.listLimit = LIST_PAGE;
     }
     state.address = label;
@@ -600,12 +637,8 @@ function paintStormList({ loading = false } = {}) {
       .join(" · ");
     li.innerHTML = `<span class="sz" style="color:${col.fill}">${Number(s.maxSizeIn).toFixed(2)}″</span>
       <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"} · nearest ${Number(s.minDist).toFixed(1)} km</span></span>
-      <span class="meta">${focused ? "On map" : on ? "In report" : "#" + (idx + 1)}</span>`;
-    const activate = () => {
-      state.mapFocusDate = s.date;
-      if (!state.selected.has(s.date)) state.selected.add(s.date);
-      paintStormList();
-    };
+      <span class="meta">${on ? (focused && state.selected.size === 1 ? "This day" : "On map") : "Tap to add"}</span>`;
+    const activate = () => activateStormDate(s.date);
     li.addEventListener("click", activate);
     li.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -640,12 +673,14 @@ function applyStormResult(result, { loading = false, reseatSelection = true } = 
   if (reseatSelection) {
     state.listLimit = LIST_PAGE;
     state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
+    state.overlayCollection = true;
   } else {
     for (const d of [...state.selected]) {
       if (!state.storms.some((s) => s.date === d)) state.selected.delete(d);
     }
     if (!state.selected.size && state.storms.length) {
       state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
+      state.overlayCollection = true;
     } else {
       autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     }
@@ -665,12 +700,18 @@ function applyStormResult(result, { loading = false, reseatSelection = true } = 
     return;
   }
   const still = loading || result.loading;
+  const overlayN = state.selected.size;
+  const mapLabel = state.overlayCollection
+    ? `${overlayN} dates overlaid (tap one to isolate)`
+    : overlayN > 1
+      ? `${overlayN} dates overlaid · last: ${focus || "—"}`
+      : `map: ${focus || "—"}`;
   setStatus(
     status,
     still
       ? `Loading… ${state.storms.length} covering date(s) so far · ${result.hailRowCount || 0} reports.${note}`
       : state.storms.length
-        ? `${state.storms.length} verified covering · map: ${focus || "—"} (${sortLabel}) · NOAA SWDI / SPC / IEM.${note}`
+        ? `${state.storms.length} verified covering · ${mapLabel} (${sortLabel}) · NOAA SWDI / SPC / IEM.${note}`
         : `No storms ≥${state.minHailIn}″ with verified cover in ~${state.years} years.${note}`,
   );
 }
@@ -720,9 +761,16 @@ async function refreshStorms({ force = false } = {}) {
       years: state.years,
       minHailIn: state.minHailIn,
       force,
-      onPartial: (part) => applyIfCurrent(part, { loading: Boolean(part.loading), reseatSelection: true }),
+      onPartial: (part) =>
+        applyIfCurrent(part, {
+          loading: Boolean(part.loading),
+          reseatSelection: state.overlayCollection,
+        }),
     });
-    applyIfCurrent(result, { loading: Boolean(result.loading), reseatSelection: true });
+    applyIfCurrent(result, {
+      loading: Boolean(result.loading),
+      reseatSelection: state.overlayCollection,
+    });
   } catch (err) {
     if (gen !== refreshStorms._gen) return;
     paintStormList({ loading: false });
@@ -1170,11 +1218,9 @@ function boot() {
     state.stormSort = v === "recent" ? "recent" : "intense";
     if (!state.storms.length) return;
     state.mapFocusDate = null;
-    state.listLimit = LIST_PAGE;
-    state.selected = autoSelectTopStorms(state.storms, state.stormSort, TOP_STORM_N);
     applyStormResult(
       { storms: state.storms, hailRowCount: getHomeHailCache().hail?.length || 0, loading: false, note: null },
-      { loading: false, reseatSelection: false },
+      { loading: false, reseatSelection: true },
     );
   });
 
@@ -1196,10 +1242,11 @@ function boot() {
     const cache = getHomeHailCache();
     if (!cache.hail?.length) return;
     const result = filterCachedHomeStorms({ years: state.years, minHailIn: state.minHailIn });
-    // While history is still filling, keep reseating top-10 so we don't freeze on the first 2 dates.
+    // While history is still filling, keep reseating the starter pack — but never after the
+    // homeowner has tapped a date (isolate / multi-overlay mode).
     applyStormResult(result, {
       loading: Boolean(result.loading),
-      reseatSelection: Boolean(result.loading || cache.loadingDeep),
+      reseatSelection: Boolean(result.loading || cache.loadingDeep) && state.overlayCollection,
     });
   });
 
