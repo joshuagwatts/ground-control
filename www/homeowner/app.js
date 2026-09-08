@@ -469,11 +469,17 @@ function paintSuggestions(hits, { emptyMsg = "" } = {}) {
     btn.id = `addr-opt-${i}`;
     const main = hitLabel(hit);
     btn.innerHTML = `<span class="ho-suggest-main">${escapeHtml(main)}</span>
-      <span class="ho-suggest-meta">Tap to use this address</span>`;
+      <span class="ho-suggest-meta">Tap to search this address</span>`;
+    // Keep focus in the field (so the list doesn't dismiss before click lands),
+    // then run the same path as the Search button.
     btn.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      void selectAddressHit(hit);
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void submitAddressSearch({ hit });
     });
     li.appendChild(btn);
     box.appendChild(li);
@@ -488,7 +494,7 @@ function highlightSuggest(idx) {
   if (input && idx >= 0) input.setAttribute("aria-activedescendant", `addr-opt-${idx}`);
 }
 
-async function selectAddressHit(hit) {
+async function selectAddressHit(hit, { force = true } = {}) {
   const status = $("#addr-status");
   setStatus(status, "Locking address…");
   clearSuggestions();
@@ -515,7 +521,7 @@ async function selectAddressHit(hit) {
       !Number.isFinite(state.lat) ||
       Math.abs(state.lat - lat) > 1e-5 ||
       Math.abs(state.lon - lon) > 1e-5;
-    if (moved) {
+    if (moved || force) {
       clearHomeHailCache();
       state.mapFocusDate = null;
       state.overlayCollection = true;
@@ -530,9 +536,36 @@ async function selectAddressHit(hit) {
     setStep("storms");
     pinHome(lat, lon);
     paintStormList({ loading: true });
-    await refreshStorms({ force: moved });
+    await refreshStorms({ force: moved || force });
   } catch (err) {
     setStatus(status, err?.message || "Address lookup failed", true);
+  }
+}
+
+/** Same path for Search button, Enter, and tapping a suggestion. */
+async function submitAddressSearch({ hit = null } = {}) {
+  const status = $("#addr-status");
+  const go = $("#addr-go");
+  const q = $("#addr-q")?.value || "";
+  if (go) go.disabled = true;
+  try {
+    if (hit) {
+      setStatus(status, "Looking up Oklahoma address…");
+      await selectAddressHit(hit, { force: true });
+      return;
+    }
+    if (state.suggestHits.length && state.suggestIdx >= 0) {
+      setStatus(status, "Looking up Oklahoma address…");
+      await selectAddressHit(state.suggestHits[state.suggestIdx], { force: true });
+      return;
+    }
+    setStatus(status, "Looking up Oklahoma address…");
+    const found = await lookupAddress(q);
+    await selectAddressHit(found.hit || found, { force: true });
+  } catch (err) {
+    setStatus(status, err?.message || "Lookup failed", true);
+  } finally {
+    if (go) go.disabled = false;
   }
 }
 
@@ -1180,23 +1213,7 @@ function boot() {
 
   $("#addr-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const status = $("#addr-status");
-    const go = $("#addr-go");
-    const q = $("#addr-q")?.value || "";
-    if (state.suggestHits.length && state.suggestIdx >= 0) {
-      await selectAddressHit(state.suggestHits[state.suggestIdx]);
-      return;
-    }
-    if (go) go.disabled = true;
-    setStatus(status, "Looking up Oklahoma address…");
-    try {
-      const hit = await lookupAddress(q);
-      await selectAddressHit(hit.hit || hit);
-    } catch (err) {
-      setStatus(status, err?.message || "Lookup failed", true);
-    } finally {
-      if (go) go.disabled = false;
-    }
+    await submitAddressSearch();
   });
 
   $("#addr-q")?.addEventListener("input", (e) => {
@@ -1214,6 +1231,9 @@ function boot() {
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       highlightSuggest(Math.max(0, state.suggestIdx - 1));
+    } else if (e.key === "Enter" && state.suggestIdx >= 0) {
+      e.preventDefault();
+      void submitAddressSearch({ hit: state.suggestHits[state.suggestIdx] });
     } else if (e.key === "Escape") {
       clearSuggestions();
     }
