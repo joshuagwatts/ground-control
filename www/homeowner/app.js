@@ -4,15 +4,14 @@
 import { APP_VERSION } from "../version.js";
 import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
 import { PRODUCT, CLAIM_RULES, homescopeRecommendation } from "./product.js";
-import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache } from "./hail-load.js";
 import {
-  buildHomeHailZoneBands,
+  buildHailTraceDayBands,
   hailRadarBandColor,
-  hailSpotterZoneColor,
   hailMeshBandOpacity,
   isSpotterHail,
 } from "../wx.js";
 import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
+import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache } from "./hail-load.js";
 
 const LEAD_KEY = "homescope_lead_v1";
 const TOP_STORM_N = 10;
@@ -201,6 +200,7 @@ function ensureMap() {
     subdomains: "0123",
   }).addTo(state.map);
   window.L.control.zoom({ position: "bottomright" }).addTo(state.map);
+  state.hailSvg = window.L.svg({ padding: 0.85 });
   state.overlay = window.L.layerGroup().addTo(state.map);
   return state.map;
 }
@@ -222,10 +222,41 @@ function pinHome(lat, lon) {
   requestAnimationFrame(() => map.invalidateSize());
 }
 
-function colorForHailSize(sizeIn, { spotter = false, radar = false } = {}) {
-  if (spotter) return hailSpotterZoneColor(sizeIn);
-  if (radar) return hailRadarBandColor(sizeIn);
+function colorForHailSize(sizeIn) {
   return hailRadarBandColor(sizeIn);
+}
+
+/** Leaflet SVG hatch for HailTrace pale fringe bands (same pattern as field HailScope). */
+function ensureHomeHailHatch(svgRoot) {
+  if (!svgRoot || svgRoot.querySelector("#gc-hail-hatch")) return;
+  const NS = "http://www.w3.org/2000/svg";
+  const defs =
+    svgRoot.querySelector("defs") ||
+    (() => {
+      const d = document.createElementNS(NS, "defs");
+      svgRoot.insertBefore(d, svgRoot.firstChild);
+      return d;
+    })();
+  const pattern = document.createElementNS(NS, "pattern");
+  pattern.setAttribute("id", "gc-hail-hatch");
+  pattern.setAttribute("patternUnits", "userSpaceOnUse");
+  pattern.setAttribute("width", "10");
+  pattern.setAttribute("height", "10");
+  pattern.setAttribute("patternTransform", "rotate(45)");
+  const base = document.createElementNS(NS, "rect");
+  base.setAttribute("width", "10");
+  base.setAttribute("height", "10");
+  base.setAttribute("fill", "rgba(255, 245, 157, 0.55)");
+  const line = document.createElementNS(NS, "line");
+  line.setAttribute("x1", "0");
+  line.setAttribute("y1", "0");
+  line.setAttribute("x2", "0");
+  line.setAttribute("y2", "10");
+  line.setAttribute("stroke", "rgba(120, 110, 60, 0.45)");
+  line.setAttribute("stroke-width", "2");
+  pattern.appendChild(base);
+  pattern.appendChild(line);
+  defs.appendChild(pattern);
 }
 
 function rankedStorms(storms = state.storms, sort = state.stormSort) {
@@ -251,82 +282,83 @@ function autoSelectTopStorms(storms = state.storms, sort = state.stormSort, n = 
 function paintOverlays() {
   if (!state.overlay || !window.L) return;
   state.overlay.clearLayers();
+  const map = state.map;
+  if (map && !state.hailSvg) state.hailSvg = window.L.svg({ padding: 0.85 });
   const homeLat = state.lat;
   const homeLon = state.lon;
   const bounds = [];
   if (Number.isFinite(homeLat) && Number.isFinite(homeLon)) bounds.push([homeLat, homeLon]);
   let anySelected = false;
   const dayPool = getHomeHailCache().hail || [];
+  let needHatch = false;
 
   for (const s of rankedStorms()) {
     if (!state.selected.has(s.date)) continue;
     anySelected = true;
-    const zone = {
-      ...(s.raw || {}),
-      date: s.date,
-      lat: s.raw?.lat ?? homeLat,
-      lon: s.raw?.lon ?? homeLon,
-      size_in: s.maxSizeIn,
-      max_size: s.maxSizeIn,
-      zone_pts: s.zone_pts || s.raw?.zone_pts || [],
-      zone_r_km: s.raw?.zone_r_km,
-      source: s.raw?.source,
-    };
     const day = String(s.date || "").slice(0, 10);
     const dayRows = dayPool.filter((p) => String(p?.date || "").slice(0, 10) === day);
 
     let bands = [];
     try {
-      // Same HailScope fill path — full-day SWDI/MESH rows, not collapsed near-roof crumbs.
-      bands = buildHomeHailZoneBands(zone, dayRows) || [];
+      // Field HailScope selected-day path: nested HailTrace swaths + size colors.
+      bands = buildHailTraceDayBands(day, dayRows) || [];
     } catch (err) {
-      console.warn("[HomeScope] zone bands failed", s.date, err);
+      console.warn("[HomeScope] HailTrace bands failed", day, err);
       bands = [];
     }
 
     for (const band of bands) {
       if (!band?.ring?.length) continue;
       const sz = Number(band.maxSize) || Number(s.maxSizeIn) || 1;
-      const src = String(band.source || "");
-      const isSpot = src === "spotter" || (band.confirmed === true && !/radar|swdi|mesh/i.test(src));
-      const isRadar = /radar|swdi|mesh/i.test(src) || (!isSpot && src !== "hail");
-      const col = isSpot ? hailSpotterZoneColor(sz) : hailRadarBandColor(sz);
-      const fillOp = isSpot
-        ? Math.min(0.42, 0.22 + sz * 0.06)
-        : Math.min(0.58, Math.max(0.28, hailMeshBandOpacity(sz) * 0.85));
-      window.L.polygon(band.ring, {
+      const col = hailRadarBandColor(sz);
+      const isolated = Boolean(band.isolated);
+      if (isolated) needHatch = true;
+      const latLngs = [band.ring, ...(band.holes || [])];
+      window.L.polygon(latLngs, {
         color: col.stroke,
-        weight: isSpot ? 1.6 : 1.2,
-        fillColor: col.fill,
-        fillOpacity: fillOp,
-        opacity: isRadar ? 0.75 : 0.9,
-        dashArray: isSpot ? "5 4" : null,
+        weight: isolated ? 0.9 : 0.65,
+        fillColor: isolated ? "url(#gc-hail-hatch)" : col.fill,
+        fillOpacity: isolated ? 0.72 : hailMeshBandOpacity(sz),
+        opacity: isolated ? 0.65 : 0.42,
+        stroke: true,
+        smoothFactor: 1.8,
+        renderer: state.hailSvg || undefined,
+        className: isolated ? "wx-hail-topo wx-hail-isolated" : "wx-hail-topo",
       }).addTo(state.overlay);
       for (const ll of band.ring) {
         if (Number.isFinite(ll[0]) && Number.isFinite(ll[1])) bounds.push(ll);
       }
     }
 
-    // Spotter dots on top of swaths (HailTrace-style) — never a substitute for zones.
-    const spotPts = [...(zone.zone_pts || []), ...dayRows]
+    // Spotter reports as dots on the swath — never filled red hulls.
+    const spotPts = dayRows
       .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && isSpotterHail(p))
-      .filter((p) => (Number(p.distance_km) || 999) <= 25);
+      .filter((p) => {
+        if (!Number.isFinite(homeLat)) return true;
+        const d = Number(p.distance_km);
+        if (Number.isFinite(d) && d < 900) return d <= 40;
+        return true;
+      });
     const seen = new Set();
-    for (const p of spotPts.slice(0, 60)) {
+    for (const p of spotPts.slice(0, 80)) {
       const key = `${Number(p.lat).toFixed(4)}|${Number(p.lon).toFixed(4)}`;
       if (seen.has(key)) continue;
       seen.add(key);
       const pSz = Number(p.size_in) || Number(s.maxSizeIn) || 1;
-      const col = hailSpotterZoneColor(pSz);
+      const col = hailRadarBandColor(pSz);
       window.L.circleMarker([p.lat, p.lon], {
         radius: 5,
-        color: "#fff",
-        weight: 1.5,
-        fillColor: col.fill,
+        color: "#ffffff",
+        weight: 1.4,
+        fillColor: "#ff2d2d",
         fillOpacity: 0.95,
       }).addTo(state.overlay);
       bounds.push([p.lat, p.lon]);
     }
+  }
+
+  if (needHatch && state.hailSvg?._container) {
+    ensureHomeHailHatch(state.hailSvg._container);
   }
 
   if (anySelected && state.map && bounds.length >= 2) {
@@ -546,7 +578,7 @@ function paintStormList({ loading = false } = {}) {
     const on = state.selected.has(s.date);
     const li = document.createElement("li");
     li.className = on ? "on" : "";
-    const col = colorForHailSize(s.maxSizeIn, { radar: /radar/i.test(s.sources) });
+    const col = colorForHailSize(s.maxSizeIn);
     const how = [
       s.coversNear ? "near roof" : null,
       s.coversPolygon ? "zone over home" : null,

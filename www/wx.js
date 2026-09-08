@@ -5623,53 +5623,48 @@ function zoneHitPool(zone, rawPts) {
 function buildDetailedZoneRings(zone, rawPts) {
   // Storm-date mode: radar swaths drawn once in drawStormRadarSwathLayers; spotters are dots only.
   if (hasSelectedStormDates()) return [];
-  return buildHomeHailZoneBands(zone, rawPts);
+  // Pin / calendar browse — HailTrace nested swaths (never old convex-hull red blobs).
+  return buildHailTraceDayBands(parseStormDay(zone.date) || zone.date, rawPts);
 }
 
 /**
- * HomeScope / pin-mode zone bands — same geometry path as HailScope fills.
- * Uses the full day’s raw hail rows (not just collapsed near-roof points) so MESH/SWDI swaths actually draw.
+ * HailTrace-style nested size contours for one storm day.
+ * Same mesh as field HailScope selected-day swaths: SWDI/MESH + spotter kernels,
+ * stacked holes, radar size colors — not topoZoneRing / spotter hull fills.
  */
+export function buildHailTraceDayBands(dayKey, dayRows = []) {
+  const key = parseStormDay(dayKey) || String(dayKey || "").slice(0, 10);
+  const dayPts = (dayRows || []).filter(
+    (p) =>
+      Number.isFinite(p.lat) &&
+      Number.isFinite(p.lon) &&
+      (!key || stormDayMatches(p.date, key) || String(p.date || "").slice(0, 10) === key),
+  );
+  const radarPts = capRadarPtsForMesh(dayPts.filter(isSwdiHail), SWDI_MESH_PT_CAP);
+  const spotPts = dayPts.filter(isSpotterHail).slice(0, 80);
+  // HailTrace metro coverage often exists where SWDI is empty — seed from spotters too.
+  const meshPts = radarPts.length ? [...radarPts, ...spotPts] : spotPts;
+  if (!meshPts.length) return [];
+  const anchor = {
+    date: key,
+    lat: meshPts.reduce((s, p) => s + p.lat, 0) / meshPts.length,
+    lon: meshPts.reduce((s, p) => s + p.lon, 0) / meshPts.length,
+    size_in: Math.max(...meshPts.map((p) => parseFloat(p.size_in) || 0), 0.75),
+  };
+  const bands = cachedStormSwathBands(key || "day", meshPts, anchor);
+  return bands.map((b) => ({
+    ...b,
+    source: radarPts.length ? "radar" : "mesh",
+    isolated: isIsolatedHailBand(b),
+    maxSize: Number(b.maxSize) || parseFloat(anchor.size_in) || 0.75,
+  }));
+}
+
+/** @deprecated alias — HomeScope / older callers */
 export function buildHomeHailZoneBands(zone = {}, dayRows = []) {
-  const pool = capRadarPtsForMesh(zoneHitPool(zone, dayRows));
-  if (!pool.length) {
-    if (!Number.isFinite(Number(zone.lat)) || !Number.isFinite(Number(zone.lon))) return [];
-    return [
-      {
-        ring: topoZoneRing(zone, []),
-        maxSize: parseFloat(zone.max_size || zone.size_in) || 0.75,
-        hits: 1,
-        confirmed: false,
-        source: "hail",
-      },
-    ];
-  }
-  const radar = pool.filter(isRadarHail);
-  if (radar.length) {
-    const rings = buildHailSwathRings(radar, zone, { includeSpotters: false }) || [];
-    return rings.map((r) => ({
-      ...r,
-      source: r.source || "radar",
-      maxSize: Number(r.maxSize) || parseFloat(zone.max_size || zone.size_in) || 0.75,
-    }));
-  }
-  const spots = pool.filter(isSpotterHail);
-  if (!spots.length) return [];
-  return [
-    {
-      ring: topoZoneRing(
-        { ...zone, size_in: zone.size_in || zone.max_size || spots[0].size_in },
-        spots,
-      ),
-      maxSize: Math.max(
-        ...spots.map((p) => parseFloat(p.size_in) || 0),
-        parseFloat(zone.max_size || zone.size_in) || 0.75,
-      ),
-      hits: spots.length,
-      confirmed: true,
-      source: "spotter",
-    },
-  ];
+  const day = parseStormDay(zone.date) || String(zone.date || "").slice(0, 10);
+  const rows = dayRows?.length ? dayRows : zone.zone_pts || [];
+  return buildHailTraceDayBands(day, rows);
 }
 
 function topoZoneRing(zone, rawPts) {
@@ -5902,22 +5897,16 @@ function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFi
     const dayPts = (zoneRows || []).filter(
       (p) => stormDayMatches(p.date, dayKey) && Number.isFinite(p.lat) && Number.isFinite(p.lon),
     );
-    const radarPts = capRadarPtsForMesh(dayPts.filter(isSwdiHail), SWDI_MESH_PT_CAP);
-    const spotPts = dayPts.filter(isSpotterHail).slice(0, 80);
-    // HailTrace metro coverage often exists where SWDI is empty — seed from spotters too.
-    const meshPts = radarPts.length ? [...radarPts, ...spotPts] : spotPts;
-    if (!meshPts.length) continue;
+    const bands = buildHailTraceDayBands(dayKey, dayPts);
+    if (!bands.length) continue;
     const anchor = {
       date: dayKey,
-      lat: meshPts.reduce((s, p) => s + p.lat, 0) / meshPts.length,
-      lon: meshPts.reduce((s, p) => s + p.lon, 0) / meshPts.length,
-      size_in: Math.max(...meshPts.map((p) => parseFloat(p.size_in) || 0), 0.75),
+      size_in: Math.max(...bands.map((b) => Number(b.maxSize) || 0), 0.75),
     };
-    const bands = cachedStormSwathBands(dayKey, meshPts, anchor);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(anchor.size_in) || 0.75;
       const col = hailRadarBandColor(sz);
-      const isIsolated = isIsolatedHailBand(sub);
+      const isIsolated = sub.isolated || isIsolatedHailBand(sub);
       const latLngs = [sub.ring, ...(sub.holes || [])];
       fitPts.push(...sub.ring);
       const poly = window.L.polygon(latLngs, {
@@ -5941,7 +5930,7 @@ function drawStormRadarSwathLayers(day, zoneRows, hailLayer, fitPts, hailRadarFi
         confirmed: false,
         size: sz,
         kind: "fill",
-        radar: radarPts.length > 0,
+        radar: /radar/i.test(String(sub.source || "")),
         outer: true,
       });
     }
@@ -6043,6 +6032,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
     const zoneDay = parseStormDay(h.date);
+    // Selected storm days: swaths live on hailSwathLayer only (no duplicate / old hulls here).
+    if (stormOn) continue;
     const dayHits = zoneHitPool(h, zoneRows);
     const pin = pinCoords();
     const zoneHits =
@@ -6051,69 +6042,41 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
           ? dayHits.filter((p) => hitDistKm(p) <= HOUSE_ZONE_KM)
           : dayHits
         : dayHits;
-    const subRings = [];
-    for (const sub of buildDetailedZoneRings(h, zoneHits)) subRings.push(sub);
-    if (!subRings.length && zoneHits.length && !stormOn) {
-      const radarHits = zoneHits.filter(isRadarHail);
-      if (radarHits.length) subRings.push(...buildHailSwathRings(radarHits, h));
-      else {
-        const spotsOnly = zoneHits.filter(isSpotterHail);
-        if (spotsOnly.length) {
-          subRings.push({
-            ring: topoZoneRing(h, spotsOnly),
-            maxSize: Math.max(...spotsOnly.map((p) => parseFloat(p.size_in) || 0), parseFloat(h.size_in) || 0.75),
-            hits: spotsOnly.length,
-            confirmed: true,
-            source: "spotter",
-          });
-        }
-      }
+    let bands = buildDetailedZoneRings(h, zoneHits);
+    if (!bands.length && zoneHits.length) {
+      bands = buildHailTraceDayBands(zoneDay || h.date, zoneHits);
     }
-    subRings.sort((a, b) => (Number(a.maxSize) || 0) - (Number(b.maxSize) || 0));
-    const bands = stackHailBandPolys(subRings);
-    if (bands.length && zoneDay) hailZoneDays.add(zoneDay);
+    if (!bands.length) continue;
+    if (zoneDay) hailZoneDays.add(zoneDay);
     for (const sub of bands) {
       const sz = sub.maxSize || parseFloat(h.size_in);
-      const isMixed = sub.source === "spot+radar";
-      const isSwdiZone = !isMixed && /radar|mesh|swdi/i.test(String(sub.source || ""));
-      const isSpotZone = sub.source === "spotter";
-      const isConfirm = isMixed || isSpotZone || (Boolean(sub.confirmed) && !isSwdiZone);
-      const col = isSpotZone ? hailSpotterZoneColor(sz) : isSwdiZone ? hailRadarBandColor(sz) : hailZoneColor(sz);
-      const fillPane = isSwdiZone ? "hailRadarFills" : isSpotZone ? "hailSpotFills" : "hailFills";
-      const fillRenderer = isSwdiZone ? hailRadarFillSvg : isSpotZone ? hailSpotFillSvg : hailFillSvg;
-      const isIsolated = isSwdiZone && isIsolatedHailBand(sub);
-      const fillOpacity = isSwdiZone
-        ? hailMeshBandOpacity(sz) * (isIsolated ? 0.55 : 1)
-        : hailLayerFillOpacity(sz);
+      const col = hailRadarBandColor(sz);
+      const isIsolated = sub.isolated || isIsolatedHailBand(sub);
+      const fillOpacity = hailMeshBandOpacity(sz) * (isIsolated ? 0.55 : 1);
       fitPts.push(...sub.ring);
       const latLngs = [sub.ring, ...(sub.holes || [])];
       const poly = window.L.polygon(latLngs, {
         color: col.stroke,
         fillColor: isIsolated ? "url(#gc-hail-hatch)" : col.fill,
-        fillOpacity: isIsolated ? 0.85 : fillOpacity,
-        weight: isSwdiZone ? 0.7 : 1.2,
-        opacity: isIsolated ? 0.72 : isSwdiZone ? 0.4 : 0.7,
-        dashArray: isIsolated ? "5 4" : null,
+        fillOpacity: isIsolated ? 0.72 : fillOpacity,
+        weight: isIsolated ? 0.9 : 0.6,
+        opacity: isIsolated ? 0.65 : 0.4,
+        dashArray: null,
         stroke: true,
         smoothFactor: 1.8,
-        pane: fillPane,
-        renderer: fillRenderer,
+        pane: "hailRadarFills",
+        renderer: hailRadarFillSvg,
         interactive: true,
         bubblingMouseEvents: false,
-        className: [
-          isConfirm ? "wx-hail-topo wx-hail-confirmed wx-hail-spotter-zone" : "wx-hail-topo",
-          isIsolated ? "wx-hail-isolated" : "",
-        ]
-          .filter(Boolean)
-          .join(" "),
+        className: ["wx-hail-topo", isIsolated ? "wx-hail-isolated" : ""].filter(Boolean).join(" "),
       }).addTo(hailLayer);
-      const hatchSvg = fillRenderer?._container;
+      const hatchSvg = hailRadarFillSvg?._container;
       if (isIsolated && hatchSvg) ensureHailHatchPattern(hatchSvg);
       trackHailStroke(bindHailZoneTap(poly, h, sub), {
-        confirmed: isConfirm,
+        confirmed: false,
         size: sz,
         kind: "fill",
-        radar: isSwdiZone,
+        radar: true,
         outer: true,
       });
     }

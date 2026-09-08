@@ -8,7 +8,7 @@ import {
   collapseHailByDate,
   HOUSE_HAIL_KM,
   HOUSE_ZONE_KM,
-  buildHomeHailZoneBands,
+  buildHailTraceDayBands,
   fetchIemLsrHailArchive,
   mergeHailRows,
 } from "../wx.js";
@@ -47,7 +47,7 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
 
   let coversPolygon = false;
   try {
-    const bands = buildHomeHailZoneBands(row, dayRows) || [];
+    const bands = buildHailTraceDayBands(row.date, dayRows) || [];
     for (const band of bands) {
       if (band?.ring && pointInLatLonRing(lat, lon, band.ring)) {
         coversPolygon = true;
