@@ -170,14 +170,19 @@ function setStep(step) {
   $$("[data-panel]").forEach((panel) => {
     const p = panel.dataset.panel;
     const pIdx = order.indexOf(p);
-    // Keep address visible once we've started; storms/report unlock in sequence.
+    // Address stays available. On report, hide the map/storms panel so Leaflet
+    // is not stacked on top of the hail report document.
     if (p === "address") {
       panel.hidden = false;
       return;
     }
+    if (step === "report") {
+      panel.hidden = p !== "report";
+      return;
+    }
     panel.hidden = pIdx < 0 || pIdx > idx;
   });
-  if (step === "storms" || step === "report") {
+  if (step === "storms") {
     requestAnimationFrame(() => {
       ensureMap()?.invalidateSize?.();
       if (Number.isFinite(state.lat)) pinHome(state.lat, state.lon);
