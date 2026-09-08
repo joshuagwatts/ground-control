@@ -133,30 +133,35 @@ function stormCoversHome(row, lat, lon, dayRows = []) {
     if (Number.isFinite(d) && d < 900) return d;
     return haversineKm(lat, lon, p.lat, p.lon);
   });
-  const nearest = dists.length ? Math.min(...dists) : Number(row.min_dist);
+  const nearest = dists.length
+    ? Math.min(...dists)
+    : (() => {
+        const d = Number(row.distance_km ?? row.min_dist);
+        return Number.isFinite(d) && d < 900 ? d : NaN;
+      })();
   const coversNear =
     (Number(row.near_hits) || 0) > 0 ||
     (Number.isFinite(nearest) && nearest <= COVER_NEAR_KM);
 
   if (coversNear) {
-    return { coversNear: true, coversPolygon: false, coversHome: true };
+    return { coversNear: true, coversPolygon: false, coversHome: true, nearestKm: nearest };
   }
 
   const hull = convexHullLatLon(pts);
   if (hull) {
     if (pointInLatLonRing(lat, lon, hull)) {
-      return { coversNear: false, coversPolygon: true, coversHome: true };
+      return { coversNear: false, coversPolygon: true, coversHome: true, nearestKm: nearest };
     }
     const padded = expandRingByKm(hull, COVER_NEAR_KM);
     if (padded && pointInLatLonRing(lat, lon, padded)) {
-      return { coversNear: false, coversPolygon: true, coversHome: true };
+      return { coversNear: false, coversPolygon: true, coversHome: true, nearestKm: nearest };
     }
   }
   // Sparse LSR: nearest report within swath pad ⇒ zone-over-home for the list.
   if (Number.isFinite(nearest) && nearest <= COVER_SWATH_KM) {
-    return { coversNear: false, coversPolygon: true, coversHome: true };
+    return { coversNear: false, coversPolygon: true, coversHome: true, nearestKm: nearest };
   }
-  return { coversNear: false, coversPolygon: false, coversHome: false };
+  return { coversNear: false, coversPolygon: false, coversHome: false, nearestKm: nearest };
 }
 
 function sourceLabel(row) {
@@ -253,6 +258,7 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
     // zone_pts from collapse is enough for hull cover — skip rebuilding per-day maps each chunk.
     const cover = stormCoversHome(row, lat, lon, row.zone_pts || []);
     if (!cover.coversHome) continue;
+    const nearestKm = Number(cover.nearestKm);
     storms.push({
       date,
       pretty: prettyDate(date),
@@ -262,7 +268,8 @@ export function summarizeHailRows(hailRows, lat, lon, { minHailIn = 1, days = 73
       coversNear: cover.coversNear,
       coversPolygon: cover.coversPolygon,
       nearHits: Number(row.near_hits) || 0,
-      minDist: Number(row.min_dist) || 999,
+      // collapseHailByDate exposes distance_km, not min_dist — never show the 999 sentinel.
+      minDist: Number.isFinite(nearestKm) && nearestKm < 900 ? nearestKm : null,
       hits: Number(row.hits) || 0,
       zone_pts: row.zone_pts || [],
       raw: row,

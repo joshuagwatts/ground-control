@@ -1105,8 +1105,12 @@ function paintStormList({ loading = false, skipMap = false } = {}) {
     const how = [s.coversNear ? "near roof" : null, s.coversPolygon ? "zone over home" : null]
       .filter(Boolean)
       .join(" · ");
+    const distMeta =
+      Number.isFinite(s.minDist) && s.minDist < 900
+        ? ` · nearest ${Number(s.minDist).toFixed(1)} km`
+        : "";
     li.innerHTML = `<span class="sz" style="color:${col.fill}">${Number(s.maxSizeIn).toFixed(2)}″</span>
-      <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"} · nearest ${Number(s.minDist).toFixed(1)} km</span></span>
+      <span>${s.pretty || s.date}<br/><span class="meta">${s.sources} · ${how || "verified cover"}${distMeta}</span></span>
       <span class="meta">${on ? (state.selected.size > 1 ? "On map" : "Solo") : "Tap to add"}</span>`;
     const activate = () => activateStormDate(s.date);
     li.addEventListener("click", activate);
@@ -1364,11 +1368,15 @@ function reportStormRowsHtml(storms, flag) {
       const cover = [s.coversNear ? "Near roof" : null, s.coversPolygon ? "Zone over home" : null]
         .filter(Boolean)
         .join(" · ");
+      const dist =
+        Number.isFinite(s.minDist) && s.minDist < 900
+          ? ` · ${Number(s.minDist).toFixed(1)} km`
+          : "";
       return `<li class="hg-storm">
             <div class="hg-storm-size">${escHtml(Number(s.maxSizeIn).toFixed(2))}<span>″</span></div>
             <div class="hg-storm-body">
               <strong>${escHtml(s.pretty || s.date)}</strong>
-              <span class="hg-storm-meta">${escHtml(s.sources)}${cover ? " · " + escHtml(cover) : ""} · ${escHtml(Number(s.minDist).toFixed(1))} km</span>
+              <span class="hg-storm-meta">${escHtml(s.sources)}${cover ? " · " + escHtml(cover) : ""}${escHtml(dist)}</span>
             </div>
             <div class="hg-storm-flag">${escHtml(flag || "#" + (idx + 1))}</div>
           </li>`;
