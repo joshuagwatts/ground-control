@@ -1626,17 +1626,25 @@ export async function fetchIemLsrHailArchive(lat, lon, radiusKm = 40, daysBack =
       windowStart.setUTCDate(windowStart.getUTCDate() - span);
       windows.push({ windowStart, windowEnd, offset, span });
     }
-    // One year at a time so each onChunk can paint before the next fetch.
-    for (const w of windows) {
-      const rows = await fetchIemLsrHailRange(lat, lon, km, w.windowStart, w.windowEnd);
-      for (const r of rows || []) {
-        const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
-        byKey.set(k, r);
+    // Parallel fetch (3) but notify as EACH year finishes — don't wait on a 5y batch.
+    const concurrency = 3;
+    let coveredMax = 0;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < windows.length) {
+        const idx = cursor++;
+        const w = windows[idx];
+        const rows = await fetchIemLsrHailRange(lat, lon, km, w.windowStart, w.windowEnd);
+        for (const r of rows || []) {
+          const k = `${r.date}|${Number(r.lat).toFixed(4)}|${Number(r.lon).toFixed(4)}|${r.size_in}`;
+          byKey.set(k, r);
+        }
+        coveredMax = Math.max(coveredMax, w.offset + w.span);
+        await notify([...byKey.values()], Math.min(days, coveredMax));
+        await new Promise((r) => setTimeout(r, 0));
       }
-      const covered = Math.min(days, w.offset + w.span);
-      await notify([...byKey.values()], covered);
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, windows.length) }, () => worker()));
     const out = [...byKey.values()];
     lsrHailCache.set(cacheKey, out);
     return out;
