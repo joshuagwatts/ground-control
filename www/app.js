@@ -72,7 +72,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.317";
+} from "./wx.js?v=0.2.318";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1270,13 +1270,26 @@ async function huntPhotonInvestors(lat, lon) {
 
 const investorPublicBusy = new Set();
 
+function withDeadline(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      setTimeout(() => resolve(null), ms);
+    }),
+  ]);
+}
+
 async function enrichInvestorPublic(inv) {
   const id = String(inv?.id || "");
   if (!id || investorPublicBusy.has(id)) return;
   investorPublicBusy.add(id);
   try {
-    const next = await enrichInvestorFromPublic(inv);
-    if (!next) return;
+    const next = await withDeadline(enrichInvestorFromPublic(inv), 9000);
+    if (!next) {
+      setStatus(`${investorDisplayName(inv)} · no public phone or listings yet`);
+      paintFieldMap();
+      return;
+    }
     const hit = upsertInvestor(savedInvestors(), next);
     db.investors = hit.list;
     persist();

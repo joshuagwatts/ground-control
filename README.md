@@ -52,9 +52,9 @@ https://joshuagwatts.github.io/ground-control/?v=0.2.307
 
 This is the working crew link. Hail Search storms lives here. Hearts and stars do **not**.
 
-**Alpha sandbox (hearts & stars — v0.2.317)**
+**Alpha sandbox (hearts & stars — v0.2.318)**
 
-https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.317
+https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.318
 
 Hearts and Stars stay **off** until you tap them. Phone, email, and sale listings load only after you select an office. Hard-refresh once if a phone still hunts every pin.
 

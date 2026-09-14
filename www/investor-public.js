@@ -660,12 +660,16 @@ export async function fetchInvestorListings(inv) {
 /** Fill missing phone/email and, for stars, the agent's actual sale homes. */
 export async function enrichInvestorFromPublic(inv) {
   if (!inv) return null;
-  const contacts = await enrichInvestorContacts(inv).catch(() => null);
+  const listingsP =
+    String(inv.kind) === "realestate" && investorListings(inv).length < 2
+      ? fetchInvestorListings(inv).catch(() => [])
+      : Promise.resolve(investorListings(inv));
+  const [contacts, found] = await Promise.all([
+    enrichInvestorContacts(inv).catch(() => null),
+    listingsP,
+  ]);
   let listings = investorListings(inv);
-  if (String(inv.kind) === "realestate" && listings.length < 2) {
-    const found = await fetchInvestorListings({ ...inv, website: contacts?.website || inv.website }).catch(() => []);
-    if (found.length) listings = found;
-  }
+  if (Array.isArray(found) && found.length) listings = found;
   const extra = { ...(contacts || {}), listings };
   const next = mergeInvestorPublic(inv, extra);
   const betterContact = (next.phone && next.phone !== inv.phone) || (next.email && next.email !== inv.email);
