@@ -390,12 +390,13 @@ function corsProxyCandidates(url) {
   try {
     if (typeof location !== "undefined") {
       const same = sameOriginProxyUrl(url);
-      if (same) local.push(same);
+      if (same && !/:4173(?:\/|$)/.test(same)) local.push(same);
     }
     if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
-      local.push(`${location.protocol}//${location.host}/proxy?url=${enc}`);
-      local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
       local.push(`http://127.0.0.1:4175/proxy?url=${enc}`);
+      local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
+      const same = sameOriginProxyUrl(url);
+      if (same && !/:4173(?:\/|$)/.test(same)) local.push(same);
     }
   } catch {
     /* ignore */
@@ -411,6 +412,7 @@ function corsProxyCandidates(url) {
 function validProxyBody(body) {
   const t = String(body || "").trim();
   if (!t) return false;
+  if (/Error code:\s*404|File not found|Cannot GET \/proxy/i.test(t) && t.length < 800) return false;
   if (t.startsWith("{") || t.startsWith("[")) {
     try {
       JSON.parse(t);

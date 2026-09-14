@@ -561,20 +561,29 @@ function placeContactHtml(data, esc) {
   return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${facts.join("")}${bits.join("")}${miss}</div>`;
 }
 
-async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
-  const [contacts, assessor] = await Promise.all([
+async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace) {
+  const [contacts, assessorGis] = await Promise.all([
     lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({})),
-    lookupAssessorParcel(lat, lon, addr).catch(() => null),
+    lookupAssessorParcel(lat, lon, addr, { enrich: false }).catch(() => null),
   ]);
   let people = mergeContacts(listingForPin(geo, addr), contacts);
-  let fields = ownerFields(people, assessor);
-  let dossier = {
-    ...base,
-    ...fields,
-    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
+  let assessor = assessorGis;
+  const pack = (a) => {
+    const fields = ownerFields(people, a);
+    return {
+      ...base,
+      ...fields,
+      zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
+    };
   };
-  // Chat APIs extract missing phone/email/name from public listing + assessor pages only
-  if (settings && (!fields.owner_phone || !fields.owner_email || !fields.owner_name)) {
+  let dossier = pack(assessor);
+  if (typeof onPlace === "function") onPlace(dossier);
+  if (assessor?.url && /oklahomacounty\.org/i.test(assessor.url)) {
+    assessor = await enrichAssessorPublicRecord(assessor).catch(() => assessor);
+    dossier = pack(assessor);
+    if (typeof onPlace === "function") onPlace(dossier);
+  }
+  if (settings && (!dossier.owner_phone || !dossier.owner_email || !dossier.owner_name)) {
     const ai = await fillContactGapsWithChat(settings, {
       address: addr,
       assessor,
@@ -583,16 +592,12 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
     }).catch(() => null);
     if (ai) {
       people = mergeContacts(people, ai);
-      fields = ownerFields(people, assessor);
-      dossier = {
-        ...dossier,
-        ...fields,
-        zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
-      };
+      dossier = pack(assessor);
+      if (typeof onPlace === "function") onPlace(dossier);
     }
   }
-  if (fields.owner_phone || fields.owner_name || fields.owner_email) {
-    noteHouseOwnerPhone(lat, lon, addr, fields.owner_phone, fields);
+  if (dossier.owner_phone || dossier.owner_name || dossier.owner_email) {
+    noteHouseOwnerPhone(lat, lon, addr, dossier.owner_phone, dossier);
   }
   return dossier;
 }
@@ -3993,7 +3998,6 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   const swdiFastDays = swdiDaysForRing(fastKm, days);
   const swdiWideDays = swdiDaysForRing(wideKm, days);
   const wideFetch = wideKm > fastKm + 1;
-  const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
   const wxP = currentWeather(lat, lon).catch(() => ({ ok: false }));
   const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, lsrFirstDays(days)).catch(() => []);
   const lsrWideP = wideFetch ? fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []) : null;
@@ -4028,6 +4032,10 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
       },
     });
   };
+  const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial, (hit) => {
+    placeHit = hit;
+    pushPartial("place", { loading: true });
+  });
 
   lsrFast = await lsrFastP;
   accHail = mergeHailRows([], [], lsrFast);

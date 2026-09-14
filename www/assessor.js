@@ -732,7 +732,7 @@ async function queryLayer(layer, lat, lon, pin) {
   return chooseRow(rows, layer, pin);
 }
 
-export async function lookupAssessorParcel(lat, lon, address = "") {
+export async function lookupAssessorParcel(lat, lon, address = "", { enrich = true } = {}) {
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return null;
   const y = Number(lat);
   const x = Number(lon);
@@ -742,10 +742,9 @@ export async function lookupAssessorParcel(lat, lon, address = "") {
   const hits = await Promise.all(layers.map((l) => queryLayer(l, y, x, pin).catch(() => null)));
   let hit = hits.find(Boolean) || null;
   if (!hit) return null;
-  if (hit.url && /oklahomacounty\.org/i.test(hit.url)) {
+  hit = finishAssessor(hit);
+  if (enrich && hit.url && /oklahomacounty\.org/i.test(hit.url)) {
     hit = await enrichAssessorPublicRecord(hit);
-  } else {
-    hit = finishAssessor(hit);
   }
   return hit;
 }
