@@ -3287,6 +3287,37 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
   line-height: 1.35;
 }
 .hs-inv-pop-regions { color: #f3e6c4; }
+.hs-inv-pop-hunt { color: #fde68a; font-size: 12px; }
+.leaflet-div-icon.hs-inv-listing {
+  background: transparent;
+  border: none;
+}
+.hs-inv-listing-dot {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px 3px 4px 4px;
+  background: #fbbf24;
+  box-shadow: 0 0 0 2px #0b0b0d, 0 1px 3px rgba(0, 0, 0, 0.55);
+  position: relative;
+}
+.hs-inv-listing-dot::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 4px;
+  height: 5px;
+  background: #0b0b0d;
+  border-radius: 1px;
+}
+.hs-inv-listing-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 140px;
+  font-size: 12px;
+}
 .hs-inv-pop-actions {
   display: flex;
   flex-wrap: wrap;

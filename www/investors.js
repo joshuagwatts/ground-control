@@ -19,12 +19,13 @@ export const INVESTOR_KINDS = [
     short: "RE",
     symbol: "star",
     color: "#fbbf24",
-    hint: "Outline star until you are working together, then a filled gold star — tap to show their regions",
+    hint: "Outline star until you are working together, then a filled gold star — tap to show their listings",
   },
 ];
 
 export const MAX_INVESTORS = 200;
 export const MAX_LISTED_INVESTORS = 400;
+export const MAX_INVESTOR_LISTINGS = 40;
 
 const KIND_IDS = new Set(INVESTOR_KINDS.map((k) => k.id));
 
@@ -70,10 +71,8 @@ export function countyNameAt(lat, lon) {
   return hit ? `${hit.name} County` : "";
 }
 
-export function defaultRegionsForListing(kind, city, lat, lon) {
-  if (kind !== "realestate") return [];
-  const bits = [String(city || "").trim(), countyNameAt(lat, lon)].filter(Boolean);
-  return [...new Set(bits)].slice(0, 6);
+export function defaultRegionsForListing(_kind, _city, _lat, _lon) {
+  return [];
 }
 
 export function investorKindMeta(id) {
@@ -301,8 +300,6 @@ export function listingFromBizRow(row, kindHint = "") {
   const kind = kindHint || classifyInvestorKind(name, `${row?.office || ""} ${row?.shop || ""}`);
   if (!kind || !validInvestorCoord(row?.lat, row?.lon) || !inOklahoma(row.lat, row.lon)) return null;
   if (!name) return null;
-  const city = String(row.city || "").trim();
-  const regions = defaultRegionsForListing(kind, city, row.lat, row.lon);
   return normalizeInvestor({
     id: listedInvestorId(kind, row.lat, row.lon, name),
     kind,
@@ -311,9 +308,11 @@ export function listingFromBizRow(row, kindHint = "") {
     company: name,
     phone: row.phone || "",
     email: row.email || "",
+    website: row.website || "",
     address: listingAddress(row),
     note: "",
-    regionText: regions.join(", "),
+    regionText: "",
+    listings: row.listings || [],
     lat: row.lat,
     lon: row.lon,
     source: row.source || "osm",
@@ -376,8 +375,10 @@ export function mergeInvestorListings(lists) {
       ...prev,
       phone: prev.phone || n.phone,
       email: prev.email || n.email,
+      website: prev.website || n.website,
       address: (prev.address || "").length >= (n.address || "").length ? prev.address : n.address,
       regionText: prev.regionText || n.regionText,
+      listings: (prev.listings || []).length >= (n.listings || []).length ? prev.listings : n.listings,
     });
   };
   for (const list of lists || []) {
@@ -399,7 +400,21 @@ export function mergeListedAndSaved(listed, saved, hiddenIds = []) {
     const n = normalizeInvestor(inv);
     if (hide.has(n.id)) continue;
     const prev = byId.get(n.id);
-    byId.set(n.id, prev ? normalizeInvestor({ ...prev, ...n, lat: n.lat, lon: n.lon }) : n);
+    byId.set(
+      n.id,
+      prev
+        ? normalizeInvestor({
+            ...prev,
+            ...n,
+            phone: n.phone || prev.phone,
+            email: n.email || prev.email,
+            website: n.website || prev.website,
+            listings: (n.listings || []).length ? n.listings : prev.listings,
+            lat: n.lat,
+            lon: n.lon,
+          })
+        : n,
+    );
   }
   return [...byId.values()];
 }
@@ -430,11 +445,56 @@ export async function fetchPhotonInvestorsNear(lat, lon) {
   return mergeInvestorListings(chunks);
 }
 
+export function normalizeListing(raw = {}) {
+  const lat = Number(raw.lat);
+  const lon = Number(raw.lon);
+  return {
+    address: clip(raw.address, 160),
+    price: clip(raw.price, 24),
+    url: clip(raw.url, 240),
+    source: clip(raw.source, 40) || "listing",
+    lat: Number.isFinite(lat) ? lat : null,
+    lon: Number.isFinite(lon) ? lon : null,
+  };
+}
+
+export function investorListings(inv) {
+  return (Array.isArray(inv?.listings) ? inv.listings : []).filter((row) => validInvestorCoord(row.lat, row.lon));
+}
+
+/** South/west/north/east box covering this agent's actual sale homes. */
+export function investorListingBounds(inv) {
+  const homes = investorListings(inv);
+  let south = 90;
+  let north = -90;
+  let west = 180;
+  let east = -180;
+  let n = 0;
+  for (const h of homes) {
+    south = Math.min(south, Number(h.lat));
+    north = Math.max(north, Number(h.lat));
+    west = Math.min(west, Number(h.lon));
+    east = Math.max(east, Number(h.lon));
+    n += 1;
+  }
+  if (validInvestorCoord(inv?.lat, inv?.lon)) {
+    south = Math.min(south, Number(inv.lat));
+    north = Math.max(north, Number(inv.lat));
+    west = Math.min(west, Number(inv.lon));
+    east = Math.max(east, Number(inv.lon));
+    n += 1;
+  }
+  if (!n || south >= north || west >= east) return null;
+  const pad = 0.008;
+  return { south: south - pad, north: north + pad, west: west - pad, east: east + pad };
+}
+
 export function normalizeInvestor(raw = {}) {
   const kind = KIND_IDS.has(String(raw.kind || "").toLowerCase()) ? String(raw.kind).toLowerCase() : "insurance";
   const relationship = String(raw.relationship || "").toLowerCase() === "partner" ? "partner" : "prospect";
   const names = parseRegionNames(raw.regionText || (Array.isArray(raw.regions) ? raw.regions.map((r) => r?.name || r).join(", ") : ""));
   const phone = formatPhone(raw.phone || "") || clip(raw.phone, 40);
+  const listings = (Array.isArray(raw.listings) ? raw.listings : []).map(normalizeListing).slice(0, MAX_INVESTOR_LISTINGS);
   return {
     id: String(raw.id || uid()),
     kind,
@@ -443,10 +503,12 @@ export function normalizeInvestor(raw = {}) {
     company: clip(raw.company, 80),
     phone,
     email: clip(raw.email, 120),
+    website: clip(raw.website, 200),
     address: clip(raw.address, 200),
     note: clip(raw.note, 800),
     regions: names,
     regionText: names.join(", "),
+    listings,
     lat: Number(raw.lat),
     lon: Number(raw.lon),
     created: String(raw.created || new Date().toISOString()),

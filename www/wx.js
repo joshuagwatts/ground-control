@@ -48,11 +48,12 @@ import {
   investorGlyphSvg,
   investorDisplayName,
   investorContactLine,
-  investorRegionBounds,
+  investorHasContact,
+  investorListingBounds,
+  investorListings,
   isPartner,
   promoteButtonLabel,
   relationshipLabel,
-  resolveInvestorRegions,
   validInvestorCoord,
 } from "./investors.js";
 import { flagNetProfile, isAndroid, isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
@@ -412,6 +413,7 @@ let fieldOverlay = {
   onInvestorEdit: null,
   onInvestorPromote: null,
   onInvestorDelete: null,
+  onInvestorNeedPublic: null,
 };
 const livePinMarkers = { marks: new Map(), done: new Map() };
 
@@ -9207,6 +9209,10 @@ function ensureFieldPanes() {
     pane.style.zIndex = 640;
     pane.style.pointerEvents = "none";
   }
+  if (!map.getPane("investorListings")) {
+    map.createPane("investorListings");
+    map.getPane("investorListings").style.zIndex = 665;
+  }
 }
 
 function investorDivIcon(inv) {
@@ -9229,8 +9235,16 @@ function investorPopupHtml(inv) {
   const email = String(inv.email || "").trim();
   const addr = String(inv.address || "").trim();
   const note = String(inv.note || "").trim();
-  const regions = String(inv.kind) === "realestate" ? resolveInvestorRegions(inv) : [];
-  const regionLine = regions.map((r) => r.name).join(" · ");
+  const homes = String(inv.kind) === "realestate" ? investorListings(inv) : [];
+  const listingLine =
+    String(inv.kind) === "realestate"
+      ? homes.length
+        ? `${homes.length} active listing${homes.length === 1 ? "" : "s"}`
+        : "Looking up this office's listings…"
+      : "";
+  const missContact = !investorHasContact(inv)
+    ? `<span class="hs-inv-pop-hunt">${escHousePop(String(inv.kind) === "insurance" ? "Looking up this agency's phone and email…" : "Looking up office phone and email…")}</span>`
+    : "";
   const tel = e164 ? `<a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(phone)}</a>` : "";
   const sms = e164 ? `<a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>` : "";
   const mail = email ? `<a class="hs-mail" href="mailto:${escHousePop(email)}">${escHousePop(email)}</a>` : "";
@@ -9239,7 +9253,8 @@ function investorPopupHtml(inv) {
     <span class="hs-inv-pop-rel">${escHousePop(relationshipLabel(inv))}</span>
     ${who && who !== name ? `<span class="hs-inv-pop-who">${escHousePop(who)}</span>` : ""}
     ${addr ? `<span class="hs-inv-pop-addr">${escHousePop(addr)}</span>` : ""}
-    ${regionLine ? `<span class="hs-inv-pop-regions">${escHousePop(regionLine)}</span>` : ""}
+    ${listingLine ? `<span class="hs-inv-pop-regions">${escHousePop(listingLine)}</span>` : ""}
+    ${missContact}
     ${note ? `<span class="hs-inv-pop-note">${escHousePop(note)}</span>` : ""}
     <div class="hs-inv-pop-actions">
       ${tel}${sms}${mail}
@@ -9250,13 +9265,13 @@ function investorPopupHtml(inv) {
 }
 
 function bindInvestorMarker(marker, inv) {
-  const regions = String(inv?.kind) === "realestate" ? resolveInvestorRegions(inv) : [];
+  const homes = String(inv?.kind) === "realestate" ? investorListings(inv) : [];
   marker.bindPopup(investorPopupHtml(inv), {
     className: "hs-zone-popup hs-inv-popup",
     closeButton: true,
     maxWidth: 280,
     offset: [0, -10],
-    autoPan: regions.length === 0,
+    autoPan: homes.length === 0,
   });
   marker.on("popupopen", () => {
     const root = marker.getPopup()?.getElement?.();
@@ -9281,35 +9296,51 @@ function bindInvestorMarker(marker, inv) {
   });
 }
 
+function listingHouseIcon(tip = "") {
+  const title = tip ? ` title="${escHousePop(tip)}"` : "";
+  return window.L.divIcon({
+    className: "hs-inv-listing",
+    html: `<span class="hs-inv-listing-dot"${title} aria-hidden="true"></span>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+}
+
+function listingPopupHtml(home, inv) {
+  const addr = String(home?.address || "Listed home").trim();
+  const price = String(home?.price || "").trim();
+  const url = String(home?.url || "").trim();
+  const who = investorDisplayName(inv);
+  const link = url
+    ? `<a class="hs-list" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
+    : "";
+  return `<div class="hs-inv-listing-pop">
+    <strong>${escHousePop(addr)}</strong>
+    ${price ? `<span>${escHousePop(price)}</span>` : ""}
+    <span class="hs-inv-pop-who">${escHousePop(who)}</span>
+    ${link}
+  </div>`;
+}
+
 function paintInvestorRegions(inv) {
   if (!investorRegionLayer) return;
   investorRegionLayer.clearLayers();
   if (!inv || String(inv.kind) !== "realestate") return;
-  for (const shape of resolveInvestorRegions(inv)) {
-    const color = shape.color || "#fbbf24";
-    if (shape.ring?.length >= 4) {
-      window.L.polygon(shape.ring, {
-        pane: "investorRegions",
-        color,
-        weight: 3,
-        dashArray: "8 5",
-        fillColor: color,
-        fillOpacity: 0.2,
-        interactive: false,
-        className: "hs-inv-region",
-      }).addTo(investorRegionLayer);
-    } else if (Number.isFinite(shape.lat) && Number.isFinite(shape.lon) && Number(shape.radiusM) > 0) {
-      window.L.circle([shape.lat, shape.lon], {
-        pane: "investorRegions",
-        radius: Number(shape.radiusM),
-        color,
-        weight: 3,
-        fillColor: color,
-        fillOpacity: 0.18,
-        interactive: false,
-        className: "hs-inv-region",
-      }).addTo(investorRegionLayer);
-    }
+  for (const home of investorListings(inv)) {
+    const tip = home.address || "Listed home";
+    const marker = window.L.marker([home.lat, home.lon], {
+      pane: "investorListings",
+      icon: listingHouseIcon(tip),
+      keyboard: false,
+      title: tip,
+      zIndexOffset: -40,
+    }).addTo(investorRegionLayer);
+    marker.bindPopup(listingPopupHtml(home, inv), {
+      className: "hs-zone-popup hs-inv-popup",
+      closeButton: true,
+      maxWidth: 240,
+      offset: [0, -6],
+    });
   }
 }
 
@@ -9324,7 +9355,8 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
 
 function fitInvestorRegions(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
-  const box = investorRegionBounds(inv);
+  if (!investorListings(inv).length) return false;
+  const box = investorListingBounds(inv);
   if (!box) return false;
   try {
     map.fitBounds(
@@ -9332,7 +9364,7 @@ function fitInvestorRegions(inv) {
         [box.south, box.west],
         [box.north, box.east],
       ],
-      { padding: [36, 36], maxZoom: 12, animate: true },
+      { padding: [40, 40], maxZoom: 16, animate: true },
     );
     return true;
   } catch {
@@ -9356,6 +9388,9 @@ function selectInvestorOnMap(inv, marker) {
   paintInvestorRegions(inv);
   const zoomed = fitInvestorRegions(inv);
   openInvestorPopupSoon(marker, zoomed ? 320 : 40);
+  const needListings = String(inv?.kind) === "realestate" && !investorListings(inv).length;
+  const needContact = !investorHasContact(inv);
+  if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
 }
 
 function paintInvestorLayer() {
@@ -9392,7 +9427,7 @@ function paintInvestorLayer() {
   }
 }
 
-/** Select a heart/star pin, paint real-estate regions, and open contact info. */
+/** Select a heart/star pin, paint that office's listings, and open contact info. */
 export function focusInvestorPin(id, { popup = true } = {}) {
   selectedInvestorId = String(id || "");
   paintInvestorLayer();
@@ -9401,6 +9436,11 @@ export function focusInvestorPin(id, { popup = true } = {}) {
   if (inv) paintInvestorRegions(inv);
   const zoomed = inv ? fitInvestorRegions(inv) : false;
   if (popup) openInvestorPopupSoon(marker, zoomed ? 320 : 40);
+  if (inv) {
+    const needListings = String(inv.kind) === "realestate" && !investorListings(inv).length;
+    const needContact = !investorHasContact(inv);
+    if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
+  }
 }
 
 function markDivIcon(mark, zoomUi = zoomUiScale()) {
@@ -9603,6 +9643,7 @@ export function setFieldOverlay({
   onInvestorEdit,
   onInvestorPromote,
   onInvestorDelete,
+  onInvestorNeedPublic,
 } = {}) {
   const prevDots = fieldOverlay.showHailDots !== false;
   const prevFlags = fieldOverlay.showPhoneFlags === true;
@@ -9624,6 +9665,7 @@ export function setFieldOverlay({
     onInvestorEdit,
     onInvestorPromote,
     onInvestorDelete,
+    onInvestorNeedPublic,
   };
   if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";

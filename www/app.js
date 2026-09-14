@@ -71,7 +71,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.314";
+} from "./wx.js?v=0.2.315";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -91,7 +91,10 @@ import {
   mergeListedAndSaved,
   mergeInvestorListings,
   fetchPhotonInvestorsNear,
+  investorHasContact,
+  investorListings,
 } from "./investors.js";
+import { enrichInvestorFromPublic } from "./investor-public.js";
 import { OK_INVESTOR_SEED } from "./ok-investors.js";
 import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
@@ -1220,6 +1223,44 @@ async function huntPhotonInvestors(lat, lon) {
   const ins = n.filter((x) => x.kind === "insurance").length;
   const re = n.filter((x) => x.kind === "realestate").length;
   if (ins + re) setStatus(`${ins} insurance hearts · ${re} real estate stars from public listings`);
+  scheduleVisibleInvestorEnrich();
+}
+
+const investorPublicBusy = new Set();
+let investorEnrichTimer = 0;
+
+function scheduleVisibleInvestorEnrich() {
+  if (investorEnrichTimer) clearTimeout(investorEnrichTimer);
+  investorEnrichTimer = setTimeout(() => {
+    investorEnrichTimer = 0;
+    const need = fieldInvestors()
+      .filter((inv) => !investorHasContact(inv) || (inv.kind === "realestate" && !investorListings(inv).length))
+      .slice(0, 6);
+    for (const inv of need) void enrichInvestorPublic(inv);
+  }, 400);
+}
+
+async function enrichInvestorPublic(inv) {
+  const id = String(inv?.id || "");
+  if (!id || investorPublicBusy.has(id)) return;
+  investorPublicBusy.add(id);
+  try {
+    const next = await enrichInvestorFromPublic(inv);
+    if (!next) return;
+    const hit = upsertInvestor(savedInvestors(), next);
+    db.investors = hit.list;
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    const homes = investorListings(next);
+    const contact = [next.phone, next.email].filter(Boolean).join(" · ");
+    const bits = [];
+    if (contact) bits.push(contact);
+    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"}`);
+    if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
+  } finally {
+    investorPublicBusy.delete(id);
+  }
 }
 
 function doneHouses() {
@@ -1305,6 +1346,7 @@ function paintFieldMap() {
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onInvestorEdit: (inv) => openInvestorComposer(inv),
+    onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv),
     onInvestorPromote: (inv) => {
       const nextRel = promoteRelationship(inv);
       const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
@@ -1510,7 +1552,7 @@ function fillInvestorComposer() {
         <button type="button" id="hs-comp-x">Close</button>
       </header>
       <div class="hs-kinds">${composerKindButtons("", d.kind)}</div>
-      <p class="muted hs-inv-hint">${re ? "Outline star until you are working together, then promote to a gold star. Regions light up when you tap the pin." : "Broken heart until a working relationship — then promote to a full red heart."}</p>
+      <p class="muted hs-inv-hint">${re ? "Outline star until you are working together, then promote to a gold star. Tap the pin to highlight that office's actual listings." : "Broken heart until a working relationship — then promote to a full red heart. Phone and email load from the public agency listing."}</p>
       <label>Name<input id="hs-inv-name" maxlength="80" value="${esc(d.name || "")}" placeholder="Who to call" /></label>
       <label>Company<input id="hs-inv-co" maxlength="80" value="${esc(d.company || "")}" placeholder="Agency or fund" /></label>
       <label>Phone<input id="hs-inv-phone" maxlength="40" value="${esc(d.phone || "")}" placeholder="(405) 348-0100" inputmode="tel" /></label>
@@ -1518,7 +1560,7 @@ function fillInvestorComposer() {
       <label>Location<input id="hs-comp-addr" maxlength="200" value="${esc(d.address || "")}" placeholder="Office or home base" /></label>
       ${
         re
-          ? `<label>Regions they control<textarea id="hs-inv-regions" rows="2" maxlength="400" placeholder="Edmond, Oklahoma County, Tulsa metro">${esc(d.regionText || "")}</textarea></label>`
+          ? `<label>Notes on their turf<textarea id="hs-inv-regions" rows="2" maxlength="400" placeholder="Optional — listings load from public sale pages">${esc(d.regionText || "")}</textarea></label>`
           : ""
       }
       <label>Note<textarea id="hs-comp-note" rows="2" maxlength="800" placeholder="Last conversation, carrier mix, who they buy…">${esc(d.note || "")}</textarea></label>
@@ -1751,7 +1793,7 @@ function paintFieldSheet() {
             .slice(0, 40)
             .map(
               (inv) =>
-                `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.address || inv.phone].filter(Boolean).join(" · "))}${inv.regionText ? `<em>${esc(inv.regionText)}</em>` : ""}</span></button>`,
+                `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" && investorListings(inv).length ? `<em>${esc(`${investorListings(inv).length} listings`)}</em>` : ""}</span></button>`,
             )
             .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
         : `<p class="muted">Hearts and stars load from public Oklahoma business listings. Broken heart = stay in touch. Promote to a red heart or gold star when you have a working relationship. Hold the map to drop someone extra.</p>`

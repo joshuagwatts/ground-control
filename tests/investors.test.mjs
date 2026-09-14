@@ -15,11 +15,22 @@ import {
   promoteButtonLabel,
   normalizeInvestor,
   investorRegionBounds,
+  investorListingBounds,
+  investorListings,
   classifyInvestorKind,
   listingFromBizRow,
   mergeListedAndSaved,
   mergeInvestorListings,
+  defaultRegionsForListing,
 } from "../www/investors.js";
+import {
+  parseSaleListingsFromHtml,
+  parseRealtorDetailSlug,
+  parseJsonLdBusinesses,
+  cleanBizEmail,
+  namesLikelySame,
+  mergeInvestorPublic,
+} from "../www/investor-public.js";
 
 function assert(ok, msg) {
   if (!ok) throw new Error(msg);
@@ -106,5 +117,50 @@ const dup = mergeInvestorListings([
   [listingFromBizRow({ ...listed, lat: listed.lat + 0.0004, phone: "" })],
 ]);
 assert(dup.length === 1 && /936-9200/.test(dup[0].phone), "nearby duplicate offices collapse");
+
+assert(defaultRegionsForListing("realestate", "Edmond", 35.65, -97.48).length === 0, "no county box defaults");
+
+const homes = normalizeInvestor({
+  kind: "realestate",
+  name: "Brick & Beam Realty",
+  lat: 35.2108,
+  lon: -97.4762,
+  listings: [
+    { address: "101 W Main St, Norman, OK", lat: 35.222, lon: -97.445, url: "https://www.realtor.com/realestateandhomes-detail/101-W-Main-St_Norman_OK_73069_M1" },
+    { address: "2200 Westheimer Dr, Norman, OK", lat: 35.201, lon: -97.51 },
+  ],
+});
+assert(investorListings(homes).length === 2, "two mapped listings");
+const listBox = investorListingBounds(homes);
+assert(listBox && listBox.south < 35.201 && listBox.north > 35.222, "listing bounds hug the homes not the county");
+assert(listBox.east - listBox.west < 0.2, "listing box is not a county-sized yellow rectangle");
+
+const slugAddr = parseRealtorDetailSlug("123-Main-St_Oklahoma-City_OK_73120_M12345");
+assert(/123 Main St/i.test(slugAddr) && /Oklahoma City/i.test(slugAddr), "realtor slug → street");
+
+const parsedHomes = parseSaleListingsFromHtml(`
+  <a href="https://www.realtor.com/realestateandhomes-detail/1601-E-Imhoff-Rd_Norman_OK_73071_M99887">listing</a>
+  <a href="https://www.zillow.com/homedetails/2200-Westheimer-Dr-Norman-OK-73069/111_zpid/">z</a>
+  {"address":{"line":"708 24th Avenue Northwest","city":"Norman","state_code":"OK"},"coordinate":{"lat":35.2275,"lon":-97.4791}}
+`);
+assert(parsedHomes.some((h) => /Imhoff/i.test(h.address)), "realtor detail listing");
+assert(parsedHomes.some((h) => /Westheimer/i.test(h.address)), "zillow detail listing");
+
+const ld = parseJsonLdBusinesses(`<script type="application/ld+json">{"@type":"InsuranceAgency","name":"Devin Smith","telephone":"4052907108","email":"devin@okcjakes.com","address":{"streetAddress":"3639 NW 63rd Street","addressLocality":"Oklahoma City"}}</script>`);
+assert(ld.some((r) => /290-7108/.test(r.phone) && r.email.includes("okcjakes")), "agency json-ld phone+email");
+assert(!cleanBizEmail("team@keen.io"), "drop tracker emails");
+assert(!cleanBizEmail("info@thebbb.org"), "drop bureau directory email");
+assert(cleanBizEmail("jake@okcjakes.com", "https://www.okcjakes.com/") === "jake@okcjakes.com", "keep office email");
+assert(namesLikelySame("Keller Williams Realty", "Keller Williams Realty Tulsa"), "office name overlap");
+
+const filled = mergeInvestorPublic(
+  { ...listed, phone: "", email: "" },
+  { phone: "(405) 936-9200", email: "hello@early.test", listings: homes.listings },
+);
+assert(/936-9200/.test(filled.phone) && filled.email.includes("early"), "public enrich fills heart contact");
+assert(filled.listings.length === 2, "public enrich keeps sale homes");
+
+const savedBlank = mergeListedAndSaved([listed], [{ ...listed, phone: "", note: "called" }], []);
+assert(/936-9200/.test(savedBlank[0].phone) && savedBlank[0].note === "called", "empty saved phone does not wipe listing phone");
 
 console.log("investors ok");

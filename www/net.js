@@ -401,6 +401,12 @@ function needsBrowserCorsProxy(url) {
       h.endsWith("apartments.com") ||
       h.endsWith("rent.com") ||
       h.endsWith("realtor.com") ||
+      h.endsWith("redfin.com") ||
+      h.endsWith("homes.com") ||
+      h.endsWith("statefarm.com") ||
+      h.endsWith("farmers.com") ||
+      h.endsWith("allstate.com") ||
+      h.endsWith("kw.com") ||
       h.endsWith("411.com") ||
       h.endsWith("whitepages.com") ||
       h.endsWith("anywho.com") ||
