@@ -46,17 +46,17 @@ The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator**
 
 ## Team web (iPhone Safari, free)
 
-**Alpha — hearts & stars (v0.2.314)**
+**Team app (stable hail drawer — v0.2.305)**
 
-https://joshuagwatts.github.io/ground-control/?v=0.2.314&alpha=1
+https://joshuagwatts.github.io/ground-control/?v=0.2.305
 
-Open that on any phone. Add to Home Screen. **Hearts** and **Stars** are on by default.
+This is the working crew link. New experiments do **not** deploy here. Hard-refresh or delete the Home Screen icon once if a phone still shows hearts/stars.
 
-Hold the map (or long-press / right-click) → **Insurance** (broken heart until you promote to a red heart) or **Real estate** (outline star until you promote to a gold star; tap a star to show the regions they control).
+**Alpha sandbox (new stuff only)**
 
-Stable Pages URL (same app, may need a hard refresh if a phone cached an older copy):
+https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.314
 
-**https://joshuagwatts.github.io/ground-control/**
+Hearts, stars, and other unfinished work live only on this URL. Breakage here must not touch the team app.
 
 LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.
 

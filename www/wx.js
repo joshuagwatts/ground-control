@@ -42,19 +42,8 @@ import {
   cancelRentFlagSweep,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
-import { lookupAssessorParcel, enrichAssessorPublicRecord } from "./assessor.js";
+import { lookupAssessorParcel } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, markPinSvgHtml, clampPinScale } from "./marks.js";
-import {
-  investorGlyphSvg,
-  investorDisplayName,
-  investorContactLine,
-  investorRegionBounds,
-  isPartner,
-  promoteButtonLabel,
-  relationshipLabel,
-  resolveInvestorRegions,
-  validInvestorCoord,
-} from "./investors.js";
 import { flagNetProfile, isAndroid, isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
 
 let map = null;
@@ -393,25 +382,15 @@ try {
 let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
-let investorLayer = null;
-let investorRegionLayer = null;
-let selectedInvestorId = "";
-const investorMarkers = new Map();
 let fieldOverlay = {
   marks: [],
   done: [],
-  investors: [],
   showMarks: true,
   showDone: true,
   showHailDots: true,
   showPhoneFlags: false,
-  showInsuranceInvestors: true,
-  showRealEstateInvestors: true,
   onMark: null,
   onDone: null,
-  onInvestorEdit: null,
-  onInvestorPromote: null,
-  onInvestorDelete: null,
 };
 const livePinMarkers = { marks: new Map(), done: new Map() };
 
@@ -518,7 +497,6 @@ function bindPlaceLinks(root) {
 }
 
 function ownerFields(people = {}, assessor = null) {
-  const b = assessor?.building || {};
   return {
     owner_name: (assessor && assessor.name) || people.name || people.owner_name || "",
     owner_phone: people.phone || people.owner_phone || "",
@@ -527,11 +505,7 @@ function ownerFields(people = {}, assessor = null) {
     assessor_url: (assessor && assessor.url) || "",
     assessor_source: (assessor && assessor.source) || "",
     assessor_record: (assessor && assessor.record_line) || "",
-    roof_permits: (assessor && assessor.roof_permits) || "",
     homestead: Boolean(assessor && assessor.homestead),
-    absentee: Boolean(assessor && assessor.absentee),
-    owner_kind: (assessor && assessor.owner_kind) || "",
-    acct_type: (assessor && (assessor.acct_type || b.acct_type)) || "",
     facebook_url: people.facebook || people.facebook_url || "",
     instagram_url: people.instagram || people.instagram_url || "",
     zillow_url: people.zillow_url || "",
@@ -539,28 +513,17 @@ function ownerFields(people = {}, assessor = null) {
 }
 
 function placeContactHtml(data, esc) {
+  const addr = data.address || "";
   const zurl = pickZillowUrl(data);
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
   const homestead = Boolean(data.homestead);
-  const absentee = Boolean(data.absentee);
   const record = String(data.assessor_record || "").trim();
-  const mail = String(data.owner_mail || "").trim();
-  const roof = String(data.roof_permits || "").trim();
-  const kind = String(data.owner_kind || "").trim();
-  const acct = String(data.acct_type || "").trim();
   const e164 = phoneDigits(phone);
   const assessorUrl = String(data.assessor_url || "").trim();
-  const facts = [];
-  if (record) facts.push(`<span class="hs-record">${esc(record)}</span>`);
-  if (absentee && mail) {
-    facts.push(`<span class="hs-mail-away" title="Mailing address is not this house">Mail ${esc(mail)}</span>`);
-  }
-  if (roof && !record.toLowerCase().includes(roof.toLowerCase().slice(0, 12))) {
-    facts.push(`<span class="hs-roof-permit">${esc(roof)}</span>`);
-  }
   const bits = [];
+  if (record) bits.push(`<span class="hs-record">${esc(record)}</span>`);
   if (zurl) bits.push(`<a class="hs-zillow" href="${zurl}" target="_blank" rel="noopener noreferrer">Zillow</a>`);
   if (assessorUrl) {
     const lab = data.assessor_source ? `${esc(data.assessor_source)} assessor` : "Assessor";
@@ -571,53 +534,26 @@ function placeContactHtml(data, esc) {
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
+  // Mailing address omitted — street address is already shown above the contacts row.
   if (homestead) bits.push(`<span class="hs-homestead" title="Homestead exemption on file">Homestead</span>`);
-  if (absentee) bits.push(`<span class="hs-absentee" title="Owner of record mails elsewhere">Absentee</span>`);
-  if (kind === "llc") bits.push(`<span class="hs-entity">LLC</span>`);
-  if (kind === "trust") bits.push(`<span class="hs-entity">Trust</span>`);
-  if (kind === "corp") bits.push(`<span class="hs-entity">Corp</span>`);
-  if (kind === "public") bits.push(`<span class="hs-entity">Public</span>`);
-  if (acct && !/^(res|residential)$/i.test(acct)) bits.push(`<span class="hs-entity">${esc(acct)}</span>`);
-  const miss = !name && !e164 && !email && !record ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${facts.join("")}${bits.join("")}${miss}</div>`;
+  const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
 }
 
-async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace) {
-  const pack = (people, a) => {
-    const fields = ownerFields(people, a);
-    return {
-      ...base,
-      ...fields,
-      zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
-    };
+async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {
+  const [contacts, assessor] = await Promise.all([
+    lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({})),
+    lookupAssessorParcel(lat, lon, addr).catch(() => null),
+  ]);
+  let people = mergeContacts(listingForPin(geo, addr), contacts);
+  let fields = ownerFields(people, assessor);
+  let dossier = {
+    ...base,
+    ...fields,
+    zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
   };
-  const emit = (people, a) => {
-    const dossier = pack(people, a);
-    if (typeof onPlace === "function") onPlace(dossier);
-    return dossier;
-  };
-  let people = listingForPin(geo, addr);
-  let assessor = null;
-  let dossier = emit(people, assessor);
-  const gisP = lookupAssessorParcel(lat, lon, addr, { enrich: false }).catch(() => null);
-  const contactsP = lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({}));
-  assessor = await gisP;
-  if (assessor) dossier = emit(people, assessor);
-  const enrichP =
-    assessor?.url && /oklahomacounty\.org/i.test(assessor.url)
-      ? enrichAssessorPublicRecord(assessor)
-          .then((hit) => {
-            assessor = hit;
-            dossier = emit(people, assessor);
-            return hit;
-          })
-          .catch(() => assessor)
-      : Promise.resolve(assessor);
-  const contacts = await contactsP;
-  people = mergeContacts(listingForPin(geo, addr), contacts);
-  assessor = (await enrichP) || assessor;
-  dossier = emit(people, assessor);
-  if (settings && (!dossier.owner_phone || !dossier.owner_email || !dossier.owner_name)) {
+  // Chat APIs extract missing phone/email/name from public listing + assessor pages only
+  if (settings && (!fields.owner_phone || !fields.owner_email || !fields.owner_name)) {
     const ai = await fillContactGapsWithChat(settings, {
       address: addr,
       assessor,
@@ -626,11 +562,16 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace
     }).catch(() => null);
     if (ai) {
       people = mergeContacts(people, ai);
-      dossier = emit(people, assessor);
+      fields = ownerFields(people, assessor);
+      dossier = {
+        ...dossier,
+        ...fields,
+        zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
+      };
     }
   }
-  if (dossier.owner_phone || dossier.owner_name || dossier.owner_email) {
-    noteHouseOwnerPhone(lat, lon, addr, dossier.owner_phone, dossier);
+  if (fields.owner_phone || fields.owner_name || fields.owner_email) {
+    noteHouseOwnerPhone(lat, lon, addr, fields.owner_phone, fields);
   }
   return dossier;
 }
@@ -4031,6 +3972,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
   const swdiFastDays = swdiDaysForRing(fastKm, days);
   const swdiWideDays = swdiDaysForRing(wideKm, days);
   const wideFetch = wideKm > fastKm + 1;
+  const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial);
   const wxP = currentWeather(lat, lon).catch(() => ({ ok: false }));
   const lsrFastP = fetchIemLsrHail(lat, lon, fastKm, lsrFirstDays(days)).catch(() => []);
   const lsrWideP = wideFetch ? fetchIemLsrHail(lat, lon, wideKm, days).catch(() => []) : null;
@@ -4065,10 +4007,6 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
       },
     });
   };
-  void mergePlaceOwner(settings, lat, lon, addr, geo, partial, (hit) => {
-    placeHit = hit;
-    pushPartial("place", { loading: true });
-  });
 
   lsrFast = await lsrFastP;
   accHail = mergeHailRows([], [], lsrFast);
@@ -4090,7 +4028,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     },
   });
 
-  [wxNow, spcFast] = await Promise.all([wxP, spcFastP]);
+  [wxNow, spcFast, placeHit] = await Promise.all([wxP, spcFastP, placeP]);
   accHail = mergeHailRows(spcFast.hail || [], accHail, lsrFast);
   accWind = spcFast.wind || [];
   pushPartial("spc", { loading: true, fetchedKm: fastKm });
@@ -9197,210 +9135,6 @@ function ensureFieldPanes() {
     map.createPane("doneHouses");
     map.getPane("doneHouses").style.zIndex = 655;
   }
-  if (!map.getPane("investors")) {
-    map.createPane("investors");
-    map.getPane("investors").style.zIndex = 670;
-  }
-  if (!map.getPane("investorRegions")) {
-    map.createPane("investorRegions");
-    const pane = map.getPane("investorRegions");
-    pane.style.zIndex = 640;
-    pane.style.pointerEvents = "none";
-  }
-}
-
-function investorDivIcon(inv) {
-  const partner = isPartner(inv);
-  const kind = String(inv?.kind || "insurance");
-  const html = investorGlyphSvg(inv, { size: 30 });
-  return window.L.divIcon({
-    className: `hs-inv-pin hs-inv-${kind}${partner ? " partner" : " prospect"}`,
-    html,
-    iconSize: [30, 30],
-    iconAnchor: [15, 15],
-  });
-}
-
-function investorPopupHtml(inv) {
-  const name = investorDisplayName(inv);
-  const who = investorContactLine(inv);
-  const phone = formatPhone(inv.phone || "") || String(inv.phone || "").trim();
-  const e164 = phoneDigits(phone);
-  const email = String(inv.email || "").trim();
-  const addr = String(inv.address || "").trim();
-  const note = String(inv.note || "").trim();
-  const regions = String(inv.kind) === "realestate" ? resolveInvestorRegions(inv) : [];
-  const regionLine = regions.map((r) => r.name).join(" · ");
-  const tel = e164 ? `<a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(phone)}</a>` : "";
-  const sms = e164 ? `<a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>` : "";
-  const mail = email ? `<a class="hs-mail" href="mailto:${escHousePop(email)}">${escHousePop(email)}</a>` : "";
-  return `<div class="hs-inv-pop hs-inv-pop-${escHousePop(inv.kind)}">
-    <strong class="hs-inv-pop-name">${escHousePop(name)}</strong>
-    <span class="hs-inv-pop-rel">${escHousePop(relationshipLabel(inv))}</span>
-    ${who && who !== name ? `<span class="hs-inv-pop-who">${escHousePop(who)}</span>` : ""}
-    ${addr ? `<span class="hs-inv-pop-addr">${escHousePop(addr)}</span>` : ""}
-    ${regionLine ? `<span class="hs-inv-pop-regions">${escHousePop(regionLine)}</span>` : ""}
-    ${note ? `<span class="hs-inv-pop-note">${escHousePop(note)}</span>` : ""}
-    <div class="hs-inv-pop-actions">
-      ${tel}${sms}${mail}
-      <button type="button" class="hs-inv-promote" data-inv-act="promote">${escHousePop(promoteButtonLabel(inv))}</button>
-      <button type="button" class="hs-inv-edit" data-inv-act="edit">Edit</button>
-    </div>
-  </div>`;
-}
-
-function bindInvestorMarker(marker, inv) {
-  const regions = String(inv?.kind) === "realestate" ? resolveInvestorRegions(inv) : [];
-  marker.bindPopup(investorPopupHtml(inv), {
-    className: "hs-zone-popup hs-inv-popup",
-    closeButton: true,
-    maxWidth: 280,
-    offset: [0, -10],
-    autoPan: regions.length === 0,
-  });
-  marker.on("popupopen", () => {
-    const root = marker.getPopup()?.getElement?.();
-    if (!root || root._hsInvBound) return;
-    root._hsInvBound = true;
-    root.addEventListener("click", (ev) => {
-      const btn = ev.target?.closest?.("[data-inv-act]");
-      if (!btn) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const act = btn.dataset.invAct;
-      if (act === "promote") fieldOverlay.onInvestorPromote?.(inv);
-      if (act === "edit") {
-        try {
-          marker.closePopup();
-        } catch {
-          /* ignore */
-        }
-        fieldOverlay.onInvestorEdit?.(inv);
-      }
-    });
-  });
-}
-
-function paintInvestorRegions(inv) {
-  if (!investorRegionLayer) return;
-  investorRegionLayer.clearLayers();
-  if (!inv || String(inv.kind) !== "realestate") return;
-  for (const shape of resolveInvestorRegions(inv)) {
-    const color = shape.color || "#fbbf24";
-    if (shape.ring?.length >= 4) {
-      window.L.polygon(shape.ring, {
-        pane: "investorRegions",
-        color,
-        weight: 3,
-        dashArray: "8 5",
-        fillColor: color,
-        fillOpacity: 0.2,
-        interactive: false,
-        className: "hs-inv-region",
-      }).addTo(investorRegionLayer);
-    } else if (Number.isFinite(shape.lat) && Number.isFinite(shape.lon) && Number(shape.radiusM) > 0) {
-      window.L.circle([shape.lat, shape.lon], {
-        pane: "investorRegions",
-        radius: Number(shape.radiusM),
-        color,
-        weight: 3,
-        fillColor: color,
-        fillOpacity: 0.18,
-        interactive: false,
-        className: "hs-inv-region",
-      }).addTo(investorRegionLayer);
-    }
-  }
-}
-
-function visibleInvestors(list, { showInsurance = true, showRealEstate = true } = {}) {
-  return (list || []).filter((inv) => {
-    if (!validInvestorCoord(inv.lat, inv.lon)) return false;
-    if (inv.kind === "insurance") return showInsurance;
-    if (inv.kind === "realestate") return showRealEstate;
-    return false;
-  });
-}
-
-function fitInvestorRegions(inv) {
-  if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
-  const box = investorRegionBounds(inv);
-  if (!box) return false;
-  try {
-    map.fitBounds(
-      [
-        [box.south, box.west],
-        [box.north, box.east],
-      ],
-      { padding: [36, 36], maxZoom: 12, animate: true },
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function openInvestorPopupSoon(marker, delayMs = 40) {
-  if (!marker) return;
-  setTimeout(() => {
-    try {
-      marker.openPopup();
-    } catch {
-      /* popup optional */
-    }
-  }, delayMs);
-}
-
-function selectInvestorOnMap(inv, marker) {
-  selectedInvestorId = inv?.id ? String(inv.id) : "";
-  paintInvestorRegions(inv);
-  const zoomed = fitInvestorRegions(inv);
-  openInvestorPopupSoon(marker, zoomed ? 320 : 40);
-}
-
-function paintInvestorLayer() {
-  if (!map || !window.L) return;
-  ensureFieldPanes();
-  if (!investorLayer) investorLayer = window.L.layerGroup().addTo(map);
-  if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
-  investorLayer.clearLayers();
-  investorMarkers.clear();
-  const showIns = fieldOverlay.showInsuranceInvestors !== false;
-  const showRe = fieldOverlay.showRealEstateInvestors !== false;
-  const list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe });
-  const selected = list.find((x) => x.id === selectedInvestorId) || null;
-  paintInvestorRegions(selected);
-  for (const inv of list) {
-    const marker = window.L.marker([inv.lat, inv.lon], {
-      pane: "investors",
-      icon: investorDivIcon(inv),
-      keyboard: false,
-      title: investorDisplayName(inv),
-      zIndexOffset: inv.id === selectedInvestorId ? 400 : 0,
-    })
-      .on("click", (e) => {
-        window.L.DomEvent.stop(e);
-        wxSuppressMapTap = true;
-        selectInvestorOnMap(inv, marker);
-        setTimeout(() => {
-          wxSuppressMapTap = false;
-        }, 500);
-      })
-      .addTo(investorLayer);
-    bindInvestorMarker(marker, inv);
-    investorMarkers.set(String(inv.id), marker);
-  }
-}
-
-/** Select a heart/star pin, paint real-estate regions, and open contact info. */
-export function focusInvestorPin(id, { popup = true } = {}) {
-  selectedInvestorId = String(id || "");
-  paintInvestorLayer();
-  const inv = (fieldOverlay.investors || []).find((x) => String(x.id) === selectedInvestorId);
-  const marker = investorMarkers.get(selectedInvestorId);
-  if (inv) paintInvestorRegions(inv);
-  const zoomed = inv ? fitInvestorRegions(inv) : false;
-  if (popup) openInvestorPopupSoon(marker, zoomed ? 320 : 40);
 }
 
 function markDivIcon(mark, zoomUi = zoomUiScale()) {
@@ -9589,20 +9323,14 @@ function placeSelectPin(latlng) {
 export function setFieldOverlay({
   marks = [],
   done = [],
-  investors = [],
   donePinScale = 1,
   showMarks = true,
   showDone = true,
   showHailDots = true,
   showPhoneFlags = false,
-  showInsuranceInvestors = true,
-  showRealEstateInvestors = true,
   onMark,
   onDone,
   onMarkScale,
-  onInvestorEdit,
-  onInvestorPromote,
-  onInvestorDelete,
 } = {}) {
   const prevDots = fieldOverlay.showHailDots !== false;
   const prevFlags = fieldOverlay.showPhoneFlags === true;
@@ -9610,20 +9338,14 @@ export function setFieldOverlay({
   fieldOverlay = {
     marks,
     done,
-    investors,
     donePinScale,
     showMarks,
     showDone,
     showHailDots,
     showPhoneFlags: nextFlags,
-    showInsuranceInvestors,
-    showRealEstateInvestors,
     onMark,
     onMarkScale,
     onDone,
-    onInvestorEdit,
-    onInvestorPromote,
-    onInvestorDelete,
   };
   if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";
@@ -9718,7 +9440,6 @@ export function setFieldOverlay({
       livePinMarkers.done.set(String(h.id), marker);
     }
   }
-  paintInvestorLayer();
   scheduleZoomUiRefresh(true);
 }
 
@@ -11886,17 +11607,6 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = nul
 /** Soft sheet patch — keep selected dates lit while list/radar keep loading. */
 function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (!root || !data) return;
-  const viewport = Boolean(data.viewport || data._meta?.viewport);
-  if (!viewport) {
-    const place = root.querySelector(".hs-place");
-    const html = placeContactHtml(data, esc);
-    if (place) place.outerHTML = html;
-    else {
-      const pinEl = root.querySelector(".hs-pin");
-      if (pinEl) pinEl.insertAdjacentHTML("afterend", html);
-    }
-    bindPlaceLinks(root);
-  }
   const days = hailScopeDays(data);
   const box = root.querySelector(".hs-dates");
   if (box) {

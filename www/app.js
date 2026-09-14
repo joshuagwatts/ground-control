@@ -58,7 +58,6 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
-  focusInvestorPin,
   mapIsLive,
   refreshMapSize,
   defaultMapCenter,
@@ -71,7 +70,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.314";
+} from "./wx.js?v=0.2.305";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -79,24 +78,10 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale, mergeMarksPack, serializeTeamMarksPack, markListIconHtml } from "./marks.js";
-import {
-  INVESTOR_KINDS,
-  newInvestor,
-  upsertInvestor,
-  removeInvestor,
-  promoteRelationship,
-  investorDisplayName,
-  investorGlyphSvg,
-  relationshipLabel,
-  mergeListedAndSaved,
-  mergeInvestorListings,
-  fetchPhotonInvestorsNear,
-} from "./investors.js";
-import { OK_INVESTOR_SEED } from "./ok-investors.js";
-import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
+import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
-import { APP_VERSION, CACHE_BUST } from "./version.js";
+import { CACHE_BUST } from "./version.js";
 import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
 
 applyFormFactorClass();
@@ -134,7 +119,6 @@ function isPhoneApp() {
 }
 let pendingShot = "granules_close";
 let markDraft = null;
-let investorDraft = null;
 let doneBusy = false;
 let selectedDoneId = null;
 
@@ -1184,44 +1168,6 @@ function fieldMarks() {
   return Array.isArray(db.marks) ? db.marks : [];
 }
 
-function savedInvestors() {
-  return Array.isArray(db.investors) ? db.investors : [];
-}
-
-function hiddenInvestorIds() {
-  return Array.isArray(db.settings.hiddenInvestorIds) ? db.settings.hiddenInvestorIds : [];
-}
-
-let liveListedInvestors = [];
-
-function listedInvestorPool() {
-  return mergeInvestorListings([OK_INVESTOR_SEED, liveListedInvestors]);
-}
-
-function fieldInvestors() {
-  return mergeListedAndSaved(listedInvestorPool(), savedInvestors(), hiddenInvestorIds());
-}
-
-let photonHuntTimer = 0;
-function schedulePhotonInvestorHunt(lat, lon) {
-  if (photonHuntTimer) clearTimeout(photonHuntTimer);
-  photonHuntTimer = setTimeout(() => {
-    photonHuntTimer = 0;
-    void huntPhotonInvestors(lat, lon);
-  }, 700);
-}
-
-async function huntPhotonInvestors(lat, lon) {
-  const extra = await fetchPhotonInvestorsNear(lat, lon).catch(() => []);
-  if (extra.length) liveListedInvestors = extra;
-  paintFieldMap();
-  paintFieldSheet();
-  const n = fieldInvestors();
-  const ins = n.filter((x) => x.kind === "insurance").length;
-  const re = n.filter((x) => x.kind === "realestate").length;
-  if (ins + re) setStatus(`${ins} insurance hearts · ${re} real estate stars from public listings`);
-}
-
 function doneHouses() {
   return Array.isArray(db.done?.houses) ? db.done.houses : [];
 }
@@ -1294,28 +1240,13 @@ function paintFieldMap() {
   setFieldOverlay({
     marks: fieldMarks(),
     done: doneHouses(),
-    investors: fieldInvestors(),
     donePinScale: donePinScaleUi(),
     showMarks: db.settings.showMarks !== false,
     showDone: db.settings.showDone !== false,
     showHailDots: db.settings.showHailDots !== false,
     showPhoneFlags: db.settings.showPhoneFlags === true,
-    showInsuranceInvestors: db.settings.showInsuranceInvestors !== false,
-    showRealEstateInvestors: db.settings.showRealEstateInvestors !== false,
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
-    onInvestorEdit: (inv) => openInvestorComposer(inv),
-    onInvestorPromote: (inv) => {
-      const nextRel = promoteRelationship(inv);
-      const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
-      db.investors = hit.list;
-      persist();
-      paintFieldMap();
-      paintFieldSheet();
-      const next = fieldInvestors().find((x) => x.id === inv.id);
-      if (next) focusInvestorPin(next.id, { popup: true });
-      setStatus(next ? `${investorDisplayName(next)} · ${relationshipLabel(next)}` : "Investor updated");
-    },
     onDone: (h) => {
       if (!h || !Number.isFinite(Number(h.lat))) return;
       selectedDoneId = h.id;
@@ -1330,7 +1261,6 @@ function paintFieldMap() {
 
 function closeComposer() {
   markDraft = null;
-  investorDraft = null;
   const el = $("#hs-composer");
   if (el) {
     el.hidden = true;
@@ -1338,17 +1268,12 @@ function closeComposer() {
   }
 }
 
-function composerKindButtons(kind, investorKind = "") {
+function composerKindButtons(kind) {
   const k = kind === "atlas" || kind === "disc" ? "ping" : kind;
-  const marks = COMPOSE_KINDS.map(
+  return COMPOSE_KINDS.map(
     (x) =>
-      `<button type="button" class="hs-kind${x.id === k && !investorKind ? " on" : ""}" data-kind="${esc(x.id)}" style="--k:${x.color}">${esc(x.label)}</button>`,
+      `<button type="button" class="hs-kind${x.id === k ? " on" : ""}" data-kind="${esc(x.id)}" style="--k:${x.color}">${esc(x.label)}</button>`,
   ).join("");
-  const invs = INVESTOR_KINDS.map(
-    (x) =>
-      `<button type="button" class="hs-kind hs-kind-inv${x.id === investorKind ? " on" : ""}" data-investor="${esc(x.id)}" style="--k:${x.color}">${esc(x.id === "insurance" ? "Insurance" : "Real estate")}</button>`,
-  ).join("");
-  return `${marks}${invs}`;
 }
 
 function composerProductButtons(d) {
@@ -1377,10 +1302,6 @@ function applyProductToDraft(productId) {
 }
 
 function fillComposer() {
-  if (investorDraft) {
-    fillInvestorComposer();
-    return;
-  }
   const el = $("#hs-composer");
   if (!el || !markDraft) return;
   const d = markDraft;
@@ -1395,7 +1316,7 @@ function fillComposer() {
         <strong>${d.id && fieldMarks().some((m) => m.id === d.id) ? "Edit pin" : "Drop a pin"}</strong>
         <button type="button" id="hs-comp-x">Close</button>
       </header>
-      <div class="hs-kinds">${composerKindButtons(d.kind, "")}</div>
+      <div class="hs-kinds">${composerKindButtons(d.kind)}</div>
       ${ping ? `<div class="hs-prods">${composerProductButtons(d)}</div>` : ""}
       <label>${ping ? "Product" : "Label"}<input id="hs-comp-label" maxlength="80" value="${esc(d.label || prod?.label || meta.label)}" placeholder="GAF Timberline HD, Belmont, GlassMaster…" /></label>
       <label>Address<input id="hs-comp-addr" value="${esc(d.address || "")}" placeholder="Looking up address…" /></label>
@@ -1412,10 +1333,9 @@ function fillComposer() {
         ${fieldMarks().some((m) => m.id === d.id) ? `<button type="button" id="hs-comp-del">Delete</button>` : ""}
       </div>
     </div>`;
-  el.querySelectorAll(".hs-kind[data-kind]").forEach((b) => {
+  el.querySelectorAll(".hs-kind").forEach((b) => {
     b.onclick = () => {
       markDraft.kind = b.dataset.kind;
-      investorDraft = null;
       if (markDraft.kind === "ping") {
         applyProductToDraft(db.settings.marksLastProduct || "atlas-glassmaster");
       } else {
@@ -1427,9 +1347,6 @@ function fillComposer() {
       persist();
       fillComposer();
     };
-  });
-  el.querySelectorAll(".hs-kind[data-investor]").forEach((b) => {
-    b.onclick = () => startInvestorDraft(b.dataset.investor);
   });
   el.querySelectorAll(".hs-prod").forEach((b) => {
     b.onclick = () => {
@@ -1473,161 +1390,11 @@ function fillComposer() {
   };
 }
 
-function startInvestorDraft(kind) {
-  const lat = Number(investorDraft?.lat ?? markDraft?.lat);
-  const lon = Number(investorDraft?.lon ?? markDraft?.lon);
-  const address = String(investorDraft?.address || markDraft?.address || "");
-  const existing = investorDraft?.id && fieldInvestors().some((x) => x.id === investorDraft.id) ? investorDraft : null;
-  investorDraft = existing
-    ? { ...existing, kind }
-    : newInvestor({
-        kind,
-        lat,
-        lon,
-        address,
-        name: investorDraft?.name || "",
-        company: investorDraft?.company || "",
-        phone: investorDraft?.phone || "",
-        email: investorDraft?.email || "",
-        note: investorDraft?.note || "",
-        regionText: investorDraft?.regionText || "",
-        relationship: investorDraft?.relationship || "prospect",
-      });
-  fillComposer();
-}
-
-function fillInvestorComposer() {
-  const el = $("#hs-composer");
-  if (!el || !investorDraft) return;
-  const d = investorDraft;
-  const re = d.kind === "realestate";
-  const existing = fieldInvestors().some((x) => x.id === d.id);
-  el.hidden = false;
-  el.innerHTML = `
-    <div class="hs-composer-card hs-inv-composer">
-      <header>
-        <strong>${existing ? "Edit investor" : re ? "Drop a real estate investor" : "Drop an insurance investor"}</strong>
-        <button type="button" id="hs-comp-x">Close</button>
-      </header>
-      <div class="hs-kinds">${composerKindButtons("", d.kind)}</div>
-      <p class="muted hs-inv-hint">${re ? "Outline star until you are working together, then promote to a gold star. Regions light up when you tap the pin." : "Broken heart until a working relationship — then promote to a full red heart."}</p>
-      <label>Name<input id="hs-inv-name" maxlength="80" value="${esc(d.name || "")}" placeholder="Who to call" /></label>
-      <label>Company<input id="hs-inv-co" maxlength="80" value="${esc(d.company || "")}" placeholder="Agency or fund" /></label>
-      <label>Phone<input id="hs-inv-phone" maxlength="40" value="${esc(d.phone || "")}" placeholder="(405) 348-0100" inputmode="tel" /></label>
-      <label>Email<input id="hs-inv-email" maxlength="120" value="${esc(d.email || "")}" placeholder="name@company.com" inputmode="email" /></label>
-      <label>Location<input id="hs-comp-addr" maxlength="200" value="${esc(d.address || "")}" placeholder="Office or home base" /></label>
-      ${
-        re
-          ? `<label>Regions they control<textarea id="hs-inv-regions" rows="2" maxlength="400" placeholder="Edmond, Oklahoma County, Tulsa metro">${esc(d.regionText || "")}</textarea></label>`
-          : ""
-      }
-      <label>Note<textarea id="hs-comp-note" rows="2" maxlength="800" placeholder="Last conversation, carrier mix, who they buy…">${esc(d.note || "")}</textarea></label>
-      <div class="hs-inv-rel">
-        <button type="button" class="hs-kind${d.relationship !== "partner" ? " on" : ""}" data-rel="prospect">${re ? "Stay in touch ★" : "Stay in touch ♡"}</button>
-        <button type="button" class="hs-kind${d.relationship === "partner" ? " on" : ""}" data-rel="partner">${re ? "Working · gold star" : "Working · red heart"}</button>
-      </div>
-      <div class="hs-composer-actions">
-        <button type="button" class="primary" id="hs-comp-save">Save investor</button>
-        ${existing ? `<button type="button" id="hs-comp-del">Delete</button>` : ""}
-      </div>
-    </div>`;
-  el.querySelectorAll(".hs-kind[data-kind]").forEach((b) => {
-    b.onclick = () => {
-      const lat = d.lat;
-      const lon = d.lon;
-      const address = d.address;
-      investorDraft = null;
-      markDraft = newMark({ lat, lon, address, kind: b.dataset.kind, label: kindMeta(b.dataset.kind).label });
-      if (markDraft.kind === "ping") applyProductToDraft(db.settings.marksLastProduct || "atlas-glassmaster");
-      fillComposer();
-    };
-  });
-  el.querySelectorAll(".hs-kind[data-investor]").forEach((b) => {
-    b.onclick = () => startInvestorDraft(b.dataset.investor);
-  });
-  el.querySelectorAll(".hs-kind[data-rel]").forEach((b) => {
-    b.onclick = () => {
-      investorDraft.relationship = b.dataset.rel === "partner" ? "partner" : "prospect";
-      fillInvestorComposer();
-    };
-  });
-  const bind = (id, key) => {
-    const inp = el.querySelector(id);
-    if (inp) inp.oninput = () => {
-      investorDraft[key] = inp.value;
-    };
-  };
-  bind("#hs-inv-name", "name");
-  bind("#hs-inv-co", "company");
-  bind("#hs-inv-phone", "phone");
-  bind("#hs-inv-email", "email");
-  bind("#hs-comp-addr", "address");
-  bind("#hs-comp-note", "note");
-  bind("#hs-inv-regions", "regionText");
-  $("#hs-comp-x").onclick = () => closeComposer();
-  $("#hs-comp-save").onclick = () => saveInvestorDraft();
-  const del = $("#hs-comp-del");
-  if (del) {
-    del.onclick = () => {
-      db.investors = removeInvestor(savedInvestors(), investorDraft.id);
-      if (String(investorDraft.id).startsWith("list:")) {
-        db.settings.hiddenInvestorIds = [...new Set([...hiddenInvestorIds(), String(investorDraft.id)])];
-      }
-      persist();
-      closeComposer();
-      paintFieldMap();
-      paintFieldSheet();
-      setStatus("Investor removed");
-    };
-  }
-}
-
-function saveInvestorDraft() {
-  if (!investorDraft) return;
-  if (!investorDraft.name && !investorDraft.company) {
-    investorDraft.name = investorDraft.kind === "realestate" ? "Real estate investor" : "Insurance investor";
-  }
-  const hit = upsertInvestor(savedInvestors(), investorDraft);
-  db.investors = hit.list;
-  if (hit.investor.kind === "insurance") db.settings.showInsuranceInvestors = true;
-  if (hit.investor.kind === "realestate") db.settings.showRealEstateInvestors = true;
-  persist();
-  closeComposer();
-  paintFieldMap();
-  paintFieldSheet();
-  focusInvestorPin(hit.investor.id, { popup: true });
-  setStatus(`${investorDisplayName(hit.investor)} saved`);
-}
-
-async function openInvestorComposer(seed) {
-  const lat = Number(seed.lat);
-  const lon = Number(seed.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-  bump();
-  const existing = seed.id ? fieldInvestors().find((x) => x.id === seed.id) : null;
-  investorDraft = existing ? { ...existing } : newInvestor({ ...seed, lat, lon });
-  markDraft = newMark({ lat, lon, address: investorDraft.address || "", kind: "note" });
-  fillComposer();
-  if (!investorDraft.address) {
-    try {
-      const geo = await reverseGeocode(lat, lon);
-      if (investorDraft && !investorDraft.address && geo?.address) {
-        investorDraft.address = geo.address;
-        const inp = $("#hs-comp-addr");
-        if (inp && !inp.value) inp.value = geo.address;
-      }
-    } catch {
-      /* optional */
-    }
-  }
-}
-
 async function openMarkComposer(seed) {
   const lat = Number(seed.lat);
   const lon = Number(seed.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   bump();
-  investorDraft = null;
   const existing = seed.id ? fieldMarks().find((m) => m.id === seed.id) : null;
   let kind = existing?.kind || db.settings.marksLastKind || "ping";
   if (kind === "atlas" || kind === "disc") kind = "ping";
@@ -1697,13 +1464,12 @@ function paintFieldSheet() {
   const houses = doneHouses();
   const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
   const selHouse = selectedDoneHouse();
-  const invs = fieldInvestors();
   root.innerHTML = `
     <div class="hs-field-head">
       <strong>Completed houses</strong>
       <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "None loaded yet"}</span>
     </div>
-    <p class="muted">Yellow pins = completed houses (Jobs tab). Hold the map to drop field marks, insurance hearts, or real estate stars. Hold any pin to resize marks.</p>
+    <p class="muted">Yellow pins = completed houses (Jobs tab). Hold the map to drop field marks; hold any pin to resize.</p>
     <div class="hs-mark-tools">
       <button type="button" class="primary" id="hs-done-jobs">Manage in Jobs</button>
       ${selHouse ? `<button type="button" id="hs-done-all-pins">Clear selection</button>` : ""}
@@ -1740,21 +1506,6 @@ function paintFieldSheet() {
             )
             .join("")
         : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product.</p>`
-    }</div>
-    <div class="hs-field-head">
-      <strong>Investors</strong>
-      <span class="muted">${invs.length ? `${invs.length} on map` : "Public listings load automatically"}</span>
-    </div>
-    <div class="hs-mark-list hs-inv-list">${
-      invs.length
-        ? `${invs
-            .slice(0, 40)
-            .map(
-              (inv) =>
-                `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.address || inv.phone].filter(Boolean).join(" · "))}${inv.regionText ? `<em>${esc(inv.regionText)}</em>` : ""}</span></button>`,
-            )
-            .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
-        : `<p class="muted">Hearts and stars load from public Oklahoma business listings. Broken heart = stay in touch. Promote to a red heart or gold star when you have a working relationship. Hold the map to drop someone extra.</p>`
     }</div>`;
   const filter = $("#hs-mark-filter");
   if (filter) filter.onchange = () => paintFieldSheet();
@@ -1804,20 +1555,12 @@ function paintFieldSheet() {
       else setStatus(`Team marks · ${fieldMarks().length} on map${res.added ? ` (+${res.added} new)` : ""}`);
     };
   }
-  root.querySelectorAll(".hs-mark-row[data-id]").forEach((b) => {
+  root.querySelectorAll(".hs-mark-row").forEach((b) => {
     b.onclick = () => {
       const m = fieldMarks().find((x) => x.id === b.dataset.id);
       if (!m) return;
       flyToPin(m.lat, m.lon, 20);
       openMarkComposer(m);
-    };
-  });
-  root.querySelectorAll(".hs-inv-row[data-inv]").forEach((b) => {
-    b.onclick = () => {
-      const inv = fieldInvestors().find((x) => x.id === b.dataset.inv);
-      if (!inv) return;
-      flyToPin(inv.lat, inv.lon, 18);
-      focusInvestorPin(inv.id, { popup: true });
     };
   });
 }
@@ -1879,8 +1622,6 @@ function syncLayerToggleStates(el) {
   el.querySelector('[data-ov="biz-flags"]')?.classList.toggle("on", ff.business);
   el.querySelector('[data-ov="done"]')?.classList.toggle("on", db.settings.showDone !== false);
   el.querySelector('[data-ov="marks"]')?.classList.toggle("on", db.settings.showMarks !== false);
-  el.querySelector('[data-ov="hearts"]')?.classList.toggle("on", db.settings.showInsuranceInvestors !== false);
-  el.querySelector('[data-ov="stars"]')?.classList.toggle("on", db.settings.showRealEstateInvestors !== false);
 }
 
 function paintLayerToggles() {
@@ -1895,9 +1636,7 @@ function paintLayerToggles() {
     <button type="button" data-ov="rent-flags" class="hs-flag-kind-toggle" aria-label="Green residential flags" title="Show or hide green residential flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
     <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" aria-label="Blue commercial flags" title="Show or hide blue commercial flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>
     <button type="button" data-ov="done">Done</button>
-    <button type="button" data-ov="marks">Marks</button>
-    <button type="button" data-ov="hearts" class="hs-inv-toggle" aria-label="Insurance investors" title="Insurance investors — broken heart until a working relationship, then a full red heart">${investorGlyphSvg({ kind: "insurance", relationship: "partner" }, { size: 14 })} Hearts</button>
-    <button type="button" data-ov="stars" class="hs-inv-toggle" aria-label="Real estate investors" title="Real estate investors — stars, tap to show the regions they control">${investorGlyphSvg({ kind: "realestate", relationship: "partner" }, { size: 14 })} Stars</button>`;
+    <button type="button" data-ov="marks">Marks</button>`;
     if (!el._hsFlagsStatusBound) {
       el._hsFlagsStatusBound = true;
       window.addEventListener("hs-phone-flags", (ev) => {
@@ -1976,22 +1715,6 @@ function paintLayerToggles() {
       }
       if (b.dataset.ov === "done") db.settings.showDone = !(db.settings.showDone !== false);
       if (b.dataset.ov === "marks") db.settings.showMarks = !(db.settings.showMarks !== false);
-      if (b.dataset.ov === "hearts") {
-        db.settings.showInsuranceInvestors = !(db.settings.showInsuranceInvestors !== false);
-        persist();
-        syncLayerToggleStates(el);
-        paintFieldMap();
-        setStatus(db.settings.showInsuranceInvestors !== false ? "Insurance hearts on · hold the map to add" : "Insurance hearts hidden");
-        return;
-      }
-      if (b.dataset.ov === "stars") {
-        db.settings.showRealEstateInvestors = !(db.settings.showRealEstateInvestors !== false);
-        persist();
-        syncLayerToggleStates(el);
-        paintFieldMap();
-        setStatus(db.settings.showRealEstateInvestors !== false ? "Real estate stars on · hold the map to add" : "Real estate stars hidden");
-        return;
-      }
       persist();
       syncLayerToggleStates(el);
       paintFieldMap();
@@ -2319,10 +2042,6 @@ async function renderWx() {
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();
-    {
-      const c = defaultMapCenter(db.settings);
-      schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
-    }
     syncHailBottomChrome();
     setWxMapExpanded(false);
     if (wxState.data) revealHailStormSheet({ interactive: true, scroll: false });
@@ -2418,10 +2137,6 @@ async function renderWx() {
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();
-    {
-      const c = defaultMapCenter(db.settings);
-      schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
-    }
     syncHailBottomChrome();
     // Interactive UI by default — fullscreen only via address-bar swipe down
     setWxMapExpanded(false);
@@ -2517,7 +2232,6 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   wxState.lat = lat;
   wxState.lon = lon;
   wxState.viewport = false;
-  schedulePhotonInvestorHunt(lat, lon);
   const knownAddr = String(prefAddr || "").trim();
   wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : wxState.address || "";
   setWxPin(lat, lon);
@@ -2808,10 +2522,6 @@ function renderKeys() {
     <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
-    <h3>Team alpha</h3>
-    <p class="muted">Share this link so the crew loads hearts &amp; stars on any phone. Add to Home Screen. Hold the map → Insurance or Real estate.</p>
-    <p class="hs-alpha-url" id="set-alpha-url">${esc(teamAlphaLink(APP_VERSION))}</p>
-    <div class="actions"><button type="button" id="copy-alpha">Copy alpha link</button></div>
     <h3>Team sync</h3>
     <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
     <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
@@ -2846,14 +2556,6 @@ function renderKeys() {
     ghTok.oninput = () => {
       db.settings.github_token = ghTok.value.trim();
       persist();
-    };
-  }
-  const copyAlpha = $("#copy-alpha");
-  if (copyAlpha) {
-    copyAlpha.onclick = async () => {
-      const url = teamAlphaLink(APP_VERSION);
-      const ok = await copyText(url);
-      setStatus(ok ? "Alpha link copied" : url);
     };
   }
   document.querySelectorAll(".key-row input[data-field]").forEach((inp) => {

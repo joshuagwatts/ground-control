@@ -46,8 +46,8 @@ import {
   loadPersistedRentFlags,
   persistedRentFlagsAt,
 } from "../www/contacts.js";
-import { parseOsmXmlNodes, isUsableHttpBody } from "../www/net.js";
-import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel, pickBuildingFacts, formatAssessorRecordLine, parseOkCountyAssessorHtml, parseOkCountyBuildingDetailHtml, mailingLooksAbsentee, ownerEntityKind } from "../www/assessor.js";
+import { parseOsmXmlNodes } from "../www/net.js";
+import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel, pickBuildingFacts, formatAssessorRecordLine, parseOkCountyAssessorHtml } from "../www/assessor.js";
 
 function assert(ok, msg) {
   if (!ok) throw new Error(msg);
@@ -149,7 +149,6 @@ assert(formatOwnerName("CITY OF EDMOND") === "City Of Edmond", "owner caps");
 assert(formatOwnerName("SMITH RENTALS LLC") === "Smith Rentals LLC", "keep LLC");
 assert(formatMailing("PO BOX 2970", "EDMOND", "OK", "73083-2970").includes("PO BOX 2970"), "mail po box");
 assert(parcelMatchesPin("400 S Bryant, Edmond, OK", "400 S BRYANT AVE EDMOND"), "assessor situs");
-assert(parcelMatchesPin("202 E 4th St, Edmond, OK", "202 E 4TH ST EDMOND"), "glued city situs");
 assert(!parcelMatchesPin("2521 Tredington Way, Edmond, OK", "2501 TREDINGTON WAY EDMOND"), "wrong lot");
 
 const okc = pickParcel({
@@ -186,28 +185,13 @@ const crk = pickParcel({
 assert(/Sapulpa/i.test(crk.name), "creek name");
 assert(/Sapulpa/i.test(crk.mail), "creek citystate mail");
 
-const bld = pickBuildingFacts({ YearBuilt: 1998, BuiltAsSF: 2100, SaleDate: "05-28-1996", SalePrice: 185000, TotalImpValue: 120000, Exterior: "Frame Vinyl" });
+const bld = pickBuildingFacts({ YearBuilt: 1998, BuiltAsSF: 2100, SaleDate: "05-28-1996", SalePrice: 185000, TotalImpValue: 120000 });
 assert(bld.year_built === 1998 && bld.sqft === 2100, "building facts");
-assert(bld.exterior === "Frame Vinyl", "tulsa exterior");
 const line = formatAssessorRecordLine({
-  building: { ...bld, roof_cover: "Composition Shingle", roof_type: "Gable", year_remodel: 2013, stories: 1.5 },
-  permits: [{ date: "1/3/2024", number: "B23-00923", description: "Reroof Composition" }],
+  building: bld,
+  permits: [{ date: "1/3/2024", number: "B23-00923", description: "Remodeled" }],
 });
-assert(/Composition Shingle/.test(line) && /Built 1998/.test(line) && /Roof/.test(line), "assessor record line");
-const gisLine = formatAssessorRecordLine({
-  building: { sale_date: "2005", market_value: 295000, acres: 0.2135, subdivision: "CAPITOL VIEW SECOND" },
-});
-assert(/Sale 2005/.test(gisLine) && /Market \$295,000/.test(gisLine) && /0.21 ac/.test(gisLine), "gis-only roof facts");
-
-assert(
-  !isUsableHttpBody("<html><h1>CORS proxy temporarily paused</h1><p>Proxy requests are unavailable</p></html>", "https://services8.arcgis.com/x/FeatureServer/0/query?f=json"),
-  "reject paused cors.sh html",
-);
-assert(
-  !isUsableHttpBody("<!doctype html><title>File not found</title><p>File not found</p>", "https://example.com"),
-  "reject python 404",
-);
-assert(isUsableHttpBody('{"features":[{"attributes":{"name1":"Riley"}}]}', "https://services8.arcgis.com/x/FeatureServer/0/query?f=json"), "accept gis json");
+assert(/Built 1998/.test(line) && /Permit/.test(line), "assessor record line");
 
 const okParsed = parseOkCountyAssessorHtml(
   '<table><tr><td>Improved</td><td>Restroom Building</td><td>1990</td><td>264</td><td>1 Stories</td></tr>' +
@@ -215,27 +199,6 @@ const okParsed = parseOkCountyAssessorHtml(
 );
 assert(okParsed.buildings[0]?.year_built === 1990, "ok county html building");
 assert(okParsed.permits[0]?.number === "B23-00923", "ok county html permit");
-
-const okCard = parseOkCountyAssessorHtml(`
-  <table><tr><th>Issued</th><th>Permit #</th><th>Provided by</th><th>Bldg #</th><th>Description</th><th>Est Construction Cost</th><th>Status</th></tr>
-  <tr><td>6/1/1995</td><td>10259674</td><td>EDMOND</td><td>1</td><td>Add On</td><td>500</td><td>Inactive</td></tr>
-  <tr><td>4/12/2019</td><td>B19-441</td><td>EDMOND</td><td>1</td><td>Reroof Composition Shingle</td><td>12000</td><td>Inactive</td></tr></table>
-  <table><tr><th>Bldg #</th><th>Vacant/Improved Land</th><th>Bldg Description</th><th>Year Built</th><th>SqFt</th><th># Stories</th></tr>
-  <tr><td>1</td><td>Improved</td><td>1 1/2 Story Fin</td><td>1945</td><td>1,586</td><td>1.5 Stories</td></tr></table>`);
-assert(okCard.buildings[0]?.sqft === 1586 && okCard.buildings[0]?.year_built === 1945, "ok county header sqft");
-assert(okCard.permits.length === 2 && okCard.permits[1].description.includes("Reroof"), "ok county header permits");
-
-const bldgHtml = parseOkCountyBuildingDetailHtml(
-  "Roof Type: | Gable | Roof Cover: | Composition Shingle | Year Built: | 1945 | Remodel Year: | 2013 | Square Feet: | 1,586 | # of Stories: | 1.5 Stories | Bldg Exterior: | Frame Vinyl | Physical Condition: | Average",
-);
-assert(bldgHtml.roof_cover === "Composition Shingle" && bldgHtml.year_remodel === 2013 && bldgHtml.sqft === 1586, "ok county bldg detail");
-
-assert(mailingLooksAbsentee("PO BOX 2970, Edmond, OK 73083", "400 S BRYANT AVE EDMOND"), "po box absentee");
-assert(!mailingLooksAbsentee("202 E 4TH ST, Edmond, OK 73034", "202 E 4TH ST EDMOND"), "same house not absentee");
-assert(mailingLooksAbsentee("SOUTHERN REGION, Memphis, TN 38166", "200 S BROADWAY EDMOND"), "out-of-state mail absentee");
-assert(ownerEntityKind("Kickingbird Medical Building LLC") === "llc", "llc kind");
-assert(ownerEntityKind("Riley William A III Rev Trust") === "trust", "trust kind");
-assert(ownerEntityKind("United States Postal Service") === "public", "public kind");
 
 const pin = "2521 Tredington Way, Edmond, OK 73034";
 const keep = listingForPin({ address: pin, phone: "918-582-0001", name: "Shop" }, pin);
