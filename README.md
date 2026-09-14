@@ -46,9 +46,9 @@ The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator**
 
 ## Team web (iPhone Safari, free)
 
-**Alpha — hearts & stars (v0.2.313)**
+**Alpha — hearts & stars (v0.2.314)**
 
-https://joshuagwatts.github.io/ground-control/?v=0.2.313&alpha=1
+https://joshuagwatts.github.io/ground-control/?v=0.2.314&alpha=1
 
 Open that on any phone. Add to Home Screen. **Hearts** and **Stars** are on by default.
 

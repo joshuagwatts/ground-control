@@ -71,7 +71,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.313";
+} from "./wx.js?v=0.2.314";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -84,12 +84,15 @@ import {
   newInvestor,
   upsertInvestor,
   removeInvestor,
-  setInvestorRelationship,
   promoteRelationship,
   investorDisplayName,
   investorGlyphSvg,
   relationshipLabel,
+  mergeListedAndSaved,
+  mergeInvestorListings,
+  fetchPhotonInvestorsNear,
 } from "./investors.js";
+import { OK_INVESTOR_SEED } from "./ok-investors.js";
 import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
@@ -1181,8 +1184,42 @@ function fieldMarks() {
   return Array.isArray(db.marks) ? db.marks : [];
 }
 
-function fieldInvestors() {
+function savedInvestors() {
   return Array.isArray(db.investors) ? db.investors : [];
+}
+
+function hiddenInvestorIds() {
+  return Array.isArray(db.settings.hiddenInvestorIds) ? db.settings.hiddenInvestorIds : [];
+}
+
+let liveListedInvestors = [];
+
+function listedInvestorPool() {
+  return mergeInvestorListings([OK_INVESTOR_SEED, liveListedInvestors]);
+}
+
+function fieldInvestors() {
+  return mergeListedAndSaved(listedInvestorPool(), savedInvestors(), hiddenInvestorIds());
+}
+
+let photonHuntTimer = 0;
+function schedulePhotonInvestorHunt(lat, lon) {
+  if (photonHuntTimer) clearTimeout(photonHuntTimer);
+  photonHuntTimer = setTimeout(() => {
+    photonHuntTimer = 0;
+    void huntPhotonInvestors(lat, lon);
+  }, 700);
+}
+
+async function huntPhotonInvestors(lat, lon) {
+  const extra = await fetchPhotonInvestorsNear(lat, lon).catch(() => []);
+  if (extra.length) liveListedInvestors = extra;
+  paintFieldMap();
+  paintFieldSheet();
+  const n = fieldInvestors();
+  const ins = n.filter((x) => x.kind === "insurance").length;
+  const re = n.filter((x) => x.kind === "realestate").length;
+  if (ins + re) setStatus(`${ins} insurance hearts · ${re} real estate stars from public listings`);
 }
 
 function doneHouses() {
@@ -1269,7 +1306,9 @@ function paintFieldMap() {
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onInvestorEdit: (inv) => openInvestorComposer(inv),
     onInvestorPromote: (inv) => {
-      db.investors = setInvestorRelationship(fieldInvestors(), inv.id, promoteRelationship(inv));
+      const nextRel = promoteRelationship(inv);
+      const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
+      db.investors = hit.list;
       persist();
       paintFieldMap();
       paintFieldSheet();
@@ -1530,7 +1569,10 @@ function fillInvestorComposer() {
   const del = $("#hs-comp-del");
   if (del) {
     del.onclick = () => {
-      db.investors = removeInvestor(fieldInvestors(), investorDraft.id);
+      db.investors = removeInvestor(savedInvestors(), investorDraft.id);
+      if (String(investorDraft.id).startsWith("list:")) {
+        db.settings.hiddenInvestorIds = [...new Set([...hiddenInvestorIds(), String(investorDraft.id)])];
+      }
       persist();
       closeComposer();
       paintFieldMap();
@@ -1545,7 +1587,7 @@ function saveInvestorDraft() {
   if (!investorDraft.name && !investorDraft.company) {
     investorDraft.name = investorDraft.kind === "realestate" ? "Real estate investor" : "Insurance investor";
   }
-  const hit = upsertInvestor(fieldInvestors(), investorDraft);
+  const hit = upsertInvestor(savedInvestors(), investorDraft);
   db.investors = hit.list;
   if (hit.investor.kind === "insurance") db.settings.showInsuranceInvestors = true;
   if (hit.investor.kind === "realestate") db.settings.showRealEstateInvestors = true;
@@ -1701,17 +1743,18 @@ function paintFieldSheet() {
     }</div>
     <div class="hs-field-head">
       <strong>Investors</strong>
-      <span class="muted">${invs.length ? `${invs.length} on map` : "Hold the map, then tap Insurance or Real estate"}</span>
+      <span class="muted">${invs.length ? `${invs.length} on map` : "Public listings load automatically"}</span>
     </div>
     <div class="hs-mark-list hs-inv-list">${
       invs.length
-        ? invs
+        ? `${invs
+            .slice(0, 40)
             .map(
               (inv) =>
                 `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.address || inv.phone].filter(Boolean).join(" · "))}${inv.regionText ? `<em>${esc(inv.regionText)}</em>` : ""}</span></button>`,
             )
-            .join("")
-        : `<p class="muted">Broken heart = stay in touch. Red heart = working relationship. Stars work the same — tap a star to light the regions they control.</p>`
+            .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
+        : `<p class="muted">Hearts and stars load from public Oklahoma business listings. Broken heart = stay in touch. Promote to a red heart or gold star when you have a working relationship. Hold the map to drop someone extra.</p>`
     }</div>`;
   const filter = $("#hs-mark-filter");
   if (filter) filter.onchange = () => paintFieldSheet();
@@ -2276,6 +2319,10 @@ async function renderWx() {
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();
+    {
+      const c = defaultMapCenter(db.settings);
+      schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+    }
     syncHailBottomChrome();
     setWxMapExpanded(false);
     if (wxState.data) revealHailStormSheet({ interactive: true, scroll: false });
@@ -2371,6 +2418,10 @@ async function renderWx() {
     paintFieldMap();
     paintFieldSheet();
     wirePinSizeSlider();
+    {
+      const c = defaultMapCenter(db.settings);
+      schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+    }
     syncHailBottomChrome();
     // Interactive UI by default — fullscreen only via address-bar swipe down
     setWxMapExpanded(false);
@@ -2466,6 +2517,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
   wxState.lat = lat;
   wxState.lon = lon;
   wxState.viewport = false;
+  schedulePhotonInvestorHunt(lat, lon);
   const knownAddr = String(prefAddr || "").trim();
   wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : wxState.address || "";
   setWxPin(lat, lon);

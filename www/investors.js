@@ -24,8 +24,57 @@ export const INVESTOR_KINDS = [
 ];
 
 export const MAX_INVESTORS = 200;
+export const MAX_LISTED_INVESTORS = 400;
 
 const KIND_IDS = new Set(INVESTOR_KINDS.map((k) => k.id));
+
+const OK_BOX = { south: 33.55, north: 37.05, west: -103.05, east: -94.35 };
+const PHOTON_URL = "https://photon.komoot.io/api/";
+const SKIP_LISTING = /\bbail\b|\bbonding\b|\bhistoric school\b|\benrollment center\b/i;
+const INSURANCE_NAME =
+  /\b(insurance|insurors?|underwrit|claims?\s+adjust|public adjust|farmers ins|state farm|allstate|farm bureau|nationwide|liberty mutual|shelter ins|american family|progressive|aflac|aaa insurance)\b/i;
+const REALESTATE_NAME =
+  /\b(real\s*e-?state|realtors?|realty|estate agents?|keller williams|re\/?max|coldwell|century 21|berkshire hathaway|exp realty|we buy houses|home buyers?|investment propert|properties (llc|inc|group)|holdings (llc|group))\b/i;
+
+export function inOklahoma(lat, lon) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  return Number.isFinite(la) && Number.isFinite(lo) && la >= OK_BOX.south && la <= OK_BOX.north && lo >= OK_BOX.west && lo <= OK_BOX.east;
+}
+
+/** Public business listing → insurance heart or real-estate star. Empty if neither. */
+export function classifyInvestorKind(name, extra = "") {
+  const s = `${name || ""} ${extra || ""}`;
+  if (SKIP_LISTING.test(s)) return "";
+  const office = String(extra || "").toLowerCase();
+  if (/\binsurance\b/.test(office) && !/estate_agent|realtor/.test(office)) return "insurance";
+  if (/estate_agent|realtor|\brealty\b|property_management/.test(office)) return "realestate";
+  if (INSURANCE_NAME.test(s)) return "insurance";
+  if (REALESTATE_NAME.test(s)) return "realestate";
+  return "";
+}
+
+export function listedInvestorId(kind, lat, lon, name) {
+  const slug = String(name || "x")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 24);
+  return `list:${kind}:${Number(lat).toFixed(4)}:${Number(lon).toFixed(4)}:${slug}`;
+}
+
+export function countyNameAt(lat, lon) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return "";
+  const hit = OK_COUNTY_REGIONS.find((c) => la >= c.south && la <= c.north && lo >= c.west && lo <= c.east);
+  return hit ? `${hit.name} County` : "";
+}
+
+export function defaultRegionsForListing(kind, city, lat, lon) {
+  if (kind !== "realestate") return [];
+  const bits = [String(city || "").trim(), countyNameAt(lat, lon)].filter(Boolean);
+  return [...new Set(bits)].slice(0, 6);
+}
 
 export function investorKindMeta(id) {
   const key = String(id || "").toLowerCase();
@@ -238,6 +287,147 @@ export function validInvestorCoord(lat, lon) {
   const la = Number(lat);
   const lo = Number(lon);
   return Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && !(la === 0 && lo === 0);
+}
+
+function listingAddress(row = {}) {
+  return [row.street || row.address, row.city, row.state || "OK", row.zip]
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
+export function listingFromBizRow(row, kindHint = "") {
+  const name = String(row?.name || "").trim();
+  const kind = kindHint || classifyInvestorKind(name, `${row?.office || ""} ${row?.shop || ""}`);
+  if (!kind || !validInvestorCoord(row?.lat, row?.lon) || !inOklahoma(row.lat, row.lon)) return null;
+  if (!name) return null;
+  const city = String(row.city || "").trim();
+  const regions = defaultRegionsForListing(kind, city, row.lat, row.lon);
+  return normalizeInvestor({
+    id: listedInvestorId(kind, row.lat, row.lon, name),
+    kind,
+    relationship: "prospect",
+    name,
+    company: name,
+    phone: row.phone || "",
+    email: row.email || "",
+    address: listingAddress(row),
+    note: "",
+    regionText: regions.join(", "),
+    lat: row.lat,
+    lon: row.lon,
+    source: row.source || "osm",
+  });
+}
+
+export function listingFromPhotonFeature(feat) {
+  const p = feat?.properties || {};
+  const coords = feat?.geometry?.coordinates;
+  const lon = Number(coords?.[0]);
+  const lat = Number(coords?.[1]);
+  const name = String(p.name || p.osm_value || "").trim();
+  const extra = `${p.osm_key || ""}=${p.osm_value || ""} ${p.type || ""}`;
+  const kind = classifyInvestorKind(name, extra);
+  if (!kind || !name || !inOklahoma(lat, lon)) return null;
+  const state = String(p.state || "").toLowerCase();
+  if (state && !/^(ok|oklahoma)$/.test(state)) return null;
+  const street = [p.housenumber, p.street].filter(Boolean).join(" ");
+  return listingFromBizRow(
+    {
+      name,
+      street,
+      city: p.city || p.county || "",
+      state: p.state || "OK",
+      zip: p.postcode || "",
+      lat,
+      lon,
+      phone: p.phone || "",
+      email: p.email || "",
+      source: "osm",
+      office: p.osm_value || "",
+    },
+    kind,
+  );
+}
+
+export function mergeInvestorListings(lists) {
+  const out = [];
+  const seen = new Map();
+  const keyOf = (n) => {
+    const slug = String(n.name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "")
+      .slice(0, 28);
+    return `${n.kind}:${slug}:${Number(n.lat).toFixed(3)}:${Number(n.lon).toFixed(3)}`;
+  };
+  const push = (inv) => {
+    if (!inv || !validInvestorCoord(inv.lat, inv.lon)) return;
+    const n = normalizeInvestor(inv);
+    const key = keyOf(n);
+    const prevI = seen.get(key) ?? seen.get(n.id);
+    if (prevI == null) {
+      seen.set(key, out.length);
+      seen.set(n.id, out.length);
+      out.push(n);
+      return;
+    }
+    const prev = out[prevI];
+    out[prevI] = normalizeInvestor({
+      ...prev,
+      phone: prev.phone || n.phone,
+      email: prev.email || n.email,
+      address: (prev.address || "").length >= (n.address || "").length ? prev.address : n.address,
+      regionText: prev.regionText || n.regionText,
+    });
+  };
+  for (const list of lists || []) {
+    for (const inv of list || []) push(inv);
+  }
+  return out.slice(0, MAX_LISTED_INVESTORS);
+}
+
+/** Saved edits (promote / notes) win over public listings with the same id. */
+export function mergeListedAndSaved(listed, saved, hiddenIds = []) {
+  const hide = new Set((hiddenIds || []).map(String));
+  const byId = new Map();
+  for (const inv of listed || []) {
+    const n = normalizeInvestor(inv);
+    if (hide.has(n.id)) continue;
+    byId.set(n.id, n);
+  }
+  for (const inv of saved || []) {
+    const n = normalizeInvestor(inv);
+    if (hide.has(n.id)) continue;
+    const prev = byId.get(n.id);
+    byId.set(n.id, prev ? normalizeInvestor({ ...prev, ...n, lat: n.lat, lon: n.lon }) : n);
+  }
+  return [...byId.values()];
+}
+
+export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "" } = {}) {
+  const u = new URL(PHOTON_URL);
+  u.searchParams.set("q", String(q || "").trim() || "oklahoma");
+  u.searchParams.set("limit", String(limit));
+  if (Number.isFinite(Number(lat))) u.searchParams.set("lat", String(lat));
+  if (Number.isFinite(Number(lon))) u.searchParams.set("lon", String(lon));
+  if (osmTag) u.searchParams.set("osm_tag", osmTag);
+  const res = await fetch(u, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`photon ${res.status}`);
+  const data = await res.json();
+  return (data?.features || []).map(listingFromPhotonFeature).filter(Boolean);
+}
+
+export async function fetchPhotonInvestorsNear(lat, lon) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return [];
+  const jobs = [
+    photonInvestorSearch({ q: "insurance agency", lat: la, lon: lo, limit: 40, osmTag: "office:insurance" }),
+    photonInvestorSearch({ q: "realtor", lat: la, lon: lo, limit: 30, osmTag: "office:estate_agent" }),
+    photonInvestorSearch({ q: "real estate investor", lat: la, lon: lo, limit: 20 }),
+  ];
+  const chunks = await Promise.all(jobs.map((p) => p.catch(() => [])));
+  return mergeInvestorListings(chunks);
 }
 
 export function normalizeInvestor(raw = {}) {

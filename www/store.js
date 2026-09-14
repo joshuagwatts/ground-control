@@ -25,6 +25,7 @@ function blank() {
       showFlagCommercial: true,
       showInsuranceInvestors: true,
       showRealEstateInvestors: true,
+      hiddenInvestorIds: [],
       done_pin_scale: 1,
       humor: 40,
       honesty: 98,

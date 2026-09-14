@@ -15,6 +15,10 @@ import {
   promoteButtonLabel,
   normalizeInvestor,
   investorRegionBounds,
+  classifyInvestorKind,
+  listingFromBizRow,
+  mergeListedAndSaved,
+  mergeInvestorListings,
 } from "../www/investors.js";
 
 function assert(ok, msg) {
@@ -73,5 +77,34 @@ assert(/Promote to gold star/.test(promoteButtonLabel(star)), "star promote labe
 
 const bad = normalizeInvestor({ kind: "nope", relationship: "maybe", name: "X" });
 assert(bad.kind === "insurance" && bad.relationship === "prospect", "normalize fallbacks");
+
+assert(classifyInvestorKind("State Farm") === "insurance", "state farm");
+assert(classifyInvestorKind("Keller Williams Realty") === "realestate", "kw");
+assert(classifyInvestorKind("Abrahams Nationwide Bonding Bail") === "", "skip bail");
+assert(classifyInvestorKind("Farmers", "office=insurance") === "insurance", "osm insurance tag");
+assert(classifyInvestorKind("Local Broker", "estate_agent") === "realestate", "osm realtor tag");
+
+const listed = listingFromBizRow({
+  name: "Early Insurance Agency",
+  street: "17342 North May Avenue",
+  city: "Edmond",
+  state: "OK",
+  lat: 35.6487,
+  lon: -97.5662,
+  phone: "(405) 936-9200",
+  source: "osm",
+});
+assert(listed && listed.kind === "insurance" && listed.id.startsWith("list:insurance:"), "listed heart id");
+assert(/936-9200/.test(listed.phone), "listed phone");
+
+const saved = mergeListedAndSaved([listed], [{ ...listed, relationship: "partner", note: "good partner" }], []);
+assert(saved.length === 1 && saved[0].relationship === "partner" && saved[0].note === "good partner", "promote listing persists");
+assert(mergeListedAndSaved([listed], [], [listed.id]).length === 0, "hidden listing stays off");
+
+const dup = mergeInvestorListings([
+  [listed],
+  [listingFromBizRow({ ...listed, lat: listed.lat + 0.0004, phone: "" })],
+]);
+assert(dup.length === 1 && /936-9200/.test(dup[0].phone), "nearby duplicate offices collapse");
 
 console.log("investors ok");
