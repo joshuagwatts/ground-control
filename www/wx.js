@@ -9423,9 +9423,12 @@ function paintInvestorLayer() {
   investorMarkers.clear();
   const showIns = fieldOverlay.showInsuranceInvestors === true;
   const showRe = fieldOverlay.showRealEstateInvestors === true;
-  const list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).filter(
+  let list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).filter(
     (inv) => inv.id === selectedInvestorId || investorNearMap(inv),
   );
+  if (!list.length) {
+    list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).slice(0, 40);
+  }
   const selected = list.find((x) => x.id === selectedInvestorId) || null;
   paintInvestorRegions(selected);
   for (const inv of list) {

@@ -72,7 +72,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.315";
+} from "./wx.js?v=0.2.317";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1217,9 +1217,15 @@ function investorOfficesWanted() {
   return investorHeartsOn() || investorStarsOn();
 }
 
+function officeMapHome() {
+  const c = defaultMapCenter(db.settings);
+  if (isOklahomaLatLon(c.lat, c.lon)) return c;
+  return { lat: 35.4676, lon: -97.5164 };
+}
+
 function startOfficeLayerHunt() {
   const here = mapCenterCoords();
-  const home = defaultMapCenter(db.settings);
+  const home = officeMapHome();
   if (!here || !isOklahomaLatLon(here.lat, here.lon)) {
     flyToPin(home.lat, home.lon, 11);
     schedulePhotonInvestorHunt(home.lat, home.lon);
