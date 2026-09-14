@@ -361,6 +361,11 @@ export function formatAssessorRecordLine(assessor = {}) {
     parts.push(`Sale ${saleBits.join(" · ")}`);
   }
   if (b.market_value) parts.push(`Market $${Math.round(b.market_value).toLocaleString()}`);
+  if (b.acres) {
+    const ac = Number(b.acres);
+    parts.push(`${ac >= 10 ? ac.toFixed(1) : ac.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")} ac`);
+  }
+  if (b.foundation && parts.length < 7) parts.push(String(b.foundation).replace(/\s+/g, " ").trim());
   const roofLine = formatRoofPermitLine(assessor.permits);
   if (roofLine) parts.push((assessor.permits || []).some(isRoofPermit) ? `Roof ${roofLine}` : `Permit ${roofLine}`);
   if (b.subdivision && parts.length < 5) parts.push(b.subdivision);
@@ -697,7 +702,12 @@ function addressWhere(field, parts) {
 async function arcgisQuery(url, params) {
   const q = new URLSearchParams({ f: "json", returnGeometry: "false", resultRecordCount: "4", ...params });
   const { body } = await httpGet(`${url}?${q}`, 12000);
-  const data = JSON.parse(body || "{}");
+  let data = {};
+  try {
+    data = JSON.parse(body || "{}");
+  } catch {
+    return [];
+  }
   if (data.error) return [];
   return (data.features || []).map((f) => f.attributes).filter(Boolean);
 }

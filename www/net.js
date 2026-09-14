@@ -66,7 +66,7 @@ async function httpGetViaCorsSh(url, timeoutMs) {
   try {
     const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
     const body = unwrapProxyBody(await res.text());
-    if (!res.ok || !validProxyBody(body)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    if (!res.ok || !validProxyBody(body, url)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
     return { url, status: res.status, body };
   } finally {
     clearTimeout(timer);
@@ -83,7 +83,7 @@ async function httpGetViaServiceWorkerMessage(url, timeoutMs) {
     channel.port1.onmessage = (ev) => {
       clearTimeout(timer);
       const msg = ev.data || {};
-      if (msg.ok && validProxyBody(msg.body)) {
+      if (msg.ok && validProxyBody(msg.body, url)) {
         resolve({ url, status: Number(msg.status) || 200, body: unwrapProxyBody(msg.body) });
       } else {
         reject(new Error(msg.err || "proxy empty"));
@@ -109,7 +109,7 @@ async function httpGetViaSameOriginProxy(url, timeoutMs) {
   try {
     const res = await fetch(proxyUrl, { signal: ctrl.signal, redirect: "follow" });
     const body = unwrapProxyBody(await res.text());
-    if (!res.ok || !validProxyBody(body)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    if (!res.ok || !validProxyBody(body, url)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
     return { url, status: res.status, body };
   } finally {
     clearTimeout(timer);
@@ -319,6 +319,15 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
     return { url: native.url || target, status, body: bodyToText(native.data) };
   }
 
+  // Esri GIS advertises CORS * — skip public relays that are paused or rewrite JSON.
+  if (typeof window !== "undefined" && corsOpenGisHost(target)) {
+    try {
+      return await httpGetDirectBrowser(target, Math.min(Number(timeoutMs) || 12000, 8000));
+    } catch {
+      /* county HTML / locked GIS still needs a proxy */
+    }
+  }
+
   // Browser: NOAA/IEM block CORS — go straight to proxies instead of a doomed direct fetch.
   if (typeof window !== "undefined" && needsBrowserCorsProxy(target)) {
     try {
@@ -333,7 +342,9 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   try {
     const res = await fetch(target, { signal: ctrl.signal, redirect: "follow", headers });
     if (!res.ok) throw new Error(`fetch ${res.status}`);
-    return { url: res.url, status: res.status, body: await res.text() };
+    const body = await res.text();
+    if (!validProxyBody(body, target)) throw new Error("empty");
+    return { url: res.url, status: res.status, body };
   } catch (e) {
     const msg = String(e?.message || e || "fetch failed");
     if (/abort/i.test(msg)) throw new Error("timeout");
@@ -349,6 +360,29 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
     throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
   } finally {
     clearTimeout(t);
+  }
+}
+
+function corsOpenGisHost(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h.includes("arcgis.com") || h.endsWith("incog.org") || h.includes("clevelandcounty.com");
+  } catch {
+    return false;
+  }
+}
+
+async function httpGetDirectBrowser(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    const body = await res.text();
+    if (!validProxyBody(body, url)) throw new Error("empty");
+    return { url: res.url || url, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -374,6 +408,8 @@ function needsBrowserCorsProxy(url) {
       h.includes("chamber") ||
       h.includes("duckduckgo") ||
       h.includes("arcgis.com") ||
+      h.endsWith("incog.org") ||
+      h.includes("clevelandcounty") ||
       h.includes("oklahomacounty") ||
       h.includes("assessor")
     );
@@ -409,16 +445,22 @@ function corsProxyCandidates(url) {
   ];
 }
 
-function validProxyBody(body) {
+export function isUsableHttpBody(body, url = "") {
+  return validProxyBody(body, url);
+}
+
+function validProxyBody(body, url = "") {
   const t = String(body || "").trim();
   if (!t) return false;
+  if (/CORS proxy temporarily paused|proxy requests are unavailable/i.test(t)) return false;
   if (/Error code:\s*404|File not found|Cannot GET \/proxy/i.test(t) && t.length < 800) return false;
-  if (t.startsWith("{") || t.startsWith("[")) {
+  const wantJson = /f=json|FeatureServer|arcgis/i.test(String(url || ""));
+  if (wantJson || t.startsWith("{") || t.startsWith("[")) {
     try {
       JSON.parse(t);
       return true;
     } catch {
-      return false;
+      if (wantJson) return false;
     }
   }
   return t.length >= 80;
@@ -438,10 +480,39 @@ function unwrapProxyBody(body) {
   return raw;
 }
 
+async function fetchViaProxyUrl(proxy, url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    const body = unwrapProxyBody(await res.text());
+    if (!validProxyBody(body, url)) throw new Error("proxy empty");
+    return { url, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function httpGetViaCorsProxy(url, timeoutMs) {
   const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 16000), 36000);
   let lastErr = "cors proxy failed";
   const isNoaa = /ncdc\.noaa\.gov|noaa\.gov/i.test(url);
+  const enc = encodeURIComponent(url);
+
+  try {
+    if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+      for (const proxy of [`http://127.0.0.1:4175/proxy?url=${enc}`, `http://127.0.0.1:4174/proxy?url=${enc}`]) {
+        try {
+          return await fetchViaProxyUrl(proxy, url, Math.min(perMs, 8000));
+        } catch (e) {
+          lastErr = String(e?.message || e || lastErr);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 
   // NOAA SWDI — cors.sh carries large JSON; try before slow/broken proxies.
   if (isNoaa) {
@@ -470,37 +541,20 @@ async function httpGetViaCorsProxy(url, timeoutMs) {
 
   const team = teamProxyUrl(url);
   if (team) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), perMs);
     try {
-      const res = await fetch(team, { signal: ctrl.signal, redirect: "follow" });
-      const body = unwrapProxyBody(await res.text());
-      if (res.ok && validProxyBody(body)) {
-        clearTimeout(timer);
-        return { url, status: res.status, body };
-      }
-      throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+      return await fetchViaProxyUrl(team, url, perMs);
     } catch (e) {
-      clearTimeout(timer);
       lastErr = String(e?.message || e || lastErr);
     }
   }
 
   const proxies = corsProxyCandidates(url).filter(
-    (p) => p !== team && p !== sameOriginProxyUrl(url) && p !== corsShProxyUrl(url),
+    (p) => p !== team && p !== sameOriginProxyUrl(url) && p !== corsShProxyUrl(url) && !/:4175\/proxy|:4174\/proxy/.test(p),
   );
   for (const proxy of proxies) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), perMs);
     try {
-      const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
-      if (!res.ok) throw new Error(`fetch ${res.status}`);
-      const body = unwrapProxyBody(await res.text());
-      if (!validProxyBody(body)) throw new Error("proxy empty");
-      clearTimeout(timer);
-      return { url, status: res.status, body };
+      return await fetchViaProxyUrl(proxy, url, perMs);
     } catch (e) {
-      clearTimeout(timer);
       lastErr = String(e?.message || e || "cors proxy failed");
     }
   }

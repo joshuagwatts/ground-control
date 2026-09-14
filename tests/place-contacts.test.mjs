@@ -46,7 +46,7 @@ import {
   loadPersistedRentFlags,
   persistedRentFlagsAt,
 } from "../www/contacts.js";
-import { parseOsmXmlNodes } from "../www/net.js";
+import { parseOsmXmlNodes, isUsableHttpBody } from "../www/net.js";
 import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel, pickBuildingFacts, formatAssessorRecordLine, parseOkCountyAssessorHtml, parseOkCountyBuildingDetailHtml, mailingLooksAbsentee, ownerEntityKind } from "../www/assessor.js";
 
 function assert(ok, msg) {
@@ -194,6 +194,20 @@ const line = formatAssessorRecordLine({
   permits: [{ date: "1/3/2024", number: "B23-00923", description: "Reroof Composition" }],
 });
 assert(/Composition Shingle/.test(line) && /Built 1998/.test(line) && /Roof/.test(line), "assessor record line");
+const gisLine = formatAssessorRecordLine({
+  building: { sale_date: "2005", market_value: 295000, acres: 0.2135, subdivision: "CAPITOL VIEW SECOND" },
+});
+assert(/Sale 2005/.test(gisLine) && /Market \$295,000/.test(gisLine) && /0.21 ac/.test(gisLine), "gis-only roof facts");
+
+assert(
+  !isUsableHttpBody("<html><h1>CORS proxy temporarily paused</h1><p>Proxy requests are unavailable</p></html>", "https://services8.arcgis.com/x/FeatureServer/0/query?f=json"),
+  "reject paused cors.sh html",
+);
+assert(
+  !isUsableHttpBody("<!doctype html><title>File not found</title><p>File not found</p>", "https://example.com"),
+  "reject python 404",
+);
+assert(isUsableHttpBody('{"features":[{"attributes":{"name1":"Riley"}}]}', "https://services8.arcgis.com/x/FeatureServer/0/query?f=json"), "accept gis json");
 
 const okParsed = parseOkCountyAssessorHtml(
   '<table><tr><td>Improved</td><td>Restroom Building</td><td>1990</td><td>264</td><td>1 Stories</td></tr>' +

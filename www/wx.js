@@ -42,7 +42,7 @@ import {
   cancelRentFlagSweep,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
-import { lookupAssessorParcel } from "./assessor.js";
+import { lookupAssessorParcel, enrichAssessorPublicRecord } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, markPinSvgHtml, clampPinScale } from "./marks.js";
 import { flagNetProfile, isAndroid, isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
 
@@ -562,13 +562,7 @@ function placeContactHtml(data, esc) {
 }
 
 async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace) {
-  const [contacts, assessorGis] = await Promise.all([
-    lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({})),
-    lookupAssessorParcel(lat, lon, addr, { enrich: false }).catch(() => null),
-  ]);
-  let people = mergeContacts(listingForPin(geo, addr), contacts);
-  let assessor = assessorGis;
-  const pack = (a) => {
+  const pack = (people, a) => {
     const fields = ownerFields(people, a);
     return {
       ...base,
@@ -576,12 +570,24 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace
       zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
     };
   };
-  let dossier = pack(assessor);
-  if (typeof onPlace === "function") onPlace(dossier);
+  const emit = (people, a) => {
+    const dossier = pack(people, a);
+    if (typeof onPlace === "function") onPlace(dossier);
+    return dossier;
+  };
+  let people = listingForPin(geo, addr);
+  let assessor = null;
+  let dossier = emit(people, assessor);
+  const gisP = lookupAssessorParcel(lat, lon, addr, { enrich: false }).catch(() => null);
+  const contactsP = lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({}));
+  assessor = await gisP;
+  if (assessor) dossier = emit(people, assessor);
+  const contacts = await contactsP;
+  people = mergeContacts(listingForPin(geo, addr), contacts);
+  dossier = emit(people, assessor);
   if (assessor?.url && /oklahomacounty\.org/i.test(assessor.url)) {
     assessor = await enrichAssessorPublicRecord(assessor).catch(() => assessor);
-    dossier = pack(assessor);
-    if (typeof onPlace === "function") onPlace(dossier);
+    dossier = emit(people, assessor);
   }
   if (settings && (!dossier.owner_phone || !dossier.owner_email || !dossier.owner_name)) {
     const ai = await fillContactGapsWithChat(settings, {
@@ -592,8 +598,7 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace
     }).catch(() => null);
     if (ai) {
       people = mergeContacts(people, ai);
-      dossier = pack(assessor);
-      if (typeof onPlace === "function") onPlace(dossier);
+      dossier = emit(people, assessor);
     }
   }
   if (dossier.owner_phone || dossier.owner_name || dossier.owner_email) {
@@ -4032,7 +4037,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
       },
     });
   };
-  const placeP = mergePlaceOwner(settings, lat, lon, addr, geo, partial, (hit) => {
+  void mergePlaceOwner(settings, lat, lon, addr, geo, partial, (hit) => {
     placeHit = hit;
     pushPartial("place", { loading: true });
   });
@@ -4057,7 +4062,7 @@ export async function quickDossier(settings, lat, lon, { onPartial, address: pin
     },
   });
 
-  [wxNow, spcFast, placeHit] = await Promise.all([wxP, spcFastP, placeP]);
+  [wxNow, spcFast] = await Promise.all([wxP, spcFastP]);
   accHail = mergeHailRows(spcFast.hail || [], accHail, lsrFast);
   accWind = spcFast.wind || [];
   pushPartial("spc", { loading: true, fetchedKm: fastKm });
@@ -11636,6 +11641,17 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = nul
 /** Soft sheet patch — keep selected dates lit while list/radar keep loading. */
 function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (!root || !data) return;
+  const viewport = Boolean(data.viewport || data._meta?.viewport);
+  if (!viewport) {
+    const place = root.querySelector(".hs-place");
+    const html = placeContactHtml(data, esc);
+    if (place) place.outerHTML = html;
+    else {
+      const pinEl = root.querySelector(".hs-pin");
+      if (pinEl) pinEl.insertAdjacentHTML("afterend", html);
+    }
+    bindPlaceLinks(root);
+  }
   const days = hailScopeDays(data);
   const box = root.querySelector(".hs-dates");
   if (box) {
