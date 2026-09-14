@@ -193,6 +193,43 @@ export function regionSummary(inv) {
   return shapes.map((s) => s.name).join(" · ");
 }
 
+/** South/west/north/east box covering city circles and county rings, or null. */
+export function investorRegionBounds(inv) {
+  const shapes = resolveInvestorRegions(inv);
+  let south = 90;
+  let north = -90;
+  let west = 180;
+  let east = -180;
+  let n = 0;
+  for (const s of shapes) {
+    if (Array.isArray(s.ring)) {
+      for (const pt of s.ring) {
+        const lat = Number(pt?.[0]);
+        const lon = Number(pt?.[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        south = Math.min(south, lat);
+        north = Math.max(north, lat);
+        west = Math.min(west, lon);
+        east = Math.max(east, lon);
+        n += 1;
+      }
+      continue;
+    }
+    if (Number.isFinite(s.lat) && Number.isFinite(s.lon) && Number(s.radiusM) > 0) {
+      const dLat = Number(s.radiusM) / 111320;
+      const cos = Math.cos((Number(s.lat) * Math.PI) / 180) || 1;
+      const dLon = Number(s.radiusM) / (111320 * cos);
+      south = Math.min(south, Number(s.lat) - dLat);
+      north = Math.max(north, Number(s.lat) + dLat);
+      west = Math.min(west, Number(s.lon) - dLon);
+      east = Math.max(east, Number(s.lon) + dLon);
+      n += 1;
+    }
+  }
+  if (!n || south >= north || west >= east) return null;
+  return { south, north, west, east };
+}
+
 function clip(s, n) {
   return String(s || "").trim().slice(0, n);
 }

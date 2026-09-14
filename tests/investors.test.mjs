@@ -14,6 +14,7 @@ import {
   investorGlyphSvg,
   promoteButtonLabel,
   normalizeInvestor,
+  investorRegionBounds,
 } from "../www/investors.js";
 
 function assert(ok, msg) {
@@ -61,6 +62,8 @@ assert(shapes.some((s) => s.type === "city" && s.name === "Edmond" && s.radiusM 
 assert(shapes.some((s) => s.type === "county" && /Oklahoma/.test(s.name) && s.ring?.length >= 4), "oklahoma county box");
 assert(shapes.filter((s) => s.type === "county").length >= 4, "tulsa metro expands counties");
 assert(shapes.some((s) => s.type === "label" && /Mystery/.test(s.name)), "unknown region kept as label");
+const box = investorRegionBounds(star);
+assert(box && box.south < 35.68 && box.north > 35.68 && box.west < -97.53 && box.east > -97.12, "region bounds cover edmond + oklahoma county");
 assert(matchCountyRegion("cleveland county")?.name === "Cleveland", "county match");
 assert(matchCityRegion("Oklahoma City")?.name === "Oklahoma City", "city match");
 assert(/star/.test(investorGlyphSvg(star)), "outline star");
