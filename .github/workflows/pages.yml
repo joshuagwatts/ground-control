@@ -2,7 +2,7 @@ name: Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, alpha]
   workflow_dispatch:
 
 permissions:
@@ -21,15 +21,28 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Stage site
+      - name: Checkout team app (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: team
+      - name: Checkout alpha sandbox
+        uses: actions/checkout@v4
+        with:
+          ref: alpha
+          path: alpha
+      - name: Stage team at / and experiments at /alpha/
         run: |
           if [ -n "${{ secrets.TEAM_SWDI_PROXY_URL }}" ]; then
-            echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > www/proxy-config.js
+            echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > team/www/proxy-config.js
+            echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > alpha/www/proxy-config.js
           fi
           mkdir -p _site
-          cp -a www/. _site/
+          cp -a team/www/. _site/
+          mkdir -p _site/alpha
+          cp -a alpha/www/. _site/alpha/
           touch _site/.nojekyll
+          touch _site/alpha/.nojekyll
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
