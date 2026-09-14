@@ -71,7 +71,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.312";
+} from "./wx.js?v=0.2.313";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -90,10 +90,10 @@ import {
   investorGlyphSvg,
   relationshipLabel,
 } from "./investors.js";
-import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH } from "./team.js";
+import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress } from "./contacts.js";
-import { CACHE_BUST } from "./version.js";
+import { APP_VERSION, CACHE_BUST } from "./version.js";
 import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
 
 applyFormFactorClass();
@@ -2756,6 +2756,10 @@ function renderKeys() {
     <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
+    <h3>Team alpha</h3>
+    <p class="muted">Share this link so the crew loads hearts &amp; stars on any phone. Add to Home Screen. Hold the map → Insurance or Real estate.</p>
+    <p class="hs-alpha-url" id="set-alpha-url">${esc(teamAlphaLink(APP_VERSION))}</p>
+    <div class="actions"><button type="button" id="copy-alpha">Copy alpha link</button></div>
     <h3>Team sync</h3>
     <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
     <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
@@ -2790,6 +2794,14 @@ function renderKeys() {
     ghTok.oninput = () => {
       db.settings.github_token = ghTok.value.trim();
       persist();
+    };
+  }
+  const copyAlpha = $("#copy-alpha");
+  if (copyAlpha) {
+    copyAlpha.onclick = async () => {
+      const url = teamAlphaLink(APP_VERSION);
+      const ok = await copyText(url);
+      setStatus(ok ? "Alpha link copied" : url);
     };
   }
   document.querySelectorAll(".key-row input[data-field]").forEach((inp) => {

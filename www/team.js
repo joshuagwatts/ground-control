@@ -3,6 +3,16 @@
 export const TEAM_REPO = "joshuagwatts/ground-control";
 export const TEAM_MARKS_PATH = "www/data/team-marks.json";
 export const TEAM_DONE_PATH = "www/data/team-done.json";
+export const TEAM_WEB_URL = "https://joshuagwatts.github.io/ground-control/";
+
+/** Cache-busted Pages URL so phones skip a stale Home Screen copy. */
+export function teamAlphaLink(version = "") {
+  const v = String(version || "").trim();
+  const u = new URL("./", TEAM_WEB_URL);
+  if (v) u.searchParams.set("v", v);
+  u.searchParams.set("alpha", "1");
+  return u.toString();
+}
 
 function githubHeaders(token) {
   return {

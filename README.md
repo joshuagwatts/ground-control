@@ -46,11 +46,17 @@ The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator**
 
 ## Team web (iPhone Safari, free)
 
-Every push to `main` also deploys the app to **GitHub Pages** — no PC required:
+**Alpha — hearts & stars (v0.2.313)**
+
+https://joshuagwatts.github.io/ground-control/?v=0.2.313&alpha=1
+
+Open that on any phone. Add to Home Screen. **Hearts** and **Stars** are on by default.
+
+Hold the map (or long-press / right-click) → **Insurance** (broken heart until you promote to a red heart) or **Real estate** (outline star until you promote to a gold star; tap a star to show the regions they control).
+
+Stable Pages URL (same app, may need a hard refresh if a phone cached an older copy):
 
 **https://joshuagwatts.github.io/ground-control/**
-
-Open that link on any phone browser. Add to Home Screen for an app-like icon. **Hard refresh once** after updates (`Ctrl+Shift+R` or clear site data) so the latest radar proxy loads.
 
 LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.
 
