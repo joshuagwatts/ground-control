@@ -44,6 +44,16 @@ import {
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
 import { lookupAssessorParcel, enrichAssessorPublicRecord } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, markPinSvgHtml, clampPinScale } from "./marks.js";
+import {
+  investorGlyphSvg,
+  investorDisplayName,
+  investorContactLine,
+  isPartner,
+  promoteButtonLabel,
+  relationshipLabel,
+  resolveInvestorRegions,
+  validInvestorCoord,
+} from "./investors.js";
 import { flagNetProfile, isAndroid, isSlowBrowserNet, useDesktopChrome, usePhoneChrome } from "./device.js";
 
 let map = null;
@@ -382,15 +392,24 @@ try {
 let houseHoldUntil = 0;
 let markLayer = null;
 let doneLayer = null;
+let investorLayer = null;
+let investorRegionLayer = null;
+let selectedInvestorId = "";
 let fieldOverlay = {
   marks: [],
   done: [],
+  investors: [],
   showMarks: true,
   showDone: true,
   showHailDots: true,
   showPhoneFlags: false,
+  showInsuranceInvestors: true,
+  showRealEstateInvestors: true,
   onMark: null,
   onDone: null,
+  onInvestorEdit: null,
+  onInvestorPromote: null,
+  onInvestorDelete: null,
 };
 const livePinMarkers = { marks: new Map(), done: new Map() };
 
@@ -9176,6 +9195,160 @@ function ensureFieldPanes() {
     map.createPane("doneHouses");
     map.getPane("doneHouses").style.zIndex = 655;
   }
+  if (!map.getPane("investors")) {
+    map.createPane("investors");
+    map.getPane("investors").style.zIndex = 670;
+  }
+  if (!map.getPane("investorRegions")) {
+    map.createPane("investorRegions");
+    const pane = map.getPane("investorRegions");
+    pane.style.zIndex = 640;
+    pane.style.pointerEvents = "none";
+  }
+}
+
+function investorDivIcon(inv) {
+  const partner = isPartner(inv);
+  const kind = String(inv?.kind || "insurance");
+  const html = investorGlyphSvg(inv, { size: 30 });
+  return window.L.divIcon({
+    className: `hs-inv-pin hs-inv-${kind}${partner ? " partner" : " prospect"}`,
+    html,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+  });
+}
+
+function investorPopupHtml(inv) {
+  const name = investorDisplayName(inv);
+  const who = investorContactLine(inv);
+  const phone = formatPhone(inv.phone || "") || String(inv.phone || "").trim();
+  const e164 = phoneDigits(phone);
+  const email = String(inv.email || "").trim();
+  const addr = String(inv.address || "").trim();
+  const note = String(inv.note || "").trim();
+  const regions = String(inv.kind) === "realestate" ? resolveInvestorRegions(inv) : [];
+  const regionLine = regions.map((r) => r.name).join(" · ");
+  const tel = e164 ? `<a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(phone)}</a>` : "";
+  const sms = e164 ? `<a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>` : "";
+  const mail = email ? `<a class="hs-mail" href="mailto:${escHousePop(email)}">${escHousePop(email)}</a>` : "";
+  return `<div class="hs-inv-pop hs-inv-pop-${escHousePop(inv.kind)}">
+    <strong class="hs-inv-pop-name">${escHousePop(name)}</strong>
+    <span class="hs-inv-pop-rel">${escHousePop(relationshipLabel(inv))}</span>
+    ${who && who !== name ? `<span class="hs-inv-pop-who">${escHousePop(who)}</span>` : ""}
+    ${addr ? `<span class="hs-inv-pop-addr">${escHousePop(addr)}</span>` : ""}
+    ${regionLine ? `<span class="hs-inv-pop-regions">${escHousePop(regionLine)}</span>` : ""}
+    ${note ? `<span class="hs-inv-pop-note">${escHousePop(note)}</span>` : ""}
+    <div class="hs-inv-pop-actions">
+      ${tel}${sms}${mail}
+      <button type="button" class="hs-inv-promote" data-inv-act="promote">${escHousePop(promoteButtonLabel(inv))}</button>
+      <button type="button" class="hs-inv-edit" data-inv-act="edit">Edit</button>
+    </div>
+  </div>`;
+}
+
+function bindInvestorMarker(marker, inv) {
+  marker.bindPopup(investorPopupHtml(inv), {
+    className: "hs-zone-popup hs-inv-popup",
+    closeButton: true,
+    maxWidth: 280,
+    offset: [0, -10],
+    autoPan: true,
+  });
+  marker.on("popupopen", () => {
+    const root = marker.getPopup()?.getElement?.();
+    if (!root || root._hsInvBound) return;
+    root._hsInvBound = true;
+    root.addEventListener("click", (ev) => {
+      const btn = ev.target?.closest?.("[data-inv-act]");
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.dataset.invAct;
+      if (act === "promote") fieldOverlay.onInvestorPromote?.(inv);
+      if (act === "edit") {
+        try {
+          marker.closePopup();
+        } catch {
+          /* ignore */
+        }
+        fieldOverlay.onInvestorEdit?.(inv);
+      }
+    });
+  });
+}
+
+function paintInvestorRegions(inv) {
+  if (!investorRegionLayer) return;
+  investorRegionLayer.clearLayers();
+  if (!inv || String(inv.kind) !== "realestate") return;
+  for (const shape of resolveInvestorRegions(inv)) {
+    const color = shape.color || "#fbbf24";
+    if (shape.ring?.length >= 4) {
+      window.L.polygon(shape.ring, {
+        pane: "investorRegions",
+        color,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.16,
+        interactive: false,
+        className: "hs-inv-region",
+      }).addTo(investorRegionLayer);
+    } else if (Number.isFinite(shape.lat) && Number.isFinite(shape.lon) && Number(shape.radiusM) > 0) {
+      window.L.circle([shape.lat, shape.lon], {
+        pane: "investorRegions",
+        radius: Number(shape.radiusM),
+        color,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.14,
+        interactive: false,
+        className: "hs-inv-region",
+      }).addTo(investorRegionLayer);
+    }
+  }
+}
+
+function visibleInvestors(list, { showInsurance = true, showRealEstate = true } = {}) {
+  return (list || []).filter((inv) => {
+    if (!validInvestorCoord(inv.lat, inv.lon)) return false;
+    if (inv.kind === "insurance") return showInsurance;
+    if (inv.kind === "realestate") return showRealEstate;
+    return false;
+  });
+}
+
+function paintInvestorLayer() {
+  if (!map || !window.L) return;
+  ensureFieldPanes();
+  if (!investorLayer) investorLayer = window.L.layerGroup().addTo(map);
+  if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
+  investorLayer.clearLayers();
+  const showIns = fieldOverlay.showInsuranceInvestors !== false;
+  const showRe = fieldOverlay.showRealEstateInvestors !== false;
+  const list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe });
+  const selected = list.find((x) => x.id === selectedInvestorId) || null;
+  paintInvestorRegions(selected);
+  for (const inv of list) {
+    const marker = window.L.marker([inv.lat, inv.lon], {
+      pane: "investors",
+      icon: investorDivIcon(inv),
+      keyboard: false,
+      title: investorDisplayName(inv),
+      zIndexOffset: inv.id === selectedInvestorId ? 400 : 0,
+    })
+      .on("click", (e) => {
+        window.L.DomEvent.stop(e);
+        wxSuppressMapTap = true;
+        selectedInvestorId = inv.id;
+        paintInvestorRegions(inv);
+        setTimeout(() => {
+          wxSuppressMapTap = false;
+        }, 400);
+      })
+      .addTo(investorLayer);
+    bindInvestorMarker(marker, inv);
+  }
 }
 
 function markDivIcon(mark, zoomUi = zoomUiScale()) {
@@ -9364,14 +9537,20 @@ function placeSelectPin(latlng) {
 export function setFieldOverlay({
   marks = [],
   done = [],
+  investors = [],
   donePinScale = 1,
   showMarks = true,
   showDone = true,
   showHailDots = true,
   showPhoneFlags = false,
+  showInsuranceInvestors = true,
+  showRealEstateInvestors = true,
   onMark,
   onDone,
   onMarkScale,
+  onInvestorEdit,
+  onInvestorPromote,
+  onInvestorDelete,
 } = {}) {
   const prevDots = fieldOverlay.showHailDots !== false;
   const prevFlags = fieldOverlay.showPhoneFlags === true;
@@ -9379,14 +9558,20 @@ export function setFieldOverlay({
   fieldOverlay = {
     marks,
     done,
+    investors,
     donePinScale,
     showMarks,
     showDone,
     showHailDots,
     showPhoneFlags: nextFlags,
+    showInsuranceInvestors,
+    showRealEstateInvestors,
     onMark,
     onMarkScale,
     onDone,
+    onInvestorEdit,
+    onInvestorPromote,
+    onInvestorDelete,
   };
   if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";
@@ -9481,6 +9666,7 @@ export function setFieldOverlay({
       livePinMarkers.done.set(String(h.id), marker);
     }
   }
+  paintInvestorLayer();
   scheduleZoomUiRefresh(true);
 }
 
