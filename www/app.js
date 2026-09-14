@@ -62,6 +62,7 @@ import {
   mapIsLive,
   refreshMapSize,
   defaultMapCenter,
+  mapCenterCoords,
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
@@ -97,7 +98,7 @@ import { enrichInvestorFromPublic } from "./investor-public.js";
 import { OK_INVESTOR_SEED } from "./ok-investors.js";
 import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
-import { parseStreetAddress } from "./contacts.js";
+import { parseStreetAddress, isOklahomaLatLon } from "./contacts.js";
 import { APP_VERSION, CACHE_BUST } from "./version.js";
 import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
 
@@ -1216,6 +1217,17 @@ function investorOfficesWanted() {
   return investorHeartsOn() || investorStarsOn();
 }
 
+function startOfficeLayerHunt() {
+  const here = mapCenterCoords();
+  const home = defaultMapCenter(db.settings);
+  if (!here || !isOklahomaLatLon(here.lat, here.lon)) {
+    flyToPin(home.lat, home.lon, 11);
+    schedulePhotonInvestorHunt(home.lat, home.lon);
+    return;
+  }
+  schedulePhotonInvestorHunt(here.lat, here.lon);
+}
+
 function shownFieldInvestors() {
   const hearts = investorHeartsOn();
   const stars = investorStarsOn();
@@ -2037,8 +2049,7 @@ function paintLayerToggles() {
         paintFieldMap();
         paintFieldSheet();
         if (investorHeartsOn()) {
-          const c = defaultMapCenter(db.settings);
-          schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+          startOfficeLayerHunt();
           setStatus("Insurance hearts on · tap an office for phone and email");
         } else setStatus("Insurance hearts hidden");
         return;
@@ -2050,8 +2061,7 @@ function paintLayerToggles() {
         paintFieldMap();
         paintFieldSheet();
         if (investorStarsOn()) {
-          const c = defaultMapCenter(db.settings);
-          schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+          startOfficeLayerHunt();
           setStatus("Real estate stars on · tap a star to draw that office's listings");
         } else setStatus("Real estate stars hidden");
         return;

@@ -2149,6 +2149,16 @@ export function mapIsLive() {
   }
 }
 
+export function mapCenterCoords() {
+  try {
+    const c = map?.getCenter?.();
+    if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) return null;
+    return { lat: c.lat, lon: c.lng, zoom: map.getZoom?.() };
+  } catch {
+    return null;
+  }
+}
+
 export function defaultMapCenter(settings) {
   const lat = Number(settings?.lat);
   const lon = Number(settings?.lon);
