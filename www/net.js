@@ -360,11 +360,22 @@ export function rewriteNoaaSwdiUrl(url) {
   );
 }
 
+function corsOpenWeatherHost(h) {
+  return (
+    h === "ncei.noaa.gov" ||
+    h === "www.ncei.noaa.gov" ||
+    h === "spc.noaa.gov" ||
+    h === "www.spc.noaa.gov" ||
+    h === "api.weather.gov" ||
+    h === "mesonet.agron.iastate.edu"
+  );
+}
+
 export function needsBrowserCorsProxy(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
-    // ncei SWDI is CORS-open. Routing it through cors.sh / the Pages SW 502s Search storms.
-    if (h === "ncei.noaa.gov" || h === "www.ncei.noaa.gov") return false;
+    // These hail/weather hosts send CORS *. The Pages SW / cors.sh path 502s Search storms.
+    if (corsOpenWeatherHost(h)) return false;
     return (
       h.endsWith("ncdc.noaa.gov") ||
       h.endsWith("noaa.gov") ||

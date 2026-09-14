@@ -17,7 +17,17 @@ assert.equal(rewriteNoaaSwdiUrl(ncei), ncei, "ncei URL is left alone");
 
 assert.equal(needsBrowserCorsProxy(ncei), false, "ncei SWDI is fetched directly");
 assert.equal(needsBrowserCorsProxy(ncdc), true, "legacy ncdc still needs a proxy");
-assert.equal(needsBrowserCorsProxy("https://api.weather.gov/alerts"), true, "weather.gov still needs a proxy");
+assert.equal(needsBrowserCorsProxy("https://api.weather.gov/alerts"), false, "api.weather.gov is CORS-open");
+assert.equal(
+  needsBrowserCorsProxy("https://www.spc.noaa.gov/climo/reports/240520_rpts_filtered.csv"),
+  false,
+  "SPC reports are CORS-open",
+);
+assert.equal(
+  needsBrowserCorsProxy("https://mesonet.agron.iastate.edu/cgi-bin/request/gis/lsr.py?type=HAIL"),
+  false,
+  "IEM LSR is CORS-open",
+);
 assert.equal(needsBrowserCorsProxy("https://example.com/x"), false, "plain hosts stay direct");
 
 console.log("swdi-url ok");

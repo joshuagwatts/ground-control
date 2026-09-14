@@ -46,9 +46,9 @@ The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator**
 
 ## Team web (iPhone Safari, free)
 
-**Team app (stable hail drawer — v0.2.306)**
+**Team app (stable hail drawer — v0.2.307)**
 
-https://joshuagwatts.github.io/ground-control/?v=0.2.306
+https://joshuagwatts.github.io/ground-control/?v=0.2.307
 
 This is the working crew link. New experiments do **not** deploy here. Hard-refresh or delete the Home Screen icon once if a phone still shows hearts/stars or an empty storm list.
 
