@@ -2809,7 +2809,7 @@ function renderKeys() {
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
     <h3>Team alpha</h3>
-    <p class="muted">Share this link so the crew loads hearts &amp; stars on any phone. Add to Home Screen. Hold the map → Insurance or Real estate.</p>
+    <p class="muted">This copy is the alpha sandbox. The working team app stays at the root Pages URL and is not overwritten by this build.</p>
     <p class="hs-alpha-url" id="set-alpha-url">${esc(teamAlphaLink(APP_VERSION))}</p>
     <div class="actions"><button type="button" id="copy-alpha">Copy alpha link</button></div>
     <h3>Team sync</h3>
