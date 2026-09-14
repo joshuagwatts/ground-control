@@ -582,13 +582,20 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace
   const contactsP = lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({}));
   assessor = await gisP;
   if (assessor) dossier = emit(people, assessor);
+  const enrichP =
+    assessor?.url && /oklahomacounty\.org/i.test(assessor.url)
+      ? enrichAssessorPublicRecord(assessor)
+          .then((hit) => {
+            assessor = hit;
+            dossier = emit(people, assessor);
+            return hit;
+          })
+          .catch(() => assessor)
+      : Promise.resolve(assessor);
   const contacts = await contactsP;
   people = mergeContacts(listingForPin(geo, addr), contacts);
+  assessor = (await enrichP) || assessor;
   dossier = emit(people, assessor);
-  if (assessor?.url && /oklahomacounty\.org/i.test(assessor.url)) {
-    assessor = await enrichAssessorPublicRecord(assessor).catch(() => assessor);
-    dossier = emit(people, assessor);
-  }
   if (settings && (!dossier.owner_phone || !dossier.owner_email || !dossier.owner_name)) {
     const ai = await fillContactGapsWithChat(settings, {
       address: addr,
