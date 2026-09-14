@@ -406,8 +406,8 @@ let fieldOverlay = {
   showDone: true,
   showHailDots: true,
   showPhoneFlags: false,
-  showInsuranceInvestors: true,
-  showRealEstateInvestors: true,
+  showInsuranceInvestors: false,
+  showRealEstateInvestors: false,
   onMark: null,
   onDone: null,
   onInvestorEdit: null,
@@ -9344,6 +9344,17 @@ function paintInvestorRegions(inv) {
   }
 }
 
+function investorNearMap(inv, padKm = 10) {
+  if (!validInvestorCoord(inv?.lat, inv?.lon)) return false;
+  if (!map || !window.L) return true;
+  const b = map.getBounds?.();
+  if (!b?.isValid?.()) return true;
+  if (b.contains([inv.lat, inv.lon])) return true;
+  const c = map.getCenter?.();
+  if (!c) return true;
+  return haversineKm(c.lat, c.lng, inv.lat, inv.lon) <= padKm;
+}
+
 function visibleInvestors(list, { showInsurance = true, showRealEstate = true } = {}) {
   return (list || []).filter((inv) => {
     if (!validInvestorCoord(inv.lat, inv.lon)) return false;
@@ -9400,9 +9411,11 @@ function paintInvestorLayer() {
   if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
   investorLayer.clearLayers();
   investorMarkers.clear();
-  const showIns = fieldOverlay.showInsuranceInvestors !== false;
-  const showRe = fieldOverlay.showRealEstateInvestors !== false;
-  const list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe });
+  const showIns = fieldOverlay.showInsuranceInvestors === true;
+  const showRe = fieldOverlay.showRealEstateInvestors === true;
+  const list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).filter(
+    (inv) => inv.id === selectedInvestorId || investorNearMap(inv),
+  );
   const selected = list.find((x) => x.id === selectedInvestorId) || null;
   paintInvestorRegions(selected);
   for (const inv of list) {
@@ -9635,8 +9648,8 @@ export function setFieldOverlay({
   showDone = true,
   showHailDots = true,
   showPhoneFlags = false,
-  showInsuranceInvestors = true,
-  showRealEstateInvestors = true,
+  showInsuranceInvestors = false,
+  showRealEstateInvestors = false,
   onMark,
   onDone,
   onMarkScale,
@@ -10139,6 +10152,9 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
       }
     }
     scheduleHouseNumbers();
+    if (fieldOverlay.showInsuranceInvestors === true || fieldOverlay.showRealEstateInvestors === true) {
+      paintInvestorLayer();
+    }
     if (hasSelectedStormDates()) {
       keepStormSwathsOnMap();
       return;

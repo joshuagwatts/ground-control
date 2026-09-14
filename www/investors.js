@@ -432,15 +432,19 @@ export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "
   return (data?.features || []).map(listingFromPhotonFeature).filter(Boolean);
 }
 
-export async function fetchPhotonInvestorsNear(lat, lon) {
+export async function fetchPhotonInvestorsNear(lat, lon, { insurance = true, realestate = true } = {}) {
   const la = Number(lat);
   const lo = Number(lon);
   if (!Number.isFinite(la) || !Number.isFinite(lo)) return [];
-  const jobs = [
-    photonInvestorSearch({ q: "insurance agency", lat: la, lon: lo, limit: 40, osmTag: "office:insurance" }),
-    photonInvestorSearch({ q: "realtor", lat: la, lon: lo, limit: 30, osmTag: "office:estate_agent" }),
-    photonInvestorSearch({ q: "real estate investor", lat: la, lon: lo, limit: 20 }),
-  ];
+  const jobs = [];
+  if (insurance) {
+    jobs.push(photonInvestorSearch({ q: "insurance agency", lat: la, lon: lo, limit: 40, osmTag: "office:insurance" }));
+  }
+  if (realestate) {
+    jobs.push(photonInvestorSearch({ q: "realtor", lat: la, lon: lo, limit: 30, osmTag: "office:estate_agent" }));
+    jobs.push(photonInvestorSearch({ q: "real estate investor", lat: la, lon: lo, limit: 20 }));
+  }
+  if (!jobs.length) return [];
   const chunks = await Promise.all(jobs.map((p) => p.catch(() => [])));
   return mergeInvestorListings(chunks);
 }

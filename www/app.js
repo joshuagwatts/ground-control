@@ -91,7 +91,6 @@ import {
   mergeListedAndSaved,
   mergeInvestorListings,
   fetchPhotonInvestorsNear,
-  investorHasContact,
   investorListings,
 } from "./investors.js";
 import { enrichInvestorFromPublic } from "./investor-public.js";
@@ -1205,8 +1204,31 @@ function fieldInvestors() {
   return mergeListedAndSaved(listedInvestorPool(), savedInvestors(), hiddenInvestorIds());
 }
 
+function investorHeartsOn() {
+  return db.settings.showInsuranceInvestors === true;
+}
+
+function investorStarsOn() {
+  return db.settings.showRealEstateInvestors === true;
+}
+
+function investorOfficesWanted() {
+  return investorHeartsOn() || investorStarsOn();
+}
+
+function shownFieldInvestors() {
+  const hearts = investorHeartsOn();
+  const stars = investorStarsOn();
+  return fieldInvestors().filter((inv) => {
+    if (inv.kind === "insurance") return hearts;
+    if (inv.kind === "realestate") return stars;
+    return false;
+  });
+}
+
 let photonHuntTimer = 0;
 function schedulePhotonInvestorHunt(lat, lon) {
+  if (!investorOfficesWanted()) return;
   if (photonHuntTimer) clearTimeout(photonHuntTimer);
   photonHuntTimer = setTimeout(() => {
     photonHuntTimer = 0;
@@ -1215,30 +1237,20 @@ function schedulePhotonInvestorHunt(lat, lon) {
 }
 
 async function huntPhotonInvestors(lat, lon) {
-  const extra = await fetchPhotonInvestorsNear(lat, lon).catch(() => []);
+  const wantIns = investorHeartsOn();
+  const wantRe = investorStarsOn();
+  if (!wantIns && !wantRe) return;
+  const extra = await fetchPhotonInvestorsNear(lat, lon, { insurance: wantIns, realestate: wantRe }).catch(() => []);
   if (extra.length) liveListedInvestors = extra;
   paintFieldMap();
   paintFieldSheet();
-  const n = fieldInvestors();
+  const n = shownFieldInvestors();
   const ins = n.filter((x) => x.kind === "insurance").length;
   const re = n.filter((x) => x.kind === "realestate").length;
-  if (ins + re) setStatus(`${ins} insurance hearts · ${re} real estate stars from public listings`);
-  scheduleVisibleInvestorEnrich();
+  if (ins + re) setStatus(`${ins} insurance hearts · ${re} real estate stars nearby — tap one for phone and listings`);
 }
 
 const investorPublicBusy = new Set();
-let investorEnrichTimer = 0;
-
-function scheduleVisibleInvestorEnrich() {
-  if (investorEnrichTimer) clearTimeout(investorEnrichTimer);
-  investorEnrichTimer = setTimeout(() => {
-    investorEnrichTimer = 0;
-    const need = fieldInvestors()
-      .filter((inv) => !investorHasContact(inv) || (inv.kind === "realestate" && !investorListings(inv).length))
-      .slice(0, 6);
-    for (const inv of need) void enrichInvestorPublic(inv);
-  }, 400);
-}
 
 async function enrichInvestorPublic(inv) {
   const id = String(inv?.id || "");
@@ -1341,8 +1353,8 @@ function paintFieldMap() {
     showDone: db.settings.showDone !== false,
     showHailDots: db.settings.showHailDots !== false,
     showPhoneFlags: db.settings.showPhoneFlags === true,
-    showInsuranceInvestors: db.settings.showInsuranceInvestors !== false,
-    showRealEstateInvestors: db.settings.showRealEstateInvestors !== false,
+    showInsuranceInvestors: investorHeartsOn(),
+    showRealEstateInvestors: investorStarsOn(),
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onInvestorEdit: (inv) => openInvestorComposer(inv),
@@ -1739,7 +1751,7 @@ function paintFieldSheet() {
   const houses = doneHouses();
   const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
   const selHouse = selectedDoneHouse();
-  const invs = fieldInvestors();
+  const invs = shownFieldInvestors();
   root.innerHTML = `
     <div class="hs-field-head">
       <strong>Completed houses</strong>
@@ -1785,7 +1797,7 @@ function paintFieldSheet() {
     }</div>
     <div class="hs-field-head">
       <strong>Investors</strong>
-      <span class="muted">${invs.length ? `${invs.length} on map` : "Public listings load automatically"}</span>
+      <span class="muted">${invs.length ? `${invs.length} on map` : "Hearts / Stars off"}</span>
     </div>
     <div class="hs-mark-list hs-inv-list">${
       invs.length
@@ -1796,7 +1808,7 @@ function paintFieldSheet() {
                 `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" && investorListings(inv).length ? `<em>${esc(`${investorListings(inv).length} listings`)}</em>` : ""}</span></button>`,
             )
             .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
-        : `<p class="muted">Hearts and stars load from public Oklahoma business listings. Broken heart = stay in touch. Promote to a red heart or gold star when you have a working relationship. Hold the map to drop someone extra.</p>`
+        : `<p class="muted">Turn on Hearts or Stars in the map bar to load offices. Tap a star to draw that office's listings. Phone and email load only for the office you select.</p>`
     }</div>`;
   const filter = $("#hs-mark-filter");
   if (filter) filter.onchange = () => paintFieldSheet();
@@ -1921,8 +1933,8 @@ function syncLayerToggleStates(el) {
   el.querySelector('[data-ov="biz-flags"]')?.classList.toggle("on", ff.business);
   el.querySelector('[data-ov="done"]')?.classList.toggle("on", db.settings.showDone !== false);
   el.querySelector('[data-ov="marks"]')?.classList.toggle("on", db.settings.showMarks !== false);
-  el.querySelector('[data-ov="hearts"]')?.classList.toggle("on", db.settings.showInsuranceInvestors !== false);
-  el.querySelector('[data-ov="stars"]')?.classList.toggle("on", db.settings.showRealEstateInvestors !== false);
+  el.querySelector('[data-ov="hearts"]')?.classList.toggle("on", investorHeartsOn());
+  el.querySelector('[data-ov="stars"]')?.classList.toggle("on", investorStarsOn());
 }
 
 function paintLayerToggles() {
@@ -2019,19 +2031,29 @@ function paintLayerToggles() {
       if (b.dataset.ov === "done") db.settings.showDone = !(db.settings.showDone !== false);
       if (b.dataset.ov === "marks") db.settings.showMarks = !(db.settings.showMarks !== false);
       if (b.dataset.ov === "hearts") {
-        db.settings.showInsuranceInvestors = !(db.settings.showInsuranceInvestors !== false);
+        db.settings.showInsuranceInvestors = !investorHeartsOn();
         persist();
         syncLayerToggleStates(el);
         paintFieldMap();
-        setStatus(db.settings.showInsuranceInvestors !== false ? "Insurance hearts on · hold the map to add" : "Insurance hearts hidden");
+        paintFieldSheet();
+        if (investorHeartsOn()) {
+          const c = defaultMapCenter(db.settings);
+          schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+          setStatus("Insurance hearts on · tap an office for phone and email");
+        } else setStatus("Insurance hearts hidden");
         return;
       }
       if (b.dataset.ov === "stars") {
-        db.settings.showRealEstateInvestors = !(db.settings.showRealEstateInvestors !== false);
+        db.settings.showRealEstateInvestors = !investorStarsOn();
         persist();
         syncLayerToggleStates(el);
         paintFieldMap();
-        setStatus(db.settings.showRealEstateInvestors !== false ? "Real estate stars on · hold the map to add" : "Real estate stars hidden");
+        paintFieldSheet();
+        if (investorStarsOn()) {
+          const c = defaultMapCenter(db.settings);
+          schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+          setStatus("Real estate stars on · tap a star to draw that office's listings");
+        } else setStatus("Real estate stars hidden");
         return;
       }
       persist();

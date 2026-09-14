@@ -22,7 +22,9 @@ import {
   mergeListedAndSaved,
   mergeInvestorListings,
   defaultRegionsForListing,
+  fetchPhotonInvestorsNear,
 } from "../www/investors.js";
+import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
   parseSaleListingsFromHtml,
   parseRealtorDetailSlug,
@@ -162,5 +164,22 @@ assert(filled.listings.length === 2, "public enrich keeps sale homes");
 
 const savedBlank = mergeListedAndSaved([listed], [{ ...listed, phone: "", note: "called" }], []);
 assert(/936-9200/.test(savedBlank[0].phone) && savedBlank[0].note === "called", "empty saved phone does not wipe listing phone");
+
+const none = await fetchPhotonInvestorsNear(35.47, -97.52, { insurance: false, realestate: false });
+assert(none.length === 0, "no office hunt when hearts and stars are off");
+
+const reset = migrateInvestorOfficeSettings({
+  showInsuranceInvestors: true,
+  showRealEstateInvestors: true,
+});
+assert(reset.showInsuranceInvestors === false && reset.showRealEstateInvestors === false, "old always-on offices turn off");
+assert(reset.investorOfficeOptIn === true, "opt-in flag set");
+assert(
+  migrateInvestorOfficeSettings({
+    showInsuranceInvestors: true,
+    investorOfficeOptIn: true,
+  }).showInsuranceInvestors === true,
+  "explicit on stays on after opt-in",
+);
 
 console.log("investors ok");

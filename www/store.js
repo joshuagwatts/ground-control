@@ -1,5 +1,17 @@
 const KEY = "groundcontrol.v1";
 
+/** Old saves left hearts/stars on, so every pin hunted phones and listings. Opt in only. */
+export function migrateInvestorOfficeSettings(settings) {
+  const s = settings && typeof settings === "object" ? settings : {};
+  if (s.investorOfficeOptIn === true) return s;
+  return {
+    ...s,
+    showInsuranceInvestors: false,
+    showRealEstateInvestors: false,
+    investorOfficeOptIn: true,
+  };
+}
+
 function blank() {
   return {
     chat: [],
@@ -23,8 +35,9 @@ function blank() {
       showPhoneFlags: false,
       showFlagResidential: true,
       showFlagCommercial: true,
-      showInsuranceInvestors: true,
-      showRealEstateInvestors: true,
+      showInsuranceInvestors: false,
+      showRealEstateInvestors: false,
+      investorOfficeOptIn: true,
       hiddenInvestorIds: [],
       done_pin_scale: 1,
       humor: 40,
@@ -68,7 +81,7 @@ export function load() {
       ...base,
       ...raw,
       lens: { ...base.lens, ...(raw.lens || {}) },
-      settings: { ...base.settings, ...(raw.settings || {}) },
+      settings: migrateInvestorOfficeSettings({ ...base.settings, ...(raw.settings || {}) }),
       chat: Array.isArray(raw.chat) ? raw.chat : [],
       jobs: Array.isArray(raw.jobs) ? raw.jobs : [],
       marks: Array.isArray(raw.marks) ? raw.marks : [],
