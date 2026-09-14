@@ -2092,21 +2092,14 @@ body.wx-map-expanded .hs-sheet {
   align-items: center;
   gap: 0.32rem;
 }
-.hs-inv-ico {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
+.hs-inv-ico,
+.hs-layers button.hs-inv-toggle .hs-inv-glyph {
+  display: block;
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
 }
-.hs-inv-ico.heart {
-  background: #e11d48;
-  clip-path: path("M6 11 L1.2 6.2 A2.6 2.6 0 0 1 6 2.6 A2.6 2.6 0 0 1 10.8 6.2 Z");
-}
-.hs-inv-ico.star {
-  background: #fbbf24;
-  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
-}
-.hs-layers button.hs-inv-toggle:not(.on) .hs-inv-ico {
+.hs-layers button.hs-inv-toggle:not(.on) .hs-inv-glyph {
   opacity: 0.35;
   filter: grayscale(0.4);
 }

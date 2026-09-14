@@ -58,6 +58,7 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
+  focusInvestorPin,
   mapIsLive,
   refreshMapSize,
   defaultMapCenter,
@@ -70,7 +71,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.310";
+} from "./wx.js?v=0.2.311";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1273,6 +1274,7 @@ function paintFieldMap() {
       paintFieldMap();
       paintFieldSheet();
       const next = fieldInvestors().find((x) => x.id === inv.id);
+      if (next) focusInvestorPin(next.id, { popup: true });
       setStatus(next ? `${investorDisplayName(next)} · ${relationshipLabel(next)}` : "Investor updated");
     },
     onDone: (h) => {
@@ -1551,6 +1553,7 @@ function saveInvestorDraft() {
   closeComposer();
   paintFieldMap();
   paintFieldSheet();
+  focusInvestorPin(hit.investor.id, { popup: true });
   setStatus(`${investorDisplayName(hit.investor)} saved`);
 }
 
@@ -1771,7 +1774,7 @@ function paintFieldSheet() {
       const inv = fieldInvestors().find((x) => x.id === b.dataset.inv);
       if (!inv) return;
       flyToPin(inv.lat, inv.lon, 18);
-      openInvestorComposer(inv);
+      focusInvestorPin(inv.id, { popup: true });
     };
   });
 }
@@ -1850,8 +1853,8 @@ function paintLayerToggles() {
     <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" aria-label="Blue commercial flags" title="Show or hide blue commercial flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>
     <button type="button" data-ov="done">Done</button>
     <button type="button" data-ov="marks">Marks</button>
-    <button type="button" data-ov="hearts" class="hs-inv-toggle" aria-label="Insurance investors" title="Insurance investors — broken heart until a working relationship, then a full red heart"><span class="hs-inv-ico heart" aria-hidden="true"></span>Hearts</button>
-    <button type="button" data-ov="stars" class="hs-inv-toggle" aria-label="Real estate investors" title="Real estate investors — stars, tap to show the regions they control"><span class="hs-inv-ico star" aria-hidden="true"></span>Stars</button>`;
+    <button type="button" data-ov="hearts" class="hs-inv-toggle" aria-label="Insurance investors" title="Insurance investors — broken heart until a working relationship, then a full red heart">${investorGlyphSvg({ kind: "insurance", relationship: "partner" }, { size: 14 })} Hearts</button>
+    <button type="button" data-ov="stars" class="hs-inv-toggle" aria-label="Real estate investors" title="Real estate investors — stars, tap to show the regions they control">${investorGlyphSvg({ kind: "realestate", relationship: "partner" }, { size: 14 })} Stars</button>`;
     if (!el._hsFlagsStatusBound) {
       el._hsFlagsStatusBound = true;
       window.addEventListener("hs-phone-flags", (ev) => {

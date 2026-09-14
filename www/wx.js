@@ -395,6 +395,7 @@ let doneLayer = null;
 let investorLayer = null;
 let investorRegionLayer = null;
 let selectedInvestorId = "";
+const investorMarkers = new Map();
 let fieldOverlay = {
   marks: [],
   done: [],
@@ -9324,6 +9325,7 @@ function paintInvestorLayer() {
   if (!investorLayer) investorLayer = window.L.layerGroup().addTo(map);
   if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
   investorLayer.clearLayers();
+  investorMarkers.clear();
   const showIns = fieldOverlay.showInsuranceInvestors !== false;
   const showRe = fieldOverlay.showRealEstateInvestors !== false;
   const list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe });
@@ -9342,13 +9344,35 @@ function paintInvestorLayer() {
         wxSuppressMapTap = true;
         selectedInvestorId = inv.id;
         paintInvestorRegions(inv);
+        try {
+          marker.openPopup();
+        } catch {
+          /* popup optional */
+        }
         setTimeout(() => {
           wxSuppressMapTap = false;
         }, 400);
       })
       .addTo(investorLayer);
     bindInvestorMarker(marker, inv);
+    investorMarkers.set(String(inv.id), marker);
   }
+}
+
+/** Select a heart/star pin, paint real-estate regions, and open contact info. */
+export function focusInvestorPin(id, { popup = true } = {}) {
+  selectedInvestorId = String(id || "");
+  paintInvestorLayer();
+  if (!popup || !selectedInvestorId) return;
+  const marker = investorMarkers.get(selectedInvestorId);
+  if (!marker) return;
+  setTimeout(() => {
+    try {
+      marker.openPopup();
+    } catch {
+      /* popup optional */
+    }
+  }, 40);
 }
 
 function markDivIcon(mark, zoomUi = zoomUiScale()) {
