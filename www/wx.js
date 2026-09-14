@@ -497,6 +497,7 @@ function bindPlaceLinks(root) {
 }
 
 function ownerFields(people = {}, assessor = null) {
+  const b = assessor?.building || {};
   return {
     owner_name: (assessor && assessor.name) || people.name || people.owner_name || "",
     owner_phone: people.phone || people.owner_phone || "",
@@ -505,7 +506,11 @@ function ownerFields(people = {}, assessor = null) {
     assessor_url: (assessor && assessor.url) || "",
     assessor_source: (assessor && assessor.source) || "",
     assessor_record: (assessor && assessor.record_line) || "",
+    roof_permits: (assessor && assessor.roof_permits) || "",
     homestead: Boolean(assessor && assessor.homestead),
+    absentee: Boolean(assessor && assessor.absentee),
+    owner_kind: (assessor && assessor.owner_kind) || "",
+    acct_type: (assessor && (assessor.acct_type || b.acct_type)) || "",
     facebook_url: people.facebook || people.facebook_url || "",
     instagram_url: people.instagram || people.instagram_url || "",
     zillow_url: people.zillow_url || "",
@@ -513,17 +518,28 @@ function ownerFields(people = {}, assessor = null) {
 }
 
 function placeContactHtml(data, esc) {
-  const addr = data.address || "";
   const zurl = pickZillowUrl(data);
   const phone = formatPhone(data.owner_phone || "");
   const email = String(data.owner_email || "").trim();
   const name = String(data.owner_name || "").trim();
   const homestead = Boolean(data.homestead);
+  const absentee = Boolean(data.absentee);
   const record = String(data.assessor_record || "").trim();
+  const mail = String(data.owner_mail || "").trim();
+  const roof = String(data.roof_permits || "").trim();
+  const kind = String(data.owner_kind || "").trim();
+  const acct = String(data.acct_type || "").trim();
   const e164 = phoneDigits(phone);
   const assessorUrl = String(data.assessor_url || "").trim();
+  const facts = [];
+  if (record) facts.push(`<span class="hs-record">${esc(record)}</span>`);
+  if (absentee && mail) {
+    facts.push(`<span class="hs-mail-away" title="Mailing address is not this house">Mail ${esc(mail)}</span>`);
+  }
+  if (roof && !record.toLowerCase().includes(roof.toLowerCase().slice(0, 12))) {
+    facts.push(`<span class="hs-roof-permit">${esc(roof)}</span>`);
+  }
   const bits = [];
-  if (record) bits.push(`<span class="hs-record">${esc(record)}</span>`);
   if (zurl) bits.push(`<a class="hs-zillow" href="${zurl}" target="_blank" rel="noopener noreferrer">Zillow</a>`);
   if (assessorUrl) {
     const lab = data.assessor_source ? `${esc(data.assessor_source)} assessor` : "Assessor";
@@ -534,10 +550,15 @@ function placeContactHtml(data, esc) {
     bits.push(`<a class="hs-sms" href="sms:${esc(e164)}">Text</a>`);
   }
   if (email) bits.push(`<a class="hs-mail" href="mailto:${esc(email)}">${esc(email)}</a>`);
-  // Mailing address omitted — street address is already shown above the contacts row.
   if (homestead) bits.push(`<span class="hs-homestead" title="Homestead exemption on file">Homestead</span>`);
-  const miss = !name && !e164 && !email ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${bits.join("")}${miss}</div>`;
+  if (absentee) bits.push(`<span class="hs-absentee" title="Owner of record mails elsewhere">Absentee</span>`);
+  if (kind === "llc") bits.push(`<span class="hs-entity">LLC</span>`);
+  if (kind === "trust") bits.push(`<span class="hs-entity">Trust</span>`);
+  if (kind === "corp") bits.push(`<span class="hs-entity">Corp</span>`);
+  if (kind === "public") bits.push(`<span class="hs-entity">Public</span>`);
+  if (acct && !/^(res|residential)$/i.test(acct)) bits.push(`<span class="hs-entity">${esc(acct)}</span>`);
+  const miss = !name && !e164 && !email && !record ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${facts.join("")}${bits.join("")}${miss}</div>`;
 }
 
 async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}) {

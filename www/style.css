@@ -2423,6 +2423,23 @@ body.wx-map-expanded .hs-field {
   line-height: 1.35;
   color: var(--muted);
 }
+.hs-mail-away,
+.hs-roof-permit {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #d9f0e3;
+}
+.hs-absentee,
+.hs-entity {
+  display: inline-flex; align-items: center;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  font-size: 12px; font-weight: 650;
+  color: #f3e6c4;
+  border: 1px solid #6b5420;
+  background: rgba(107, 84, 32, 0.18);
+}
 .hs-fb { color: #d6e4ff !important; border-color: #3b5bdb !important; }
 .hs-ig { color: #ffd6e8 !important; border-color: #c2255c !important; }
 .hs-tel, .hs-sms { color: var(--text); }
