@@ -46,11 +46,11 @@ The Capacitor `ios/` project ships with the repo. Ship CI builds a **simulator**
 
 ## Team web (iPhone Safari, free)
 
-**Team app (stable hail drawer — v0.2.305)**
+**Team app (stable hail drawer — v0.2.306)**
 
-https://joshuagwatts.github.io/ground-control/?v=0.2.305
+https://joshuagwatts.github.io/ground-control/?v=0.2.306
 
-This is the working crew link. New experiments do **not** deploy here. Hard-refresh or delete the Home Screen icon once if a phone still shows hearts/stars.
+This is the working crew link. New experiments do **not** deploy here. Hard-refresh or delete the Home Screen icon once if a phone still shows hearts/stars or an empty storm list.
 
 **Alpha sandbox (new stuff only)**
 
@@ -62,7 +62,7 @@ LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local de
 
 ### Optional team SWDI proxy (Cloudflare)
 
-The web app uses **cors.sh** + a service worker for NOAA radar on GitHub Pages. For extra reliability you can also deploy a free Cloudflare Worker:
+Hail Search storms fetches NOAA SWDI from `ncei.noaa.gov` directly (that host is CORS-open). The optional Cloudflare worker is only a fallback:
 
 1. Create a [Cloudflare API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with Workers edit permission.
 2. Add repo secret `CLOUDFLARE_API_TOKEN` — the **SWDI proxy** workflow deploys `ground-control-swdi`.
