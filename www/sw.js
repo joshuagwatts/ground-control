@@ -10,8 +10,15 @@ function assertPublic(url) {
   return u.toString();
 }
 
+function rewriteNoaaSwdiUrl(url) {
+  return String(url || "").replace(
+    /:\/\/(?:www\.)?ncdc\.noaa\.gov\/swdiws\//gi,
+    "://www.ncei.noaa.gov/swdiws/"
+  );
+}
+
 async function proxyFetch(target) {
-  const url = assertPublic(target);
+  const url = rewriteNoaaSwdiUrl(assertPublic(target));
   const res = await fetch(url, {
     headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*" },
     redirect: "follow",

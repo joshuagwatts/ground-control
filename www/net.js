@@ -308,7 +308,7 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
 }
 
 export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
-  const target = assertPublic(url);
+  const target = assertPublic(rewriteNoaaSwdiUrl(url));
   const headers = { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...extraHeaders };
 
   const native = await nativeRequest("GET", target, headers, undefined, timeoutMs);
@@ -352,9 +352,19 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   }
 }
 
-function needsBrowserCorsProxy(url) {
+/** NOAA moved SWDI to ncei; that host sends CORS headers so Pages can fetch it directly. */
+export function rewriteNoaaSwdiUrl(url) {
+  return String(url || "").replace(
+    /:\/\/(?:www\.)?ncdc\.noaa\.gov\/swdiws\//gi,
+    "://www.ncei.noaa.gov/swdiws/"
+  );
+}
+
+export function needsBrowserCorsProxy(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
+    // ncei SWDI is CORS-open. Routing it through cors.sh / the Pages SW 502s Search storms.
+    if (h === "ncei.noaa.gov" || h === "www.ncei.noaa.gov") return false;
     return (
       h.endsWith("ncdc.noaa.gov") ||
       h.endsWith("noaa.gov") ||
