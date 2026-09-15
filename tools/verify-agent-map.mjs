@@ -12,7 +12,9 @@
  *   node tools/verify-agent-map.mjs dots       # where a listing pins
  */
 import {
-  classifyInvestorKind,
+  osmInvestorKind,
+  osmParcelOnly,
+  nameReadsLikeInvestor,
   osmTagContext,
   photonBboxParam,
   listingFromPhotonFeature,
@@ -20,7 +22,6 @@ import {
   PHOTON_INSURANCE_TERMS,
 } from "../www/investors.js";
 import {
-  isOfficeOsmElement,
   officeOverpassQuery,
   listingAddressParts,
   parseCensusMatch,
@@ -34,6 +35,16 @@ const OVERPASS = [
   "https://overpass.kumi.systems/api/interpreter",
   "https://lz4.overpass-api.de/api/interpreter",
 ];
+
+/** An OSM tag that claims the place is an agency, whatever else it says. */
+const AGENCY_TAG = /\b(estate_agent|estate_agency|real_estate|realty|realtor|property_management|property_manager|letting_agent|housing_association|insurance)\b/;
+
+/** Plain-English reason a tagged office did not earn a pin. */
+function whyNotAnAgent(tags, name) {
+  if (tags.amenity || tags.shop) return `surveyed as ${tags.amenity ? `amenity=${tags.amenity}` : `shop=${tags.shop}`}`;
+  if (osmParcelOnly(tags) && !nameReadsLikeInvestor(name)) return `${tags.landuse} parcel, no door number or phone`;
+  return "the name names another trade";
+}
 
 const only = process.argv[2] || "";
 const runOffices = !only || only === "offices";
@@ -97,12 +108,22 @@ if (runOffices) {
   for (const f of FRAMES) {
     process.stderr.write(`\nquerying ${f.label}…\n`);
     const overpassHits = new Map();
+    const turnedAway = [];
     try {
       const { data } = await overpass(officeOverpassQuery(f.south, f.west, f.north, f.east));
-      for (const el of (data.elements || []).filter(isOfficeOsmElement)) {
+      for (const el of data.elements || []) {
         const t = el.tags || {};
         const name = (t.name || t.brand || t.operator || "").trim();
-        overpassHits.set(name.toLowerCase(), { name, kind: classifyInvestorKind(name, osmTagContext(t)) });
+        if (!name) continue;
+        const kind = osmInvestorKind(el);
+        if (!kind) {
+          // Carries an agency tag yet earns no pin — name the rule that turned it
+          // away, so a missing agent can be told apart from a water plant we meant
+          // to drop.
+          if (AGENCY_TAG.test(`${t.office || ""} ${t.shop || ""}`)) turnedAway.push(`${name} (${whyNotAnAgent(t, name)})`);
+          continue;
+        }
+        overpassHits.set(name.toLowerCase(), { name, kind });
       }
     } catch (e) {
       process.stderr.write(`  overpass unavailable: ${e.message}\n`);
@@ -121,6 +142,7 @@ if (runOffices) {
     console.log(`  only photon saw (${photonOnly.length}): ${photonOnly.slice(0, 8).join(", ") || "—"}`);
     console.log(`  only overpass saw (${overpassOnly.length}): ${overpassOnly.slice(0, 8).join(", ") || "—"}`);
     console.log(`  stars: ${stars.map((s) => s.name).slice(0, 16).join(" | ")}`);
+    if (turnedAway.length) console.log(`  tagged as an office but turned away (${turnedAway.length}): ${turnedAway.join(" | ")}`);
   }
 }
 
