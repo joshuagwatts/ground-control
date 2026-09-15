@@ -10,6 +10,18 @@ const www = path.join(root, "www");
 const PORT = Number(process.env.PORT) || 4174;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+/** Overpass answers 406 to any browser UA, so relayed calls must identify the app. */
+const APP_UA = "GroundControl/1.0 (https://github.com/joshuagwatts/ground-control)";
+
+function uaFor(target) {
+  try {
+    const h = new URL(target).hostname.toLowerCase();
+    if (h.includes("overpass") || h.endsWith("openstreetmap.org")) return APP_UA;
+  } catch {
+    /* fall through to the browser UA */
+  }
+  return UA;
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -33,7 +45,7 @@ async function proxy(req, res, target) {
   try {
     const upstream = await fetch(target, {
       headers: {
-        "User-Agent": UA,
+        "User-Agent": uaFor(target),
         Accept: "text/html,application/xhtml+xml,application/json,*/*",
         "Accept-Language": "en-US,en;q=0.9",
       },

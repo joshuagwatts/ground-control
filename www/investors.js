@@ -72,7 +72,10 @@ export function classifyInvestorKind(name, extra = "") {
 }
 
 /** Free-form tag context for classification — everything that hints at what an OSM place is. */
-export function osmTagContext(tags = {}) {
+export function osmTagContext(input = {}) {
+  // Takes a tag bag or the whole element; handing it an element used to silently
+  // classify every office as "neither".
+  const tags = input?.tags && typeof input.tags === "object" ? input.tags : input || {};
   return [
     tags.office ? `office=${tags.office}` : "",
     tags.shop ? `shop=${tags.shop}` : "",
@@ -473,12 +476,34 @@ export function mergeListedAndSaved(listed, saved, hiddenIds = []) {
   return [...byId.values()];
 }
 
-export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "" } = {}) {
+export function photonBboxParam(bounds) {
+  const s = Number(bounds?.south);
+  const w = Number(bounds?.west);
+  const n = Number(bounds?.north);
+  const e = Number(bounds?.east);
+  if (![s, w, n, e].every(Number.isFinite) || n <= s || e <= w) return "";
+  return `${w.toFixed(5)},${s.toFixed(5)},${e.toFixed(5)},${n.toFixed(5)}`;
+}
+
+/** A frame-sized box around a point, for the one-shot hunt that only knows a centre. */
+export function boundsAround(lat, lon, deg = 0.06) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return null;
+  const d = Math.max(0.01, Number(deg) || 0.06);
+  return { south: la - d, west: lo - d, north: la + d, east: lo + d };
+}
+
+export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "", bounds = null } = {}) {
   const u = new URL(PHOTON_URL);
   u.searchParams.set("q", String(q || "").trim() || "oklahoma");
   u.searchParams.set("limit", String(limit));
   if (Number.isFinite(Number(lat))) u.searchParams.set("lat", String(lat));
   if (Number.isFinite(Number(lon))) u.searchParams.set("lon", String(lon));
+  // lat/lon only nudges the ranking — without a bbox "realtor" returns Port Harcourt
+  // and Southern Minnesota, and the whole frame gets thrown away by the state filter.
+  const bbox = photonBboxParam(bounds);
+  if (bbox) u.searchParams.set("bbox", bbox);
   if (osmTag) u.searchParams.set("osm_tag", osmTag);
   const res = await fetch(u, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`photon ${res.status}`);
@@ -486,21 +511,36 @@ export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "
   return (data?.features || []).map(listingFromPhotonFeature).filter(Boolean);
 }
 
-export async function fetchPhotonInvestorsNear(lat, lon, { insurance = true, realestate = true } = {}) {
-  const la = Number(lat);
-  const lo = Number(lon);
-  if (!Number.isFinite(la) || !Number.isFinite(lo)) return [];
-  const jobs = [];
-  if (insurance) {
-    jobs.push(photonInvestorSearch({ q: "insurance agency", lat: la, lon: lo, limit: 40, osmTag: "office:insurance" }));
-  }
-  if (realestate) {
-    jobs.push(photonInvestorSearch({ q: "realtor", lat: la, lon: lo, limit: 30, osmTag: "office:estate_agent" }));
-    jobs.push(photonInvestorSearch({ q: "real estate investor", lat: la, lon: lo, limit: 20 }));
-  }
-  if (!jobs.length) return [];
-  const chunks = await Promise.all(jobs.map((p) => p.catch(() => [])));
+/**
+ * Terms worth one Photon request each. Trimmed against an Overpass sweep of the same
+ * frame — brand names ("keller williams", "re/max") never added an office the generic
+ * trade words had not already found, so they are not worth the round trip.
+ */
+export const PHOTON_REALESTATE_TERMS = ["realty", "real estate", "realtors", "property management", "properties"];
+export const PHOTON_INSURANCE_TERMS = ["insurance", "insurance agency"];
+
+/**
+ * Discover offices inside the current frame using Photon. Overpass is the richer
+ * source but it rejects browser User-Agents outright, so on the web build this is
+ * the one office sweep that can actually run.
+ */
+export async function fetchPhotonInvestorsInBounds(bounds, { insurance = true, realestate = true } = {}) {
+  if (!photonBboxParam(bounds)) return [];
+  const terms = [
+    ...(realestate ? PHOTON_REALESTATE_TERMS : []),
+    ...(insurance ? PHOTON_INSURANCE_TERMS : []),
+  ];
+  if (!terms.length) return [];
+  const chunks = await Promise.all(
+    terms.map((q) => photonInvestorSearch({ q, bounds, limit: 40 }).catch(() => [])),
+  );
   return mergeInvestorListings(chunks);
+}
+
+export async function fetchPhotonInvestorsNear(lat, lon, { insurance = true, realestate = true } = {}) {
+  const box = boundsAround(lat, lon);
+  if (!box) return [];
+  return fetchPhotonInvestorsInBounds(box, { insurance, realestate });
 }
 
 /**

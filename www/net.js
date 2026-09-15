@@ -639,7 +639,12 @@ const OVERPASS_ENDPOINTS = [
   "https://lz4.overpass-api.de/api/interpreter",
 ];
 
-/** Overpass 406s a generic Chrome UA — identify the app. */
+/**
+ * Overpass 406s a generic Chrome UA — identify the app. Browsers refuse to set
+ * User-Agent, so on the web build this only takes effect through a relay that
+ * sends its own honest UA (the team worker, or the dev server's /proxy). That is
+ * why office discovery cannot lean on Overpass alone — see the Photon sweep.
+ */
 const OVERPASS_HEADERS = {
   "User-Agent": "GroundControl/1.0 (https://github.com/joshuagwatts/ground-control)",
   Accept: "application/json",

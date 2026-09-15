@@ -94,6 +94,7 @@ import {
   mergeListedAndSaved,
   mergeInvestorListings,
   fetchPhotonInvestorsNear,
+  fetchPhotonInvestorsInBounds,
   investorHasContact,
   investorInBounds,
   mappedInvestorListings,
@@ -1383,10 +1384,19 @@ async function preloadInViewOffices() {
   const bounds = mapFrameBounds();
   if (!bounds) return;
   const gen = ++officeSweepGen;
-  const els = await fetchOsmOfficesInBounds(bounds).catch(() => []);
+  // Two sources, because neither is reliable alone: Overpass has the richer tagging
+  // but refuses browser User-Agents, while Photon answers any origin and so is the
+  // only sweep that survives on the web build.
+  const [els, photon] = await Promise.all([
+    fetchOsmOfficesInBounds(bounds).catch(() => []),
+    fetchPhotonInvestorsInBounds(bounds, {
+      insurance: investorHeartsOn(),
+      realestate: investorStarsOn(),
+    }).catch(() => []),
+  ]);
   if (gen !== officeSweepGen) return;
   lastOsmOfficeEls = els;
-  const extra = listedInvestorsFromOsmElements(els);
+  const extra = mergeInvestorListings([listedInvestorsFromOsmElements(els), photon]);
   if (extra.length) setLiveListedInvestors(mergeInvestorListings([listedInvestorPool(), extra]));
   setLiveListedInvestors(applyOsmOfficesToInvestors(liveListedInvestors, els));
   paintInvestorMap();
