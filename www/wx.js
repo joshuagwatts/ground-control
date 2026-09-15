@@ -499,6 +499,27 @@ export function eventHitsInvestorUi(e) {
     ),
   );
 }
+
+function pointNearLatLng(pt, ll, px) {
+  if (!map || !ll || !pt) return false;
+  const p = map.latLngToContainerPoint(ll);
+  return Math.hypot(p.x - pt.x, p.y - pt.y) <= px;
+}
+
+/** Leaflet map clicks often target the tile under the glyph — also hit-test pin pixels. */
+export function mapClickHitsInvestor(e) {
+  if (eventHitsInvestorUi(e)) return true;
+  if (!map || !e?.latlng) return false;
+  const pt = map.latLngToContainerPoint(e.latlng);
+  for (const marker of investorMarkers.values()) {
+    if (pointNearLatLng(pt, marker.getLatLng?.(), 28)) return true;
+  }
+  let listingHit = false;
+  investorRegionLayer?.eachLayer?.((layer) => {
+    if (!listingHit && pointNearLatLng(pt, layer.getLatLng?.(), 16)) listingHit = true;
+  });
+  return listingHit;
+}
 let radarHost = "https://tilecache.rainviewer.com";
 let radarColor = "2/1_1";
 const WX_PRODUCTS = ["precip", "cloud", "vis", "wind", "hail"];
@@ -10255,7 +10276,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     });
   }
   map.on("click", (e) => {
-    if (wxSuppressMapTap || eventHitsInvestorUi(e)) return;
+    if (wxSuppressMapTap || mapClickHitsInvestor(e)) return;
     // Storm overlay mode: taps hit zones for info — don't drop/move the blue pin.
     if (hasSelectedStormDates()) return;
     let { lat, lng } = e.latlng;

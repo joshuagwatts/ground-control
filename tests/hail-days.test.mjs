@@ -21,6 +21,7 @@ import {
   spcLookbackDays,
   lsrFirstDays,
   eventHitsInvestorUi,
+  mapClickHitsInvestor,
 } from "../www/wx.js";
 
 function assert(cond, msg) {
@@ -248,5 +249,7 @@ function fakeEl(hit) {
 assert(eventHitsInvestorUi({ target: fakeEl("hs-inv-pin") }), "a star tap is not a house pin");
 assert(eventHitsInvestorUi({ originalEvent: { target: fakeEl("hs-inv-listing-hit") } }), "a listing dot tap is not Search storms");
 assert(!eventHitsInvestorUi({ target: fakeEl("leaflet-container") }), "empty map still loads storms");
+assert(mapClickHitsInvestor({ target: fakeEl("hs-inv-pin") }), "mapClickHitsInvestor sees a star DOM hit");
+assert(!mapClickHitsInvestor({ target: fakeEl("leaflet-container") }), "mapClickHitsInvestor leaves empty map alone");
 
 console.log("hail-days ok");
