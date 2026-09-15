@@ -31,11 +31,45 @@ const KIND_IDS = new Set(INVESTOR_KINDS.map((k) => k.id));
 
 const OK_BOX = { south: 33.55, north: 37.05, west: -103.05, east: -94.35 };
 const PHOTON_URL = "https://photon.komoot.io/api/";
-const SKIP_LISTING = /\bbail\b|\bbonding\b|\bhistoric school\b|\benrollment center\b/i;
+const SKIP_LISTING =
+  /\bbail\b|\bbonding\b|\bhistoric school\b|\benrollment center\b|\b(?:car )?insurance repair\b|\btitle loans?\b|\bpawn\b/i;
 const INSURANCE_NAME =
-  /\b(insurance|insurors?|underwrit|claims?\s+adjust|public adjust|farmers ins|state farm|allstate|farm bureau|nationwide|liberty mutual|shelter ins|american family|progressive|aflac|aaa insurance)\b/i;
+  /\b(insurance|insurors?|underwrit|claims?\s+adjust|public adjust|risk management|farmers ins|state farm|allstate|farm bureau|nationwide|liberty mutual|shelter ins|american family|progressive|aflac|aaa insurance|goosehead|brightway|hippo|lemonade insurance|travelers|usaa|erie insurance|auto-?owners|safeco|the hartford|cincinnati insurance|chubb)\b/i;
+/** Generic trade words first, then brokerage brands that do not always say "realty". */
 const REALESTATE_NAME =
-  /\b(real\s*e-?state|realtors?|realty|estate agents?|keller williams|re\/?max|coldwell|century 21|berkshire hathaway|exp realty|we buy houses|home buyers?|investment propert|properties (llc|inc|group)|holdings (llc|group))\b/i;
+  /\b(real\s*e-?state|realtors?|realty|estate agents?|land (?:&|and) home|property manage(?:ment|rs?)|propert(?:y|ies) group|home ?sellers?|home ?buyers?|house ?buyers?|we buy (?:houses|homes)|cash for (?:houses|homes)|sell my house|home ?place|homestead group|investment propert|properties (?:llc|inc|group|co)|holdings (?:llc|group))\b|\b(keller williams|re\/?max|coldwell banker|century ?21|berkshire hathaway home|exp realty|epique|fathom realty|lpt realty|real broker|compass real ?estate|sotheby'?s international|weichert|crye-?leike|howard hanna|united country|better homes and gardens real estate|opendoor|offerpad|redfin|chinowth|mcgraw realtors|metro first|verbode|whittington)\b|\bpropert(?:y|ies)(?:\s*,?\s*(?:l\.?l\.?c\.?|inc\.?|co\.?))?\s*$/i;
+
+/** OSM tag values that mean "this is an insurance office" / "this is a real-estate office". */
+const INSURANCE_TAGS = /\b(insurance|insurance_agency|insurance_broker)\b/;
+const REALESTATE_TAGS =
+  /\b(estate_agent|estate_agency|realtor|realty|real_estate|real_estate_agent|property_management|property_manager|letting_agent|housing_association)\b/;
+/** Tag context that rules a place out no matter how its name reads ("Homeplace Diner"). */
+const SKIP_TAGS =
+  /\b(restaurant|fast_food|cafe|pub|\bbar\b|biergarten|fuel|hotel|motel|hostel|place_of_worship|school|college|kindergarten|hospital|clinic|doctors|dentist|pharmacy|veterinary|supermarket|convenience|hairdresser|beauty|car_repair|car_wash|funeral_directors|bank|atm|fitness_centre|childcare|library|museum)\b/;
+/**
+ * Names that name a different trade. OSM around Oklahoma City carries
+ * `office=estate_agent` on a bottled-water plant, a self-storage yard and a home
+ * designer; the sign on the door beats a tag nobody has revisited since the import.
+ * These veto outright — "Naifco Realty Central Storage" is a storage yard whatever
+ * the first word says.
+ */
+const NOT_AGENT_NAME =
+  /\b(storage|bottling|church|chapel|ministries|cathedral|synagogue|mosque|funeral|mortuary|crematory|cemetery|car ?wash|laundromat|dry clean\w*|day ?care|diner|caf[eé]|coffee|espresso|grill|pizza|pizzeria|taqueria|bbq|barbecue|steakhouse|buffet|bakery|brewery|brewing|taproom|tavern|saloon|barbershop|tattoo|liquor|smoke shop|vape|dispensary|towing|muffler|transmission|auto repair|body shop|machine shop|welding|lumber|hardware|animal hospital|urgent care|orthodont\w*|architect\w*|(?:home|interior) design|drafting)\b|\bwater(?: (?:co|company|works|supply))?\s*$/i;
+
+/**
+ * Worth spending office lookups on? A map that has not been laid out yet reports a
+ * frame a few metres wide — sweeping that burns a round trip per search term and can
+ * only return places nowhere near the crew.
+ */
+export function officeSweepWorthIt(bounds, minSpan = 0.002) {
+  const s = Number(bounds?.south);
+  const w = Number(bounds?.west);
+  const n = Number(bounds?.north);
+  const e = Number(bounds?.east);
+  if (![s, w, n, e].every(Number.isFinite) || n <= s || e <= w) return false;
+  if (n - s < minSpan || e - w < minSpan) return false;
+  return s <= OK_BOX.north && n >= OK_BOX.south && w <= OK_BOX.east && e >= OK_BOX.west;
+}
 
 export function inOklahoma(lat, lon) {
   const la = Number(lat);
@@ -43,16 +77,76 @@ export function inOklahoma(lat, lon) {
   return Number.isFinite(la) && Number.isFinite(lo) && la >= OK_BOX.south && la <= OK_BOX.north && lo >= OK_BOX.west && lo <= OK_BOX.east;
 }
 
-/** Public business listing → insurance heart or real-estate star. Empty if neither. */
+/**
+ * Public business listing → insurance heart or real-estate star. Empty if neither.
+ * `extra` is free-form tag context (`office=estate_agent`, `shop=insurance`, brand, operator…).
+ * A real-estate tag always wins over an insurance tag: brokerages often sell insurance too,
+ * but a tagged estate agent is never an insurance agency.
+ */
 export function classifyInvestorKind(name, extra = "") {
   const s = `${name || ""} ${extra || ""}`;
   if (SKIP_LISTING.test(s)) return "";
-  const office = String(extra || "").toLowerCase();
-  if (/\binsurance\b/.test(office) && !/estate_agent|realtor/.test(office)) return "insurance";
-  if (/estate_agent|realtor|\brealty\b|property_management/.test(office)) return "realestate";
-  if (INSURANCE_NAME.test(s)) return "insurance";
+  if (NOT_AGENT_NAME.test(String(name || ""))) return "";
+  const tags = String(extra || "").toLowerCase();
+  // A surveyed amenity beats a stale office tag: nobody runs a brokerage out of the
+  // dining room, so `amenity=restaurant` wins over `office=estate_agent`.
+  if (SKIP_TAGS.test(tags)) return "";
+  if (REALESTATE_TAGS.test(tags)) return "realestate";
+  if (INSURANCE_TAGS.test(tags)) return "insurance";
   if (REALESTATE_NAME.test(s)) return "realestate";
+  if (INSURANCE_NAME.test(s)) return "insurance";
   return "";
+}
+
+/** Free-form tag context for classification — everything that hints at what an OSM place is. */
+export function osmTagContext(input = {}) {
+  // Takes a tag bag or the whole element; handing it an element used to silently
+  // classify every office as "neither".
+  const tags = input?.tags && typeof input.tags === "object" ? input.tags : input || {};
+  return [
+    tags.office ? `office=${tags.office}` : "",
+    tags.shop ? `shop=${tags.shop}` : "",
+    tags.amenity ? `amenity=${tags.amenity}` : "",
+    tags.craft ? `craft=${tags.craft}` : "",
+    tags.leisure ? `leisure=${tags.leisure}` : "",
+    tags.tourism ? `tourism=${tags.tourism}` : "",
+    tags.healthcare ? `healthcare=${tags.healthcare}` : "",
+    tags["office:type"] || "",
+    tags.brand || "",
+    tags.operator || "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** Does the name itself say "agency", rather than only a tag saying so? */
+export function nameReadsLikeInvestor(name) {
+  const s = String(name || "");
+  return REALESTATE_NAME.test(s) || INSURANCE_NAME.test(s);
+}
+
+/**
+ * A `landuse=` polygon is a parcel of ground, not a business, and around Oklahoma
+ * City plenty of them carry an office tag from an old import — that is how a water
+ * plant and an office block ended up as agents. Ground with no door number and no
+ * phone has to earn its pin on the name alone.
+ */
+export function osmParcelOnly(tags = {}) {
+  if (!tags.landuse) return false;
+  const door = tags["addr:housenumber"] || tags["addr:street"];
+  const reach = tags.phone || tags["contact:phone"] || tags.website || tags["contact:website"] || tags.email;
+  return !door && !reach;
+}
+
+/** Insurance / real-estate kind for an OSM element, or "" when it is neither. */
+export function osmInvestorKind(el) {
+  const tags = el?.tags || {};
+  const name = String(tags.name || tags.brand || tags.operator || "").trim();
+  if (!name) return "";
+  const kind = classifyInvestorKind(name, osmTagContext(tags));
+  if (!kind) return "";
+  if (osmParcelOnly(tags) && !nameReadsLikeInvestor(name)) return "";
+  return kind;
 }
 
 export function listedInvestorId(kind, lat, lon, name) {
@@ -431,12 +525,34 @@ export function mergeListedAndSaved(listed, saved, hiddenIds = []) {
   return [...byId.values()];
 }
 
-export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "" } = {}) {
+export function photonBboxParam(bounds) {
+  const s = Number(bounds?.south);
+  const w = Number(bounds?.west);
+  const n = Number(bounds?.north);
+  const e = Number(bounds?.east);
+  if (![s, w, n, e].every(Number.isFinite) || n <= s || e <= w) return "";
+  return `${w.toFixed(5)},${s.toFixed(5)},${e.toFixed(5)},${n.toFixed(5)}`;
+}
+
+/** A frame-sized box around a point, for the one-shot hunt that only knows a centre. */
+export function boundsAround(lat, lon, deg = 0.06) {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return null;
+  const d = Math.max(0.01, Number(deg) || 0.06);
+  return { south: la - d, west: lo - d, north: la + d, east: lo + d };
+}
+
+export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "", bounds = null } = {}) {
   const u = new URL(PHOTON_URL);
   u.searchParams.set("q", String(q || "").trim() || "oklahoma");
   u.searchParams.set("limit", String(limit));
   if (Number.isFinite(Number(lat))) u.searchParams.set("lat", String(lat));
   if (Number.isFinite(Number(lon))) u.searchParams.set("lon", String(lon));
+  // lat/lon only nudges the ranking — without a bbox "realtor" returns Port Harcourt
+  // and Southern Minnesota, and the whole frame gets thrown away by the state filter.
+  const bbox = photonBboxParam(bounds);
+  if (bbox) u.searchParams.set("bbox", bbox);
   if (osmTag) u.searchParams.set("osm_tag", osmTag);
   const res = await fetch(u, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`photon ${res.status}`);
@@ -444,21 +560,60 @@ export async function photonInvestorSearch({ q, lat, lon, limit = 30, osmTag = "
   return (data?.features || []).map(listingFromPhotonFeature).filter(Boolean);
 }
 
-export async function fetchPhotonInvestorsNear(lat, lon, { insurance = true, realestate = true } = {}) {
-  const la = Number(lat);
-  const lo = Number(lon);
-  if (!Number.isFinite(la) || !Number.isFinite(lo)) return [];
-  const jobs = [];
-  if (insurance) {
-    jobs.push(photonInvestorSearch({ q: "insurance agency", lat: la, lon: lo, limit: 40, osmTag: "office:insurance" }));
-  }
-  if (realestate) {
-    jobs.push(photonInvestorSearch({ q: "realtor", lat: la, lon: lo, limit: 30, osmTag: "office:estate_agent" }));
-    jobs.push(photonInvestorSearch({ q: "real estate investor", lat: la, lon: lo, limit: 20 }));
-  }
-  if (!jobs.length) return [];
-  const chunks = await Promise.all(jobs.map((p) => p.catch(() => [])));
+/**
+ * Terms worth one Photon request each. Trimmed against an Overpass sweep of the same
+ * frame — brand names ("keller williams", "re/max") never added an office the generic
+ * trade words had not already found, so they are not worth the round trip.
+ */
+export const PHOTON_REALESTATE_TERMS = ["realty", "real estate", "realtors", "property management", "properties"];
+export const PHOTON_INSURANCE_TERMS = ["insurance", "insurance agency"];
+
+/**
+ * Discover offices inside the current frame using Photon. Overpass is the richer
+ * source but it rejects browser User-Agents outright, so on the web build this is
+ * the one office sweep that can actually run.
+ */
+export async function fetchPhotonInvestorsInBounds(bounds, { insurance = true, realestate = true } = {}) {
+  if (!photonBboxParam(bounds)) return [];
+  const terms = [
+    ...(realestate ? PHOTON_REALESTATE_TERMS : []),
+    ...(insurance ? PHOTON_INSURANCE_TERMS : []),
+  ];
+  if (!terms.length) return [];
+  const chunks = await Promise.all(
+    terms.map((q) => photonInvestorSearch({ q, bounds, limit: 40 }).catch(() => [])),
+  );
   return mergeInvestorListings(chunks);
+}
+
+export async function fetchPhotonInvestorsNear(lat, lon, { insurance = true, realestate = true } = {}) {
+  const box = boundsAround(lat, lon);
+  if (!box) return [];
+  return fetchPhotonInvestorsInBounds(box, { insurance, realestate });
+}
+
+/**
+ * How well a listing coordinate is pinned down:
+ * rooftop — the house number itself resolved; parcel — the building/plot;
+ * approx — somewhere in the right block; street — a road centreline (never a house).
+ */
+export const LISTING_PRECISION = ["rooftop", "parcel", "approx", "street", "area"];
+const EXACT_PRECISION = new Set(["rooftop", "parcel"]);
+/** A road centreline or a city centroid is the "pin in the middle of the street" bug — never draw it. */
+const UNDRAWABLE_PRECISION = new Set(["street", "area"]);
+
+export function normalizeListingPrecision(raw) {
+  const p = String(raw || "").toLowerCase();
+  return LISTING_PRECISION.includes(p) ? p : "approx";
+}
+
+export function listingIsMappable(row) {
+  return validInvestorCoord(row?.lat, row?.lon) && !UNDRAWABLE_PRECISION.has(normalizeListingPrecision(row?.precision));
+}
+
+/** True when the coordinate came back pinned to the house itself, not just the right block. */
+export function listingIsExact(row) {
+  return validInvestorCoord(row?.lat, row?.lon) && EXACT_PRECISION.has(normalizeListingPrecision(row?.precision));
 }
 
 export function normalizeListing(raw = {}) {
@@ -471,6 +626,8 @@ export function normalizeListing(raw = {}) {
     source: clip(raw.source, 40) || "listing",
     lat: Number.isFinite(lat) ? lat : null,
     lon: Number.isFinite(lon) ? lon : null,
+    precision: normalizeListingPrecision(raw.precision),
+    geoSource: clip(raw.geoSource, 24),
   };
 }
 
@@ -478,9 +635,21 @@ export function investorListings(inv) {
   return (Array.isArray(inv?.listings) ? inv.listings : []).filter((row) => validInvestorCoord(row.lat, row.lon));
 }
 
+/** Listings we are willing to draw a gold dot for. */
+export function mappedInvestorListings(inv) {
+  return (Array.isArray(inv?.listings) ? inv.listings : []).filter(listingIsMappable);
+}
+
+/** Listings we know the address of but refuse to place on the map. */
+export function unmappedInvestorListings(inv) {
+  return (Array.isArray(inv?.listings) ? inv.listings : []).filter(
+    (row) => Boolean(String(row?.address || "").trim()) && !listingIsMappable(row),
+  );
+}
+
 /** South/west/north/east box covering this agent's actual sale homes. */
 export function investorListingBounds(inv) {
-  const homes = investorListings(inv);
+  const homes = mappedInvestorListings(inv);
   let south = 90;
   let north = -90;
   let west = 180;

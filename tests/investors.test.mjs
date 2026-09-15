@@ -24,6 +24,20 @@ import {
   defaultRegionsForListing,
   fetchPhotonInvestorsNear,
   investorInBounds,
+  osmInvestorKind,
+  osmParcelOnly,
+  nameReadsLikeInvestor,
+  osmTagContext,
+  photonBboxParam,
+  boundsAround,
+  officeSweepWorthIt,
+  listingFromPhotonFeature,
+  PHOTON_REALESTATE_TERMS,
+  PHOTON_INSURANCE_TERMS,
+  normalizeListing,
+  listingIsExact,
+  mappedInvestorListings,
+  unmappedInvestorListings,
 } from "../www/investors.js";
 import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
@@ -36,11 +50,23 @@ import {
   sameOfficeBrand,
   officesLikelySame,
   officeOverpassQuery,
+  officeOverpassQueryNarrow,
   clampOfficeBounds,
   applyOsmOfficesToInvestors,
   listedInvestorsFromOsmElements,
+  isOfficeOsmElement,
   pickOsmOfficeForInvestor,
   listingNearOffice,
+  parseZillowDetailParts,
+  parseRealtorDetailParts,
+  listingAddressParts,
+  photonHitPrecision,
+  nominatimHitPrecision,
+  scoreListingGeoHit,
+  parseCensusMatch,
+  withDeadline,
+  SHALLOW_LOOKUP_MS,
+  DEEP_LOOKUP_MS,
 } from "../www/investor-public.js";
 
 function assert(ok, msg) {
@@ -242,5 +268,207 @@ const office = { lat: 35.4676, lon: -97.5164 };
 assert(listingNearOffice(office, { lat: 35.49, lon: -97.53 }), "nearby sale home stays");
 assert(!listingNearOffice(office, { lat: 36.15, lon: -95.99 }), "tulsa dump does not pin on an okc star");
 assert(!listingNearOffice(office, { lat: 35.4676, lon: -97.5164 }), "office coordinate is not a listing");
+
+/* ── Agents we used to drop on the floor ───────────────────────────────────── */
+
+// OSM tags realty offices half a dozen ways; only two of them used to count.
+assert(classifyInvestorKind("Sam J Silver Real Estate", "shop=estate_agent") === "realestate", "shop=estate_agent is a star");
+assert(classifyInvestorKind("Cornerstone", "office=property_management") === "realestate", "property_management is a star");
+assert(classifyInvestorKind("Paula and Company Realtors", "office=company") === "realestate", "realtors in the name is a star");
+assert(classifyInvestorKind("Homeplace", "office=company") === "realestate", "a named brokerage office is a star");
+assert(classifyInvestorKind("Homeplace Diner", "amenity=restaurant") === "", "a restaurant is never an agent");
+assert(classifyInvestorKind("Goosehead Insurance", "office=company") === "insurance", "insurance brand in the name is a heart");
+assert(
+  classifyInvestorKind("Chinowth & Cohen", "office=insurance shop=estate_agent") === "realestate",
+  "an estate agent that also sells insurance is still a star",
+);
+assert(osmInvestorKind({ tags: { name: "McGraw Realtors", office: "company" } }) === "realestate", "osm element kind");
+assert(classifyInvestorKind("Braden Group", osmTagContext({ office: "estate_agent" })) === "realestate", "office=estate_agent is a star whatever the name reads");
+assert(
+  osmTagContext({ tags: { office: "estate_agent" } }) === osmTagContext({ office: "estate_agent" }),
+  "tag context reads an element or a bare tag bag the same way",
+);
+assert(osmInvestorKind({ tags: { office: "estate_agent" } }) === "", "an unnamed office is not drawable");
+assert(isOfficeOsmElement({ tags: { name: "Metro First Realty", shop: "estate_agent" } }), "shop-tagged office counts");
+assert(!isOfficeOsmElement({ tags: { name: "Sonic Drive-In", amenity: "fast_food" } }), "drive-in is not an office");
+
+const sweep = officeOverpassQuery(35.4, -97.6, 35.55, -97.42);
+assert(/nwr\["office"\]/.test(sweep), "overpass sweeps every office in frame, not two tag values");
+assert(/shop"="estate_agent/.test(sweep), "overpass asks for shop-tagged estate agents");
+assert(/State Farm/.test(sweep), "overpass asks for State Farm");
+assert(/nwr\["office"="property_management"\]/.test(officeOverpassQueryNarrow(35.4, -97.6, 35.55, -97.42)), "narrow fallback keeps property management");
+
+const shopTagged = listedInvestorsFromOsmElements([
+  { lat: 35.5003, lon: -97.5337, tags: { name: "Sam J Silver Real Estate", shop: "estate_agent", phone: "+1 405 521 2481" } },
+  { lat: 35.4707, lon: -97.5458, tags: { name: "Paula and Company Realtors" } },
+]);
+assert(shopTagged.length === 2 && shopTagged.every((i) => i.kind === "realestate"), "both realty offices become stars");
+
+/* ── Listing dots: the house, or no dot at all ─────────────────────────────── */
+
+const zParts = parseZillowDetailParts("2200-Westheimer-Dr-Norman-OK-73069/111_zpid/");
+assert(zParts.street === "2200 Westheimer Dr", "zillow slug → street without the city glued on");
+assert(zParts.city === "Norman", "zillow slug → city");
+assert(zParts.zip === "73069", "zillow slug keeps the zip the geocoder needs");
+assert(zParts.house === "2200", "zillow slug → house number");
+assert(parseZillowDetailParts("500-S-Broadway-Ave-APT-4-Edmond-OK-73034/12_zpid").city === "Edmond", "unit rides with the street");
+assert(parseRealtorDetailParts("123-Main-St_Oklahoma-City_OK_73120_M12345").zip === "73120", "realtor slug keeps the zip");
+assert(listingAddressParts("1417 NW 34th St, Oklahoma City, OK 73118").zip === "73118", "free-text address → parts");
+assert(!listingAddressParts("Oklahoma City, OK"), "a city is not a listing address");
+
+assert(photonHitPrecision({ type: "street", osm_key: "highway" }) === "street", "road centreline graded as street");
+assert(photonHitPrecision({ housenumber: "1417" }) === "rooftop", "house number is a rooftop");
+assert(photonHitPrecision({ type: "house", osm_key: "amenity" }) === "approx", "a named POI is not the address we asked for");
+assert(photonHitPrecision({ type: "city", osm_key: "place" }) === "area", "city centroid graded as area");
+assert(nominatimHitPrecision({ class: "highway", addresstype: "road" }) === "street", "nominatim road graded as street");
+assert(nominatimHitPrecision({ address: { house_number: "1417" } }) === "rooftop", "nominatim house number is a rooftop");
+
+const want = { house: "1417", street: "NW 34th St", city: "Oklahoma City", zip: "73118" };
+const near = { lat: 35.5, lon: -97.53 };
+assert(
+  scoreListingGeoHit({ lat: 35.4951, lon: -97.5388, precision: "street", street: "NW 34th St" }, want, near) < 0,
+  "a street centreline never wins — this is the dot in the middle of the road",
+);
+assert(
+  scoreListingGeoHit({ lat: 35.5053, lon: -97.5348, precision: "rooftop", housenumber: "9999", street: "NW 34th St" }, want, near) < 0,
+  "the wrong house number on the right street is rejected",
+);
+assert(
+  scoreListingGeoHit(
+    { lat: 35.5053, lon: -97.5348, precision: "rooftop", housenumber: "1417", street: "NW 34th St", city: "Oklahoma City", postcode: "73118" },
+    want,
+    near,
+  ) > 10,
+  "the matching house scores well clear of everything else",
+);
+assert(
+  scoreListingGeoHit({ lat: 36.15, lon: -95.99, precision: "rooftop", housenumber: "1417" }, want, near) < 0,
+  "a rooftop in the wrong metro is rejected",
+);
+
+const census = parseCensusMatch({
+  matchedAddress: "1417 NW 34TH ST, OKLAHOMA CITY, OK, 73118",
+  coordinates: { x: -97.534816, y: 35.505303 },
+  addressComponents: { preDirection: "NW", streetName: "34TH", suffixType: "ST", city: "OKLAHOMA CITY", zip: "73118" },
+});
+assert(census.housenumber === "1417" && census.postcode === "73118", "census match → house number + zip");
+assert(census.precision === "parcel" && census.geoSource === "census", "census match is parcel-accurate");
+assert(scoreListingGeoHit(census, want, near) > 0, "census match is usable");
+
+const mixed = normalizeInvestor({
+  kind: "realestate",
+  name: "Dot Precision Realty",
+  lat: 35.47,
+  lon: -97.52,
+  listings: [
+    { address: "1 Roof St, OKC, OK", lat: 35.48, lon: -97.53, precision: "rooftop", geoSource: "census" },
+    { address: "2 Block Ave, OKC, OK", lat: 35.481, lon: -97.531, precision: "approx" },
+    { address: "3 Centreline Rd, OKC, OK", lat: 35.482, lon: -97.532, precision: "street" },
+    { address: "4 Unplaceable Ln, OKC, OK" },
+  ],
+});
+assert(mappedInvestorListings(mixed).length === 2, "rooftop and approximate homes draw; a street centreline does not");
+assert(!mappedInvestorListings(mixed).some((h) => /Centreline/.test(h.address)), "the street-centreline home is never drawn");
+assert(unmappedInvestorListings(mixed).length === 2, "centreline and un-geocoded homes stay listed as address-only");
+assert(listingIsExact(mixed.listings[0]) && !listingIsExact(mixed.listings[1]), "only a verified home reads as exact");
+assert(normalizeListing({ lat: 1, lon: 2 }).precision === "approx", "a listing with no precision is treated as approximate");
+const exactBox = investorListingBounds(mixed);
+assert(exactBox && exactBox.north < 35.4901, "listing bounds ignore homes we refused to place");
+
+/* ── Photon has to be frame-bounded or the whole sweep is thrown away ──────── */
+
+const okcBox = { south: 35.46, west: -97.56, north: 35.54, east: -97.48 };
+assert(photonBboxParam(okcBox) === "-97.56000,35.46000,-97.48000,35.54000", "bbox is lon,lat,lon,lat for photon");
+assert(!photonBboxParam({ south: 35.5, west: -97.5, north: 35.4, east: -97.4 }), "an inside-out box is not a bbox");
+assert(!photonBboxParam(null), "no bounds, no bbox");
+const around = boundsAround(35.5, -97.52, 0.06);
+assert(around.south < 35.5 && around.north > 35.5 && around.west < -97.52 && around.east > -97.52, "a centre becomes a frame");
+assert(photonBboxParam(boundsAround(35.5, -97.52)), "the one-shot hunt still gets a bbox");
+assert(PHOTON_REALESTATE_TERMS.includes("realty") && PHOTON_REALESTATE_TERMS.includes("property management"), "star terms");
+assert(PHOTON_INSURANCE_TERMS.includes("insurance"), "heart terms");
+assert(
+  !PHOTON_REALESTATE_TERMS.some((t) => /keller|re\/max|century/i.test(t)),
+  "brand terms cost a request and found nothing the trade words missed",
+);
+
+/* ── Places OSM calls an estate agent that plainly are not ─────────────────── */
+
+const osmEl = (tags) => ({ type: "way", tags });
+
+// A surveyed amenity beats a stale office tag — nobody brokers houses from the kitchen.
+assert(!osmInvestorKind(osmEl({ name: "Culberson Center", landuse: "retail", amenity: "restaurant", office: "estate_agent" })), "a restaurant is not an agent, office tag or not");
+assert(!osmInvestorKind(osmEl({ name: "Corner Cafe", shop: "coffee", office: "estate_agent" })), "a coffee shop is not an agent");
+
+// The name names another trade. "Realty" in the name does not make a storage yard an office.
+assert(!osmInvestorKind(osmEl({ name: "Eureka Water", landuse: "industrial", office: "estate_agent" })), "a bottled-water plant is not an agent");
+assert(!osmInvestorKind(osmEl({ name: "Naifco Realty Central Storage", landuse: "industrial" })), "a storage yard is not an agent even with Realty in the name");
+assert(!osmInvestorKind(osmEl({ name: "Brent Gibson Classic Home Design", building: "yes", office: "estate_agent", "addr:housenumber": "415" })), "a home designer is not an agent");
+assert(!osmInvestorKind(osmEl({ name: "Faith Chapel", office: "estate_agent" })), "a chapel is not an agent");
+assert(!osmInvestorKind(osmEl({ name: "Insurance Repair Specialists", office: "company", "addr:housenumber": "9" })), "a restoration contractor is not an insurance agency");
+assert(!osmInvestorKind(osmEl({ name: "Sooner Towing", office: "estate_agent" })), "a wrecker yard is not an agent");
+
+// Ground with an office tag and nothing else has to earn the pin on its name.
+assert(osmParcelOnly({ landuse: "commercial", office: "estate_agent" }), "a landuse polygon with no door and no phone is just ground");
+assert(!osmParcelOnly({ landuse: "commercial", office: "estate_agent", "addr:housenumber": "3101" }), "a door number makes it a place");
+assert(!osmParcelOnly({ landuse: "commercial", office: "estate_agent", phone: "+1 405 555 0100" }), "a phone makes it a place");
+assert(!osmParcelOnly({ building: "commercial", office: "estate_agent" }), "a building is not a landuse parcel");
+assert(!osmInvestorKind(osmEl({ name: "3101 Treat Building", landuse: "commercial", office: "estate_agent" })), "an office block is not the agency inside it");
+assert(!osmInvestorKind(osmEl({ name: "York Investment Loans", landuse: "industrial", office: "insurance" })), "a loan office tagged insurance on bare ground is dropped");
+
+// …but the parcel rule must not cost us the agents that only live on a polygon.
+assert(osmInvestorKind(osmEl({ name: "Dean Fleshmans Real Estate", landuse: "industrial", office: "estate_agent" })) === "realestate", "a parcel whose name says real estate keeps its star");
+assert(osmInvestorKind(osmEl({ name: "Paula and Company Realtors", landuse: "retail" })) === "realestate", "a parcel whose name says realtors keeps its star");
+assert(osmInvestorKind(osmEl({ name: "Don A Boyington Properties", landuse: "industrial", office: "estate_agent" })) === "realestate", "an X Properties firm is a star");
+assert(osmInvestorKind(osmEl({ name: "Livingston Properties, LLC", office: "estate_agent", "addr:housenumber": "800" })) === "realestate", "an X Properties, LLC firm is a star");
+assert(
+  osmInvestorKind(osmEl({ name: "Gallaggher Risk Management Services", landuse: "commercial", office: "insurance" })) === "insurance",
+  "risk management is the insurance trade",
+);
+assert(nameReadsLikeInvestor("Abercrombie Properties") && !nameReadsLikeInvestor("3101 Treat Building"), "name-only agency test");
+assert(!nameReadsLikeInvestor("Property Damage Restoration"), "properties must be the trade, not a passing word");
+
+// A leasing office still manages property — those stay.
+assert(
+  osmInvestorKind(osmEl({ name: "Sooner Crossing Apartments", building: "apartments", office: "estate_agent", "addr:housenumber": "2" })) === "realestate",
+  "an apartment leasing office is still a property manager",
+);
+
+assert(officeSweepWorthIt(okcBox), "a real frame over OKC is worth sweeping");
+// A map that has not laid out yet reports a frame metres wide, in the wrong state.
+assert(!officeSweepWorthIt({ south: 45.83983, west: -119.70529, north: 45.84037, east: -119.70471 }), "no sweep before the map lays out");
+assert(!officeSweepWorthIt({ south: 35.5, west: -97.53, north: 35.5005, east: -97.5295 }), "a sixty-metre frame is not worth seven round trips");
+assert(!officeSweepWorthIt({ south: 40.6, west: -74.1, north: 40.8, east: -73.9 }), "no sweep outside Oklahoma");
+assert(officeSweepWorthIt({ south: 33.0, west: -104.0, north: 38.0, east: -94.0 }), "a frame that overlaps the state still sweeps");
+assert(!officeSweepWorthIt(null), "no frame, no sweep");
+
+// Photon labels an office with osm_key/osm_value; that has to classify like an OSM tag.
+const photonOffice = listingFromPhotonFeature({
+  geometry: { coordinates: [-97.5337, 35.5003] },
+  properties: { name: "Braden Group", osm_key: "office", osm_value: "estate_agent", state: "Oklahoma", city: "Oklahoma City" },
+});
+assert(photonOffice && photonOffice.kind === "realestate", "a photon estate agent is a star");
+assert(
+  !listingFromPhotonFeature({
+    geometry: { coordinates: [-97.5337, 35.5003] },
+    properties: { name: "Homeplace Diner", osm_key: "amenity", osm_value: "restaurant", state: "Oklahoma" },
+  }),
+  "a photon restaurant is not an agent",
+);
+assert(
+  !listingFromPhotonFeature({
+    geometry: { coordinates: [-93.29, 44.98] },
+    properties: { name: "Realtor Association of Southern Minnesota", osm_key: "office", osm_value: "estate_agent" },
+  }),
+  "an out-of-state hit from an unbounded query is dropped",
+);
+
+/* ── One slow office must not hold the queue ───────────────────────────────── */
+
+const never = new Promise(() => {});
+const t0 = Date.now();
+assert((await withDeadline(never, 60, "gave up")) === "gave up", "a hung lookup resolves to the fallback");
+assert(Date.now() - t0 < 1500, "and it gives up on time");
+assert((await withDeadline(Promise.reject(new Error("boom")), 500, "fell back")) === "fell back", "a failed lookup falls back");
+assert(SHALLOW_LOOKUP_MS < DEEP_LOOKUP_MS, "the in-view sweep is cheaper than a tapped office");
 
 console.log("investors ok");
