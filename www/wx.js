@@ -478,6 +478,27 @@ const windNoise = {
 /** Map + timeline layer visibility. */
 export const wxTimelineFilters = { precip: true, hail: true, wind: true, temp: true };
 let wxSuppressMapTap = false;
+let wxSuppressMapTapTimer = 0;
+
+function suppressMapTap(ms = 700) {
+  wxSuppressMapTap = true;
+  if (wxSuppressMapTapTimer) clearTimeout(wxSuppressMapTapTimer);
+  wxSuppressMapTapTimer = setTimeout(() => {
+    wxSuppressMapTap = false;
+    wxSuppressMapTapTimer = 0;
+  }, ms);
+}
+
+/** Star / listing / office popup — never treat these as a house pin or Search storms. */
+export function eventHitsInvestorUi(e) {
+  const t = e?.originalEvent?.target || e?.target;
+  if (!t || typeof t.closest !== "function") return false;
+  return Boolean(
+    t.closest(
+      ".hs-inv-pin, .hs-inv-listing, .hs-inv-listing-hit, .hs-inv-popup, .hs-inv-listing-pop, .leaflet-popup.hs-inv-popup",
+    ),
+  );
+}
 let radarHost = "https://tilecache.rainviewer.com";
 let radarColor = "2/1_1";
 const WX_PRODUCTS = ["precip", "cloud", "vis", "wind", "hail"];
@@ -9231,7 +9252,7 @@ function ensureFieldPanes() {
   }
   if (!map.getPane("investors")) {
     map.createPane("investors");
-    map.getPane("investors").style.zIndex = 670;
+    map.getPane("investors").style.zIndex = 680;
   }
   if (!map.getPane("investorRegions")) {
     map.createPane("investorRegions");
@@ -9241,7 +9262,7 @@ function ensureFieldPanes() {
   }
   if (!map.getPane("investorListings")) {
     map.createPane("investorListings");
-    map.getPane("investorListings").style.zIndex = 665;
+    map.getPane("investorListings").style.zIndex = 675;
   }
 }
 
@@ -9411,6 +9432,7 @@ function paintInvestorRegions(inv) {
     const tip = `${home.address || "Listed home"}${exact ? "" : " (approximate)"}`;
     window.L.circleMarker([home.lat, home.lon], {
       pane: "investorListings",
+      className: "hs-inv-listing-hit",
       radius: exact ? 6 : 7,
       color: "#0b0b0d",
       weight: 1,
@@ -9421,6 +9443,10 @@ function paintInvestorRegions(inv) {
       keyboard: false,
       title: tip,
     })
+      .on("click", (e) => {
+        window.L.DomEvent.stop(e);
+        suppressMapTap(700);
+      })
       .bindPopup(listingPopupHtml(home, inv), {
         className: "hs-zone-popup hs-inv-popup",
         closeButton: true,
@@ -9560,11 +9586,8 @@ function paintInvestorLayer({ force = false } = {}) {
     })
       .on("click", (e) => {
         window.L.DomEvent.stop(e);
-        wxSuppressMapTap = true;
+        suppressMapTap(900);
         selectInvestorOnMap(inv, marker);
-        setTimeout(() => {
-          wxSuppressMapTap = false;
-        }, 500);
       })
       .addTo(investorLayer);
     bindInvestorMarker(marker, inv);
@@ -10232,7 +10255,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     });
   }
   map.on("click", (e) => {
-    if (wxSuppressMapTap) return;
+    if (wxSuppressMapTap || eventHitsInvestorUi(e)) return;
     // Storm overlay mode: taps hit zones for info — don't drop/move the blue pin.
     if (hasSelectedStormDates()) return;
     let { lat, lng } = e.latlng;

@@ -20,6 +20,7 @@ import {
   dossierWideKm,
   spcLookbackDays,
   lsrFirstDays,
+  eventHitsInvestorUi,
 } from "../www/wx.js";
 
 function assert(cond, msg) {
@@ -240,5 +241,12 @@ const trulyNear = {
 const [roofZone] = collapseHailByDate([trulyNear]);
 assert(roofZone.near_hits === 1, "pin distance recompute finds roof hail");
 assert(Math.abs(roofZone.lat - 35.467) < 0.001, "roof zone anchors on the selected pin");
+
+function fakeEl(hit) {
+  return { closest: (sel) => (String(sel).includes(hit) ? {} : null) };
+}
+assert(eventHitsInvestorUi({ target: fakeEl("hs-inv-pin") }), "a star tap is not a house pin");
+assert(eventHitsInvestorUi({ originalEvent: { target: fakeEl("hs-inv-listing-hit") } }), "a listing dot tap is not Search storms");
+assert(!eventHitsInvestorUi({ target: fakeEl("leaflet-container") }), "empty map still loads storms");
 
 console.log("hail-days ok");

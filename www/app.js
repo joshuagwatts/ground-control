@@ -74,7 +74,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.325";
+} from "./wx.js?v=0.2.326";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1262,7 +1262,7 @@ function startOfficeLayerHunt() {
   const here = mapCenterCoords();
   const home = officeMapHome();
   if (!here || !isOklahomaLatLon(here.lat, here.lon)) {
-    flyToPin(home.lat, home.lon, 11);
+    flyToPin(home.lat, home.lon, 11, { stay: true });
     schedulePhotonInvestorHunt(home.lat, home.lon);
     scheduleInViewOfficePreload();
     return;
@@ -1381,7 +1381,7 @@ function openAgentAccuracy() {
     const frame = mapFrameBounds();
     if (shown.length && !shown.some((inv) => investorInBounds(inv, frame))) {
       const dest = homeOrHere(mapCenterCoords() || officeMapHome());
-      flyToPin(dest.lat, dest.lon, 12);
+      flyToPin(dest.lat, dest.lon, 12, { stay: true });
     }
     paintFieldSheet();
     setStatus(accuracyStatusLine());
@@ -1400,7 +1400,7 @@ function checkAgentAccuracyFrame() {
   const dest = homeOrHere(here);
   const inCam = shown.filter((inv) => investorInBounds(inv, frame));
   if (!inCam.length) {
-    flyToPin(dest.lat, dest.lon, 12);
+    flyToPin(dest.lat, dest.lon, 12, { stay: true });
     setStatus("Flying to the offices on the map…");
   }
   const box = inCam.length && officeSweepWorthIt(frame) ? frame : boundsAround(dest.lat, dest.lon, 0.08);
@@ -2191,7 +2191,7 @@ function paintFieldSheet() {
     b.onclick = () => {
       const inv = fieldInvestors().find((x) => x.id === b.dataset.inv);
       if (!inv) return;
-      flyToPin(inv.lat, inv.lon, 18);
+      flyToPin(inv.lat, inv.lon, 18, { stay: true });
       focusInvestorPin(inv.id, { popup: true });
     };
   });
