@@ -1151,7 +1151,7 @@ export async function fetchSwdiHailForDays(lat, lon, radiusKm, isoDays, { bbox: 
   const bbox = bboxOverride || bboxForKm(lat, lon, km);
   const ingestKm = bboxOverride ? ingestKmForBbox({ lat, lon }, bbox) : km;
   const fmt = (iso) => iso.replace(/-/g, "");
-  const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
+  const url = `https://www.ncei.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
   const daySet = new Set(days);
   const slow = isSlowBrowserNet();
   const timeout = slow ? 18000 : 24000;
@@ -1185,7 +1185,7 @@ export async function fetchSwdiHailSpan(lat, lon, radiusKm, startIso, endIso, { 
   const ingestKm = bboxOverride ? ingestKmForBbox({ lat, lon }, bbox) : km;
   const fmt = (iso) => iso.replace(/-/g, "");
   const endExclusive = addIsoDay(end, 1);
-  const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(endExclusive)}?bbox=${bbox}`;
+  const url = `https://www.ncei.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(endExclusive)}?bbox=${bbox}`;
   const slow = isSlowBrowserNet();
   const timeout = slow ? 20000 : 28000;
   let lastErr = "";
@@ -1461,7 +1461,7 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgres
         const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
         const endExclusive = new Date(end);
         endExclusive.setDate(endExclusive.getDate() + 1);
-        const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(endExclusive)}?bbox=${bbox}`;
+        const url = `https://www.ncei.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(endExclusive)}?bbox=${bbox}`;
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
             const { body } = await httpGet(url, timeout);
