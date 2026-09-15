@@ -1385,8 +1385,16 @@ function checkAgentAccuracyFrame() {
     openAgentAccuracy();
     return;
   }
-  const box = accuracyBounds();
+  const shown = shownFieldInvestors();
+  const frame = mapFrameBounds();
   const here = mapCenterCoords() || officeMapHome();
+  const dest = homeOrHere(here);
+  const inCam = shown.filter((inv) => investorInBounds(inv, frame));
+  if (!inCam.length) {
+    flyToPin(dest.lat, dest.lon, 12);
+    setStatus("Flying to the offices on the map…");
+  }
+  const box = inCam.length && officeSweepWorthIt(frame) ? frame : boundsAround(dest.lat, dest.lon, 0.08);
   startOfficeLayerHunt();
   if (box) {
     void fetchPhotonInvestorsInBounds(box, {
@@ -1402,9 +1410,13 @@ function checkAgentAccuracyFrame() {
       .catch(() => setStatus(accuracyStatusLine()));
   }
   schedulePhotonInvestorHunt(here.lat, here.lon);
-  scheduleInViewOfficePreload(80);
+  scheduleInViewOfficePreload(120);
   paintFieldSheet();
-  setStatus("Checking offices around this map…");
+  if (inCam.length) setStatus("Checking offices around this map…");
+}
+
+function homeOrHere(here) {
+  return isOklahomaLatLon(here?.lat, here?.lon) ? here : officeMapHome();
 }
 
 function accuracyPanelHtml(rep) {
