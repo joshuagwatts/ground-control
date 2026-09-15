@@ -96,6 +96,7 @@ import {
   fetchPhotonInvestorsNear,
   fetchPhotonInvestorsInBounds,
   officeSweepWorthIt,
+  boundsAround,
   investorHasContact,
   investorInBounds,
   mappedInvestorListings,
@@ -1349,16 +1350,23 @@ function officeLookupStatus() {
   setStatus(`${withPhone} of ${view.length} offices in view have a public phone${tail}`);
 }
 
+function accuracyBounds() {
+  const box = mapFrameBounds();
+  if (officeSweepWorthIt(box)) return box;
+  const here = mapCenterCoords() || officeMapHome();
+  return boundsAround(here.lat, here.lon, 0.08);
+}
+
 function agentAccuracyReport() {
   return summarizeAgentAccuracy(shownFieldInvestors(), mapFrameBounds());
 }
 
 function accuracyStatusLine(rep = agentAccuracyReport()) {
-  if (!rep.offices) {
-    return investorOfficesWanted() ? "No offices in this frame yet" : "Turn on Hearts or Stars, then check this frame";
-  }
-  const phones = `${rep.withPhone} of ${rep.offices} offices have a public phone`;
-  if (!rep.listings) return `${phones} · no sale homes loaded yet`;
+  if (!investorOfficesWanted()) return "Turn on Hearts or Stars, then check this frame";
+  if (!rep.onMap) return "No offices on the map yet";
+  if (rep.cameraEmpty) return `${rep.onMap} offices on the map · none in this camera`;
+  const phones = `${rep.withPhone} of ${rep.offices} offices in view have a public phone`;
+  if (!rep.listings) return phones;
   return `${phones} · ${rep.verified} listing${rep.verified === 1 ? "" : "s"} verified · ${rep.approximate} approximate · ${rep.addressOnly} address-only`;
 }
 
@@ -1377,20 +1385,41 @@ function checkAgentAccuracyFrame() {
     openAgentAccuracy();
     return;
   }
+  const box = accuracyBounds();
+  const here = mapCenterCoords() || officeMapHome();
   startOfficeLayerHunt();
+  if (box) {
+    void fetchPhotonInvestorsInBounds(box, {
+      insurance: investorHeartsOn(),
+      realestate: investorStarsOn(),
+    })
+      .then((extra) => {
+        if (extra.length) setLiveListedInvestors(mergeInvestorListings([listedInvestorPool(), extra]));
+        paintInvestorMap();
+        paintFieldSheet();
+        setStatus(accuracyStatusLine());
+      })
+      .catch(() => setStatus(accuracyStatusLine()));
+  }
+  schedulePhotonInvestorHunt(here.lat, here.lon);
   scheduleInViewOfficePreload(80);
   paintFieldSheet();
-  setStatus("Checking this frame…");
+  setStatus("Checking offices around this map…");
 }
 
 function accuracyPanelHtml(rep) {
   const off = !investorOfficesWanted();
   const bits = [];
-  bits.push(off ? "Hearts / Stars off" : `${rep.hearts} ♥ · ${rep.stars} ★ in this frame`);
-  if (!off && rep.offices) bits.push(`${rep.withPhone} of ${rep.offices} have a public phone`);
+  if (off) bits.push("Hearts / Stars off");
+  else {
+    bits.push(`${rep.onMapHearts} ♥ · ${rep.onMapStars} ★ on the map`);
+    if (rep.cameraEmpty) bits.push("none in this camera");
+    else if (rep.offices) bits.push(`${rep.offices} in this camera · ${rep.withPhone} have a public phone`);
+  }
   if (rep.listings) bits.push(`${rep.verified} verified to the house · ${rep.approximate} approximate · ${rep.addressOnly} address-only`);
-  else if (!off) bits.push("Tap a star to load that office's sale homes");
+  else if (!off && rep.onMap) bits.push("Tap a star to load that office's sale homes");
   const issues = [];
+  if (rep.cameraEmpty) issues.push(`${rep.onMap} offices are loaded. None sit in this camera — pinch out or tap Check this frame.`);
   for (const name of rep.missingPhoneNames) issues.push(`No public phone yet — ${name}`);
   for (const addr of rep.looseHomes) issues.push(`Approximate pin — ${addr}`);
   for (const addr of rep.addressOnlyHomes) issues.push(`Address only, no pin — ${addr}`);
@@ -1398,13 +1427,13 @@ function accuracyPanelHtml(rep) {
     ? `<div class="hs-acc-list">${issues
         .slice(0, 10)
         .map((line) => `<p class="hs-acc-issue">${esc(line)}</p>`)
-        .join("")}${issues.length > 10 ? `<p class="muted">${issues.length - 10} more in this frame</p>` : ""}</div>`
+        .join("")}${issues.length > 10 ? `<p class="muted">${issues.length - 10} more</p>` : ""}</div>`
     : `<p class="muted">${off ? "Turn on Hearts or Stars in the map bar, then check this frame." : "Solid gold dots are the house. Hollow rings are approximate — check before you knock."}</p>`;
   return `
     <div class="hs-acc" id="hs-acc">
       <div class="hs-field-head">
         <strong>Agent accuracy</strong>
-        <span class="muted">${esc(off ? "off" : "this frame")}</span>
+        <span class="muted">${esc(off ? "off" : "this map")}</span>
       </div>
       <p class="muted hs-acc-sum">${esc(bits.join(" · "))}</p>
       <div class="hs-mark-tools">

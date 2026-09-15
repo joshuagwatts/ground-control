@@ -419,9 +419,15 @@ const accRep = summarizeAgentAccuracy(
   accBox,
 );
 assert(accRep.offices === 2 && accRep.hearts === 1 && accRep.stars === 1, "accuracy counts only the current frame");
+assert(accRep.onMap === 3 && accRep.onMapStars === 2 && accRep.cameraEmpty === false, "accuracy still names what is on the map");
 assert(accRep.verified === 1 && accRep.approximate === 1 && accRep.addressOnly === 2, "accuracy splits verified / loose / address-only");
 assert(accRep.missingPhone === 2 && accRep.missingPhoneNames.includes("Quiet Farm"), "offices without a phone are named");
 assert(!accRep.looseHomes.some((a) => /Far St/.test(a)), "homes outside the frame do not pollute the report");
+const emptyCam = summarizeAgentAccuracy(
+  [normalizeInvestor({ kind: "realestate", name: "Far Star", lat: 36.12, lon: -95.9 })],
+  accBox,
+);
+assert(emptyCam.cameraEmpty && emptyCam.onMap === 1 && emptyCam.offices === 0, "a loaded office outside the camera is not reported as missing");
 
 /* ── Photon has to be frame-bounded or the whole sweep is thrown away ──────── */
 

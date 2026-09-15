@@ -1092,21 +1092,18 @@ export function parseArcGisMatch(cand = {}) {
   };
 }
 
-/** What the Accuracy panel can say about this frame without another network trip. */
-export function summarizeAgentAccuracy(investors = [], bounds = null) {
-  const list = Array.isArray(investors) ? investors : [];
-  const inView = bounds ? list.filter((inv) => investorInBounds(inv, bounds)) : list;
-  const hearts = inView.filter((inv) => String(inv.kind) === "insurance");
-  const stars = inView.filter((inv) => String(inv.kind) === "realestate");
-  const withPhone = inView.filter((inv) => investorHasContact(inv));
-  const missingPhone = inView.filter((inv) => !investorHasContact(inv));
+function accuracySlice(list) {
+  const hearts = list.filter((inv) => String(inv.kind) === "insurance");
+  const stars = list.filter((inv) => String(inv.kind) === "realestate");
+  const withPhone = list.filter((inv) => investorHasContact(inv));
+  const missingPhone = list.filter((inv) => !investorHasContact(inv));
   const homes = stars.flatMap((inv) => (Array.isArray(inv.listings) ? inv.listings : []));
   const drawn = homes.filter(listingIsMappable);
   const verified = drawn.filter(listingIsExact);
   const addressOnly = homes.filter((row) => String(row?.address || "").trim() && !listingIsMappable(row));
   const nameOf = (inv) => String(inv?.name || inv?.company || "").trim();
   return {
-    offices: inView.length,
+    offices: list.length,
     hearts: hearts.length,
     stars: stars.length,
     withPhone: withPhone.length,
@@ -1119,6 +1116,21 @@ export function summarizeAgentAccuracy(investors = [], bounds = null) {
     missingPhoneNames: missingPhone.map(nameOf).filter(Boolean).slice(0, 8),
     looseHomes: drawn.filter((h) => !listingIsExact(h)).map((h) => h.address).filter(Boolean).slice(0, 8),
     addressOnlyHomes: addressOnly.map((h) => h.address).filter(Boolean).slice(0, 8),
+  };
+}
+
+/** What the Accuracy panel can say about this frame without another network trip. */
+export function summarizeAgentAccuracy(investors = [], bounds = null) {
+  const list = Array.isArray(investors) ? investors : [];
+  const inView = bounds ? list.filter((inv) => investorInBounds(inv, bounds)) : list;
+  const scoped = accuracySlice(inView);
+  const onMap = accuracySlice(list);
+  return {
+    ...scoped,
+    onMap: onMap.offices,
+    onMapHearts: onMap.hearts,
+    onMapStars: onMap.stars,
+    cameraEmpty: Boolean(bounds) && scoped.offices === 0 && onMap.offices > 0,
   };
 }
 
