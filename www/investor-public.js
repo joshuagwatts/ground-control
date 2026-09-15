@@ -21,11 +21,15 @@ import {
   listingFromBizRow,
   normalizeInvestor,
   normalizeListing,
+  osmInvestorKind,
+  osmTagContext,
   validInvestorCoord,
 } from "./investors.js";
 
 const OSM_API = "https://api.openstreetmap.org/api/0.6";
 const PHOTON_URL = "https://photon.komoot.io/api/";
+const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
+const CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress";
 const DDG_HTML = "https://html.duckduckgo.com/html/?q=";
 const MAX_LISTINGS = 40;
 const MAX_FETCH_LISTINGS = 10;
@@ -94,24 +98,43 @@ export function osmElementLatLon(el) {
   return validInvestorCoord(lat, lon) ? { lat, lon } : null;
 }
 
+/** Any OSM place we can call an insurance or real-estate office — tags first, then the name. */
 export function isOfficeOsmElement(el) {
-  const t = el?.tags || {};
-  if (t.office === "insurance" || t.office === "estate_agent") return true;
-  return /state\s*farm|farmers insurance|allstate|nationwide|farm bureau/i.test(t.name || "");
+  return Boolean(osmInvestorKind(el));
 }
+
+/**
+ * Offices in the frame. Asking for every `office=*` and then classifying locally catches the
+ * brokerages OSM tags as `property_management`, `shop=estate_agent`, or plain `office=company`
+ * with "Realty" in the name — the ones a two-value query silently drops.
+ */
+const OFFICE_BRAND_RE =
+  "State Farm|Farmers Insurance|Allstate|Nationwide|Farm Bureau|Goosehead|Keller Williams|RE/?MAX|Coldwell Banker|Century ?21|Berkshire Hathaway|eXp Realty|Sotheby|Realty|Realtors|Real Estate|Property Management";
 
 export function officeOverpassQuery(south, west, north, east) {
   const s = Number(south).toFixed(5);
   const w = Number(west).toFixed(5);
   const n = Number(north).toFixed(5);
   const e = Number(east).toFixed(5);
+  return `[out:json][timeout:20][bbox:${s},${w},${n},${e}];(
+    nwr["office"];
+    nwr["shop"="estate_agent"];
+    nwr["shop"="insurance"];
+    nwr["name"~"${OFFICE_BRAND_RE}",i];
+  );out tags center;`;
+}
+
+/** Narrow fallback for when the broad office sweep times out on a busy Overpass mirror. */
+export function officeOverpassQueryNarrow(south, west, north, east) {
+  const s = Number(south).toFixed(5);
+  const w = Number(west).toFixed(5);
+  const n = Number(north).toFixed(5);
+  const e = Number(east).toFixed(5);
   return `[out:json][timeout:12][bbox:${s},${w},${n},${e}];(
-    node["office"="insurance"];
-    way["office"="insurance"];
-    node["office"="estate_agent"];
-    way["office"="estate_agent"];
-    node["name"~"State Farm|Farmers Insurance|Allstate|Nationwide",i];
-    way["name"~"State Farm|Farmers Insurance|Allstate|Nationwide",i];
+    nwr["office"="insurance"];
+    nwr["office"="estate_agent"];
+    nwr["office"="property_management"];
+    nwr["shop"="estate_agent"];
   );out tags center;`;
 }
 
@@ -177,25 +200,29 @@ export function pickOsmOfficeForInvestor(inv, elements) {
 export function listedInvestorsFromOsmElements(elements) {
   const out = [];
   for (const el of elements || []) {
-    if (!isOfficeOsmElement(el)) continue;
+    const kind = osmInvestorKind(el);
+    if (!kind) continue;
     const ll = osmElementLatLon(el);
     const tags = el.tags || {};
-    const name = String(tags.name || tags.operator || "").trim();
+    const name = String(tags.name || tags.brand || tags.operator || "").trim();
     if (!ll || !name) continue;
-    const row = listingFromBizRow({
-      name,
-      street: [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" "),
-      city: tags["addr:city"] || "",
-      state: tags["addr:state"] || "OK",
-      zip: tags["addr:postcode"] || "",
-      lat: ll.lat,
-      lon: ll.lon,
-      phone: tags.phone || tags["contact:phone"] || "",
-      email: tags.email || tags["contact:email"] || "",
-      website: tags.website || tags["contact:website"] || "",
-      source: "osm",
-      office: tags.office || "",
-    });
+    const row = listingFromBizRow(
+      {
+        name,
+        street: [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" "),
+        city: tags["addr:city"] || "",
+        state: tags["addr:state"] || "OK",
+        zip: tags["addr:postcode"] || "",
+        lat: ll.lat,
+        lon: ll.lon,
+        phone: tags.phone || tags["contact:phone"] || "",
+        email: tags.email || tags["contact:email"] || "",
+        website: tags.website || tags["contact:website"] || "",
+        source: "osm",
+        office: osmTagContext(tags),
+      },
+      kind,
+    );
     if (row) out.push(row);
   }
   return out;
@@ -396,32 +423,119 @@ function pickMatchingBusiness(rows, inv) {
   return null;
 }
 
-export function parseRealtorDetailSlug(slug) {
+const STREET_SUFFIX = new Set(
+  (
+    "st street ave avenue rd road dr drive blvd boulevard ln lane ct court cir circle pl place way ter terrace " +
+    "pkwy parkway trl trail hwy highway loop run path pike sq square xing crossing bnd bend cv cove pt point " +
+    "ridge rdg creek crk park plaza walk row expy expressway fwy freeway manor mnr grove grv hollow holw " +
+    "heights hts landing lndg meadows mdws springs spgs trace trce vista vly valley crest knoll"
+  ).split(" "),
+);
+const UNIT_WORD = /^(apt|unit|ste|suite|lot|bldg|building|fl|floor|rm|room|#\d*)$/i;
+
+function titleWords(bits) {
+  return bits.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/** Index of the last street-type word, so "2200 Westheimer Dr Norman" splits into street + city. */
+function lastStreetSuffixIndex(bits) {
+  for (let i = bits.length - 1; i > 0; i -= 1) {
+    if (STREET_SUFFIX.has(String(bits[i] || "").toLowerCase().replace(/\.$/, ""))) return i;
+  }
+  return -1;
+}
+
+function houseFromStreet(street) {
+  return (String(street || "").match(/^(\d+[A-Za-z]?)\b/) || [])[1] || "";
+}
+
+function joinAddressParts({ street, city, state, zip }) {
+  return [street, city, state || "OK", zip].map((s) => String(s || "").trim()).filter(Boolean).join(", ");
+}
+
+/**
+ * Split a listing slug into street / city / state / zip. The ZIP is the strongest
+ * disambiguator a geocoder has, so it must survive parsing — dropping it is what puts a
+ * dot on the wrong block.
+ */
+export function parseRealtorDetailParts(slug) {
   const raw = decodeURIComponent(String(slug || "").split("?")[0]).replace(/\/+$/, "");
   const bits = raw.split("_").filter(Boolean);
-  if (bits.length < 3) return "";
-  const last = bits[bits.length - 1] || "";
-  if (/^M/i.test(last)) bits.pop();
+  if (bits.length < 3) return null;
+  if (/^M/i.test(bits[bits.length - 1] || "")) bits.pop();
   let zip = "";
-  if (/^\d{5}(?:-\d{4})?$/.test(bits[bits.length - 1] || "")) zip = bits.pop();
+  if (/^\d{5}(?:-\d{4})?$/.test(bits[bits.length - 1] || "")) zip = bits.pop().slice(0, 5);
   let state = "";
   if (/^[A-Za-z]{2}$/.test(bits[bits.length - 1] || "")) state = bits.pop().toUpperCase();
-  const city = (bits.pop() || "").replace(/-/g, " ");
-  const street = (bits.join(" ") || "").replace(/-/g, " ");
-  const addr = [street, city, state || "OK", zip].filter(Boolean).join(", ");
-  return /\d/.test(street) ? addr : "";
+  const city = (bits.pop() || "").replace(/-/g, " ").trim();
+  const street = (bits.join(" ") || "").replace(/-/g, " ").trim();
+  if (!/\d/.test(street)) return null;
+  const parts = { house: houseFromStreet(street), street, city, state: state || "OK", zip };
+  return { ...parts, address: joinAddressParts(parts) };
+}
+
+export function parseZillowDetailParts(path) {
+  const raw = decodeURIComponent(String(path || "").split("?")[0]).replace(/\/+$/, "");
+  const segs = raw.split("/").filter(Boolean);
+  const slug = segs.find((p) => /\d/.test(p) && !/_zpid$/i.test(p)) || segs[0] || "";
+  const bits = slug.replace(/_rb$/i, "").split("-").filter(Boolean);
+  if (bits.length < 3) return null;
+  let zip = "";
+  if (/^\d{5}$/.test(bits[bits.length - 1] || "")) zip = bits.pop();
+  let state = "";
+  if (/^[A-Za-z]{2}$/.test(bits[bits.length - 1] || "")) state = bits.pop().toUpperCase();
+  let cut = lastStreetSuffixIndex(bits);
+  // "…-Main-St-APT-4-Norman" — the unit rides with the street, not the city.
+  while (cut > 0 && cut + 1 < bits.length && UNIT_WORD.test(bits[cut + 1] || "")) {
+    cut += /^\d+$/.test(bits[cut + 2] || "") ? 2 : 1;
+  }
+  let street = titleWords(bits);
+  let city = "";
+  if (cut > 0 && cut < bits.length - 1) {
+    street = titleWords(bits.slice(0, cut + 1));
+    city = titleWords(bits.slice(cut + 1));
+  }
+  if (!/\d/.test(street)) return null;
+  const parts = { house: houseFromStreet(street), street, city, state: state || "OK", zip };
+  return { ...parts, address: joinAddressParts(parts) };
+}
+
+export function parseRealtorDetailSlug(slug) {
+  return parseRealtorDetailParts(slug)?.address || "";
 }
 
 export function parseZillowDetailSlug(path) {
-  const raw = decodeURIComponent(String(path || "").split("?")[0]).replace(/\/+$/, "");
-  const parts = raw.split("/").filter(Boolean);
-  const slug = parts.find((p) => /\d/.test(p) && !/_zpid$/i.test(p)) || parts[0] || "";
-  const bits = slug.replace(/_rb$/i, "").split("-").filter(Boolean);
-  if (bits.length < 3) return "";
-  if (/^\d{5}$/.test(bits[bits.length - 1] || "")) bits.pop();
-  if (/^[A-Za-z]{2}$/.test(bits[bits.length - 1] || "")) bits.pop();
-  const street = bits.join(" ");
-  return /\d/.test(street) ? `${street.replace(/-/g, " ")}, OK` : "";
+  return parseZillowDetailParts(path)?.address || "";
+}
+
+/** Split a free-text listing address back into the pieces a structured geocoder wants. */
+export function listingAddressParts(address) {
+  const raw = String(address || "").trim();
+  if (!raw) return null;
+  const bits = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!bits.length) return null;
+  const street = bits[0];
+  if (!/\d/.test(street)) return null;
+  let zip = "";
+  let state = "";
+  let city = "";
+  const tail = [...bits.slice(1)];
+  const last = tail[tail.length - 1] || "";
+  const zipInTail = last.match(/\b(\d{5})(?:-\d{4})?$/);
+  if (zipInTail) {
+    zip = zipInTail[1];
+    const rest = last.replace(/\b\d{5}(?:-\d{4})?$/, "").trim();
+    if (rest) tail[tail.length - 1] = rest;
+    else tail.pop();
+  }
+  const stateAt = tail.findIndex((s) => /^(ok|oklahoma)$/i.test(s));
+  if (stateAt >= 0) {
+    state = "OK";
+    tail.splice(stateAt, 1);
+  }
+  city = tail.join(" ").trim();
+  const parts = { house: houseFromStreet(street), street, city, state: state || "OK", zip };
+  return { ...parts, address: joinAddressParts(parts) };
 }
 
 function pushListing(out, seen, row) {
@@ -432,6 +546,8 @@ function pushListing(out, seen, row) {
     : `${Number(n.lat).toFixed(5)}:${Number(n.lon).toFixed(5)}`;
   if (!key || seen.has(key)) return;
   seen.add(key);
+  // Structured pieces ride along until geocoding; normalizeListing drops them before save.
+  if (row.street) n.parts = { house: row.house || "", street: row.street, city: row.city || "", state: row.state || "OK", zip: row.zip || "" };
   out.push(n);
 }
 
@@ -443,25 +559,38 @@ export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
   const realtor = /https?:\/\/(?:www\.)?realtor\.com\/realestateandhomes-detail\/([^"'?\s]+)/gi;
   let m;
   while ((m = realtor.exec(blob)) && out.length < MAX_LISTINGS) {
-    const address = parseRealtorDetailSlug(m[1]);
-    if (!address) continue;
-    pushListing(out, seen, { address, url: `https://www.realtor.com/realestateandhomes-detail/${m[1]}`, source: "realtor" });
+    const parts = parseRealtorDetailParts(m[1]);
+    if (!parts) continue;
+    pushListing(out, seen, {
+      ...parts,
+      url: `https://www.realtor.com/realestateandhomes-detail/${m[1]}`,
+      source: "realtor",
+    });
   }
   const zillow = /https?:\/\/(?:www\.)?zillow\.com\/homedetails\/([^"'?\s]+)/gi;
   while ((m = zillow.exec(blob)) && out.length < MAX_LISTINGS) {
-    const address = parseZillowDetailSlug(m[1]);
-    if (!address) continue;
-    pushListing(out, seen, { address, url: `https://www.zillow.com/homedetails/${m[1]}`, source: "zillow" });
+    const parts = parseZillowDetailParts(m[1]);
+    if (!parts) continue;
+    pushListing(out, seen, { ...parts, url: `https://www.zillow.com/homedetails/${m[1]}`, source: "zillow" });
   }
   const redfin = /https?:\/\/(?:www\.)?redfin\.com\/OK\/([A-Za-z0-9/_-]+)/gi;
   while ((m = redfin.exec(blob)) && out.length < MAX_LISTINGS) {
     const path = m[1];
-    const street = path.split("/").filter(Boolean)[1] || "";
-    const address = street.replace(/-/g, " ");
-    if (!/\d/.test(address)) continue;
-    pushListing(out, seen, { address: `${address}, OK`, url: `https://www.redfin.com/OK/${path}`, source: "redfin" });
+    const segs = path.split("/").filter(Boolean);
+    const street = (segs[1] || "").replace(/-/g, " ");
+    if (!/\d/.test(street)) continue;
+    pushListing(out, seen, {
+      house: houseFromStreet(street),
+      street,
+      city: (segs[0] || "").replace(/-/g, " "),
+      state: "OK",
+      address: joinAddressParts({ street, city: (segs[0] || "").replace(/-/g, " "), state: "OK" }),
+      url: `https://www.redfin.com/OK/${path}`,
+      source: "redfin",
+    });
   }
 
+  // Coordinates printed by the listing site itself are the house, not a geocoder guess.
   const coordBlocks =
     blob.match(/\{[^{}]{0,240}"(?:latitude|lat)"\s*:\s*-?\d+\.\d+[^{}]{0,240}\}/gi) || [];
   for (const block of coordBlocks) {
@@ -469,7 +598,14 @@ export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
     const lon = Number((block.match(/"(?:longitude|lon|lng)"\s*:\s*(-?\d+\.\d+)/i) || [])[1]);
     const line = (block.match(/"(?:line|streetAddress|full_street_address)"\s*:\s*"([^"]{6,80})"/i) || [])[1];
     if (!validInvestorCoord(lat, lon) || !inOklahoma(lat, lon)) continue;
-    pushListing(out, seen, { lat, lon, address: line || "", source: "embed" });
+    pushListing(out, seen, {
+      lat,
+      lon,
+      address: line || "",
+      source: "embed",
+      precision: "rooftop",
+      geoSource: "listing",
+    });
   }
 
   const addrJson =
@@ -480,11 +616,18 @@ export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
     const nearby = blob.slice(m.index, m.index + 500);
     const lat = Number((nearby.match(/"(?:lat|latitude)"\s*:\s*(-?\d+\.\d+)/i) || [])[1]);
     const lon = Number((nearby.match(/"(?:lon|lng|longitude)"\s*:\s*(-?\d+\.\d+)/i) || [])[1]);
+    const mapped = Number.isFinite(lat) && Number.isFinite(lon);
     pushListing(out, seen, {
       address,
-      lat: Number.isFinite(lat) ? lat : null,
-      lon: Number.isFinite(lon) ? lon : null,
+      house: houseFromStreet(m[1]),
+      street: m[1],
+      city: m[2],
+      state: m[3],
+      lat: mapped ? lat : null,
+      lon: mapped ? lon : null,
       source: "embed",
+      precision: mapped ? "rooftop" : "approx",
+      geoSource: mapped ? "listing" : "",
     });
   }
 
@@ -550,7 +693,8 @@ async function contactsFromOsm(inv) {
       return { feat, dist };
     })
     .filter((row) => row.dist < 250)
-    .sort((a, b) => a.dist - b.dist);
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 3);
   for (const { feat } of ranked) {
     const p = feat?.properties || {};
     if (
@@ -678,10 +822,18 @@ export async function fetchOsmOfficesInBounds(bounds) {
   if (!box) return [];
   let els = [];
   try {
-    const data = await overpassJson(officeOverpassQuery(box.south, box.west, box.north, box.east), 14000);
+    const data = await overpassJson(officeOverpassQuery(box.south, box.west, box.north, box.east), 16000);
     els = (data?.elements || []).filter(isOfficeOsmElement);
   } catch {
     els = [];
+  }
+  if (!els.length) {
+    try {
+      const data = await overpassJson(officeOverpassQueryNarrow(box.south, box.west, box.north, box.east), 12000);
+      els = (data?.elements || []).filter(isOfficeOsmElement);
+    } catch {
+      els = [];
+    }
   }
   if (els.length >= 3) return els;
   try {
@@ -700,7 +852,27 @@ export async function fetchOsmOfficesInBounds(bounds) {
   return els;
 }
 
-export async function enrichInvestorContacts(inv, { deep = false, osmHits = [] } = {}) {
+/**
+ * Every office lookup gets a wall-clock budget. Without one a single unreachable
+ * agency website holds the whole in-view queue and only the first pin ever fills in.
+ */
+export const SHALLOW_LOOKUP_MS = 7000;
+export const DEEP_LOOKUP_MS = 20000;
+
+export function withDeadline(promise, ms, fallback = null) {
+  let timer = 0;
+  return Promise.race([
+    Promise.resolve(promise).catch(() => fallback),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), Math.max(0, Number(ms) || 0));
+    }),
+  ]).then((v) => {
+    clearTimeout(timer);
+    return v;
+  });
+}
+
+export async function enrichInvestorContacts(inv, { deep = false, osmHits = [], budgetMs = 0 } = {}) {
   if (!inv) return null;
   let hit = {
     phone: inv.phone || "",
@@ -708,22 +880,25 @@ export async function enrichInvestorContacts(inv, { deep = false, osmHits = [] }
     website: inv.website || "",
     address: inv.address || "",
   };
+  const deadline = Date.now() + (Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS));
+  const left = () => Math.max(0, deadline - Date.now());
   const osmEl = pickOsmOfficeForInvestor(inv, osmHits);
   if (osmEl) hit = mergeContacts(hit, tagsToContacts(osmEl.tags || {}));
-  if (!hit.phone) {
-    const osm = await contactsFromOsm(inv).catch(() => null);
-    if (osm) hit = mergeContacts(hit, osm);
-  }
   if (!hit.phone || !hit.email) {
-    const brand = await contactsFromBrandLocator(inv).catch(() => null);
-    if (brand) hit = mergeContacts(hit, brand);
+    // OSM and the brand locator never depend on each other — ask both at once.
+    const jobs = [];
+    if (!hit.phone) jobs.push(withDeadline(contactsFromOsm(inv), Math.min(left(), deep ? 9000 : 5000)));
+    jobs.push(withDeadline(contactsFromBrandLocator(inv), Math.min(left(), deep ? 11000 : 5500)));
+    for (const found of await Promise.all(jobs)) {
+      if (found) hit = mergeContacts(hit, found);
+    }
   }
-  if (hit.website && (!hit.phone || !hit.email)) {
-    const site = await contactsFromWebsite(hit.website).catch(() => null);
+  if (hit.website && (!hit.phone || !hit.email) && left() > 1200) {
+    const site = await withDeadline(contactsFromWebsite(hit.website), Math.min(left(), 8000));
     if (site) hit = mergeContacts(hit, { ...site, email: cleanBizEmail(site.email, hit.website) });
   }
-  if (deep && !hit.phone) {
-    const dir = await contactsFromDirectories(inv).catch(() => null);
+  if (deep && !hit.phone && left() > 2000) {
+    const dir = await withDeadline(contactsFromDirectories(inv), left());
     if (dir) {
       hit = mergeContacts(hit, {
         ...dir,
@@ -753,24 +928,240 @@ function listingUrlsForOffice(inv) {
   ];
 }
 
-async function geocodeListing(address, near) {
-  const q = String(address || "").trim();
-  if (q.length < 8) return null;
+/**
+ * How tightly a geocoder hit is pinned. A road centreline ("street") is exactly the result
+ * that drops a listing dot in the middle of the road, so it is graded and then thrown away.
+ */
+/** Photon calls a named cafe on the block a "house" — those are POIs, not the address we asked for. */
+const PHOTON_POI_KEYS = new Set([
+  "amenity",
+  "leisure",
+  "tourism",
+  "shop",
+  "office",
+  "landuse",
+  "craft",
+  "healthcare",
+  "historic",
+  "man_made",
+  "natural",
+]);
+
+export function photonHitPrecision(props = {}) {
+  const type = String(props.type || "").toLowerCase();
+  const key = String(props.osm_key || "").toLowerCase();
+  if (String(props.housenumber || "").trim()) return "rooftop";
+  if (type === "street" || key === "highway" || key === "railway" || key === "waterway") return "street";
+  if (
+    key === "boundary" ||
+    ["city", "town", "village", "locality", "district", "county", "state", "region", "postcode", "other"].includes(type)
+  ) {
+    return "area";
+  }
+  if (type === "house") return PHOTON_POI_KEYS.has(key) ? "approx" : "rooftop";
+  if (key === "building") return "parcel";
+  return "approx";
+}
+
+export function nominatimHitPrecision(hit = {}) {
+  const addr = hit.address || {};
+  const cls = String(hit.class || hit.category || "").toLowerCase();
+  const addressType = String(hit.addresstype || "").toLowerCase();
+  if (String(addr.house_number || "").trim() || addressType === "house" || addressType === "building") return "rooftop";
+  if (cls === "building" || cls === "place") return "parcel";
+  if (cls === "highway" || addressType === "road") return "street";
+  if (cls === "boundary" || ["city", "town", "village", "suburb", "postcode", "county", "state"].includes(addressType)) {
+    return "area";
+  }
+  return "approx";
+}
+
+function houseNumbersMatch(want, got) {
+  const a = String(want || "").replace(/^0+/, "").toLowerCase();
+  if (!a) return false;
+  const b = String(got || "").toLowerCase();
+  if (!b) return false;
+  return b
+    .split(/[-,;/\s]+/)
+    .map((s) => s.replace(/^0+/, "").trim())
+    .includes(a);
+}
+
+function streetKey(s) {
+  return nameKey(s).replace(/\b(north|south|east|west|n|s|e|w|ne|nw|se|sw)\b/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** Grade one geocoder candidate against the address we asked for. Negative = unusable. */
+export function scoreListingGeoHit(cand, want = {}, near = null) {
+  if (!cand || !validInvestorCoord(cand.lat, cand.lon) || !inOklahoma(cand.lat, cand.lon)) return -1;
+  if (cand.precision === "street" || cand.precision === "area") return -1;
+  let s = cand.precision === "rooftop" ? 6 : cand.precision === "parcel" ? 3 : 1;
+  if (want.house) {
+    if (houseNumbersMatch(want.house, cand.housenumber)) s += 5;
+    else if (cand.housenumber) return -1;
+    else if (cand.precision === "rooftop") s -= 2;
+  }
+  if (want.zip && cand.postcode) s += String(cand.postcode).startsWith(want.zip) ? 3 : -4;
+  if (want.city && cand.city) s += nameKey(cand.city) === nameKey(want.city) ? 2 : -2;
+  if (want.street && cand.street) s += streetKey(cand.street) === streetKey(want.street) ? 2 : -1;
+  if (near && validInvestorCoord(near.lat, near.lon)) {
+    const km = metersBetween({ lat: Number(near.lat), lon: Number(near.lon) }, cand) / 1000;
+    if (km > MAX_LISTING_KM) return -1;
+    if (km < 12) s += 1;
+  }
+  return s;
+}
+
+function pickGeoHit(cands, want, near) {
+  let best = null;
+  let score = 2;
+  for (const cand of cands || []) {
+    const s = scoreListingGeoHit(cand, want, near);
+    if (s > score) {
+      score = s;
+      best = cand;
+    }
+  }
+  return best;
+}
+
+async function photonGeoCandidates(parts, near) {
   const u = new URL(PHOTON_URL);
-  u.searchParams.set("q", q);
-  u.searchParams.set("limit", "1");
+  u.searchParams.set("q", parts.address);
+  u.searchParams.set("limit", "8");
+  u.searchParams.set("lang", "en");
   if (Number.isFinite(Number(near?.lat))) u.searchParams.set("lat", String(near.lat));
   if (Number.isFinite(Number(near?.lon))) u.searchParams.set("lon", String(near.lon));
   try {
     const { body } = await httpGet(u.toString(), 8000, { Accept: "application/json" });
-    const feat = JSON.parse(body || "{}")?.features?.[0];
-    const lon = Number(feat?.geometry?.coordinates?.[0]);
-    const lat = Number(feat?.geometry?.coordinates?.[1]);
-    if (!validInvestorCoord(lat, lon) || !inOklahoma(lat, lon)) return null;
-    return { lat, lon };
+    return (JSON.parse(body || "{}")?.features || []).map((feat) => {
+      const p = feat?.properties || {};
+      return {
+        lat: Number(feat?.geometry?.coordinates?.[1]),
+        lon: Number(feat?.geometry?.coordinates?.[0]),
+        precision: photonHitPrecision(p),
+        housenumber: p.housenumber || "",
+        street: p.street || p.name || "",
+        city: p.city || p.district || "",
+        postcode: p.postcode || "",
+        geoSource: "photon",
+      };
+    });
   } catch {
-    return null;
+    return [];
   }
+}
+
+/**
+ * The Census geocoder interpolates along the real address range of the real block, so it
+ * lands on the house even when OSM has never heard of it. It is the only source here with
+ * near-complete US street coverage, which is why it runs before Nominatim.
+ */
+export function parseCensusMatch(match = {}) {
+  const c = match.coordinates || {};
+  const comp = match.addressComponents || {};
+  const matched = String(match.matchedAddress || "");
+  const house = (matched.match(/^\s*(\d+[A-Za-z]?)\b/) || [])[1] || "";
+  const street = [comp.preDirection, comp.streetName, comp.suffixType, comp.suffixDirection]
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return {
+    lat: Number(c.y),
+    lon: Number(c.x),
+    // Interpolated onto the correct side of the correct block — good enough to point at a roof.
+    precision: "parcel",
+    housenumber: house,
+    street,
+    city: comp.city || "",
+    postcode: String(comp.zip || "").slice(0, 5),
+    geoSource: "census",
+  };
+}
+
+async function censusGeoCandidates(parts) {
+  if (!parts.street) return [];
+  const u = new URL(CENSUS_GEOCODER_URL);
+  u.searchParams.set("address", parts.address);
+  u.searchParams.set("benchmark", "Public_AR_Current");
+  u.searchParams.set("format", "json");
+  try {
+    const { body } = await httpGet(u.toString(), 9000, { Accept: "application/json" });
+    const matches = JSON.parse(body || "{}")?.result?.addressMatches || [];
+    return matches.slice(0, 4).map(parseCensusMatch);
+  } catch {
+    return [];
+  }
+}
+
+let nominatimGate = Promise.resolve();
+/** Nominatim asks for one request per second — queue them instead of getting rate-limited. */
+function nominatimSlot() {
+  const wait = nominatimGate.then(() => new Promise((r) => setTimeout(r, 1100)));
+  nominatimGate = wait.catch(() => {});
+  return wait;
+}
+
+async function nominatimGeoCandidates(parts) {
+  if (!parts.street) return [];
+  const u = new URL(NOMINATIM_URL);
+  u.searchParams.set("format", "jsonv2");
+  u.searchParams.set("addressdetails", "1");
+  u.searchParams.set("limit", "5");
+  u.searchParams.set("countrycodes", "us");
+  u.searchParams.set("state", "Oklahoma");
+  u.searchParams.set("street", parts.street);
+  if (parts.city) u.searchParams.set("city", parts.city);
+  if (parts.zip) u.searchParams.set("postalcode", parts.zip);
+  try {
+    await nominatimSlot();
+    const { body } = await httpGet(u.toString(), 9000, {
+      Accept: "application/json",
+      "User-Agent": "GroundControl/1.0 (joshuagwatts)",
+    });
+    const rows = JSON.parse(body || "[]");
+    return (Array.isArray(rows) ? rows : []).map((hit) => {
+      const addr = hit.address || {};
+      return {
+        lat: Number(hit.lat),
+        lon: Number(hit.lon),
+        precision: nominatimHitPrecision(hit),
+        housenumber: addr.house_number || "",
+        street: addr.road || "",
+        city: addr.city || addr.town || addr.village || addr.hamlet || "",
+        postcode: addr.postcode || "",
+        geoSource: "nominatim",
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function geoResult(hit) {
+  return hit ? { lat: hit.lat, lon: hit.lon, precision: hit.precision, geoSource: hit.geoSource } : null;
+}
+
+/**
+ * Resolve a listing address to the house. Returns null rather than a point on the road —
+ * a dot on the centreline reads as a real address and sends a crew to the wrong building.
+ */
+export async function geocodeListing(address, near) {
+  const parts = typeof address === "string" ? listingAddressParts(address) : address;
+  if (!parts?.address || parts.address.length < 8) return null;
+  const pool = [];
+  const photon = await photonGeoCandidates(parts, near);
+  pool.push(...photon);
+  const confirmed = photon.find(
+    (c) => c.precision === "rooftop" && houseNumbersMatch(parts.house, c.housenumber) && scoreListingGeoHit(c, parts, near) > 0,
+  );
+  if (confirmed) return geoResult(confirmed);
+  const census = await censusGeoCandidates(parts);
+  pool.push(...census);
+  const censusHit = pickGeoHit(census, parts, near);
+  if (censusHit) return geoResult(censusHit);
+  pool.push(...(await nominatimGeoCandidates(parts)));
+  return geoResult(pickGeoHit(pool, parts, near));
 }
 
 function metersBetween(a, b) {
@@ -817,45 +1208,61 @@ export async function fetchInvestorListings(inv) {
   }
   const rows = await listingsFromPages([...new Set(urls)], inv);
   const office = { lat: Number(inv.lat), lon: Number(inv.lon) };
-  const located = [];
+  const out = [];
   let geoLeft = MAX_LISTING_GEOCODE;
   for (const row of rows.slice(0, MAX_FETCH_LISTINGS)) {
-    let next = { ...row };
-    if (!validInvestorCoord(next.lat, next.lon) && next.address && geoLeft > 0) {
-      geoLeft -= 1;
-      const geo = await geocodeListing(next.address, office);
-      if (geo) {
-        next.lat = geo.lat;
-        next.lon = geo.lon;
+    const next = { ...row };
+    if (!validInvestorCoord(next.lat, next.lon) && geoLeft > 0) {
+      const parts = next.parts || listingAddressParts(next.address);
+      if (parts) {
+        geoLeft -= 1;
+        const geo = await geocodeListing(parts, office);
+        if (geo) {
+          next.lat = geo.lat;
+          next.lon = geo.lon;
+          next.precision = geo.precision;
+          next.geoSource = geo.geoSource;
+        }
       }
     }
-    if (!validInvestorCoord(next.lat, next.lon) || !inOklahoma(next.lat, next.lon)) continue;
+    // An address we could not pin to a roof still belongs in the agent's list — just not as a dot.
+    if (!validInvestorCoord(next.lat, next.lon) || !inOklahoma(next.lat, next.lon)) {
+      if (next.address) out.push(normalizeListing({ ...next, lat: null, lon: null, precision: "street" }));
+      continue;
+    }
     if (!listingNearOffice(office, next)) continue;
-    located.push(normalizeListing(next));
+    out.push(normalizeListing(next));
   }
-  return located.slice(0, MAX_FETCH_LISTINGS);
+  return out.slice(0, MAX_FETCH_LISTINGS);
+}
+
+function allListings(inv) {
+  return Array.isArray(inv?.listings) ? inv.listings : [];
 }
 
 /** Fill missing phone/email and, for a selected star, the agent's actual sale homes. */
-export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [] } = {}) {
+export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0 } = {}) {
   if (!inv) return null;
-  const listingsP =
-    String(inv.kind) === "realestate" && deep && investorListings(inv).length < 2
-      ? fetchInvestorListings(inv).catch(() => [])
-      : Promise.resolve(investorListings(inv));
+  const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
+  const wantListings = String(inv.kind) === "realestate" && deep && allListings(inv).length < 2;
+  const listingsP = wantListings
+    ? withDeadline(fetchInvestorListings(inv), budget + 8000, [])
+    : Promise.resolve(allListings(inv));
   const [contacts, found] = await Promise.all([
-    enrichInvestorContacts(inv, { deep, osmHits }).catch(() => null),
+    withDeadline(enrichInvestorContacts(inv, { deep, osmHits, budgetMs: budget }), budget + 1500),
     listingsP,
   ]);
-  let listings = investorListings(inv);
+  let listings = allListings(inv);
   if (Array.isArray(found) && found.length) listings = found;
   const extra = { ...(contacts || {}), listings };
   const next = mergeInvestorPublic(inv, extra);
   const betterContact = (next.phone && next.phone !== inv.phone) || (next.email && next.email !== inv.email);
-  const betterList = investorListings(next).length > investorListings(inv).length;
+  const betterList =
+    allListings(next).length > allListings(inv).length ||
+    investorListings(next).length > investorListings(inv).length;
   if (!betterContact && !betterList && !(next.website && !inv.website)) {
     if (investorHasContact(inv) && String(inv.kind) !== "realestate") return null;
-    if (String(inv.kind) === "realestate" && investorListings(inv).length) return null;
+    if (String(inv.kind) === "realestate" && allListings(inv).length) return null;
   }
   return next;
 }

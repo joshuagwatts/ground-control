@@ -3318,6 +3318,29 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
   min-width: 140px;
   font-size: 12px;
 }
+/* How well the dot is pinned — green when it is the house, amber when it is only the block. */
+.hs-inv-precision {
+  font-size: 11px;
+  line-height: 1.3;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+.hs-inv-precision::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.hs-inv-precision.exact { color: #9ae6b4; }
+.hs-inv-precision.exact::before { background: #34d399; }
+.hs-inv-precision.loose { color: #fcd34d; }
+.hs-inv-precision.loose::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px #fbbf24;
+}
+.hs-inv-verify { opacity: 0.86; }
 .hs-inv-pop-actions {
   display: flex;
   flex-wrap: wrap;

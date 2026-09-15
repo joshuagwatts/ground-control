@@ -50,7 +50,9 @@ import {
   investorContactLine,
   investorHasContact,
   investorListingBounds,
-  investorListings,
+  listingIsExact,
+  mappedInvestorListings,
+  unmappedInvestorListings,
   isPartner,
   promoteButtonLabel,
   relationshipLabel,
@@ -9263,16 +9265,18 @@ function investorPopupHtml(inv) {
   const email = String(inv.email || "").trim();
   const addr = String(inv.address || "").trim();
   const note = String(inv.note || "").trim();
-  const homes = String(inv.kind) === "realestate" ? investorListings(inv) : [];
+  const isRe = String(inv.kind) === "realestate";
+  const homes = isRe ? mappedInvestorListings(inv) : [];
+  const unmapped = isRe ? unmappedInvestorListings(inv).length : 0;
   const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
-  const listingLine =
-    String(inv.kind) === "realestate"
-      ? homes.length
-        ? `${homes.length} active listing${homes.length === 1 ? "" : "s"}`
-        : looking
-          ? "Looking up this office's listings…"
-          : ""
-      : "";
+  let listingLine = "";
+  if (isRe) {
+    const bits = [];
+    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+    // Addresses we refused to place are still worth showing — silently dropping them looks like a bug.
+    if (unmapped) bits.push(`${unmapped} we could not pin to a house`);
+    listingLine = bits.length ? bits.join(" · ") : looking ? "Looking up this office's listings…" : "";
+  }
   const missContact =
     !investorHasContact(inv) && looking
       ? `<span class="hs-inv-pop-hunt">${escHousePop(String(inv.kind) === "insurance" ? "Looking up this agency's phone…" : "Looking up office phone…")}</span>`
@@ -9297,7 +9301,7 @@ function investorPopupHtml(inv) {
 }
 
 function bindInvestorMarker(marker, inv) {
-  const homes = String(inv?.kind) === "realestate" ? investorListings(inv) : [];
+  const homes = String(inv?.kind) === "realestate" ? mappedInvestorListings(inv) : [];
   marker.bindPopup(investorPopupHtml(inv), {
     className: "hs-zone-popup hs-inv-popup",
     closeButton: true,
@@ -9343,7 +9347,7 @@ function listingInMapView(home, pad = 0.012) {
 }
 
 function listingsToDraw(inv) {
-  const homes = investorListings(inv);
+  const homes = mappedInvestorListings(inv);
   const inView = homes.filter((h) => listingInMapView(h));
   if (inView.length) return inView.slice(0, LISTING_DRAW_MAX);
   const c = map?.getCenter?.();
@@ -9355,19 +9359,46 @@ function listingsToDraw(inv) {
     .slice(0, 8);
 }
 
+const GEO_SOURCE_LABEL = {
+  listing: "coordinates from the listing",
+  census: "US Census address match",
+  nominatim: "OpenStreetMap address",
+  photon: "OpenStreetMap address",
+};
+
+function listingProvenance(home) {
+  const exact = listingIsExact(home);
+  const via = GEO_SOURCE_LABEL[String(home?.geoSource || "")] || "";
+  const how = exact ? "Verified to the house" : "Approximate — verify before you knock";
+  return via ? `${how} · ${via}` : how;
+}
+
+/** Cross-check link so a wrong scraped deep link can always be checked against the address. */
+function zillowSearchUrl(address) {
+  const q = String(address || "").trim();
+  if (!q) return "";
+  return `https://www.zillow.com/homes/${encodeURIComponent(q.replace(/,\s*/g, " ").replace(/\s+/g, "-"))}_rb/`;
+}
+
 function listingPopupHtml(home, inv) {
   const addr = String(home?.address || "Listed home").trim();
   const price = String(home?.price || "").trim();
   const url = String(home?.url || "").trim();
   const who = investorDisplayName(inv);
+  const check = zillowSearchUrl(addr);
   const link = url
     ? `<a class="hs-list" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
     : "";
+  const verify =
+    check && check !== url
+      ? `<a class="hs-list hs-inv-verify" href="${escHousePop(check)}" target="_blank" rel="noopener">Check this address on Zillow</a>`
+      : "";
   return `<div class="hs-inv-listing-pop">
     <strong>${escHousePop(addr)}</strong>
     ${price ? `<span>${escHousePop(price)}</span>` : ""}
     <span class="hs-inv-pop-who">${escHousePop(who)}</span>
-    ${link}
+    <span class="hs-inv-precision ${listingIsExact(home) ? "exact" : "loose"}">${escHousePop(listingProvenance(home))}</span>
+    ${link}${verify}
   </div>`;
 }
 
@@ -9376,21 +9407,24 @@ function paintInvestorRegions(inv) {
   investorRegionLayer.clearLayers();
   if (!inv || String(inv.kind) !== "realestate") return;
   for (const home of listingsToDraw(inv)) {
-    const tip = home.address || "Listed home";
+    const exact = listingIsExact(home);
+    const tip = `${home.address || "Listed home"}${exact ? "" : " (approximate)"}`;
     window.L.circleMarker([home.lat, home.lon], {
       pane: "investorListings",
-      radius: 6,
+      radius: exact ? 6 : 7,
       color: "#0b0b0d",
       weight: 1,
+      // A dot we could not verify to the house reads as a hollow ring, never a solid pin.
       fillColor: "#fbbf24",
-      fillOpacity: 0.92,
+      fillOpacity: exact ? 0.92 : 0.16,
+      dashArray: exact ? null : "3 3",
       keyboard: false,
       title: tip,
     })
       .bindPopup(listingPopupHtml(home, inv), {
         className: "hs-zone-popup hs-inv-popup",
         closeButton: true,
-        maxWidth: 240,
+        maxWidth: 260,
         offset: [0, -6],
       })
       .addTo(investorRegionLayer);
@@ -9419,7 +9453,7 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
 
 function fitInvestorRegions(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
-  const homes = investorListings(inv);
+  const homes = mappedInvestorListings(inv);
   if (!homes.length) return false;
   if (homes.some((h) => listingInMapView(h))) return false;
   const box = investorListingBounds(inv);
@@ -9456,12 +9490,25 @@ function selectInvestorOnMap(inv, marker) {
   paintInvestorRegions(inv);
   const zoomed = fitInvestorRegions(inv);
   openInvestorPopupSoon(marker, zoomed ? 320 : 40);
-  const needListings = String(inv?.kind) === "realestate" && !investorListings(inv).length;
+  const needListings = String(inv?.kind) === "realestate" && !(inv?.listings || []).length;
   const needContact = !investorHasContact(inv);
   if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
 }
 
 let lastInvestorPaintSig = "";
+/** True while a finger is dragging the map shell — overlay rebuilds wait for the release. */
+let wxGesturePaintHold = false;
+let investorPaintPending = false;
+
+export function setWxGesturePaintHold(on) {
+  const next = Boolean(on);
+  if (next === wxGesturePaintHold) return;
+  wxGesturePaintHold = next;
+  if (!next && investorPaintPending) {
+    investorPaintPending = false;
+    paintInvestorLayer();
+  }
+}
 
 function investorViewBucket() {
   const b = map?.getBounds?.();
@@ -9471,6 +9518,11 @@ function investorViewBucket() {
 
 function paintInvestorLayer({ force = false } = {}) {
   if (!map || !window.L) return;
+  // Rebuilding heart/star markers mid-drag is the kind of main-thread work a swipe feels.
+  if (wxGesturePaintHold && !force) {
+    investorPaintPending = true;
+    return;
+  }
   ensureFieldPanes();
   if (!investorLayer) investorLayer = window.L.layerGroup().addTo(map);
   if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
@@ -9531,7 +9583,7 @@ export function focusInvestorPin(id, { popup = true } = {}) {
   const zoomed = inv ? fitInvestorRegions(inv) : false;
   if (popup) openInvestorPopupSoon(marker, zoomed ? 320 : 40);
   if (inv) {
-    const needListings = String(inv.kind) === "realestate" && !investorListings(inv).length;
+    const needListings = String(inv.kind) === "realestate" && !(inv.listings || []).length;
     const needContact = !investorHasContact(inv);
     if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
   }
@@ -10375,6 +10427,12 @@ function bindAddressSwipeToStormSheet(el) {
   let pullDy = 0;
   let coastId = 0;
   let baseShellH = 0;
+  let pullFrame = 0;
+
+  const cancelPullFrame = () => {
+    if (pullFrame) cancelAnimationFrame(pullFrame);
+    pullFrame = 0;
+  };
 
   const viewEl = () => document.getElementById("view");
   const shellEl = () => document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
@@ -10407,6 +10465,7 @@ function bindAddressSwipeToStormSheet(el) {
   const clearPullVisual = ({ animate = true } = {}) => {
     const panel = el;
     const shell = shellEl();
+    cancelPullFrame();
     if (animate) {
       panel.style.transition = "";
       if (shell) shell.style.transition = "";
@@ -10422,21 +10481,37 @@ function bindAddressSwipeToStormSheet(el) {
       shell.style.height = "";
       shell.style.minHeight = "";
     }
+    setWxGesturePaintHold(false);
   };
 
-  const applyPullVisual = (dy) => {
+  /** One-time setup so the per-frame path only ever writes height / transform / opacity. */
+  const beginPullVisual = () => {
     const shell = shellEl();
-    const p = Math.min(1, dy / 110);
     el.classList.add("hs-pull-expand");
     shell?.classList.add("hs-pull-expand");
     el.style.transition = "none";
-    if (shell) shell.style.transition = "none";
+    if (shell) {
+      shell.style.transition = "none";
+      // Pinned once so the per-frame write is a single property, not two.
+      shell.style.minHeight = "0px";
+    }
+    setWxGesturePaintHold(true);
+  };
+
+  const writePullVisual = () => {
+    pullFrame = 0;
+    const shell = shellEl();
+    const dy = pullDy;
+    const p = Math.min(1, dy / 110);
     el.style.transform = `translate3d(0, ${Math.round(dy * 0.62)}px, 0)`;
     el.style.opacity = String(Math.max(0.2, 1 - p * 0.75));
-    if (shell && baseShellH > 0) {
-      shell.style.height = `${Math.round(baseShellH + dy * 0.92)}px`;
-      shell.style.minHeight = `${Math.round(baseShellH + dy * 0.92)}px`;
-    }
+    if (shell && baseShellH > 0) shell.style.height = `${Math.round(baseShellH + dy * 0.92)}px`;
+  };
+
+  // touchmove can fire faster than the compositor paints — collapse a burst into one write.
+  const applyPullVisual = () => {
+    if (pullFrame) return;
+    pullFrame = requestAnimationFrame(writePullVisual);
   };
 
   const openFeed = () => {
@@ -10500,6 +10575,7 @@ function bindAddressSwipeToStormSheet(el) {
       }
       if (down > 10 && down > up) {
         pulling = true;
+        beginPullVisual();
         try {
           document.activeElement?.blur?.();
         } catch {
@@ -10520,7 +10596,7 @@ function bindAddressSwipeToStormSheet(el) {
       if (e.cancelable) e.preventDefault();
       e.stopPropagation();
       pullDy = Math.max(0, p.clientY - startY);
-      applyPullVisual(pullDy);
+      applyPullVisual();
       return;
     }
 
@@ -10953,8 +11029,15 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
   let touchPullDy = 0;
   let touchGestureDone = false;
   let barBaseH = 0;
+  let barPullFrame = 0;
+  let barPullTarget = 0;
+  const cancelBarFrame = () => {
+    if (barPullFrame) cancelAnimationFrame(barPullFrame);
+    barPullFrame = 0;
+  };
   const clearBarPull = ({ animate = true } = {}) => {
     const panel = document.getElementById("hs-bottom-panel");
+    cancelBarFrame();
     if (animate) {
       shell.style.transition = "";
       if (panel) panel.style.transition = "";
@@ -10970,22 +11053,32 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
       panel.style.transform = "";
       panel.style.opacity = "";
     }
+    setWxGesturePaintHold(false);
   };
-  const applyBarPull = (dy) => {
+  const beginBarPull = () => {
     const panel = document.getElementById("hs-bottom-panel");
-    const p = Math.min(1, dy / 110);
     shell.classList.add("hs-pull-expand");
     panel?.classList.add("hs-pull-expand");
     shell.style.transition = "none";
+    shell.style.minHeight = "0px";
     if (panel) panel.style.transition = "none";
-    if (barBaseH > 0) {
-      shell.style.height = `${Math.round(barBaseH + dy * 0.92)}px`;
-      shell.style.minHeight = `${Math.round(barBaseH + dy * 0.92)}px`;
-    }
+    setWxGesturePaintHold(true);
+  };
+  const writeBarPull = () => {
+    barPullFrame = 0;
+    const panel = document.getElementById("hs-bottom-panel");
+    const dy = barPullTarget;
+    const p = Math.min(1, dy / 110);
+    if (barBaseH > 0) shell.style.height = `${Math.round(barBaseH + dy * 0.92)}px`;
     if (panel && !isExpanded()) {
       panel.style.transform = `translate3d(0, ${Math.round(dy * 0.55)}px, 0)`;
       panel.style.opacity = String(Math.max(0.2, 1 - p * 0.7));
     }
+  };
+  const applyBarPull = (dy) => {
+    barPullTarget = dy;
+    if (barPullFrame) return;
+    barPullFrame = requestAnimationFrame(writeBarPull);
   };
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) return;
@@ -11007,6 +11100,7 @@ export function bindWxMapScrollExpand(view, shell, sheet, tabs) {
     if (!touchPulling) {
       if (down < 12) return;
       touchPulling = true;
+      beginBarPull();
     }
     e.preventDefault();
     touchPullDy = Math.max(0, down);

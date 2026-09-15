@@ -418,6 +418,7 @@ export function needsBrowserCorsProxy(url) {
       h.endsWith("iowa.edu") ||
       h.includes("overpass") ||
       h.endsWith("openstreetmap.org") ||
+      h.endsWith("census.gov") ||
       h.endsWith("zillow.com") ||
       h.endsWith("apartments.com") ||
       h.endsWith("rent.com") ||

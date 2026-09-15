@@ -96,7 +96,8 @@ import {
   fetchPhotonInvestorsNear,
   investorHasContact,
   investorInBounds,
-  investorListings,
+  mappedInvestorListings,
+  unmappedInvestorListings,
 } from "./investors.js";
 import {
   applyOsmOfficesToInvestors,
@@ -1205,13 +1206,34 @@ function hiddenInvestorIds() {
 }
 
 let liveListedInvestors = [];
+/**
+ * Merging + normalising the whole office pool costs real main-thread time and it runs on
+ * every repaint. Cache it and let writers invalidate, so a map drag is not re-normalising
+ * hundreds of records per frame.
+ */
+let investorPoolCache = null;
+let fieldInvestorCache = null;
+
+function invalidateInvestorCache() {
+  investorPoolCache = null;
+  fieldInvestorCache = null;
+}
 
 function listedInvestorPool() {
-  return mergeInvestorListings([OK_INVESTOR_SEED, liveListedInvestors]);
+  if (!investorPoolCache) investorPoolCache = mergeInvestorListings([OK_INVESTOR_SEED, liveListedInvestors]);
+  return investorPoolCache;
+}
+
+function setLiveListedInvestors(list) {
+  liveListedInvestors = list;
+  invalidateInvestorCache();
 }
 
 function fieldInvestors() {
-  return mergeListedAndSaved(listedInvestorPool(), savedInvestors(), hiddenInvestorIds());
+  if (!fieldInvestorCache) {
+    fieldInvestorCache = mergeListedAndSaved(listedInvestorPool(), savedInvestors(), hiddenInvestorIds());
+  }
+  return fieldInvestorCache;
 }
 
 function investorHeartsOn() {
@@ -1270,17 +1292,25 @@ async function huntPhotonInvestors(lat, lon) {
   const wantRe = investorStarsOn();
   if (!wantIns && !wantRe) return;
   const extra = await fetchPhotonInvestorsNear(lat, lon, { insurance: wantIns, realestate: wantRe }).catch(() => []);
-  if (extra.length) liveListedInvestors = mergeInvestorListings([listedInvestorPool(), extra]);
+  if (extra.length) setLiveListedInvestors(mergeInvestorListings([listedInvestorPool(), extra]));
   paintInvestorMap();
   paintFieldSheet();
   scheduleInViewOfficePreload();
 }
 
 let officeViewTimer = 0;
-let officePreloadGen = 0;
+let officeSweepGen = 0;
 let lastOsmOfficeEls = [];
 const officeContactTried = new Set();
 const investorPublicBusy = new Set();
+/** Offices waiting on a public-contact lookup, newest frame first. */
+const officeLookupQueue = [];
+const officeLookupQueued = new Set();
+let officeLookupWorkers = 0;
+
+/** Lookups that run at once. One-at-a-time is why only the first pin ever filled in. */
+const OFFICE_LOOKUP_WORKERS = 4;
+const OFFICE_LOOKUP_PER_SWEEP = 24;
 
 function scheduleInViewOfficePreload() {
   if (!investorOfficesWanted()) return;
@@ -1295,39 +1325,101 @@ function inViewOffices(bounds = mapFrameBounds()) {
   return shownFieldInvestors().filter((inv) => investorInBounds(inv, bounds));
 }
 
+/** "4 on the map · 2 address-only" — the sheet should never imply a dot we refused to draw. */
+function investorListingSummary(inv) {
+  const mapped = mappedInvestorListings(inv).length;
+  const unmapped = unmappedInvestorListings(inv).length;
+  if (!mapped && !unmapped) return "";
+  const bits = [];
+  if (mapped) bits.push(`${mapped} on the map`);
+  if (unmapped) bits.push(`${unmapped} address-only`);
+  return `<em>${esc(bits.join(" · "))}</em>`;
+}
+
+function officeLookupStatus() {
+  const view = inViewOffices();
+  if (!view.length) return;
+  const withPhone = view.filter((inv) => investorHasContact(inv)).length;
+  const pending = officeLookupQueue.length + officeLookupWorkers;
+  const tail = pending ? ` · looking up ${pending} more` : "";
+  setStatus(`${withPhone} of ${view.length} offices in view have a public phone${tail}`);
+}
+
+function queueOfficeLookup(inv) {
+  const id = String(inv?.id || "");
+  if (!id || officeLookupQueued.has(id) || officeContactTried.has(id) || investorPublicBusy.has(id)) return;
+  officeLookupQueued.add(id);
+  officeLookupQueue.push(inv);
+}
+
+/**
+ * Drain the lookup queue with a few workers in parallel. Each office is skipped if it has
+ * left the frame by the time its turn comes, but a map nudge no longer cancels the sweep —
+ * that cancellation is why a frame full of offices only ever resolved its first pin.
+ */
+function runOfficeLookups() {
+  while (officeLookupWorkers < OFFICE_LOOKUP_WORKERS && officeLookupQueue.length) {
+    officeLookupWorkers += 1;
+    void (async () => {
+      try {
+        while (officeLookupQueue.length) {
+          if (!investorOfficesWanted()) break;
+          const inv = officeLookupQueue.shift();
+          officeLookupQueued.delete(String(inv?.id || ""));
+          const frame = mapFrameBounds();
+          if (frame && !investorInBounds(inv, frame, 0.02)) continue;
+          await enrichInvestorPublic(inv, { deep: false });
+        }
+      } finally {
+        officeLookupWorkers -= 1;
+        if (!officeLookupWorkers) officeLookupStatus();
+      }
+    })();
+  }
+}
+
 async function preloadInViewOffices() {
   if (!investorOfficesWanted()) return;
   const bounds = mapFrameBounds();
   if (!bounds) return;
-  const gen = ++officePreloadGen;
+  const gen = ++officeSweepGen;
   const els = await fetchOsmOfficesInBounds(bounds).catch(() => []);
-  if (gen !== officePreloadGen) return;
+  if (gen !== officeSweepGen) return;
   lastOsmOfficeEls = els;
   const extra = listedInvestorsFromOsmElements(els);
-  if (extra.length) liveListedInvestors = mergeInvestorListings([listedInvestorPool(), extra]);
-  liveListedInvestors = applyOsmOfficesToInvestors(liveListedInvestors, els);
+  if (extra.length) setLiveListedInvestors(mergeInvestorListings([listedInvestorPool(), extra]));
+  setLiveListedInvestors(applyOsmOfficesToInvestors(liveListedInvestors, els));
   paintInvestorMap();
   paintFieldSheet();
   const view = inViewOffices(bounds);
-  const withPhone = view.filter((inv) => investorHasContact(inv)).length;
-  if (view.length) setStatus(`${withPhone} of ${view.length} offices in view have a public phone`);
-  const missing = view.filter(
-    (inv) => !investorHasContact(inv) && !officeContactTried.has(inv.id) && !investorPublicBusy.has(inv.id),
-  );
-  for (const inv of missing.slice(0, 8)) {
-    if (gen !== officePreloadGen) return;
-    const now = mapFrameBounds() || bounds;
-    if (!investorInBounds(inv, now)) continue;
-    await enrichInvestorPublic(inv, { deep: false });
-  }
+  const missing = view.filter((inv) => !investorHasContact(inv));
+  for (const inv of missing.slice(0, OFFICE_LOOKUP_PER_SWEEP)) queueOfficeLookup(inv);
+  officeLookupStatus();
+  runOfficeLookups();
 }
 
+let investorPaintFrame = 0;
+let fieldSheetTimer = 0;
+
+function paintFieldSheetSoon(ms = 220) {
+  if (fieldSheetTimer) clearTimeout(fieldSheetTimer);
+  fieldSheetTimer = window.setTimeout(() => {
+    fieldSheetTimer = 0;
+    paintFieldSheet();
+  }, ms);
+}
+
+/** Several lookups land at once — coalesce their repaints into one frame. */
 function paintInvestorMap() {
-  patchInvestorOverlay({
-    investors: fieldInvestors(),
-    showInsuranceInvestors: investorHeartsOn(),
-    showRealEstateInvestors: investorStarsOn(),
-    lookingInvestorIds: investorPublicBusy,
+  if (investorPaintFrame) return;
+  investorPaintFrame = requestAnimationFrame(() => {
+    investorPaintFrame = 0;
+    patchInvestorOverlay({
+      investors: fieldInvestors(),
+      showInsuranceInvestors: investorHeartsOn(),
+      showRealEstateInvestors: investorStarsOn(),
+      lookingInvestorIds: investorPublicBusy,
+    });
   });
 }
 
@@ -1339,18 +1431,19 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
   try {
     const next = await enrichInvestorFromPublic(inv, { deep, osmHits: lastOsmOfficeEls });
     officeContactTried.add(id);
-    if (!next) {
-      paintInvestorMap();
-      return;
-    }
+    if (!next) return;
     const hit = upsertInvestor(savedInvestors(), next);
     db.investors = hit.list;
-    persist();
-    paintInvestorMap();
-    paintFieldSheet();
-    const homes = investorListings(next);
+    invalidateInvestorCache();
+    // Several lookups finish at once — batch the write and the sheet redraw.
+    persistSoon();
+    paintFieldSheetSoon();
+    if (!deep) return;
+    const homes = mappedInvestorListings(next);
+    const unmapped = unmappedInvestorListings(next).length;
     const bits = [next.phone, next.email].filter(Boolean);
-    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"}`);
+    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+    if (unmapped) bits.push(`${unmapped} address-only`);
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
   } finally {
     investorPublicBusy.delete(id);
@@ -1448,6 +1541,7 @@ function paintFieldMap() {
       const nextRel = promoteRelationship(inv);
       const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
       db.investors = hit.list;
+      invalidateInvestorCache();
       persist();
       paintFieldMap();
       paintFieldSheet();
@@ -1709,8 +1803,10 @@ function fillInvestorComposer() {
   if (del) {
     del.onclick = () => {
       db.investors = removeInvestor(savedInvestors(), investorDraft.id);
+      invalidateInvestorCache();
       if (String(investorDraft.id).startsWith("list:")) {
         db.settings.hiddenInvestorIds = [...new Set([...hiddenInvestorIds(), String(investorDraft.id)])];
+        invalidateInvestorCache();
       }
       persist();
       closeComposer();
@@ -1728,6 +1824,7 @@ function saveInvestorDraft() {
   }
   const hit = upsertInvestor(savedInvestors(), investorDraft);
   db.investors = hit.list;
+  invalidateInvestorCache();
   if (hit.investor.kind === "insurance") db.settings.showInsuranceInvestors = true;
   if (hit.investor.kind === "realestate") db.settings.showRealEstateInvestors = true;
   persist();
@@ -1890,7 +1987,7 @@ function paintFieldSheet() {
             .slice(0, 40)
             .map(
               (inv) =>
-                `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" && investorListings(inv).length ? `<em>${esc(`${investorListings(inv).length} listings`)}</em>` : ""}</span></button>`,
+                `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" ? investorListingSummary(inv) : ""}</span></button>`,
             )
             .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
         : `<p class="muted">Turn on Hearts or Stars in the map bar to load offices. Tap a star to draw that office's listings. Phone and email load only for the office you select.</p>`
