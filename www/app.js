@@ -95,6 +95,7 @@ import {
   mergeInvestorListings,
   fetchPhotonInvestorsNear,
   fetchPhotonInvestorsInBounds,
+  officeSweepWorthIt,
   investorHasContact,
   investorInBounds,
   mappedInvestorListings,
@@ -1301,6 +1302,7 @@ async function huntPhotonInvestors(lat, lon) {
 
 let officeViewTimer = 0;
 let officeSweepGen = 0;
+let officeSweepWaits = 0;
 let lastOsmOfficeEls = [];
 const officeContactTried = new Set();
 const investorPublicBusy = new Set();
@@ -1313,13 +1315,13 @@ let officeLookupWorkers = 0;
 const OFFICE_LOOKUP_WORKERS = 4;
 const OFFICE_LOOKUP_PER_SWEEP = 24;
 
-function scheduleInViewOfficePreload() {
+function scheduleInViewOfficePreload(delay = 260) {
   if (!investorOfficesWanted()) return;
   if (officeViewTimer) clearTimeout(officeViewTimer);
   officeViewTimer = setTimeout(() => {
     officeViewTimer = 0;
     void preloadInViewOffices();
-  }, 260);
+  }, delay);
 }
 
 function inViewOffices(bounds = mapFrameBounds()) {
@@ -1382,7 +1384,15 @@ function runOfficeLookups() {
 async function preloadInViewOffices() {
   if (!investorOfficesWanted()) return;
   const bounds = mapFrameBounds();
-  if (!bounds) return;
+  if (!officeSweepWorthIt(bounds)) {
+    // Layer flipped on before the map finished laying out — come back once it has.
+    if (officeSweepWaits < 8) {
+      officeSweepWaits += 1;
+      scheduleInViewOfficePreload(400);
+    }
+    return;
+  }
+  officeSweepWaits = 0;
   const gen = ++officeSweepGen;
   // Two sources, because neither is reliable alone: Overpass has the richer tagging
   // but refuses browser User-Agents, while Photon answers any origin and so is the

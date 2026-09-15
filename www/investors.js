@@ -47,6 +47,21 @@ const REALESTATE_TAGS =
 const SKIP_TAGS =
   /\b(restaurant|fast_food|cafe|pub|\bbar\b|biergarten|fuel|hotel|motel|hostel|place_of_worship|school|college|kindergarten|hospital|clinic|doctors|dentist|pharmacy|veterinary|supermarket|convenience|hairdresser|beauty|car_repair|car_wash|funeral_directors|bank|atm|fitness_centre|childcare|library|museum)\b/;
 
+/**
+ * Worth spending office lookups on? A map that has not been laid out yet reports a
+ * frame a few metres wide — sweeping that burns a round trip per search term and can
+ * only return places nowhere near the crew.
+ */
+export function officeSweepWorthIt(bounds, minSpan = 0.002) {
+  const s = Number(bounds?.south);
+  const w = Number(bounds?.west);
+  const n = Number(bounds?.north);
+  const e = Number(bounds?.east);
+  if (![s, w, n, e].every(Number.isFinite) || n <= s || e <= w) return false;
+  if (n - s < minSpan || e - w < minSpan) return false;
+  return s <= OK_BOX.north && n >= OK_BOX.south && w <= OK_BOX.east && e >= OK_BOX.west;
+}
+
 export function inOklahoma(lat, lon) {
   const la = Number(lat);
   const lo = Number(lon);

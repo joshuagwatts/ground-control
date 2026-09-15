@@ -28,6 +28,7 @@ import {
   osmTagContext,
   photonBboxParam,
   boundsAround,
+  officeSweepWorthIt,
   listingFromPhotonFeature,
   PHOTON_REALESTATE_TERMS,
   PHOTON_INSURANCE_TERMS,
@@ -387,6 +388,14 @@ assert(
   !PHOTON_REALESTATE_TERMS.some((t) => /keller|re\/max|century/i.test(t)),
   "brand terms cost a request and found nothing the trade words missed",
 );
+
+assert(officeSweepWorthIt(okcBox), "a real frame over OKC is worth sweeping");
+// A map that has not laid out yet reports a frame metres wide, in the wrong state.
+assert(!officeSweepWorthIt({ south: 45.83983, west: -119.70529, north: 45.84037, east: -119.70471 }), "no sweep before the map lays out");
+assert(!officeSweepWorthIt({ south: 35.5, west: -97.53, north: 35.5005, east: -97.5295 }), "a sixty-metre frame is not worth seven round trips");
+assert(!officeSweepWorthIt({ south: 40.6, west: -74.1, north: 40.8, east: -73.9 }), "no sweep outside Oklahoma");
+assert(officeSweepWorthIt({ south: 33.0, west: -104.0, north: 38.0, east: -94.0 }), "a frame that overlaps the state still sweeps");
+assert(!officeSweepWorthIt(null), "no frame, no sweep");
 
 // Photon labels an office with osm_key/osm_value; that has to classify like an OSM tag.
 const photonOffice = listingFromPhotonFeature({
