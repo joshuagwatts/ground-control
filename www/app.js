@@ -18,7 +18,7 @@ import {
   privacyOn,
   cloudStatus,
 } from "./cloud.js";
-import { httpDiag } from "./net.js";
+import { httpDiag, resetProxyOutages } from "./net.js";
 import {
   loadMapConfig,
   mountMap,
@@ -74,7 +74,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.323";
+} from "./wx.js?v=0.2.324";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -3238,6 +3238,12 @@ function boot() {
   setStatus("");
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && isHailTab()) refreshMapSize();
+  });
+  // Coming back into signal is the one moment a written-off relay deserves
+  // another try, so a truck that drives out of a dead zone starts clean.
+  window.addEventListener("online", () => {
+    resetProxyOutages();
+    scheduleInViewOfficePreload(600);
   });
   let resizeMapTimer = 0;
   window.addEventListener("resize", () => {

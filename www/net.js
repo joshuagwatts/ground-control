@@ -61,13 +61,18 @@ function corsShProxyUrl(target) {
 
 async function httpGetViaCorsSh(url, timeoutMs) {
   const proxy = corsShProxyUrl(url);
+  if (proxyLooksDown(proxy)) throw new Error("proxy cooling down");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
     const body = unwrapProxyBody(await res.text());
     if (!res.ok || !validProxyBody(body, url)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    noteProxyResult(proxy, true);
     return { url, status: res.status, body };
+  } catch (e) {
+    noteProxyResult(proxy, false);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -94,10 +99,17 @@ async function httpGetViaServiceWorkerMessage(url, timeoutMs) {
 }
 
 async function httpGetViaSameOriginProxy(url, timeoutMs) {
+  // Keyed on the target, not the relay: the worker's own fetch obeys CORS, so it
+  // carries NOAA happily and can never carry the Census geocoder. One dead target
+  // must not blacklist the leg for every other API.
+  const key = targetKey("sw", url);
+  if (proxyLooksDown(key)) throw new Error("same-origin proxy cooling down");
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
     try {
       await ensureWebProxyReady(Math.min(timeoutMs, 10000));
-      return await httpGetViaServiceWorkerMessage(url, timeoutMs);
+      const hit = await httpGetViaServiceWorkerMessage(url, timeoutMs);
+      noteProxyResult(key, true);
+      return hit;
     } catch {
       /* fall through to fetch /proxy */
     }
@@ -110,7 +122,11 @@ async function httpGetViaSameOriginProxy(url, timeoutMs) {
     const res = await fetch(proxyUrl, { signal: ctrl.signal, redirect: "follow" });
     const body = unwrapProxyBody(await res.text());
     if (!res.ok || !validProxyBody(body, url)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    noteProxyResult(key, true);
     return { url, status: res.status, body };
+  } catch (e) {
+    noteProxyResult(key, false);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -508,7 +524,61 @@ function unwrapProxyBody(body) {
   return raw;
 }
 
+/**
+ * Public relays go down for days at a time — allorigins, cors.sh, codetabs and
+ * corsproxy.io were all refusing the Census geocoder during the last field check.
+ * Each one still costs its full timeout, so a phone walking a list of addresses
+ * spends the better part of a minute per address rediscovering the same outage.
+ * Two strikes and we stop asking for a while.
+ */
+const proxyOutages = new Map();
+const PROXY_STRIKES = 2;
+const PROXY_COOLDOWN_MS = 5 * 60 * 1000;
+
+function proxyKey(proxy) {
+  const s = String(proxy || "");
+  // Literal keys like "sw:census.gov" — the service worker's own fetch is still
+  // bound by CORS, so whether that leg works depends on the target, not the relay.
+  if (!s.includes("//")) return s;
+  try {
+    return new URL(s, typeof location !== "undefined" ? location.href : "https://x.invalid").host;
+  } catch {
+    return s;
+  }
+}
+
+function targetKey(prefix, url) {
+  try {
+    return `${prefix}:${new URL(url).host}`;
+  } catch {
+    return `${prefix}:?`;
+  }
+}
+
+export function proxyLooksDown(proxy, now = Date.now()) {
+  const rec = proxyOutages.get(proxyKey(proxy));
+  return Boolean(rec && rec.strikes >= PROXY_STRIKES && now < rec.until);
+}
+
+export function noteProxyResult(proxy, ok, now = Date.now()) {
+  const key = proxyKey(proxy);
+  if (ok) {
+    proxyOutages.delete(key);
+    return;
+  }
+  const rec = proxyOutages.get(key) || { strikes: 0, until: 0 };
+  rec.strikes += 1;
+  rec.until = now + PROXY_COOLDOWN_MS;
+  proxyOutages.set(key, rec);
+}
+
+/** Field crews restart the app rather than the browser — let a retry be forced. */
+export function resetProxyOutages() {
+  proxyOutages.clear();
+}
+
 async function fetchViaProxyUrl(proxy, url, timeoutMs) {
+  if (proxyLooksDown(proxy)) throw new Error("proxy cooling down");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -516,7 +586,11 @@ async function fetchViaProxyUrl(proxy, url, timeoutMs) {
     if (!res.ok) throw new Error(`fetch ${res.status}`);
     const body = unwrapProxyBody(await res.text());
     if (!validProxyBody(body, url)) throw new Error("proxy empty");
+    noteProxyResult(proxy, true);
     return { url, status: res.status, body };
+  } catch (e) {
+    noteProxyResult(proxy, false);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
