@@ -1,6 +1,6 @@
 /** Public office contacts + an agent's actual for-sale homes (not county boxes). */
 
-import { httpGet, osmMapJson, overpassJson } from "./net.js";
+import { httpDiag, httpGet, osmMapJson, overpassJson } from "./net.js";
 import { listingBrowserHeaders } from "./device.js";
 import {
   extractContactsFromHtml,
@@ -17,8 +17,11 @@ import {
 import {
   inOklahoma,
   investorHasContact,
+  investorInBounds,
   investorListings,
   listingFromBizRow,
+  listingIsExact,
+  listingIsMappable,
   normalizeInvestor,
   normalizeListing,
   osmInvestorKind,
@@ -30,6 +33,8 @@ const OSM_API = "https://api.openstreetmap.org/api/0.6";
 const PHOTON_URL = "https://photon.komoot.io/api/";
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress";
+const ARCGIS_GEOCODER_URL = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates";
+const OK_EXTENT = { west: -103.05, south: 33.55, east: -94.35, north: 37.05 };
 const DDG_HTML = "https://html.duckduckgo.com/html/?q=";
 const MAX_LISTINGS = 40;
 const MAX_FETCH_LISTINGS = 10;
@@ -1057,6 +1062,66 @@ async function photonGeoCandidates(parts, near) {
  * lands on the house even when OSM has never heard of it. It is the only source here with
  * near-complete US street coverage, which is why it runs before Nominatim.
  */
+/**
+ * Esri World Geocode — CORS * so phones on Pages can pin a listing without a
+ * public relay. PointAddress is the rooftop; StreetAddress is the interpolated
+ * house on the right block (same grade we give Census).
+ */
+export function parseArcGisMatch(cand = {}) {
+  const a = cand.attributes || {};
+  const loc = cand.location || {};
+  const addrType = String(a.Addr_type || "").toLowerCase();
+  const house = String(a.AddNum || "").trim();
+  const stAddr = String(a.StAddr || "").trim();
+  const street = stAddr.replace(/^\d+\s+/, "").trim() || String(a.StName || "").trim();
+  let precision = "approx";
+  if (addrType === "pointaddress" || addrType === "subaddress") precision = "rooftop";
+  else if (addrType === "streetaddress" || addrType === "streetint") precision = "parcel";
+  else if (addrType === "streetname") precision = "street";
+  else if (addrType === "locality" || addrType === "postal" || addrType === "postalext") precision = "area";
+  else if (house) precision = "parcel";
+  return {
+    lat: Number(loc.y),
+    lon: Number(loc.x),
+    precision,
+    housenumber: house,
+    street,
+    city: a.City || "",
+    postcode: String(a.Postal || "").slice(0, 5),
+    geoSource: "arcgis",
+  };
+}
+
+/** What the Accuracy panel can say about this frame without another network trip. */
+export function summarizeAgentAccuracy(investors = [], bounds = null) {
+  const list = Array.isArray(investors) ? investors : [];
+  const inView = bounds ? list.filter((inv) => investorInBounds(inv, bounds)) : list;
+  const hearts = inView.filter((inv) => String(inv.kind) === "insurance");
+  const stars = inView.filter((inv) => String(inv.kind) === "realestate");
+  const withPhone = inView.filter((inv) => investorHasContact(inv));
+  const missingPhone = inView.filter((inv) => !investorHasContact(inv));
+  const homes = stars.flatMap((inv) => (Array.isArray(inv.listings) ? inv.listings : []));
+  const drawn = homes.filter(listingIsMappable);
+  const verified = drawn.filter(listingIsExact);
+  const addressOnly = homes.filter((row) => String(row?.address || "").trim() && !listingIsMappable(row));
+  const nameOf = (inv) => String(inv?.name || inv?.company || "").trim();
+  return {
+    offices: inView.length,
+    hearts: hearts.length,
+    stars: stars.length,
+    withPhone: withPhone.length,
+    missingPhone: missingPhone.length,
+    listings: homes.length,
+    drawn: drawn.length,
+    verified: verified.length,
+    approximate: Math.max(0, drawn.length - verified.length),
+    addressOnly: addressOnly.length,
+    missingPhoneNames: missingPhone.map(nameOf).filter(Boolean).slice(0, 8),
+    looseHomes: drawn.filter((h) => !listingIsExact(h)).map((h) => h.address).filter(Boolean).slice(0, 8),
+    addressOnlyHomes: addressOnly.map((h) => h.address).filter(Boolean).slice(0, 8),
+  };
+}
+
 export function parseCensusMatch(match = {}) {
   const c = match.coordinates || {};
   const comp = match.addressComponents || {};
@@ -1079,8 +1144,41 @@ export function parseCensusMatch(match = {}) {
   };
 }
 
-async function censusGeoCandidates(parts) {
+async function arcgisGeoCandidates(parts, near) {
   if (!parts.street) return [];
+  const u = new URL(ARCGIS_GEOCODER_URL);
+  u.searchParams.set("f", "json");
+  u.searchParams.set("SingleLine", parts.address);
+  u.searchParams.set("outFields", "Match_addr,Addr_type,StName,AddNum,StAddr,City,RegionAbbr,Postal");
+  u.searchParams.set("maxLocations", "6");
+  u.searchParams.set("sourceCountry", "USA");
+  u.searchParams.set("category", "Address");
+  u.searchParams.set("searchExtent", `${OK_EXTENT.west},${OK_EXTENT.south},${OK_EXTENT.east},${OK_EXTENT.north}`);
+  if (Number.isFinite(Number(near?.lat)) && Number.isFinite(Number(near?.lon))) {
+    u.searchParams.set("location", `${Number(near.lon)},${Number(near.lat)}`);
+    u.searchParams.set("distance", "80000");
+  }
+  try {
+    const { body } = await httpGet(u.toString(), 8000, { Accept: "application/json" });
+    return (JSON.parse(body || "{}")?.candidates || []).map(parseArcGisMatch);
+  } catch {
+    return [];
+  }
+}
+
+function censusReachableWithoutRelay() {
+  // Pages / Safari: Census has no CORS and the public relays are dead. Native
+  // Capacitor HTTP (the APK) can still ask it after ArcGIS.
+  if (typeof window === "undefined") return true;
+  try {
+    return Boolean(httpDiag().nativeHttp);
+  } catch {
+    return false;
+  }
+}
+
+async function censusGeoCandidates(parts) {
+  if (!parts.street || !censusReachableWithoutRelay()) return [];
   const u = new URL(CENSUS_GEOCODER_URL);
   u.searchParams.set("address", parts.address);
   u.searchParams.set("benchmark", "Public_AR_Current");
@@ -1156,6 +1254,10 @@ export async function geocodeListing(address, near) {
     (c) => c.precision === "rooftop" && houseNumbersMatch(parts.house, c.housenumber) && scoreListingGeoHit(c, parts, near) > 0,
   );
   if (confirmed) return geoResult(confirmed);
+  const arcgis = await arcgisGeoCandidates(parts, near);
+  pool.push(...arcgis);
+  const arcgisHit = pickGeoHit(arcgis, parts, near);
+  if (arcgisHit) return geoResult(arcgisHit);
   const census = await censusGeoCandidates(parts);
   pool.push(...census);
   const censusHit = pickGeoHit(census, parts, near);

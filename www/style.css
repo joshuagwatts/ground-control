@@ -2117,6 +2117,10 @@ body.wx-map-expanded .hs-sheet {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
 }
+.hs-layers button.hs-acc-toggle {
+  color: #9ae6b4;
+  border-color: rgba(52, 211, 153, 0.35);
+}
 .hs-layers button.hs-flags-toggle.busy {
   box-shadow: 0 0 0 1px rgba(29, 255, 110, 0.55);
   animation: hs-flags-pulse 0.9s ease-in-out infinite;
@@ -3366,3 +3370,19 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 .hs-inv-rel { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.35rem 0 0.55rem; }
 .hs-inv-row .hs-inv-glyph { flex-shrink: 0; margin-top: 2px; }
 .hs-inv-list .hs-mark-row { align-items: flex-start; }
+.hs-acc {
+  margin: 0.55rem 0 0.85rem;
+  padding: 0.65rem 0.75rem 0.7rem;
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  border-radius: 12px;
+  background: rgba(16, 185, 129, 0.06);
+}
+.hs-acc .hs-field-head { margin-top: 0; }
+.hs-acc-sum { margin: 0 0 0.45rem; }
+.hs-acc-list { display: grid; gap: 0.28rem; margin: 0.45rem 0 0; }
+.hs-acc-issue {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #fde68a;
+}

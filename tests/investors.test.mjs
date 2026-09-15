@@ -64,6 +64,8 @@ import {
   nominatimHitPrecision,
   scoreListingGeoHit,
   parseCensusMatch,
+  parseArcGisMatch,
+  summarizeAgentAccuracy,
   withDeadline,
   SHALLOW_LOOKUP_MS,
   DEEP_LOOKUP_MS,
@@ -355,6 +357,27 @@ assert(census.housenumber === "1417" && census.postcode === "73118", "census mat
 assert(census.precision === "parcel" && census.geoSource === "census", "census match is parcel-accurate");
 assert(scoreListingGeoHit(census, want, near) > 0, "census match is usable");
 
+const arcRooftop = parseArcGisMatch({
+  location: { x: -97.5348, y: 35.5053 },
+  attributes: {
+    Addr_type: "PointAddress",
+    AddNum: "1417",
+    StAddr: "1417 NW 34th St",
+    StName: "34th",
+    City: "Oklahoma City",
+    Postal: "73118",
+  },
+});
+assert(arcRooftop.precision === "rooftop" && arcRooftop.geoSource === "arcgis", "ArcGIS PointAddress is the house");
+assert(arcRooftop.housenumber === "1417" && arcRooftop.postcode === "73118", "ArcGIS match → house + zip");
+assert(scoreListingGeoHit(arcRooftop, want, near) > 10, "ArcGIS rooftop scores like a verified house");
+const arcRoad = parseArcGisMatch({
+  location: { x: -97.53, y: 35.5 },
+  attributes: { Addr_type: "StreetName", StName: "NW 34th St", City: "Oklahoma City" },
+});
+assert(arcRoad.precision === "street", "ArcGIS StreetName is the road, not the house");
+assert(scoreListingGeoHit(arcRoad, want, near) < 0, "a road match never becomes a listing dot");
+
 const mixed = normalizeInvestor({
   kind: "realestate",
   name: "Dot Precision Realty",
@@ -374,6 +397,31 @@ assert(listingIsExact(mixed.listings[0]) && !listingIsExact(mixed.listings[1]), 
 assert(normalizeListing({ lat: 1, lon: 2 }).precision === "approx", "a listing with no precision is treated as approximate");
 const exactBox = investorListingBounds(mixed);
 assert(exactBox && exactBox.north < 35.4901, "listing bounds ignore homes we refused to place");
+
+const accBox = { south: 35.46, west: -97.56, north: 35.54, east: -97.48 };
+const accRep = summarizeAgentAccuracy(
+  [
+    mixed,
+    normalizeInvestor({
+      kind: "insurance",
+      name: "Quiet Farm",
+      lat: 35.47,
+      lon: -97.52,
+    }),
+    normalizeInvestor({
+      kind: "realestate",
+      name: "Out of Frame Realty",
+      lat: 36.12,
+      lon: -95.9,
+      listings: [{ address: "1 Far St, Tulsa, OK", lat: 36.13, lon: -95.91, precision: "rooftop" }],
+    }),
+  ],
+  accBox,
+);
+assert(accRep.offices === 2 && accRep.hearts === 1 && accRep.stars === 1, "accuracy counts only the current frame");
+assert(accRep.verified === 1 && accRep.approximate === 1 && accRep.addressOnly === 2, "accuracy splits verified / loose / address-only");
+assert(accRep.missingPhone === 2 && accRep.missingPhoneNames.includes("Quiet Farm"), "offices without a phone are named");
+assert(!accRep.looseHomes.some((a) => /Far St/.test(a)), "homes outside the frame do not pollute the report");
 
 /* ── Photon has to be frame-bounded or the whole sweep is thrown away ──────── */
 

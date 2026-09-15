@@ -74,7 +74,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.324";
+} from "./wx.js?v=0.2.325";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -106,6 +106,7 @@ import {
   enrichInvestorFromPublic,
   fetchOsmOfficesInBounds,
   listedInvestorsFromOsmElements,
+  summarizeAgentAccuracy,
 } from "./investor-public.js";
 import { OK_INVESTOR_SEED } from "./ok-investors.js";
 import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
@@ -1348,6 +1349,71 @@ function officeLookupStatus() {
   setStatus(`${withPhone} of ${view.length} offices in view have a public phone${tail}`);
 }
 
+function agentAccuracyReport() {
+  return summarizeAgentAccuracy(shownFieldInvestors(), mapFrameBounds());
+}
+
+function accuracyStatusLine(rep = agentAccuracyReport()) {
+  if (!rep.offices) {
+    return investorOfficesWanted() ? "No offices in this frame yet" : "Turn on Hearts or Stars, then check this frame";
+  }
+  const phones = `${rep.withPhone} of ${rep.offices} offices have a public phone`;
+  if (!rep.listings) return `${phones} · no sale homes loaded yet`;
+  return `${phones} · ${rep.verified} listing${rep.verified === 1 ? "" : "s"} verified · ${rep.approximate} approximate · ${rep.addressOnly} address-only`;
+}
+
+function openAgentAccuracy() {
+  revealHailStormSheet({ interactive: true, scroll: true });
+  paintFieldSheet();
+  requestAnimationFrame(() => {
+    document.getElementById("hs-acc")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  setStatus(accuracyStatusLine());
+}
+
+function checkAgentAccuracyFrame() {
+  if (!investorOfficesWanted()) {
+    setStatus("Turn on Hearts or Stars first");
+    openAgentAccuracy();
+    return;
+  }
+  startOfficeLayerHunt();
+  scheduleInViewOfficePreload(80);
+  paintFieldSheet();
+  setStatus("Checking this frame…");
+}
+
+function accuracyPanelHtml(rep) {
+  const off = !investorOfficesWanted();
+  const bits = [];
+  bits.push(off ? "Hearts / Stars off" : `${rep.hearts} ♥ · ${rep.stars} ★ in this frame`);
+  if (!off && rep.offices) bits.push(`${rep.withPhone} of ${rep.offices} have a public phone`);
+  if (rep.listings) bits.push(`${rep.verified} verified to the house · ${rep.approximate} approximate · ${rep.addressOnly} address-only`);
+  else if (!off) bits.push("Tap a star to load that office's sale homes");
+  const issues = [];
+  for (const name of rep.missingPhoneNames) issues.push(`No public phone yet — ${name}`);
+  for (const addr of rep.looseHomes) issues.push(`Approximate pin — ${addr}`);
+  for (const addr of rep.addressOnlyHomes) issues.push(`Address only, no pin — ${addr}`);
+  const issueHtml = issues.length
+    ? `<div class="hs-acc-list">${issues
+        .slice(0, 10)
+        .map((line) => `<p class="hs-acc-issue">${esc(line)}</p>`)
+        .join("")}${issues.length > 10 ? `<p class="muted">${issues.length - 10} more in this frame</p>` : ""}</div>`
+    : `<p class="muted">${off ? "Turn on Hearts or Stars in the map bar, then check this frame." : "Solid gold dots are the house. Hollow rings are approximate — check before you knock."}</p>`;
+  return `
+    <div class="hs-acc" id="hs-acc">
+      <div class="hs-field-head">
+        <strong>Agent accuracy</strong>
+        <span class="muted">${esc(off ? "off" : "this frame")}</span>
+      </div>
+      <p class="muted hs-acc-sum">${esc(bits.join(" · "))}</p>
+      <div class="hs-mark-tools">
+        <button type="button" class="primary" id="hs-acc-check">Check this frame</button>
+      </div>
+      ${issueHtml}
+    </div>`;
+}
+
 function queueOfficeLookup(inv) {
   const id = String(inv?.id || "");
   if (!id || officeLookupQueued.has(id) || officeContactTried.has(id) || investorPublicBusy.has(id)) return;
@@ -1997,6 +2063,7 @@ function paintFieldSheet() {
             .join("")
         : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product.</p>`
     }</div>
+    ${accuracyPanelHtml(agentAccuracyReport())}
     <div class="hs-field-head">
       <strong>Investors</strong>
       <span class="muted">${invs.length ? `${invs.length} on map` : "Hearts / Stars off"}</span>
@@ -2068,6 +2135,8 @@ function paintFieldSheet() {
       openMarkComposer(m);
     };
   });
+  const accCheck = $("#hs-acc-check");
+  if (accCheck) accCheck.onclick = () => checkAgentAccuracyFrame();
   root.querySelectorAll(".hs-inv-row[data-inv]").forEach((b) => {
     b.onclick = () => {
       const inv = fieldInvestors().find((x) => x.id === b.dataset.inv);
@@ -2153,7 +2222,8 @@ function paintLayerToggles() {
     <button type="button" data-ov="done">Done</button>
     <button type="button" data-ov="marks">Marks</button>
     <button type="button" data-ov="hearts" class="hs-inv-toggle" aria-label="Insurance investors" title="Insurance investors — broken heart until a working relationship, then a full red heart">${investorGlyphSvg({ kind: "insurance", relationship: "partner" }, { size: 14 })} Hearts</button>
-    <button type="button" data-ov="stars" class="hs-inv-toggle" aria-label="Real estate investors" title="Real estate investors — stars, tap to show the regions they control">${investorGlyphSvg({ kind: "realestate", relationship: "partner" }, { size: 14 })} Stars</button>`;
+    <button type="button" data-ov="stars" class="hs-inv-toggle" aria-label="Real estate investors" title="Real estate investors — stars, tap to show the regions they control">${investorGlyphSvg({ kind: "realestate", relationship: "partner" }, { size: 14 })} Stars</button>
+    <button type="button" data-ov="accuracy" class="hs-acc-toggle" aria-label="Agent accuracy" title="Verify offices and listing dots in this frame">Accuracy</button>`;
     if (!el._hsFlagsStatusBound) {
       el._hsFlagsStatusBound = true;
       window.addEventListener("hs-phone-flags", (ev) => {
@@ -2260,6 +2330,10 @@ function paintLayerToggles() {
           officePreloadGen += 1;
           setStatus("Real estate stars hidden");
         }
+        return;
+      }
+      if (b.dataset.ov === "accuracy") {
+        openAgentAccuracy();
         return;
       }
       persist();
@@ -3078,6 +3152,10 @@ function renderKeys() {
     <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
     <div class="key-list">${keyRows}</div>
     <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
+    <h3>Agent accuracy</h3>
+    <p class="muted">Hearts and Stars live on HailScope. Solid gold listing dots are verified to the house. Hollow rings are approximate — check before you knock. Address-only rows have no pin.</p>
+    <p class="muted">${esc(accuracyStatusLine())}</p>
+    <div class="actions"><button type="button" id="keys-acc">Open HailScope Accuracy</button></div>
     <h3>Team alpha</h3>
     <p class="muted">This copy is the alpha sandbox. The working team app stays at the root Pages URL and is not overwritten by this build.</p>
     <p class="hs-alpha-url" id="set-alpha-url">${esc(teamAlphaLink(APP_VERSION))}</p>
@@ -3116,6 +3194,14 @@ function renderKeys() {
     ghTok.oninput = () => {
       db.settings.github_token = ghTok.value.trim();
       persist();
+    };
+  }
+  const openAcc = $("#keys-acc");
+  if (openAcc) {
+    openAcc.onclick = () => {
+      tab = "hailscope";
+      render();
+      openAgentAccuracy();
     };
   }
   const copyAlpha = $("#copy-alpha");

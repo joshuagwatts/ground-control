@@ -344,6 +344,15 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
     }
   }
 
+  // Photon + ArcGIS World Geocode also send CORS * — listing dots must not wait on a dead relay.
+  if (typeof window !== "undefined" && corsOpenPlacesHost(new URL(target).hostname.toLowerCase())) {
+    try {
+      return await httpGetDirectBrowser(target, Math.min(Number(timeoutMs) || 12000, 8000));
+    } catch {
+      /* fall through */
+    }
+  }
+
   // Browser: NOAA/IEM block CORS — go straight to proxies instead of a doomed direct fetch.
   if (typeof window !== "undefined" && needsBrowserCorsProxy(target)) {
     try {
@@ -398,6 +407,10 @@ function corsOpenWeatherHost(h) {
   );
 }
 
+function corsOpenPlacesHost(h) {
+  return h === "photon.komoot.io" || h.endsWith(".komoot.io") || h === "geocode.arcgis.com";
+}
+
 function corsOpenGisHost(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
@@ -425,7 +438,7 @@ export function needsBrowserCorsProxy(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
     // These hail/weather hosts send CORS *. The Pages SW / cors.sh path 502s Search storms.
-    if (corsOpenWeatherHost(h)) return false;
+    if (corsOpenWeatherHost(h) || corsOpenPlacesHost(h)) return false;
     return (
       h.endsWith("ncdc.noaa.gov") ||
       h.endsWith("noaa.gov") ||
