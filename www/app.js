@@ -1376,7 +1376,16 @@ function openAgentAccuracy() {
   requestAnimationFrame(() => {
     document.getElementById("hs-acc")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-  setStatus(accuracyStatusLine());
+  setTimeout(() => {
+    const shown = shownFieldInvestors();
+    const frame = mapFrameBounds();
+    if (shown.length && !shown.some((inv) => investorInBounds(inv, frame))) {
+      const dest = homeOrHere(mapCenterCoords() || officeMapHome());
+      flyToPin(dest.lat, dest.lon, 12);
+    }
+    paintFieldSheet();
+    setStatus(accuracyStatusLine());
+  }, 450);
 }
 
 function checkAgentAccuracyFrame() {
