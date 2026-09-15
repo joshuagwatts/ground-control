@@ -1119,7 +1119,7 @@ function accuracySlice(list) {
   };
 }
 
-/** What the Accuracy panel can say about this frame without another network trip. */
+/** Frame vs on-map office/listing counts for tests and status lines. */
 export function summarizeAgentAccuracy(investors = [], bounds = null) {
   const list = Array.isArray(investors) ? investors : [];
   const inView = bounds ? list.filter((inv) => investorInBounds(inv, bounds)) : list;
