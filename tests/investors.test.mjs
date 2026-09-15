@@ -23,6 +23,7 @@ import {
   mergeInvestorListings,
   defaultRegionsForListing,
   fetchPhotonInvestorsNear,
+  investorInBounds,
 } from "../www/investors.js";
 import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
@@ -32,6 +33,13 @@ import {
   cleanBizEmail,
   namesLikelySame,
   mergeInvestorPublic,
+  sameOfficeBrand,
+  officesLikelySame,
+  officeOverpassQuery,
+  clampOfficeBounds,
+  applyOsmOfficesToInvestors,
+  listedInvestorsFromOsmElements,
+  pickOsmOfficeForInvestor,
 } from "../www/investor-public.js";
 
 function assert(ok, msg) {
@@ -181,5 +189,52 @@ assert(
   }).showInsuranceInvestors === true,
   "explicit on stays on after opt-in",
 );
+
+assert(sameOfficeBrand("State Farm", "State Farm Insurance — Jake Smith"), "state farm brand");
+assert(officesLikelySame("State Farm", "State Farm Insurance"), "state farm names match via brand");
+assert(/State Farm/.test(officeOverpassQuery(35.4, -97.6, 35.55, -97.42)), "overpass asks for State Farm");
+
+const wide = clampOfficeBounds({ south: 33.6, west: -103, north: 37, east: -94.4 });
+assert(wide && wide.north - wide.south <= 0.23 && wide.east - wide.west <= 0.23, "zoomed-out office query stays in frame");
+
+const sf = {
+  id: "list:insurance:35.5220:-97.5460:statefarm",
+  kind: "insurance",
+  name: "State Farm",
+  company: "State Farm",
+  phone: "",
+  lat: 35.522,
+  lon: -97.546,
+};
+const other = {
+  id: "list:insurance:35.4800:-97.5100:statefarm",
+  kind: "insurance",
+  name: "State Farm",
+  company: "State Farm",
+  phone: "",
+  lat: 35.48,
+  lon: -97.51,
+};
+const els = [
+  {
+    lat: 35.5221,
+    lon: -97.5462,
+    tags: { name: "State Farm", phone: "+1 405 842 3500", office: "insurance" },
+  },
+  {
+    lat: 35.4798,
+    lon: -97.5101,
+    tags: { name: "State Farm", phone: "+1 405 290 7108", office: "insurance" },
+  },
+];
+assert(/842.?3500/.test(pickOsmOfficeForInvestor(sf, els)?.tags?.phone || ""), "nearest State Farm keeps its own phone");
+const filledOffices = applyOsmOfficesToInvestors([sf, other], els);
+assert(/842.?3500/.test(filledOffices[0].phone) && /290.?7108/.test(filledOffices[1].phone), "in-view OSM phones land on the right pin");
+assert(
+  listedInvestorsFromOsmElements(els).some((inv) => /842.?3500/.test(inv.phone)),
+  "OSM elements become drawable offices with phones",
+);
+assert(investorInBounds(sf, { south: 35.51, west: -97.56, north: 35.53, east: -97.53 }), "office in frame");
+assert(!investorInBounds(sf, { south: 36.1, west: -95.9, north: 36.2, east: -95.8 }), "office out of frame stays cold");
 
 console.log("investors ok");

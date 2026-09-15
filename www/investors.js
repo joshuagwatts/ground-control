@@ -288,6 +288,18 @@ export function validInvestorCoord(lat, lon) {
   return Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && !(la === 0 && lo === 0);
 }
 
+/** True when the office pin sits in the current map frame (optional degree pad). */
+export function investorInBounds(inv, bounds, padDeg = 0) {
+  if (!validInvestorCoord(inv?.lat, inv?.lon) || !bounds) return false;
+  const pad = Number(padDeg) || 0;
+  return (
+    inv.lat >= Number(bounds.south) - pad &&
+    inv.lat <= Number(bounds.north) + pad &&
+    inv.lon >= Number(bounds.west) - pad &&
+    inv.lon <= Number(bounds.east) + pad
+  );
+}
+
 function listingAddress(row = {}) {
   return [row.street || row.address, row.city, row.state || "OK", row.zip]
     .map((s) => String(s || "").trim())

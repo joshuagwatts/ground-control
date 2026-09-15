@@ -1,6 +1,6 @@
 /** Public office contacts + an agent's actual for-sale homes (not county boxes). */
 
-import { httpGet } from "./net.js";
+import { httpGet, osmMapJson, overpassJson } from "./net.js";
 import { listingBrowserHeaders } from "./device.js";
 import {
   extractContactsFromHtml,
@@ -18,6 +18,7 @@ import {
   inOklahoma,
   investorHasContact,
   investorListings,
+  listingFromBizRow,
   normalizeInvestor,
   normalizeListing,
   validInvestorCoord,
@@ -63,6 +64,146 @@ export function namesLikelySame(a, b) {
   const setB = new Set(B);
   const hit = A.filter((t) => setB.has(t)).length;
   return hit >= Math.min(2, A.length, B.length) || (A.length === 1 && setB.has(A[0]));
+}
+
+export function officeBrandKey(s) {
+  const k = nameKey(s);
+  if (/state\s*farm/.test(k)) return "statefarm";
+  if (/farm\s*bureau/.test(k)) return "farmbureau";
+  if (/\bfarmers\b/.test(k)) return "farmers";
+  if (/\ballstate\b/.test(k)) return "allstate";
+  if (/\bnationwide\b/.test(k)) return "nationwide";
+  return "";
+}
+
+export function sameOfficeBrand(a, b) {
+  const key = officeBrandKey(a);
+  return Boolean(key && key === officeBrandKey(b));
+}
+
+export function officesLikelySame(a, b) {
+  return namesLikelySame(a, b) || sameOfficeBrand(a, b);
+}
+
+export function osmElementLatLon(el) {
+  const lat = Number(el?.lat ?? el?.center?.lat);
+  const lon = Number(el?.lon ?? el?.center?.lon);
+  return validInvestorCoord(lat, lon) ? { lat, lon } : null;
+}
+
+export function isOfficeOsmElement(el) {
+  const t = el?.tags || {};
+  if (t.office === "insurance" || t.office === "estate_agent") return true;
+  return /state\s*farm|farmers insurance|allstate|nationwide|farm bureau/i.test(t.name || "");
+}
+
+export function officeOverpassQuery(south, west, north, east) {
+  const s = Number(south).toFixed(5);
+  const w = Number(west).toFixed(5);
+  const n = Number(north).toFixed(5);
+  const e = Number(east).toFixed(5);
+  return `[out:json][timeout:12][bbox:${s},${w},${n},${e}];(
+    node["office"="insurance"];
+    way["office"="insurance"];
+    node["office"="estate_agent"];
+    way["office"="estate_agent"];
+    node["name"~"State Farm|Farmers Insurance|Allstate|Nationwide",i];
+    way["name"~"State Farm|Farmers Insurance|Allstate|Nationwide",i];
+  );out tags center;`;
+}
+
+export function clampOfficeBounds(bounds, maxDeg = 0.22) {
+  const south = Number(bounds?.south);
+  const west = Number(bounds?.west);
+  const north = Number(bounds?.north);
+  const east = Number(bounds?.east);
+  if (![south, west, north, east].every(Number.isFinite) || north <= south || east <= west) return null;
+  let s = south;
+  let n = north;
+  let w = west;
+  let e = east;
+  if (n - s > maxDeg) {
+    const mid = (s + n) / 2;
+    s = mid - maxDeg / 2;
+    n = mid + maxDeg / 2;
+  }
+  if (e - w > maxDeg) {
+    const mid = (w + e) / 2;
+    w = mid - maxDeg / 2;
+    e = mid + maxDeg / 2;
+  }
+  return { south: s, west: w, north: n, east: e };
+}
+
+export function scoreOsmOfficeMatch(inv, el) {
+  const ll = osmElementLatLon(el);
+  if (!ll || !validInvestorCoord(inv?.lat, inv?.lon)) return 0;
+  const dist = metersBetween({ lat: Number(inv.lat), lon: Number(inv.lon) }, ll);
+  if (dist > 380) return 0;
+  const name = el.tags?.name || "";
+  const invName = inv.name || inv.company;
+  let s = 0;
+  if (nameKey(name) === nameKey(invName)) s += 5;
+  else if (officesLikelySame(invName, name)) s += 4;
+  else if (dist > 90) return 0;
+  if (dist < 60) s += 3;
+  else if (dist < 140) s += 2;
+  else if (dist < 240) s += 1;
+  const houseA = houseFromAddress(inv.address);
+  const houseB = houseFromAddress(
+    [el.tags?.["addr:housenumber"], el.tags?.["addr:street"]].filter(Boolean).join(" "),
+  );
+  if (houseA && houseA === houseB) s += 5;
+  if (el.tags?.phone || el.tags?.["contact:phone"]) s += 1;
+  return s;
+}
+
+export function pickOsmOfficeForInvestor(inv, elements) {
+  let best = null;
+  let score = 0;
+  for (const el of elements || []) {
+    const s = scoreOsmOfficeMatch(inv, el);
+    if (s > score) {
+      score = s;
+      best = el;
+    }
+  }
+  return score >= 4 ? best : null;
+}
+
+export function listedInvestorsFromOsmElements(elements) {
+  const out = [];
+  for (const el of elements || []) {
+    if (!isOfficeOsmElement(el)) continue;
+    const ll = osmElementLatLon(el);
+    const tags = el.tags || {};
+    const name = String(tags.name || tags.operator || "").trim();
+    if (!ll || !name) continue;
+    const row = listingFromBizRow({
+      name,
+      street: [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" "),
+      city: tags["addr:city"] || "",
+      state: tags["addr:state"] || "OK",
+      zip: tags["addr:postcode"] || "",
+      lat: ll.lat,
+      lon: ll.lon,
+      phone: tags.phone || tags["contact:phone"] || "",
+      email: tags.email || tags["contact:email"] || "",
+      website: tags.website || tags["contact:website"] || "",
+      source: "osm",
+      office: tags.office || "",
+    });
+    if (row) out.push(row);
+  }
+  return out;
+}
+
+export function applyOsmOfficesToInvestors(investors, elements) {
+  return (investors || []).map((inv) => {
+    const el = pickOsmOfficeForInvestor(inv, elements);
+    if (!el) return inv;
+    return mergeInvestorPublic(inv, tagsToContacts(el.tags || {}));
+  });
 }
 
 function houseFromAddress(addr) {
@@ -409,8 +550,12 @@ async function contactsFromOsm(inv) {
     .sort((a, b) => a.dist - b.dist);
   for (const { feat } of ranked) {
     const p = feat?.properties || {};
-    if (p.name && !namesLikelySame(inv.name || inv.company, p.name) && nameKey(p.name) !== nameKey(inv.name || inv.company)) {
-      if (!/^(state farm|farmers insurance|allstate|aaa insurance)$/i.test(p.name)) continue;
+    if (
+      p.name &&
+      !officesLikelySame(inv.name || inv.company, p.name) &&
+      nameKey(p.name) !== nameKey(inv.name || inv.company)
+    ) {
+      continue;
     }
     const tags = await osmElementTags(p.osm_type, p.osm_id);
     if (!tags) continue;
@@ -525,7 +670,34 @@ export function mergeInvestorPublic(base, extra = {}) {
   });
 }
 
-export async function enrichInvestorContacts(inv) {
+export async function fetchOsmOfficesInBounds(bounds) {
+  const box = clampOfficeBounds(bounds);
+  if (!box) return [];
+  let els = [];
+  try {
+    const data = await overpassJson(officeOverpassQuery(box.south, box.west, box.north, box.east), 14000);
+    els = (data?.elements || []).filter(isOfficeOsmElement);
+  } catch {
+    els = [];
+  }
+  if (els.length >= 3) return els;
+  try {
+    const dump = await osmMapJson(box.south, box.west, box.north, box.east, 12000);
+    const extra = (dump?.elements || []).filter(isOfficeOsmElement);
+    const seen = new Set(els.map((el) => `${el.type || "n"}:${el.id || `${el.lat}:${el.lon}`}`));
+    for (const el of extra) {
+      const key = `${el.type || "n"}:${el.id || `${el.lat}:${el.lon}`}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      els.push(el);
+    }
+  } catch {
+    /* map dump optional */
+  }
+  return els;
+}
+
+export async function enrichInvestorContacts(inv, { deep = false, osmHits = [] } = {}) {
   if (!inv) return null;
   let hit = {
     phone: inv.phone || "",
@@ -533,8 +705,12 @@ export async function enrichInvestorContacts(inv) {
     website: inv.website || "",
     address: inv.address || "",
   };
-  const osm = await contactsFromOsm(inv).catch(() => null);
-  if (osm) hit = mergeContacts(hit, osm);
+  const osmEl = pickOsmOfficeForInvestor(inv, osmHits);
+  if (osmEl) hit = mergeContacts(hit, tagsToContacts(osmEl.tags || {}));
+  if (!hit.phone) {
+    const osm = await contactsFromOsm(inv).catch(() => null);
+    if (osm) hit = mergeContacts(hit, osm);
+  }
   if (!hit.phone || !hit.email) {
     const brand = await contactsFromBrandLocator(inv).catch(() => null);
     if (brand) hit = mergeContacts(hit, brand);
@@ -543,7 +719,7 @@ export async function enrichInvestorContacts(inv) {
     const site = await contactsFromWebsite(hit.website).catch(() => null);
     if (site) hit = mergeContacts(hit, { ...site, email: cleanBizEmail(site.email, hit.website) });
   }
-  if (!hit.phone) {
+  if (deep && !hit.phone) {
     const dir = await contactsFromDirectories(inv).catch(() => null);
     if (dir) {
       hit = mergeContacts(hit, {
@@ -657,15 +833,15 @@ export async function fetchInvestorListings(inv) {
   return located.slice(0, MAX_LISTINGS);
 }
 
-/** Fill missing phone/email and, for stars, the agent's actual sale homes. */
-export async function enrichInvestorFromPublic(inv) {
+/** Fill missing phone/email and, for a selected star, the agent's actual sale homes. */
+export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [] } = {}) {
   if (!inv) return null;
   const listingsP =
-    String(inv.kind) === "realestate" && investorListings(inv).length < 2
+    String(inv.kind) === "realestate" && deep && investorListings(inv).length < 2
       ? fetchInvestorListings(inv).catch(() => [])
       : Promise.resolve(investorListings(inv));
   const [contacts, found] = await Promise.all([
-    enrichInvestorContacts(inv).catch(() => null),
+    enrichInvestorContacts(inv, { deep, osmHits }).catch(() => null),
     listingsP,
   ]);
   let listings = investorListings(inv);

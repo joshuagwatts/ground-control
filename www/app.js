@@ -63,6 +63,7 @@ import {
   refreshMapSize,
   defaultMapCenter,
   mapCenterCoords,
+  mapFrameBounds,
   quickMapConfig,
   hidePinScalePopover,
   updatePinScaleLive,
@@ -72,7 +73,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.318";
+} from "./wx.js?v=0.2.319";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -92,9 +93,16 @@ import {
   mergeListedAndSaved,
   mergeInvestorListings,
   fetchPhotonInvestorsNear,
+  investorHasContact,
+  investorInBounds,
   investorListings,
 } from "./investors.js";
-import { enrichInvestorFromPublic } from "./investor-public.js";
+import {
+  applyOsmOfficesToInvestors,
+  enrichInvestorFromPublic,
+  fetchOsmOfficesInBounds,
+  listedInvestorsFromOsmElements,
+} from "./investor-public.js";
 import { OK_INVESTOR_SEED } from "./ok-investors.js";
 import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
@@ -1229,9 +1237,11 @@ function startOfficeLayerHunt() {
   if (!here || !isOklahomaLatLon(here.lat, here.lon)) {
     flyToPin(home.lat, home.lon, 11);
     schedulePhotonInvestorHunt(home.lat, home.lon);
+    scheduleInViewOfficePreload();
     return;
   }
   schedulePhotonInvestorHunt(here.lat, here.lon);
+  scheduleInViewOfficePreload();
 }
 
 function shownFieldInvestors() {
@@ -1259,34 +1269,67 @@ async function huntPhotonInvestors(lat, lon) {
   const wantRe = investorStarsOn();
   if (!wantIns && !wantRe) return;
   const extra = await fetchPhotonInvestorsNear(lat, lon, { insurance: wantIns, realestate: wantRe }).catch(() => []);
-  if (extra.length) liveListedInvestors = extra;
+  if (extra.length) liveListedInvestors = mergeInvestorListings([listedInvestorPool(), extra]);
   paintFieldMap();
   paintFieldSheet();
-  const n = shownFieldInvestors();
-  const ins = n.filter((x) => x.kind === "insurance").length;
-  const re = n.filter((x) => x.kind === "realestate").length;
-  if (ins + re) setStatus(`${ins} insurance hearts · ${re} real estate stars nearby — tap one for phone and listings`);
+  scheduleInViewOfficePreload();
 }
 
+let officeViewTimer = 0;
+let officePreloadGen = 0;
+let lastOsmOfficeEls = [];
+const officeContactTried = new Set();
 const investorPublicBusy = new Set();
 
-function withDeadline(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => {
-      setTimeout(() => resolve(null), ms);
-    }),
-  ]);
+function scheduleInViewOfficePreload() {
+  if (!investorOfficesWanted()) return;
+  if (officeViewTimer) clearTimeout(officeViewTimer);
+  officeViewTimer = setTimeout(() => {
+    officeViewTimer = 0;
+    void preloadInViewOffices();
+  }, 260);
 }
 
-async function enrichInvestorPublic(inv) {
+function inViewOffices(bounds = mapFrameBounds()) {
+  return shownFieldInvestors().filter((inv) => investorInBounds(inv, bounds));
+}
+
+async function preloadInViewOffices() {
+  if (!investorOfficesWanted()) return;
+  const bounds = mapFrameBounds();
+  if (!bounds) return;
+  const gen = ++officePreloadGen;
+  const els = await fetchOsmOfficesInBounds(bounds).catch(() => []);
+  if (gen !== officePreloadGen) return;
+  lastOsmOfficeEls = els;
+  const extra = listedInvestorsFromOsmElements(els);
+  if (extra.length) liveListedInvestors = mergeInvestorListings([listedInvestorPool(), extra]);
+  liveListedInvestors = applyOsmOfficesToInvestors(liveListedInvestors, els);
+  paintFieldMap();
+  paintFieldSheet();
+  const view = inViewOffices(bounds);
+  const withPhone = view.filter((inv) => investorHasContact(inv)).length;
+  if (view.length) setStatus(`${withPhone} of ${view.length} offices in view have a public phone`);
+  const missing = view.filter(
+    (inv) => !investorHasContact(inv) && !officeContactTried.has(inv.id) && !investorPublicBusy.has(inv.id),
+  );
+  for (const inv of missing.slice(0, 8)) {
+    if (gen !== officePreloadGen) return;
+    const now = mapFrameBounds() || bounds;
+    if (!investorInBounds(inv, now)) continue;
+    await enrichInvestorPublic(inv, { deep: false });
+  }
+}
+
+async function enrichInvestorPublic(inv, { deep = false } = {}) {
   const id = String(inv?.id || "");
   if (!id || investorPublicBusy.has(id)) return;
   investorPublicBusy.add(id);
+  paintFieldMap();
   try {
-    const next = await withDeadline(enrichInvestorFromPublic(inv), 9000);
+    const next = await enrichInvestorFromPublic(inv, { deep, osmHits: lastOsmOfficeEls });
+    officeContactTried.add(id);
     if (!next) {
-      setStatus(`${investorDisplayName(inv)} · no public phone or listings yet`);
       paintFieldMap();
       return;
     }
@@ -1296,13 +1339,12 @@ async function enrichInvestorPublic(inv) {
     paintFieldMap();
     paintFieldSheet();
     const homes = investorListings(next);
-    const contact = [next.phone, next.email].filter(Boolean).join(" · ");
-    const bits = [];
-    if (contact) bits.push(contact);
+    const bits = [next.phone, next.email].filter(Boolean);
     if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"}`);
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
   } finally {
     investorPublicBusy.delete(id);
+    paintFieldMap();
   }
 }
 
@@ -1389,7 +1431,9 @@ function paintFieldMap() {
     onMark: (m) => openMarkComposer(m),
     onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
     onInvestorEdit: (inv) => openInvestorComposer(inv),
-    onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv),
+    onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv, { deep: true }),
+    onInvestorViewChange: () => scheduleInViewOfficePreload(),
+    lookingInvestorIds: investorPublicBusy,
     onInvestorPromote: (inv) => {
       const nextRel = promoteRelationship(inv);
       const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
@@ -2069,8 +2113,11 @@ function paintLayerToggles() {
         paintFieldSheet();
         if (investorHeartsOn()) {
           startOfficeLayerHunt();
-          setStatus("Insurance hearts on · tap an office for phone and email");
-        } else setStatus("Insurance hearts hidden");
+          setStatus("Insurance hearts on · loading phones in view");
+        } else {
+          officePreloadGen += 1;
+          setStatus("Insurance hearts hidden");
+        }
         return;
       }
       if (b.dataset.ov === "stars") {
@@ -2081,8 +2128,11 @@ function paintLayerToggles() {
         paintFieldSheet();
         if (investorStarsOn()) {
           startOfficeLayerHunt();
-          setStatus("Real estate stars on · tap a star to draw that office's listings");
-        } else setStatus("Real estate stars hidden");
+          setStatus("Real estate stars on · loading phones in view");
+        } else {
+          officePreloadGen += 1;
+          setStatus("Real estate stars hidden");
+        }
         return;
       }
       persist();

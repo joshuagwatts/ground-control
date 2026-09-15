@@ -414,6 +414,8 @@ let fieldOverlay = {
   onInvestorPromote: null,
   onInvestorDelete: null,
   onInvestorNeedPublic: null,
+  onInvestorViewChange: null,
+  lookingInvestorIds: null,
 };
 const livePinMarkers = { marks: new Map(), done: new Map() };
 
@@ -2154,6 +2156,22 @@ export function mapCenterCoords() {
     const c = map?.getCenter?.();
     if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) return null;
     return { lat: c.lat, lon: c.lng, zoom: map.getZoom?.() };
+  } catch {
+    return null;
+  }
+}
+
+/** Visible map frame for office preload — does not change hail query bounds. */
+export function mapFrameBounds() {
+  try {
+    const b = map?.getBounds?.();
+    if (!b?.isValid?.()) return null;
+    return {
+      south: b.getSouth(),
+      west: b.getWest(),
+      north: b.getNorth(),
+      east: b.getEast(),
+    };
   } catch {
     return null;
   }
@@ -9246,15 +9264,19 @@ function investorPopupHtml(inv) {
   const addr = String(inv.address || "").trim();
   const note = String(inv.note || "").trim();
   const homes = String(inv.kind) === "realestate" ? investorListings(inv) : [];
+  const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
   const listingLine =
     String(inv.kind) === "realestate"
       ? homes.length
         ? `${homes.length} active listing${homes.length === 1 ? "" : "s"}`
-        : "Looking up this office's listings…"
+        : looking
+          ? "Looking up this office's listings…"
+          : ""
       : "";
-  const missContact = !investorHasContact(inv)
-    ? `<span class="hs-inv-pop-hunt">${escHousePop(String(inv.kind) === "insurance" ? "Looking up this agency's phone and email…" : "Looking up office phone and email…")}</span>`
-    : "";
+  const missContact =
+    !investorHasContact(inv) && looking
+      ? `<span class="hs-inv-pop-hunt">${escHousePop(String(inv.kind) === "insurance" ? "Looking up this agency's phone…" : "Looking up office phone…")}</span>`
+      : "";
   const tel = e164 ? `<a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(phone)}</a>` : "";
   const sms = e164 ? `<a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>` : "";
   const mail = email ? `<a class="hs-mail" href="mailto:${escHousePop(email)}">${escHousePop(email)}</a>` : "";
@@ -9670,6 +9692,8 @@ export function setFieldOverlay({
   onInvestorPromote,
   onInvestorDelete,
   onInvestorNeedPublic,
+  onInvestorViewChange,
+  lookingInvestorIds = null,
 } = {}) {
   const prevDots = fieldOverlay.showHailDots !== false;
   const prevFlags = fieldOverlay.showPhoneFlags === true;
@@ -9692,6 +9716,8 @@ export function setFieldOverlay({
     onInvestorPromote,
     onInvestorDelete,
     onInvestorNeedPublic,
+    onInvestorViewChange,
+    lookingInvestorIds,
   };
   if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";
@@ -10167,6 +10193,7 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     scheduleHouseNumbers();
     if (fieldOverlay.showInsuranceInvestors === true || fieldOverlay.showRealEstateInvestors === true) {
       paintInvestorLayer();
+      fieldOverlay.onInvestorViewChange?.();
     }
     if (hasSelectedStormDates()) {
       keepStormSwathsOnMap();

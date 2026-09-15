@@ -572,12 +572,13 @@ export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {
 }
 
 /** form-urlencoded POST — Overpass prefers this over huge GET query strings. */
-export async function httpPostForm(url, formBody, timeoutMs = 18000) {
+export async function httpPostForm(url, formBody, timeoutMs = 18000, extraHeaders = {}) {
   const target = assertPublic(url);
   const headers = {
     "User-Agent": UA,
     Accept: "application/json,*/*",
     "Content-Type": "application/x-www-form-urlencoded",
+    ...extraHeaders,
   };
   const body = String(formBody || "");
   const native = await nativeRequest("POST", target, headers, body, timeoutMs);
@@ -616,6 +617,12 @@ const OVERPASS_ENDPOINTS = [
   "https://lz4.overpass-api.de/api/interpreter",
 ];
 
+/** Overpass 406s a generic Chrome UA — identify the app. */
+const OVERPASS_HEADERS = {
+  "User-Agent": "GroundControl/1.0 (https://github.com/joshuagwatts/ground-control)",
+  Accept: "application/json",
+};
+
 /** Run an Overpass QL query (POST first, GET + CORS proxy fallback). */
 export async function overpassJson(query, timeoutMs = 18000) {
   const q = String(query || "").trim();
@@ -625,7 +632,7 @@ export async function overpassJson(query, timeoutMs = 18000) {
   let empty = null;
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
-      const { body } = await httpPostForm(endpoint, form, timeoutMs);
+      const { body } = await httpPostForm(endpoint, form, timeoutMs, OVERPASS_HEADERS);
       const data = JSON.parse(body || "{}");
       if (Array.isArray(data.elements) && data.elements.length) return data;
       if (Array.isArray(data.elements)) empty = data;
@@ -633,7 +640,7 @@ export async function overpassJson(query, timeoutMs = 18000) {
       last = String(e?.message || e || "overpass failed");
     }
     try {
-      const { body } = await httpGet(`${endpoint}?${form}`, Math.min(timeoutMs, 12000));
+      const { body } = await httpGet(`${endpoint}?${form}`, Math.min(timeoutMs, 12000), OVERPASS_HEADERS);
       const data = JSON.parse(body || "{}");
       if (Array.isArray(data.elements) && data.elements.length) return data;
       if (Array.isArray(data.elements)) empty = data;
