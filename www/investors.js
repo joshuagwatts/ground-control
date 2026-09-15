@@ -32,12 +32,12 @@ const KIND_IDS = new Set(INVESTOR_KINDS.map((k) => k.id));
 const OK_BOX = { south: 33.55, north: 37.05, west: -103.05, east: -94.35 };
 const PHOTON_URL = "https://photon.komoot.io/api/";
 const SKIP_LISTING =
-  /\bbail\b|\bbonding\b|\bhistoric school\b|\benrollment center\b|\bcar insurance repair\b|\btitle loans?\b|\bpawn\b/i;
+  /\bbail\b|\bbonding\b|\bhistoric school\b|\benrollment center\b|\b(?:car )?insurance repair\b|\btitle loans?\b|\bpawn\b/i;
 const INSURANCE_NAME =
-  /\b(insurance|insurors?|underwrit|claims?\s+adjust|public adjust|farmers ins|state farm|allstate|farm bureau|nationwide|liberty mutual|shelter ins|american family|progressive|aflac|aaa insurance|goosehead|brightway|hippo|lemonade insurance|travelers|usaa|erie insurance|auto-?owners|safeco|the hartford|cincinnati insurance|chubb)\b/i;
+  /\b(insurance|insurors?|underwrit|claims?\s+adjust|public adjust|risk management|farmers ins|state farm|allstate|farm bureau|nationwide|liberty mutual|shelter ins|american family|progressive|aflac|aaa insurance|goosehead|brightway|hippo|lemonade insurance|travelers|usaa|erie insurance|auto-?owners|safeco|the hartford|cincinnati insurance|chubb)\b/i;
 /** Generic trade words first, then brokerage brands that do not always say "realty". */
 const REALESTATE_NAME =
-  /\b(real\s*e-?state|realtors?|realty|estate agents?|land (?:&|and) home|property manage(?:ment|rs?)|propert(?:y|ies) group|home ?sellers?|home ?buyers?|house ?buyers?|we buy (?:houses|homes)|cash for (?:houses|homes)|sell my house|home ?place|homestead group|investment propert|properties (?:llc|inc|group|co)|holdings (?:llc|group))\b|\b(keller williams|re\/?max|coldwell banker|century ?21|berkshire hathaway home|exp realty|epique|fathom realty|lpt realty|real broker|compass real ?estate|sotheby'?s international|weichert|crye-?leike|howard hanna|united country|better homes and gardens real estate|opendoor|offerpad|redfin|chinowth|mcgraw realtors|metro first|verbode|whittington)\b/i;
+  /\b(real\s*e-?state|realtors?|realty|estate agents?|land (?:&|and) home|property manage(?:ment|rs?)|propert(?:y|ies) group|home ?sellers?|home ?buyers?|house ?buyers?|we buy (?:houses|homes)|cash for (?:houses|homes)|sell my house|home ?place|homestead group|investment propert|properties (?:llc|inc|group|co)|holdings (?:llc|group))\b|\b(keller williams|re\/?max|coldwell banker|century ?21|berkshire hathaway home|exp realty|epique|fathom realty|lpt realty|real broker|compass real ?estate|sotheby'?s international|weichert|crye-?leike|howard hanna|united country|better homes and gardens real estate|opendoor|offerpad|redfin|chinowth|mcgraw realtors|metro first|verbode|whittington)\b|\bpropert(?:y|ies)(?:\s*,?\s*(?:l\.?l\.?c\.?|inc\.?|co\.?))?\s*$/i;
 
 /** OSM tag values that mean "this is an insurance office" / "this is a real-estate office". */
 const INSURANCE_TAGS = /\b(insurance|insurance_agency|insurance_broker)\b/;
@@ -46,6 +46,15 @@ const REALESTATE_TAGS =
 /** Tag context that rules a place out no matter how its name reads ("Homeplace Diner"). */
 const SKIP_TAGS =
   /\b(restaurant|fast_food|cafe|pub|\bbar\b|biergarten|fuel|hotel|motel|hostel|place_of_worship|school|college|kindergarten|hospital|clinic|doctors|dentist|pharmacy|veterinary|supermarket|convenience|hairdresser|beauty|car_repair|car_wash|funeral_directors|bank|atm|fitness_centre|childcare|library|museum)\b/;
+/**
+ * Names that name a different trade. OSM around Oklahoma City carries
+ * `office=estate_agent` on a bottled-water plant, a self-storage yard and a home
+ * designer; the sign on the door beats a tag nobody has revisited since the import.
+ * These veto outright — "Naifco Realty Central Storage" is a storage yard whatever
+ * the first word says.
+ */
+const NOT_AGENT_NAME =
+  /\b(storage|bottling|church|chapel|ministries|cathedral|synagogue|mosque|funeral|mortuary|crematory|cemetery|car ?wash|laundromat|dry clean\w*|day ?care|diner|caf[eé]|coffee|espresso|grill|pizza|pizzeria|taqueria|bbq|barbecue|steakhouse|buffet|bakery|brewery|brewing|taproom|tavern|saloon|barbershop|tattoo|liquor|smoke shop|vape|dispensary|towing|muffler|transmission|auto repair|body shop|machine shop|welding|lumber|hardware|animal hospital|urgent care|orthodont\w*|architect\w*|(?:home|interior) design|drafting)\b|\bwater(?: (?:co|company|works|supply))?\s*$/i;
 
 /**
  * Worth spending office lookups on? A map that has not been laid out yet reports a
@@ -77,10 +86,13 @@ export function inOklahoma(lat, lon) {
 export function classifyInvestorKind(name, extra = "") {
   const s = `${name || ""} ${extra || ""}`;
   if (SKIP_LISTING.test(s)) return "";
+  if (NOT_AGENT_NAME.test(String(name || ""))) return "";
   const tags = String(extra || "").toLowerCase();
+  // A surveyed amenity beats a stale office tag: nobody runs a brokerage out of the
+  // dining room, so `amenity=restaurant` wins over `office=estate_agent`.
+  if (SKIP_TAGS.test(tags)) return "";
   if (REALESTATE_TAGS.test(tags)) return "realestate";
   if (INSURANCE_TAGS.test(tags)) return "insurance";
-  if (SKIP_TAGS.test(tags)) return "";
   if (REALESTATE_NAME.test(s)) return "realestate";
   if (INSURANCE_NAME.test(s)) return "insurance";
   return "";
@@ -107,12 +119,34 @@ export function osmTagContext(input = {}) {
     .join(" ");
 }
 
+/** Does the name itself say "agency", rather than only a tag saying so? */
+export function nameReadsLikeInvestor(name) {
+  const s = String(name || "");
+  return REALESTATE_NAME.test(s) || INSURANCE_NAME.test(s);
+}
+
+/**
+ * A `landuse=` polygon is a parcel of ground, not a business, and around Oklahoma
+ * City plenty of them carry an office tag from an old import — that is how a water
+ * plant and an office block ended up as agents. Ground with no door number and no
+ * phone has to earn its pin on the name alone.
+ */
+export function osmParcelOnly(tags = {}) {
+  if (!tags.landuse) return false;
+  const door = tags["addr:housenumber"] || tags["addr:street"];
+  const reach = tags.phone || tags["contact:phone"] || tags.website || tags["contact:website"] || tags.email;
+  return !door && !reach;
+}
+
 /** Insurance / real-estate kind for an OSM element, or "" when it is neither. */
 export function osmInvestorKind(el) {
   const tags = el?.tags || {};
   const name = String(tags.name || tags.brand || tags.operator || "").trim();
   if (!name) return "";
-  return classifyInvestorKind(name, osmTagContext(tags));
+  const kind = classifyInvestorKind(name, osmTagContext(tags));
+  if (!kind) return "";
+  if (osmParcelOnly(tags) && !nameReadsLikeInvestor(name)) return "";
+  return kind;
 }
 
 export function listedInvestorId(kind, lat, lon, name) {

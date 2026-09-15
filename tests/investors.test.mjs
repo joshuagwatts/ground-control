@@ -25,6 +25,8 @@ import {
   fetchPhotonInvestorsNear,
   investorInBounds,
   osmInvestorKind,
+  osmParcelOnly,
+  nameReadsLikeInvestor,
   osmTagContext,
   photonBboxParam,
   boundsAround,
@@ -387,6 +389,48 @@ assert(PHOTON_INSURANCE_TERMS.includes("insurance"), "heart terms");
 assert(
   !PHOTON_REALESTATE_TERMS.some((t) => /keller|re\/max|century/i.test(t)),
   "brand terms cost a request and found nothing the trade words missed",
+);
+
+/* ── Places OSM calls an estate agent that plainly are not ─────────────────── */
+
+const osmEl = (tags) => ({ type: "way", tags });
+
+// A surveyed amenity beats a stale office tag — nobody brokers houses from the kitchen.
+assert(!osmInvestorKind(osmEl({ name: "Culberson Center", landuse: "retail", amenity: "restaurant", office: "estate_agent" })), "a restaurant is not an agent, office tag or not");
+assert(!osmInvestorKind(osmEl({ name: "Corner Cafe", shop: "coffee", office: "estate_agent" })), "a coffee shop is not an agent");
+
+// The name names another trade. "Realty" in the name does not make a storage yard an office.
+assert(!osmInvestorKind(osmEl({ name: "Eureka Water", landuse: "industrial", office: "estate_agent" })), "a bottled-water plant is not an agent");
+assert(!osmInvestorKind(osmEl({ name: "Naifco Realty Central Storage", landuse: "industrial" })), "a storage yard is not an agent even with Realty in the name");
+assert(!osmInvestorKind(osmEl({ name: "Brent Gibson Classic Home Design", building: "yes", office: "estate_agent", "addr:housenumber": "415" })), "a home designer is not an agent");
+assert(!osmInvestorKind(osmEl({ name: "Faith Chapel", office: "estate_agent" })), "a chapel is not an agent");
+assert(!osmInvestorKind(osmEl({ name: "Insurance Repair Specialists", office: "company", "addr:housenumber": "9" })), "a restoration contractor is not an insurance agency");
+assert(!osmInvestorKind(osmEl({ name: "Sooner Towing", office: "estate_agent" })), "a wrecker yard is not an agent");
+
+// Ground with an office tag and nothing else has to earn the pin on its name.
+assert(osmParcelOnly({ landuse: "commercial", office: "estate_agent" }), "a landuse polygon with no door and no phone is just ground");
+assert(!osmParcelOnly({ landuse: "commercial", office: "estate_agent", "addr:housenumber": "3101" }), "a door number makes it a place");
+assert(!osmParcelOnly({ landuse: "commercial", office: "estate_agent", phone: "+1 405 555 0100" }), "a phone makes it a place");
+assert(!osmParcelOnly({ building: "commercial", office: "estate_agent" }), "a building is not a landuse parcel");
+assert(!osmInvestorKind(osmEl({ name: "3101 Treat Building", landuse: "commercial", office: "estate_agent" })), "an office block is not the agency inside it");
+assert(!osmInvestorKind(osmEl({ name: "York Investment Loans", landuse: "industrial", office: "insurance" })), "a loan office tagged insurance on bare ground is dropped");
+
+// …but the parcel rule must not cost us the agents that only live on a polygon.
+assert(osmInvestorKind(osmEl({ name: "Dean Fleshmans Real Estate", landuse: "industrial", office: "estate_agent" })) === "realestate", "a parcel whose name says real estate keeps its star");
+assert(osmInvestorKind(osmEl({ name: "Paula and Company Realtors", landuse: "retail" })) === "realestate", "a parcel whose name says realtors keeps its star");
+assert(osmInvestorKind(osmEl({ name: "Don A Boyington Properties", landuse: "industrial", office: "estate_agent" })) === "realestate", "an X Properties firm is a star");
+assert(osmInvestorKind(osmEl({ name: "Livingston Properties, LLC", office: "estate_agent", "addr:housenumber": "800" })) === "realestate", "an X Properties, LLC firm is a star");
+assert(
+  osmInvestorKind(osmEl({ name: "Gallaggher Risk Management Services", landuse: "commercial", office: "insurance" })) === "insurance",
+  "risk management is the insurance trade",
+);
+assert(nameReadsLikeInvestor("Abercrombie Properties") && !nameReadsLikeInvestor("3101 Treat Building"), "name-only agency test");
+assert(!nameReadsLikeInvestor("Property Damage Restoration"), "properties must be the trade, not a passing word");
+
+// A leasing office still manages property — those stay.
+assert(
+  osmInvestorKind(osmEl({ name: "Sooner Crossing Apartments", building: "apartments", office: "estate_agent", "addr:housenumber": "2" })) === "realestate",
+  "an apartment leasing office is still a property manager",
 );
 
 assert(officeSweepWorthIt(okcBox), "a real frame over OKC is worth sweeping");
