@@ -52,11 +52,11 @@ https://joshuagwatts.github.io/ground-control/?v=0.2.307
 
 This is the working crew link. Hail Search storms lives here. Hearts and stars do **not**.
 
-**Alpha sandbox (hearts, stars, and hail — v0.2.320)**
+**Alpha sandbox (hearts, stars, and hail — v0.2.321)**
 
-https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.320
+https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.321
 
-Hearts and Stars stay **off** until you tap them. Offices in the map frame preload public phones from OSM. Search storms uses the same NCEI hail fetch as the working 0.2.307 / APK 2.309 zones. Hard-refresh once if a phone still shows the old “no public phone” line.
+Hearts and Stars stay **off** until you tap them. Offices in the map frame preload public phones from OSM. A selected star only draws sale homes that are in the current map frame (and skips city-wide dumps). Search storms uses the same NCEI hail fetch as the working 0.2.307 / APK 2.309 zones. Hard-refresh once if a phone still shows the old “no public phone” line.
 
 LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.
 

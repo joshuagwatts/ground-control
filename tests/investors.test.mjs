@@ -40,6 +40,7 @@ import {
   applyOsmOfficesToInvestors,
   listedInvestorsFromOsmElements,
   pickOsmOfficeForInvestor,
+  listingNearOffice,
 } from "../www/investor-public.js";
 
 function assert(ok, msg) {
@@ -236,5 +237,10 @@ assert(
 );
 assert(investorInBounds(sf, { south: 35.51, west: -97.56, north: 35.53, east: -97.53 }), "office in frame");
 assert(!investorInBounds(sf, { south: 36.1, west: -95.9, north: 36.2, east: -95.8 }), "office out of frame stays cold");
+
+const office = { lat: 35.4676, lon: -97.5164 };
+assert(listingNearOffice(office, { lat: 35.49, lon: -97.53 }), "nearby sale home stays");
+assert(!listingNearOffice(office, { lat: 36.15, lon: -95.99 }), "tulsa dump does not pin on an okc star");
+assert(!listingNearOffice(office, { lat: 35.4676, lon: -97.5164 }), "office coordinate is not a listing");
 
 console.log("investors ok");

@@ -9328,14 +9328,31 @@ function bindInvestorMarker(marker, inv) {
   });
 }
 
-function listingHouseIcon(tip = "") {
-  const title = tip ? ` title="${escHousePop(tip)}"` : "";
-  return window.L.divIcon({
-    className: "hs-inv-listing",
-    html: `<span class="hs-inv-listing-dot"${title} aria-hidden="true"></span>`,
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
-  });
+const LISTING_DRAW_MAX = 20;
+
+function listingInMapView(home, pad = 0.012) {
+  if (!validInvestorCoord(home?.lat, home?.lon) || !map) return false;
+  const b = map.getBounds?.();
+  if (!b?.isValid?.()) return true;
+  return (
+    home.lat >= b.getSouth() - pad &&
+    home.lat <= b.getNorth() + pad &&
+    home.lon >= b.getWest() - pad &&
+    home.lon <= b.getEast() + pad
+  );
+}
+
+function listingsToDraw(inv) {
+  const homes = investorListings(inv);
+  const inView = homes.filter((h) => listingInMapView(h));
+  if (inView.length) return inView.slice(0, LISTING_DRAW_MAX);
+  const c = map?.getCenter?.();
+  const lat = Number.isFinite(c?.lat) ? c.lat : Number(inv?.lat);
+  const lon = Number.isFinite(c?.lng) ? c.lng : Number(inv?.lon);
+  return homes
+    .slice()
+    .sort((a, b) => haversineKm(lat, lon, a.lat, a.lon) - haversineKm(lat, lon, b.lat, b.lon))
+    .slice(0, 8);
 }
 
 function listingPopupHtml(home, inv) {
@@ -9358,21 +9375,25 @@ function paintInvestorRegions(inv) {
   if (!investorRegionLayer) return;
   investorRegionLayer.clearLayers();
   if (!inv || String(inv.kind) !== "realestate") return;
-  for (const home of investorListings(inv)) {
+  for (const home of listingsToDraw(inv)) {
     const tip = home.address || "Listed home";
-    const marker = window.L.marker([home.lat, home.lon], {
+    window.L.circleMarker([home.lat, home.lon], {
       pane: "investorListings",
-      icon: listingHouseIcon(tip),
+      radius: 6,
+      color: "#0b0b0d",
+      weight: 1,
+      fillColor: "#fbbf24",
+      fillOpacity: 0.92,
       keyboard: false,
       title: tip,
-      zIndexOffset: -40,
-    }).addTo(investorRegionLayer);
-    marker.bindPopup(listingPopupHtml(home, inv), {
-      className: "hs-zone-popup hs-inv-popup",
-      closeButton: true,
-      maxWidth: 240,
-      offset: [0, -6],
-    });
+    })
+      .bindPopup(listingPopupHtml(home, inv), {
+        className: "hs-zone-popup hs-inv-popup",
+        closeButton: true,
+        maxWidth: 240,
+        offset: [0, -6],
+      })
+      .addTo(investorRegionLayer);
   }
 }
 
@@ -9398,16 +9419,20 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
 
 function fitInvestorRegions(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
-  if (!investorListings(inv).length) return false;
+  const homes = investorListings(inv);
+  if (!homes.length) return false;
+  if (homes.some((h) => listingInMapView(h))) return false;
   const box = investorListingBounds(inv);
   if (!box) return false;
+  const spanKm = haversineKm(box.south, box.west, box.north, box.east);
+  if (spanKm > 14) return false;
   try {
     map.fitBounds(
       [
         [box.south, box.west],
         [box.north, box.east],
       ],
-      { padding: [40, 40], maxZoom: 16, animate: true },
+      { padding: [40, 40], maxZoom: 15, animate: false },
     );
     return true;
   } catch {
@@ -9436,13 +9461,19 @@ function selectInvestorOnMap(inv, marker) {
   if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
 }
 
-function paintInvestorLayer() {
+let lastInvestorPaintSig = "";
+
+function investorViewBucket() {
+  const b = map?.getBounds?.();
+  if (!b?.isValid?.()) return "";
+  return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map((n) => Number(n).toFixed(2)).join();
+}
+
+function paintInvestorLayer({ force = false } = {}) {
   if (!map || !window.L) return;
   ensureFieldPanes();
   if (!investorLayer) investorLayer = window.L.layerGroup().addTo(map);
   if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
-  investorLayer.clearLayers();
-  investorMarkers.clear();
   const showIns = fieldOverlay.showInsuranceInvestors === true;
   const showRe = fieldOverlay.showRealEstateInvestors === true;
   let list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).filter(
@@ -9452,6 +9483,20 @@ function paintInvestorLayer() {
     list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).slice(0, 40);
   }
   const selected = list.find((x) => x.id === selectedInvestorId) || null;
+  const homes = selected ? listingsToDraw(selected) : [];
+  const sig = [
+    showIns ? 1 : 0,
+    showRe ? 1 : 0,
+    selectedInvestorId,
+    list.map((inv) => `${inv.id}:${inv.phone || ""}`).join(","),
+    homes.map((h) => `${Number(h.lat).toFixed(4)},${Number(h.lon).toFixed(4)}`).join(";"),
+    investorViewBucket(),
+    fieldOverlay.lookingInvestorIds?.size || 0,
+  ].join("|");
+  if (!force && sig === lastInvestorPaintSig) return;
+  lastInvestorPaintSig = sig;
+  investorLayer.clearLayers();
+  investorMarkers.clear();
   paintInvestorRegions(selected);
   for (const inv of list) {
     const marker = window.L.marker([inv.lat, inv.lon], {
@@ -9478,7 +9523,8 @@ function paintInvestorLayer() {
 /** Select a heart/star pin, paint that office's listings, and open contact info. */
 export function focusInvestorPin(id, { popup = true } = {}) {
   selectedInvestorId = String(id || "");
-  paintInvestorLayer();
+  lastInvestorPaintSig = "";
+  paintInvestorLayer({ force: true });
   const inv = (fieldOverlay.investors || []).find((x) => String(x.id) === selectedInvestorId);
   const marker = investorMarkers.get(selectedInvestorId);
   if (inv) paintInvestorRegions(inv);
@@ -9812,8 +9858,15 @@ export function setFieldOverlay({
       livePinMarkers.done.set(String(h.id), marker);
     }
   }
-  paintInvestorLayer();
+  paintInvestorLayer({ force: true });
   scheduleZoomUiRefresh(true);
+}
+
+/** Update hearts/stars/listings without rebuilding yellow pins or marks. */
+export function patchInvestorOverlay(partial = {}) {
+  fieldOverlay = { ...fieldOverlay, ...partial };
+  if (!map || !window.L) return;
+  paintInvestorLayer();
 }
 
 function bindLongPress(onHold) {

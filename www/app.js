@@ -58,6 +58,7 @@ import {
   setWxUnits,
   reverseGeocode,
   setFieldOverlay,
+  patchInvestorOverlay,
   focusInvestorPin,
   mapIsLive,
   refreshMapSize,
@@ -73,7 +74,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.320";
+} from "./wx.js?v=0.2.321";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1270,7 +1271,7 @@ async function huntPhotonInvestors(lat, lon) {
   if (!wantIns && !wantRe) return;
   const extra = await fetchPhotonInvestorsNear(lat, lon, { insurance: wantIns, realestate: wantRe }).catch(() => []);
   if (extra.length) liveListedInvestors = mergeInvestorListings([listedInvestorPool(), extra]);
-  paintFieldMap();
+  paintInvestorMap();
   paintFieldSheet();
   scheduleInViewOfficePreload();
 }
@@ -1305,7 +1306,7 @@ async function preloadInViewOffices() {
   const extra = listedInvestorsFromOsmElements(els);
   if (extra.length) liveListedInvestors = mergeInvestorListings([listedInvestorPool(), extra]);
   liveListedInvestors = applyOsmOfficesToInvestors(liveListedInvestors, els);
-  paintFieldMap();
+  paintInvestorMap();
   paintFieldSheet();
   const view = inViewOffices(bounds);
   const withPhone = view.filter((inv) => investorHasContact(inv)).length;
@@ -1321,22 +1322,31 @@ async function preloadInViewOffices() {
   }
 }
 
+function paintInvestorMap() {
+  patchInvestorOverlay({
+    investors: fieldInvestors(),
+    showInsuranceInvestors: investorHeartsOn(),
+    showRealEstateInvestors: investorStarsOn(),
+    lookingInvestorIds: investorPublicBusy,
+  });
+}
+
 async function enrichInvestorPublic(inv, { deep = false } = {}) {
   const id = String(inv?.id || "");
   if (!id || investorPublicBusy.has(id)) return;
   investorPublicBusy.add(id);
-  paintFieldMap();
+  paintInvestorMap();
   try {
     const next = await enrichInvestorFromPublic(inv, { deep, osmHits: lastOsmOfficeEls });
     officeContactTried.add(id);
     if (!next) {
-      paintFieldMap();
+      paintInvestorMap();
       return;
     }
     const hit = upsertInvestor(savedInvestors(), next);
     db.investors = hit.list;
     persist();
-    paintFieldMap();
+    paintInvestorMap();
     paintFieldSheet();
     const homes = investorListings(next);
     const bits = [next.phone, next.email].filter(Boolean);
@@ -1344,7 +1354,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
   } finally {
     investorPublicBusy.delete(id);
-    paintFieldMap();
+    paintInvestorMap();
   }
 }
 

@@ -28,6 +28,9 @@ const OSM_API = "https://api.openstreetmap.org/api/0.6";
 const PHOTON_URL = "https://photon.komoot.io/api/";
 const DDG_HTML = "https://html.duckduckgo.com/html/?q=";
 const MAX_LISTINGS = 40;
+const MAX_FETCH_LISTINGS = 10;
+const MAX_LISTING_GEOCODE = 6;
+const MAX_LISTING_KM = 35;
 
 const PEOPLE_SEARCH =
   /facebook\.com|instagram\.com|linkedin\.com|truepeoplesearch|beenverified|spokeo|fastpeoplesearch|thatsthem|intelius|radaris|cyberbackground|whitepages\.com\/name|411\.com\/people|anywho\.com\/people/i;
@@ -779,11 +782,19 @@ function metersBetween(a, b) {
   return 2 * 6371000 * Math.asin(Math.sqrt(x));
 }
 
+export function listingNearOffice(office, home, maxKm = MAX_LISTING_KM) {
+  if (!validInvestorCoord(home?.lat, home?.lon)) return false;
+  if (!validInvestorCoord(office?.lat, office?.lon)) return true;
+  const meters = metersBetween(office, home);
+  if (meters < 90) return false;
+  return meters <= maxKm * 1000;
+}
+
 async function listingsFromPages(urls, inv) {
   const out = [];
   const seen = new Set();
-  for (const url of urls.slice(0, 5)) {
-    const page = await fetchPage(url, 12000, listingBrowserHeaders({ zillow: /zillow/i.test(url) }));
+  for (const url of urls.slice(0, 3)) {
+    const page = await fetchPage(url, 7000, listingBrowserHeaders({ zillow: /zillow/i.test(url) }));
     if (!page?.html) continue;
     for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company })) {
       pushListing(out, seen, { ...row, url: row.url || page.url });
@@ -795,21 +806,11 @@ async function listingsFromPages(urls, inv) {
 
 export async function fetchInvestorListings(inv) {
   if (!inv || String(inv.kind) !== "realestate") return [];
-  const name = inv.name || inv.company;
-  const city = investorCity(inv);
-  const urls = listingUrlsForOffice(inv);
-  const q = `site:realtor.com/realestateagents "${name}" ${city} OK`;
-  const ddg = await fetchPage(`${DDG_HTML}${encodeURIComponent(q)}`, 10000);
-  if (ddg?.html) {
-    for (const u of extractSearchResultUrls(ddg.html, { allowHostRe: /realtor\.com|zillow\.com|redfin\.com/i, limit: 5 })) {
-      urls.unshift(u);
-    }
-  }
+  const urls = listingUrlsForOffice(inv).slice(0, 2);
   if (inv.website) {
     urls.push(inv.website);
     try {
-      const origin = new URL(inv.website).origin;
-      urls.push(`${origin}/listings`, `${origin}/homes-for-sale`, `${origin}/search`);
+      urls.push(`${new URL(inv.website).origin}/listings`);
     } catch {
       /* ignore */
     }
@@ -817,9 +818,11 @@ export async function fetchInvestorListings(inv) {
   const rows = await listingsFromPages([...new Set(urls)], inv);
   const office = { lat: Number(inv.lat), lon: Number(inv.lon) };
   const located = [];
-  for (const row of rows.slice(0, MAX_LISTINGS)) {
+  let geoLeft = MAX_LISTING_GEOCODE;
+  for (const row of rows.slice(0, MAX_FETCH_LISTINGS)) {
     let next = { ...row };
-    if (!validInvestorCoord(next.lat, next.lon) && next.address) {
+    if (!validInvestorCoord(next.lat, next.lon) && next.address && geoLeft > 0) {
+      geoLeft -= 1;
       const geo = await geocodeListing(next.address, office);
       if (geo) {
         next.lat = geo.lat;
@@ -827,10 +830,10 @@ export async function fetchInvestorListings(inv) {
       }
     }
     if (!validInvestorCoord(next.lat, next.lon) || !inOklahoma(next.lat, next.lon)) continue;
-    if (validInvestorCoord(office.lat, office.lon) && metersBetween(office, next) < 90) continue;
+    if (!listingNearOffice(office, next)) continue;
     located.push(normalizeListing(next));
   }
-  return located.slice(0, MAX_LISTINGS);
+  return located.slice(0, MAX_FETCH_LISTINGS);
 }
 
 /** Fill missing phone/email and, for a selected star, the agent's actual sale homes. */
