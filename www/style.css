@@ -1762,6 +1762,11 @@ body.hs-tab #status {
     box-shadow calc(var(--map-expand-ms) * 0.75) ease;
   overflow: hidden;
 }
+/* Peek open: shrink the map so the county card / office card actually fits. */
+body.hs-tab:has(#hs-bottom-panel.hs-addr-open:not(.hs-sheet-open)) .hs-map-shell {
+  height: clamp(200px, 38dvh, 420px);
+  min-height: 180px;
+}
 body.wx-map-animating header.stat,
 body.wx-map-animating .tabs {
   backdrop-filter: none;

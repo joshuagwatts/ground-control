@@ -10649,10 +10649,13 @@ const MAP_SHELL_MS = 420;
 function scrollViewToAddressPeek() {
   const view = document.getElementById("view");
   const search = document.getElementById("hs-search");
+  const place = document.querySelector("#hs-sheet .hs-place") || document.querySelector("#hs-sheet .hs-pin");
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (!view || !shell) return;
-  if (search) {
-    const top = search.offsetTop + search.offsetHeight - Math.min(view.clientHeight * 0.22, 96);
+  const target = place || search;
+  if (target) {
+    const gap = Math.round(view.clientHeight * 0.08);
+    const top = target.getBoundingClientRect().bottom + view.scrollTop - view.clientHeight + gap;
     view.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
     return;
   }
