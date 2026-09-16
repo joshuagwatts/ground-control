@@ -69,9 +69,11 @@ import {
   parseCensusMatch,
   parseArcGisMatch,
   summarizeAgentAccuracy,
+  listingUrlsForOffice,
   withDeadline,
   SHALLOW_LOOKUP_MS,
   DEEP_LOOKUP_MS,
+  LISTING_LOOKUP_MS,
 } from "../www/investor-public.js";
 
 function assert(ok, msg) {
@@ -561,5 +563,15 @@ assert((await withDeadline(never, 60, "gave up")) === "gave up", "a hung lookup 
 assert(Date.now() - t0 < 1500, "and it gives up on time");
 assert((await withDeadline(Promise.reject(new Error("boom")), 500, "fell back")) === "fell back", "a failed lookup falls back");
 assert(SHALLOW_LOOKUP_MS < DEEP_LOOKUP_MS, "the in-view sweep is cheaper than a tapped office");
+assert(LISTING_LOOKUP_MS < DEEP_LOOKUP_MS, "sale homes must not wait on the full 20s contact budget");
+const listingUrls = listingUrlsForOffice({
+  name: "Gold Dot South Realty",
+  address: "Oklahoma City, OK",
+  website: "https://golddotsouth.example/about",
+});
+assert(listingUrls.length === 4, "realtor + zillow + site + /listings, no duplicate slash URL");
+assert(listingUrls.filter((u) => /realtor\.com/.test(u)).length === 1, "one realtor agent page, not two slash variants");
+assert(listingUrls.some((u) => /zillow\.com/.test(u)), "zillow agent page is included");
+assert(listingUrls.includes("https://golddotsouth.example/listings"), "the office site listings path is included");
 
 console.log("investors ok");

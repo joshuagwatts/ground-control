@@ -301,11 +301,11 @@ export function cleanBizEmail(raw, website = "") {
   return e;
 }
 
-async function fetchPage(url, ms = 12000, extra = {}) {
+async function fetchPage(url, ms = 12000, extra = {}, opts = {}) {
   const href = String(url || "").trim();
   if (!/^https?:\/\//i.test(href) || isPeopleSearchUrl(href)) return null;
   try {
-    const { body, url: finalUrl } = await httpGet(href, ms, { ...listingBrowserHeaders(), ...extra });
+    const { body, url: finalUrl } = await httpGet(href, ms, { ...listingBrowserHeaders(), ...extra }, opts);
     const html = String(body || "");
     if (html.length < 80) return null;
     return { html, url: finalUrl || href };
@@ -864,6 +864,10 @@ export async function fetchOsmOfficesInBounds(bounds) {
  */
 export const SHALLOW_LOOKUP_MS = 7000;
 export const DEEP_LOOKUP_MS = 20000;
+/** Wall clock for a selected star's sale homes — contacts can keep running after this. */
+export const LISTING_LOOKUP_MS = 10000;
+const LISTING_PAGE_MS = 4000;
+const LISTING_GEO_WORKERS = 4;
 
 export function withDeadline(promise, ms, fallback = null) {
   let timer = 0;
@@ -923,15 +927,23 @@ export async function enrichInvestorContacts(inv, { deep = false, osmHits = [], 
   };
 }
 
-function listingUrlsForOffice(inv) {
-  const name = inv.name || inv.company;
+export function listingUrlsForOffice(inv) {
+  const name = inv?.name || inv?.company;
   const city = citySlug(investorCity(inv));
   const slug = officeSlug(name);
-  return [
+  const urls = [
     `https://www.realtor.com/realestateagents/${slug}_${city}_ok`,
-    `https://www.realtor.com/realestateagents/${slug}_${city}_ok/`,
     `https://www.zillow.com/${city}-ok/realtor/${slug}/`,
   ];
+  if (inv?.website) {
+    urls.push(inv.website);
+    try {
+      urls.push(`${new URL(inv.website).origin}/listings`);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [...new Set(urls.filter(Boolean))].slice(0, 4);
 }
 
 /**
@@ -1260,23 +1272,20 @@ function geoResult(hit) {
 export async function geocodeListing(address, near) {
   const parts = typeof address === "string" ? listingAddressParts(address) : address;
   if (!parts?.address || parts.address.length < 8) return null;
-  const pool = [];
+  // ArcGIS first: CORS * and US rooftops. Photon-before-Esri plus Nominatim's
+  // 1-req/s queue is why a tapped star sat on "looking up listings" forever.
+  const arcgis = await arcgisGeoCandidates(parts, near);
+  const arcgisHit = pickGeoHit(arcgis, parts, near);
+  if (arcgisHit) return geoResult(arcgisHit);
   const photon = await photonGeoCandidates(parts, near);
-  pool.push(...photon);
   const confirmed = photon.find(
     (c) => c.precision === "rooftop" && houseNumbersMatch(parts.house, c.housenumber) && scoreListingGeoHit(c, parts, near) > 0,
   );
   if (confirmed) return geoResult(confirmed);
-  const arcgis = await arcgisGeoCandidates(parts, near);
-  pool.push(...arcgis);
-  const arcgisHit = pickGeoHit(arcgis, parts, near);
-  if (arcgisHit) return geoResult(arcgisHit);
+  const photonHit = pickGeoHit(photon, parts, near);
+  if (photonHit) return geoResult(photonHit);
   const census = await censusGeoCandidates(parts);
-  pool.push(...census);
-  const censusHit = pickGeoHit(census, parts, near);
-  if (censusHit) return geoResult(censusHit);
-  pool.push(...(await nominatimGeoCandidates(parts)));
-  return geoResult(pickGeoHit(pool, parts, near));
+  return geoResult(pickGeoHit(census, parts, near));
 }
 
 function metersBetween(a, b) {
@@ -1297,15 +1306,18 @@ export function listingNearOffice(office, home, maxKm = MAX_LISTING_KM) {
 }
 
 async function listingsFromPages(urls, inv) {
+  const pages = await Promise.all(
+    urls.slice(0, 4).map((url) =>
+      fetchPage(url, LISTING_PAGE_MS, listingBrowserHeaders({ zillow: /zillow/i.test(url) }), { skipPublicRelays: true }),
+    ),
+  );
   const out = [];
   const seen = new Set();
-  for (const url of urls.slice(0, 4)) {
-    const page = await fetchPage(url, 7000, listingBrowserHeaders({ zillow: /zillow/i.test(url) }));
+  for (const page of pages) {
     if (!page?.html) continue;
     for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company })) {
       pushListing(out, seen, { ...row, url: row.url || page.url });
     }
-    if (out.length >= 16) break;
   }
   return out;
 }
@@ -1317,87 +1329,80 @@ function pinListingGeo(next, geo, office) {
   return pinned;
 }
 
+async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, workers = LISTING_GEO_WORKERS } = {}) {
+  const office = { lat: Number(inv?.lat), lon: Number(inv?.lon) };
+  const todo = (rows || []).slice(0, MAX_FETCH_LISTINGS);
+  const out = [];
+  let cursor = 0;
+  let geoLeft = limit;
+  const n = Math.min(workers, Math.max(1, todo.length));
+  async function worker() {
+    while (cursor < todo.length) {
+      const row = todo[cursor];
+      cursor += 1;
+      let next = { ...row };
+      if (!listingIsMappable(next) && geoLeft > 0 && String(next.address || "").trim()) {
+        const parts = next.parts || listingAddressParts(next.address);
+        if (parts) {
+          geoLeft -= 1;
+          next = pinListingGeo(next, await geocodeListing(parts, office), office);
+        }
+      }
+      if (!validInvestorCoord(next.lat, next.lon) || !inOklahoma(next.lat, next.lon)) {
+        if (next.address) out.push(normalizeListing({ ...next, lat: null, lon: null, precision: "street" }));
+        continue;
+      }
+      if (!listingNearOffice(office, next)) continue;
+      out.push(normalizeListing(next));
+    }
+  }
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return out.slice(0, MAX_FETCH_LISTINGS);
+}
+
 export async function fetchInvestorListings(inv) {
   if (!inv || String(inv.kind) !== "realestate") return [];
-  const urls = listingUrlsForOffice(inv).slice(0, 3);
-  if (inv.website) {
-    urls.push(inv.website);
-    try {
-      urls.push(`${new URL(inv.website).origin}/listings`);
-    } catch {
-      /* ignore */
-    }
-  }
-  const rows = await listingsFromPages([...new Set(urls)], inv);
-  const office = { lat: Number(inv.lat), lon: Number(inv.lon) };
-  const out = [];
-  let geoLeft = MAX_LISTING_GEOCODE;
-  for (const row of rows.slice(0, MAX_FETCH_LISTINGS)) {
-    let next = { ...row };
-    if (!validInvestorCoord(next.lat, next.lon) && geoLeft > 0) {
-      const parts = next.parts || listingAddressParts(next.address);
-      if (parts) {
-        geoLeft -= 1;
-        next = pinListingGeo(next, await geocodeListing(parts, office), office);
-      }
-    }
-    // An address we could not pin to a roof still belongs in the agent's list — just not as a dot.
-    if (!validInvestorCoord(next.lat, next.lon) || !inOklahoma(next.lat, next.lon)) {
-      if (next.address) out.push(normalizeListing({ ...next, lat: null, lon: null, precision: "street" }));
-      continue;
-    }
-    if (!listingNearOffice(office, next)) continue;
-    out.push(normalizeListing(next));
-  }
-  return out.slice(0, MAX_FETCH_LISTINGS);
+  const rows = await listingsFromPages(listingUrlsForOffice(inv), inv);
+  return geocodeListingRows(inv, rows);
 }
 
 function allListings(inv) {
   return Array.isArray(inv?.listings) ? inv.listings : [];
 }
 
-/** Geocode address-only rows we already scraped so gold dots can actually draw. */
-async function geocodeExistingListings(inv, listings) {
-  const office = { lat: Number(inv?.lat), lon: Number(inv?.lon) };
-  const out = [];
-  let geoLeft = MAX_LISTING_GEOCODE;
-  for (const row of listings || []) {
-    let next = { ...row };
-    if (!listingIsMappable(next) && geoLeft > 0 && String(next.address || "").trim()) {
-      const parts = listingAddressParts(next.address);
-      if (parts) {
-        geoLeft -= 1;
-        next = pinListingGeo(next, await geocodeListing(parts, office), office);
-      }
-    }
-    out.push(normalizeListing(next));
-  }
-  return out;
-}
-
 /** Fill missing phone/email and, for a selected star, the agent's actual sale homes. */
-export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0 } = {}) {
+export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0, onPartial } = {}) {
   if (!inv) return null;
   const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
   const mappedCount = mappedInvestorListings(inv).length;
   const wantListings = String(inv.kind) === "realestate" && deep && mappedCount < 2;
   const listingsP = wantListings
-    ? withDeadline(fetchInvestorListings(inv), budget + 8000, [])
+    ? withDeadline(fetchInvestorListings(inv), LISTING_LOOKUP_MS, [])
     : Promise.resolve(allListings(inv));
-  const [contacts, found] = await Promise.all([
-    withDeadline(enrichInvestorContacts(inv, { deep, osmHits, budgetMs: budget }), budget + 1500),
-    listingsP,
-  ]);
+  const contactsP = withDeadline(enrichInvestorContacts(inv, { deep, osmHits, budgetMs: budget }), budget + 1500);
+
+  const found = await listingsP;
   let listings = allListings(inv);
-  if (Array.isArray(found) && found.length) listings = found;
+  const scraped = Array.isArray(found) && found.length ? found : null;
+  if (scraped) listings = scraped;
   if (
     String(inv.kind) === "realestate" &&
     deep &&
+    !scraped &&
     mappedInvestorListings({ listings }).length < 1 &&
     listings.some((row) => String(row?.address || "").trim())
   ) {
-    listings = await withDeadline(geocodeExistingListings(inv, listings), Math.min(budget, 12000), listings);
+    listings = await withDeadline(geocodeListingRows(inv, listings), LISTING_LOOKUP_MS, listings);
   }
+  if (typeof onPartial === "function" && wantListings) {
+    try {
+      onPartial(mergeInvestorPublic(inv, { listings }));
+    } catch {
+      /* peek optional */
+    }
+  }
+
+  const contacts = await contactsP;
   const extra = { ...(contacts || {}), listings };
   const next = mergeInvestorPublic(inv, extra);
   const betterContact = (next.phone && next.phone !== inv.phone) || (next.email && next.email !== inv.email);

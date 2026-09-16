@@ -77,7 +77,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.331";
+} from "./wx.js?v=0.2.332";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1454,7 +1454,30 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
   investorPublicBusy.add(id);
   paintInvestorMap();
   try {
-    const next = await enrichInvestorFromPublic(inv, { deep, osmHits: lastOsmOfficeEls });
+    const applyPartial = (partial) => {
+      if (!partial) return;
+      const hit = upsertInvestor(savedInvestors(), partial);
+      db.investors = hit.list;
+      invalidateInvestorCache();
+      persistSoon();
+      paintFieldSheetSoon();
+      const cur = hit.investor || partial;
+      const sheet = $("#hs-sheet");
+      if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
+      const homes = mappedInvestorListings(cur);
+      if (homes.length) {
+        const bits = [cur.phone, cur.email].filter(Boolean);
+        bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+        setStatus(`${investorDisplayName(cur)} · ${bits.join(" · ")}`);
+        if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(cur);
+      }
+      paintInvestorMap();
+    };
+    const next = await enrichInvestorFromPublic(inv, {
+      deep,
+      osmHits: lastOsmOfficeEls,
+      onPartial: deep ? applyPartial : undefined,
+    });
     officeContactTried.add(id);
     if (!next) return;
     const hit = upsertInvestor(savedInvestors(), next);

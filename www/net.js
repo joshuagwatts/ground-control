@@ -323,11 +323,13 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
   }
 }
 
-export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
+export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}, opts = {}) {
   const target = assertPublic(rewriteNoaaSwdiUrl(url));
   const headers = { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...extraHeaders };
+  const skipPublicRelays = opts.skipPublicRelays === true;
+  const ms = Number(timeoutMs) || 14000;
 
-  const native = await nativeRequest("GET", target, headers, undefined, timeoutMs);
+  const native = await nativeRequest("GET", target, headers, undefined, ms);
   if (native) {
     const status = native.status;
     if (!status) throw new Error("network failed — check data/Wi‑Fi · Proton may block this API");
@@ -338,7 +340,7 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   // Esri GIS advertises CORS * — skip public relays that are paused or rewrite JSON.
   if (typeof window !== "undefined" && corsOpenGisHost(target)) {
     try {
-      return await httpGetDirectBrowser(target, Math.min(Number(timeoutMs) || 12000, 8000));
+      return await httpGetDirectBrowser(target, Math.min(ms, 8000));
     } catch {
       /* county HTML / locked GIS still needs a proxy */
     }
@@ -347,7 +349,7 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   // Photon + ArcGIS World Geocode also send CORS * — listing dots must not wait on a dead relay.
   if (typeof window !== "undefined" && corsOpenPlacesHost(new URL(target).hostname.toLowerCase())) {
     try {
-      return await httpGetDirectBrowser(target, Math.min(Number(timeoutMs) || 12000, 8000));
+      return await httpGetDirectBrowser(target, Math.min(ms, 8000));
     } catch {
       /* fall through */
     }
@@ -355,6 +357,15 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
 
   // Browser: NOAA/IEM block CORS — go straight to proxies instead of a doomed direct fetch.
   if (typeof window !== "undefined" && needsBrowserCorsProxy(target)) {
+    if (skipPublicRelays) {
+      // Listing HTML: native already missed. Dead cors.sh / allorigins waits are why a
+      // selected star sat on "looking up listings" for half a minute.
+      try {
+        return await httpGetViaSameOriginProxy(target, Math.min(ms, 5000));
+      } catch {
+        throw new Error("listing host blocked");
+      }
+    }
     try {
       return await httpGetViaCorsProxy(target, timeoutMs);
     } catch {
@@ -374,7 +385,7 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
     const msg = String(e?.message || e || "fetch failed");
     if (/abort/i.test(msg)) throw new Error("timeout");
     // Browser CORS (GitHub Pages / Safari): retry via public CORS proxies.
-    if (needsBrowserCorsProxy(target)) {
+    if (needsBrowserCorsProxy(target) && !skipPublicRelays) {
       try {
         return await httpGetViaCorsProxy(target, timeoutMs);
       } catch {
