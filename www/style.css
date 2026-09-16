@@ -1814,7 +1814,7 @@ body.wx-map-expanded .hs-sheet {
 }
 /* Address peek: pin + Zillow/contacts visible; storm list stays tucked away */
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-sheet {
-  max-height: min(48vh, 26rem) !important;
+  max-height: min(62vh, 36rem) !important;
   opacity: 1 !important;
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;

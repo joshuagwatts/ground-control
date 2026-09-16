@@ -1561,10 +1561,12 @@ function paintFieldMap() {
     onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv, { deep: true }),
     onInvestorSelect: (inv) => {
       hailTapGen += 1;
+      setStatus(investorDisplayName(inv));
       showInvestorPeek(inv);
     },
     onListingSelect: (home, inv) => {
       hailTapGen += 1;
+      setStatus(String(home?.address || "Listed home"));
       void showListingPeek(home, inv, db.settings);
     },
     onInvestorViewChange: () => scheduleInViewOfficePreload(),
