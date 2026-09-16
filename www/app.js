@@ -77,7 +77,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.330";
+} from "./wx.js?v=0.2.331";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -92,6 +92,8 @@ import {
   removeInvestor,
   promoteRelationship,
   investorDisplayName,
+  investorPropertyCount,
+  investorPropertyCountLabel,
   investorGlyphSvg,
   relationshipLabel,
   mergeListedAndSaved,
@@ -1563,7 +1565,9 @@ function paintFieldMap() {
     onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv, { deep: true }),
     onInvestorSelect: (inv) => {
       hailTapGen += 1;
-      setStatus(investorDisplayName(inv));
+      setStatus(
+        [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
+      );
       showInvestorPeek(inv);
     },
     onListingSelect: (home, inv) => {
@@ -2021,10 +2025,10 @@ function paintFieldSheet() {
       invs.length
         ? `${invs
             .slice(0, 40)
-            .map(
-              (inv) =>
-                `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" ? investorListingSummary(inv) : ""}</span></button>`,
-            )
+            .map((inv) => {
+              const n = investorPropertyCount(inv);
+              return `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}${n ? `<span class="hs-inv-n">${n}</span>` : ""}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" ? investorListingSummary(inv) : ""}</span></button>`;
+            })
             .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
         : `<p class="muted">Turn on Hearts or Stars in the map bar to load offices. Tap a star to draw that office's listings. Phone and email load only for the office you select.</p>`
     }</div>`;

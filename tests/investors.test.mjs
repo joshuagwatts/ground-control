@@ -39,6 +39,8 @@ import {
   mappedInvestorListings,
   unmappedInvestorListings,
   listingsForSelectedOffice,
+  investorPropertyCount,
+  investorPropertyCountLabel,
 } from "../www/investors.js";
 import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
@@ -424,6 +426,10 @@ assert(
   "if nothing is nearby, still show the nearest mapped home so a star is never blank",
 );
 assert(listingsForSelectedOffice(mixed, { limit: 8 }).length === 2, "undrawable rows never become gold dots");
+assert(investorPropertyCount(mixed) === 4, "property count includes mapped and address-only homes");
+assert(investorPropertyCountLabel(4) === "4 properties", "plural property label");
+assert(investorPropertyCountLabel(1) === "1 property", "singular property label");
+assert(investorPropertyCount(heart) === 0, "insurance offices do not show a property count");
 assert(listingIsExact(mixed.listings[0]) && !listingIsExact(mixed.listings[1]), "only a verified home reads as exact");
 assert(normalizeListing({ lat: 1, lon: 2 }).precision === "approx", "a listing with no precision is treated as approximate");
 const exactBox = investorListingBounds(mixed);

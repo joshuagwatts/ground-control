@@ -765,6 +765,23 @@ export function investorDisplayName(inv) {
   return String(inv?.name || inv?.company || investorKindMeta(inv?.kind).label).trim();
 }
 
+/** How many sale homes this office has, mapped or address-only. */
+export function investorPropertyCount(inv) {
+  if (String(inv?.kind) !== "realestate") return 0;
+  const rows = Array.isArray(inv?.listings) ? inv.listings : [];
+  let n = 0;
+  for (const row of rows) {
+    if (String(row?.address || "").trim() || listingIsMappable(row)) n += 1;
+  }
+  return n;
+}
+
+export function investorPropertyCountLabel(count) {
+  const n = Number(count) || 0;
+  if (n <= 0) return "";
+  return n === 1 ? "1 property" : `${n} properties`;
+}
+
 export function investorContactLine(inv) {
   const bits = [inv?.company, formatPhone(inv?.phone || "") || inv?.phone, inv?.email].map((s) => String(s || "").trim()).filter(Boolean);
   return bits.join(" · ");

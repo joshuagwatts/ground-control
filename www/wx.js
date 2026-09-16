@@ -49,6 +49,8 @@ import {
   investorDisplayName,
   investorContactLine,
   investorHasContact,
+  investorPropertyCount,
+  investorPropertyCountLabel,
   listingIsExact,
   mappedInvestorListings,
   listingsForSelectedOffice,
@@ -9315,6 +9317,13 @@ function ensureFieldPanes() {
   }
 }
 
+function investorCountChip(inv) {
+  const n = investorPropertyCount(inv);
+  if (n <= 0) return "";
+  const lab = investorPropertyCountLabel(n);
+  return `<span class="hs-inv-n" title="${escHousePop(lab)}">${n}</span>`;
+}
+
 function investorDivIcon(inv) {
   const partner = isPartner(inv);
   const kind = String(inv?.kind || "insurance");
@@ -9355,7 +9364,7 @@ function investorPopupHtml(inv) {
   const sms = e164 ? `<a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>` : "";
   const mail = email ? `<a class="hs-mail" href="mailto:${escHousePop(email)}">${escHousePop(email)}</a>` : "";
   return `<div class="hs-inv-pop hs-inv-pop-${escHousePop(inv.kind)}">
-    <strong class="hs-inv-pop-name">${escHousePop(name)}</strong>
+    <strong class="hs-inv-pop-name">${escHousePop(name)}${investorCountChip(inv)}</strong>
     <span class="hs-inv-pop-rel">${escHousePop(relationshipLabel(inv))}</span>
     ${who && who !== name ? `<span class="hs-inv-pop-who">${escHousePop(who)}</span>` : ""}
     ${addr ? `<span class="hs-inv-pop-addr">${escHousePop(addr)}</span>` : ""}
@@ -9499,7 +9508,7 @@ function investorPeekHtml(inv) {
       : isRe
         ? `<p class="hs-place-miss">${escHousePop(listingLine)}</p>`
         : "";
-  return `<p class="hs-pin hs-pin-ready hs-pin-office" data-inv="${escHousePop(inv.id)}"><strong>${escHousePop(name)}</strong>${escHousePop([kindLab, relationshipLabel(inv)].filter(Boolean).join(" · "))}</p>
+  return `<p class="hs-pin hs-pin-ready hs-pin-office" data-inv="${escHousePop(inv.id)}"><strong>${escHousePop(name)}${investorCountChip(inv)}</strong>${escHousePop([kindLab, relationshipLabel(inv)].filter(Boolean).join(" · "))}</p>
 <div class="hs-place hs-inv-peek">
   ${who && who !== name ? `<span class="hs-who">${escHousePop(who)}</span>` : ""}
   ${addr ? `<span class="hs-inv-peek-addr">${escHousePop(addr)}</span>` : ""}
@@ -9837,7 +9846,7 @@ function paintInvestorLayer({ force = false } = {}) {
       pane: "investors",
       icon: investorDivIcon(inv),
       keyboard: false,
-      title: investorDisplayName(inv),
+      title: [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
       zIndexOffset: inv.id === selectedInvestorId ? 400 : 0,
     })
       .on("click", (e) => {
