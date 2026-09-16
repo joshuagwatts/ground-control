@@ -2539,9 +2539,11 @@ function wireHsShell(cfg) {
       e.stopPropagation();
       const q = ($("#hs-addr-q")?.value || "").trim();
       if (!q) return;
+      const gen = hailTapGen;
       setStatus("Finding place…");
       try {
         const hits = await geocodeAddress(q, { city: db.settings.city || "Edmond" });
+        if (gen !== hailTapGen) return;
         const hit = hits[0];
         if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
         flyToPin(hit.lat, hit.lon, 20);

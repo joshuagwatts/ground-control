@@ -10975,6 +10975,7 @@ export function syncHailBottomChrome() {
   }
   // Completed jobs / field marks ride with the storm sheet tier
   field?.classList.toggle("hs-field-open", hailBottomTier === "sheet");
+  refreshMapSize();
 }
 
 function pulseBottomPanel({ light = false } = {}) {
