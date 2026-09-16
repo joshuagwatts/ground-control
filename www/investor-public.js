@@ -248,12 +248,14 @@ function houseFromAddress(addr) {
 }
 
 export function investorCity(inv) {
-  const p = parseStreetAddress(inv?.address || "");
-  if (p.city) return p.city;
-  const m = String(inv?.address || "").match(
+  const raw = String(inv?.address || "");
+  const named = raw.match(
     /\b(Oklahoma City|Tulsa|Edmond|Norman|Broken Arrow|Moore|Midwest City|Lawton|Stillwater|Enid|Muskogee|Bartlesville|Shawnee|Owasso|Yukon|Bethany|Del City|Jenks|Bixby|Sapulpa|Ponca City|Ardmore|Altus|Guymon|Woodward|McAlester|Ada|Durant|Claremore|Tahlequah|Coweta)\b/i,
   );
-  return m ? m[1] : "Oklahoma City";
+  if (named) return named[1];
+  const p = parseStreetAddress(raw);
+  if (p.city && !/^(ok|oklahoma)$/i.test(p.city)) return p.city;
+  return "Oklahoma City";
 }
 
 function citySlug(city) {

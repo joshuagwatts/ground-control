@@ -573,5 +573,9 @@ assert(listingUrls.length === 4, "realtor + zillow + site + /listings, no duplic
 assert(listingUrls.filter((u) => /realtor\.com/.test(u)).length === 1, "one realtor agent page, not two slash variants");
 assert(listingUrls.some((u) => /zillow\.com/.test(u)), "zillow agent page is included");
 assert(listingUrls.includes("https://golddotsouth.example/listings"), "the office site listings path is included");
+assert(
+  listingUrlsForOffice({ name: "Seabrooke Realty", address: "Oklahoma City, OK" }).some((u) => /oklahoma-city/.test(u)),
+  "Oklahoma City, OK is not slugged as a state abbreviation",
+);
 
 console.log("investors ok");
