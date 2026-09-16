@@ -339,33 +339,90 @@ export function formatRoofPermitLine(permits = []) {
     .join(" · ");
 }
 
+export function formatMoney(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 100) return "";
+  return `$${Math.round(v).toLocaleString("en-US")}`;
+}
+
+function cleanFact(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+function formatAcres(raw) {
+  const ac = Number(raw);
+  if (!Number.isFinite(ac) || ac <= 0) return "";
+  return `${ac >= 10 ? ac.toFixed(1) : ac.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")} ac`;
+}
+
+/** Every county fact we have — pin card, not a truncated one-liner. */
+export function formatAssessorFactRows(assessor = {}) {
+  const b = assessor.building || {};
+  const rows = [];
+  const add = (label, value, wide = false) => {
+    const v = cleanFact(value);
+    if (!v) return;
+    rows.push({ label, value: v, wide: Boolean(wide) });
+  };
+  add("Year built", b.year_built);
+  if (b.year_remodel && Number(b.year_remodel) !== Number(b.year_built)) add("Remodeled", b.year_remodel);
+  add("Living area", b.sqft ? `${Number(b.sqft).toLocaleString("en-US")} sf` : "");
+  add("Beds", b.beds || "");
+  add("Baths", b.baths || "");
+  add("Stories", b.stories || "");
+  add("Roof cover", b.roof_cover);
+  add("Roof type", b.roof_type);
+  add("Exterior", b.exterior);
+  add("Condition", b.condition);
+  add("Quality", b.quality);
+  add("Foundation", b.foundation);
+  add("HVAC", b.hvac);
+  add("Built as", b.construction);
+  add("Last sale", [cleanFact(b.sale_date), formatMoney(b.sale_price)].filter(Boolean).join(" · "));
+  add("Market value", formatMoney(b.market_value));
+  add("Assessed", formatMoney(b.assessed_value));
+  add("Land", formatMoney(b.land_value));
+  add("Improvements", formatMoney(b.improvement_value));
+  add("Lot", formatAcres(b.acres));
+  add("Subdivision", b.subdivision, true);
+  add("Legal", b.legal, true);
+  add("Account", assessor.account);
+  if (assessor.acct_type && !/^(res|residential)$/i.test(String(assessor.acct_type))) {
+    add("Account type", assessor.acct_type);
+  }
+  add("Situs", assessor.situs, true);
+  add("Mailing", assessor.mail, true);
+  for (const p of (assessor.permits || []).slice(0, 6)) {
+    const line = [p.date, p.number, p.description, p.cost ? `$${p.cost}` : ""].filter(Boolean).join(" · ");
+    add(isRoofPermit(p) ? "Roof permit" : "Permit", line, true);
+  }
+  return rows;
+}
+
 /** Human-readable one-liner for pin UI. */
 export function formatAssessorRecordLine(assessor = {}) {
   const b = assessor.building || {};
   const parts = [];
-  const roof = [b.roof_cover, b.roof_type].map((s) => String(s || "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  const roof = [b.roof_cover, b.roof_type].map((s) => cleanFact(s)).filter(Boolean);
   if (roof.length) parts.push(roof.join(" · "));
   if (b.year_built) parts.push(`Built ${b.year_built}`);
   if (b.year_remodel && b.year_remodel !== b.year_built) parts.push(`Remodeled ${b.year_remodel}`);
-  if (b.sqft) parts.push(`${Number(b.sqft).toLocaleString()} sf`);
+  if (b.sqft) parts.push(`${Number(b.sqft).toLocaleString("en-US")} sf`);
   if (b.stories) parts.push(`${b.stories} story`);
   if (b.beds) parts.push(`${b.beds} bed`);
   if (b.baths) parts.push(`${b.baths} bath`);
-  if (b.exterior) parts.push(String(b.exterior).replace(/\s+/g, " ").trim());
-  if (b.condition) parts.push(String(b.condition).replace(/\s+/g, " ").trim());
-  if (b.construction && parts.length < 6) parts.push(String(b.construction).replace(/\s+/g, " ").trim());
+  if (b.exterior) parts.push(cleanFact(b.exterior));
+  if (b.condition) parts.push(cleanFact(b.condition));
+  if (b.construction && parts.length < 6) parts.push(cleanFact(b.construction));
   if (b.sale_date || b.sale_price) {
     const saleBits = [];
-    if (b.sale_date) saleBits.push(String(b.sale_date).trim());
-    if (b.sale_price) saleBits.push(`$${Math.round(b.sale_price).toLocaleString()}`);
+    if (b.sale_date) saleBits.push(cleanFact(b.sale_date));
+    if (b.sale_price) saleBits.push(formatMoney(b.sale_price));
     parts.push(`Sale ${saleBits.join(" · ")}`);
   }
-  if (b.market_value) parts.push(`Market $${Math.round(b.market_value).toLocaleString()}`);
-  if (b.acres) {
-    const ac = Number(b.acres);
-    parts.push(`${ac >= 10 ? ac.toFixed(1) : ac.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")} ac`);
-  }
-  if (b.foundation && parts.length < 7) parts.push(String(b.foundation).replace(/\s+/g, " ").trim());
+  if (b.market_value) parts.push(`Market ${formatMoney(b.market_value)}`);
+  if (b.acres) parts.push(formatAcres(b.acres));
+  if (b.foundation && parts.length < 7) parts.push(cleanFact(b.foundation));
   const roofLine = formatRoofPermitLine(assessor.permits);
   if (roofLine) parts.push((assessor.permits || []).some(isRoofPermit) ? `Roof ${roofLine}` : `Permit ${roofLine}`);
   if (b.subdivision && parts.length < 5) parts.push(b.subdivision);

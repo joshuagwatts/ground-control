@@ -37,8 +37,8 @@ const ARCGIS_GEOCODER_URL = "https://geocode.arcgis.com/arcgis/rest/services/Wor
 const OK_EXTENT = { west: -103.05, south: 33.55, east: -94.35, north: 37.05 };
 const DDG_HTML = "https://html.duckduckgo.com/html/?q=";
 const MAX_LISTINGS = 40;
-const MAX_FETCH_LISTINGS = 10;
-const MAX_LISTING_GEOCODE = 6;
+const MAX_FETCH_LISTINGS = 16;
+const MAX_LISTING_GEOCODE = 10;
 const MAX_LISTING_KM = 35;
 
 const PEOPLE_SEARCH =
@@ -1298,20 +1298,20 @@ export function listingNearOffice(office, home, maxKm = MAX_LISTING_KM) {
 async function listingsFromPages(urls, inv) {
   const out = [];
   const seen = new Set();
-  for (const url of urls.slice(0, 3)) {
+  for (const url of urls.slice(0, 4)) {
     const page = await fetchPage(url, 7000, listingBrowserHeaders({ zillow: /zillow/i.test(url) }));
     if (!page?.html) continue;
     for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company })) {
       pushListing(out, seen, { ...row, url: row.url || page.url });
     }
-    if (out.length >= 8) break;
+    if (out.length >= 16) break;
   }
   return out;
 }
 
 export async function fetchInvestorListings(inv) {
   if (!inv || String(inv.kind) !== "realestate") return [];
-  const urls = listingUrlsForOffice(inv).slice(0, 2);
+  const urls = listingUrlsForOffice(inv).slice(0, 3);
   if (inv.website) {
     urls.push(inv.website);
     try {

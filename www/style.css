@@ -1814,9 +1814,10 @@ body.wx-map-expanded .hs-sheet {
 }
 /* Address peek: pin + Zillow/contacts visible; storm list stays tucked away */
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-sheet {
-  max-height: none !important;
+  max-height: min(48vh, 26rem) !important;
   opacity: 1 !important;
-  overflow: visible !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
   padding-top: 0.45rem !important;
   padding-bottom: 0.35rem !important;
   margin: 0 !important;
@@ -1889,6 +1890,22 @@ body.wx-map-expanded .hs-sheet {
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready::after {
   content: none;
   display: none;
+}
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-office::after,
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready.hs-pin-office::after {
+  content: "Gold dots are this office's listings";
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-listing::after,
+.hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready.hs-pin-listing::after {
+  content: "County record for this listed home";
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
 }
 .hs-bottom-panel {
   transition:
@@ -2422,11 +2439,17 @@ body.wx-map-expanded .hs-field {
 .hs-dot-done { background: #ffcc00; }
 .hs-dot-ping { background: #fb923c; }
 .hs-place {
-  display: flex; flex-wrap: wrap; gap: 0.45rem 0.65rem; align-items: center;
+  display: flex; flex-direction: column; flex-wrap: nowrap; gap: 0.5rem;
+  align-items: stretch;
   margin: -0.15rem 0 0.85rem;
 }
 .hs-who { width: 100%; font-weight: 650; color: var(--text); font-size: 14px; }
-.hs-place a {
+.hs-place-actions {
+  display: flex; flex-wrap: wrap; gap: 0.4rem 0.5rem; align-items: center;
+}
+.hs-place a,
+.hs-place-actions a,
+.hs-inv-listing-bar a {
   display: inline-flex; align-items: center;
   padding: 0.4rem 0.7rem;
   border-radius: 999px;
@@ -2435,6 +2458,85 @@ body.wx-map-expanded .hs-field {
   color: var(--text);
   text-decoration: none;
   font-size: 13px; font-weight: 650;
+}
+.hs-parcel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem 0.75rem;
+  width: 100%;
+}
+.hs-parcel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+  min-width: 0;
+}
+.hs-parcel-row.wide { grid-column: 1 / -1; }
+.hs-parcel-lab {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 650;
+}
+.hs-parcel-val {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.hs-inv-peek-addr,
+.hs-inv-peek-count,
+.hs-inv-peek-note {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.hs-inv-peek-count { color: #f3e6c4; }
+.hs-inv-homes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  width: 100%;
+}
+.hs-inv-home {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--inset);
+  color: var(--text);
+  font: inherit;
+}
+.hs-inv-home strong { font-size: 13px; font-weight: 650; }
+.hs-inv-home span { font-size: 11px; color: var(--muted); }
+.hs-inv-home.loose { border-style: dashed; }
+.hs-inv-home-more { font-size: 12px; color: var(--muted); margin: 0; }
+.hs-inv-listing-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: -0.35rem 0 0.55rem;
+}
+.hs-inv-back,
+.hs-inv-promote,
+.hs-inv-edit {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.38rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--inset);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
 }
 .hs-zillow { color: #1c1400 !important; background: var(--trim) !important; border-color: var(--trim) !important; }
 .hs-assessor { color: #d9f0e3 !important; border-color: #2f6f4e !important; }

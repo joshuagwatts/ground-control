@@ -42,7 +42,7 @@ import {
   cancelRentFlagSweep,
 } from "./contacts.js";
 import { geocodeCandidates, geoCacheOk } from "./geocode.js";
-import { lookupAssessorParcel, enrichAssessorPublicRecord } from "./assessor.js";
+import { lookupAssessorParcel, enrichAssessorPublicRecord, formatAssessorFactRows } from "./assessor.js";
 import { kindMeta, validMarkCoord, markBadge, markTint, markPinSvgHtml, clampPinScale } from "./marks.js";
 import {
   investorGlyphSvg,
@@ -416,6 +416,8 @@ let fieldOverlay = {
   onInvestorPromote: null,
   onInvestorDelete: null,
   onInvestorNeedPublic: null,
+  onInvestorSelect: null,
+  onListingSelect: null,
   onInvestorViewChange: null,
   lookingInvestorIds: null,
 };
@@ -565,8 +567,9 @@ function bindPlaceLinks(root) {
   });
 }
 
-function ownerFields(people = {}, assessor = null) {
+function ownerFields(people = {}, assessor = null, extra = {}) {
   const b = assessor?.building || {};
+  const facts = assessor ? formatAssessorFactRows(assessor) : [];
   return {
     owner_name: (assessor && assessor.name) || people.name || people.owner_name || "",
     owner_phone: people.phone || people.owner_phone || "",
@@ -575,15 +578,45 @@ function ownerFields(people = {}, assessor = null) {
     assessor_url: (assessor && assessor.url) || "",
     assessor_source: (assessor && assessor.source) || "",
     assessor_record: (assessor && assessor.record_line) || "",
+    assessor_facts: facts,
+    assessor_checked: Boolean(extra.checked) || Boolean(assessor),
     roof_permits: (assessor && assessor.roof_permits) || "",
     homestead: Boolean(assessor && assessor.homestead),
     absentee: Boolean(assessor && assessor.absentee),
     owner_kind: (assessor && assessor.owner_kind) || "",
     acct_type: (assessor && (assessor.acct_type || b.acct_type)) || "",
+    situs: (assessor && assessor.situs) || "",
+    account: (assessor && assessor.account) || "",
     facebook_url: people.facebook || people.facebook_url || "",
     instagram_url: people.instagram || people.instagram_url || "",
     zillow_url: people.zillow_url || "",
   };
+}
+
+function parcelFactsHtml(data, esc) {
+  const rows = Array.isArray(data.assessor_facts)
+    ? data.assessor_facts
+    : formatAssessorFactRows({
+        building: data.building,
+        permits: data.permits,
+        mail: data.owner_mail,
+        situs: data.situs,
+        account: data.account,
+        acct_type: data.acct_type,
+        record_line: data.assessor_record,
+      });
+  if (rows.length) {
+    return `<div class="hs-parcel">${rows
+      .map(
+        (r) =>
+          `<div class="hs-parcel-row${r.wide ? " wide" : ""}"><span class="hs-parcel-lab">${esc(r.label)}</span><span class="hs-parcel-val">${esc(r.value)}</span></div>`,
+      )
+      .join("")}</div>`;
+  }
+  const record = String(data.assessor_record || "").trim();
+  if (record) return `<span class="hs-record">${esc(record)}</span>`;
+  if (!data.assessor_checked) return `<span class="hs-place-miss">Looking up the county record…</span>`;
+  return "";
 }
 
 function placeContactHtml(data, esc) {
@@ -593,21 +626,11 @@ function placeContactHtml(data, esc) {
   const name = String(data.owner_name || "").trim();
   const homestead = Boolean(data.homestead);
   const absentee = Boolean(data.absentee);
-  const record = String(data.assessor_record || "").trim();
-  const mail = String(data.owner_mail || "").trim();
-  const roof = String(data.roof_permits || "").trim();
   const kind = String(data.owner_kind || "").trim();
   const acct = String(data.acct_type || "").trim();
   const e164 = phoneDigits(phone);
   const assessorUrl = String(data.assessor_url || "").trim();
-  const facts = [];
-  if (record) facts.push(`<span class="hs-record">${esc(record)}</span>`);
-  if (absentee && mail) {
-    facts.push(`<span class="hs-mail-away" title="Mailing address is not this house">Mail ${esc(mail)}</span>`);
-  }
-  if (roof && !record.toLowerCase().includes(roof.toLowerCase().slice(0, 12))) {
-    facts.push(`<span class="hs-roof-permit">${esc(roof)}</span>`);
-  }
+  const parcel = parcelFactsHtml(data, esc);
   const bits = [];
   if (zurl) bits.push(`<a class="hs-zillow" href="${zurl}" target="_blank" rel="noopener noreferrer">Zillow</a>`);
   if (assessorUrl) {
@@ -626,37 +649,42 @@ function placeContactHtml(data, esc) {
   if (kind === "corp") bits.push(`<span class="hs-entity">Corp</span>`);
   if (kind === "public") bits.push(`<span class="hs-entity">Public</span>`);
   if (acct && !/^(res|residential)$/i.test(acct)) bits.push(`<span class="hs-entity">${esc(acct)}</span>`);
-  const miss = !name && !e164 && !email && !record ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>` : "";
-  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${facts.join("")}${bits.join("")}${miss}</div>`;
+  const hasParcel = Boolean(data.assessor_facts?.length || String(data.assessor_record || "").trim());
+  const miss =
+    !name && !e164 && !email && !hasParcel && data.assessor_checked
+      ? `<span class="hs-place-miss">No owner, phone, or email for this house yet</span>`
+      : "";
+  const actions = bits.length ? `<div class="hs-place-actions">${bits.join("")}</div>` : "";
+  return `<div class="hs-place">${name ? `<span class="hs-who">${esc(name)}</span>` : ""}${parcel}${actions}${miss}</div>`;
 }
 
 async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace) {
-  const pack = (people, a) => {
-    const fields = ownerFields(people, a);
+  const pack = (people, a, checked = false) => {
+    const fields = ownerFields(people, a, { checked });
     return {
       ...base,
       ...fields,
       zillow_url: pickZillowUrl({ address: addr, zillow_url: people.zillow_url || fields.zillow_url }),
     };
   };
-  const emit = (people, a) => {
-    const dossier = pack(people, a);
+  const emit = (people, a, checked = false) => {
+    const dossier = pack(people, a, checked || Boolean(a));
     if (typeof onPlace === "function") onPlace(dossier);
     return dossier;
   };
   let people = listingForPin(geo, addr);
   let assessor = null;
-  let dossier = emit(people, assessor);
+  let dossier = emit(people, assessor, false);
   const gisP = lookupAssessorParcel(lat, lon, addr, { enrich: false }).catch(() => null);
   const contactsP = lookupPlaceContacts(lat, lon, addr, geo, settings).catch(() => ({}));
   assessor = await gisP;
-  if (assessor) dossier = emit(people, assessor);
+  dossier = emit(people, assessor, true);
   const enrichP =
     assessor?.url && /oklahomacounty\.org/i.test(assessor.url)
       ? enrichAssessorPublicRecord(assessor)
           .then((hit) => {
             assessor = hit;
-            dossier = emit(people, assessor);
+            dossier = emit(people, assessor, true);
             return hit;
           })
           .catch(() => assessor)
@@ -664,7 +692,7 @@ async function mergePlaceOwner(settings, lat, lon, addr, geo, base = {}, onPlace
   const contacts = await contactsP;
   people = mergeContacts(listingForPin(geo, addr), contacts);
   assessor = (await enrichP) || assessor;
-  dossier = emit(people, assessor);
+  dossier = emit(people, assessor, true);
   if (settings && (!dossier.owner_phone || !dossier.owner_email || !dossier.owner_name)) {
     const ai = await fillContactGapsWithChat(settings, {
       address: addr,
@@ -9342,39 +9370,11 @@ function investorPopupHtml(inv) {
   </div>`;
 }
 
-function bindInvestorMarker(marker, inv) {
-  const homes = String(inv?.kind) === "realestate" ? mappedInvestorListings(inv) : [];
-  marker.bindPopup(investorPopupHtml(inv), {
-    className: "hs-zone-popup hs-inv-popup",
-    closeButton: true,
-    maxWidth: 280,
-    offset: [0, -10],
-    autoPan: homes.length === 0,
-  });
-  marker.on("popupopen", () => {
-    const root = marker.getPopup()?.getElement?.();
-    if (!root || root._hsInvBound) return;
-    root._hsInvBound = true;
-    root.addEventListener("click", (ev) => {
-      const btn = ev.target?.closest?.("[data-inv-act]");
-      if (!btn) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const act = btn.dataset.invAct;
-      if (act === "promote") fieldOverlay.onInvestorPromote?.(inv);
-      if (act === "edit") {
-        try {
-          marker.closePopup();
-        } catch {
-          /* ignore */
-        }
-        fieldOverlay.onInvestorEdit?.(inv);
-      }
-    });
-  });
+function bindInvestorMarker(_marker, _inv) {
+  /* Office info lives in the HailScope peek — Leaflet popups fight the sheet. */
 }
 
-const LISTING_DRAW_MAX = 20;
+const LISTING_DRAW_MAX = 36;
 
 function listingInMapView(home, pad = 0.012) {
   if (!validInvestorCoord(home?.lat, home?.lon) || !map) return false;
@@ -9444,6 +9444,239 @@ function listingPopupHtml(home, inv) {
   </div>`;
 }
 
+function listingAttr(home) {
+  return {
+    lat: Number(home?.lat),
+    lon: Number(home?.lon),
+    addr: String(home?.address || "").trim(),
+    url: String(home?.url || "").trim(),
+    price: String(home?.price || "").trim(),
+  };
+}
+
+function listingFromPeekBtn(btn, inv) {
+  const addr = String(btn?.dataset?.addr || "").trim();
+  const fromInv = (inv?.listings || []).find((h) => String(h?.address || "").trim() === addr);
+  if (fromInv) return fromInv;
+  const lat = Number(btn?.dataset?.lat);
+  const lon = Number(btn?.dataset?.lon);
+  return {
+    address: addr,
+    url: String(btn?.dataset?.url || "").trim(),
+    price: String(btn?.dataset?.price || "").trim(),
+    lat: Number.isFinite(lat) ? lat : null,
+    lon: Number.isFinite(lon) ? lon : null,
+  };
+}
+
+function investorHomeRowHtml(home, mapped) {
+  const a = listingAttr(home);
+  const exact = listingIsExact(home);
+  const lab = [a.addr || "Listed home", a.price].filter(Boolean).join(" · ");
+  const hint = mapped
+    ? exact
+      ? "On the map"
+      : "Approximate pin"
+    : "Address only — not on the map";
+  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}</strong><span>${escHousePop(hint)}</span></button>`;
+}
+
+function investorPeekHtml(inv) {
+  const name = investorDisplayName(inv);
+  const who = investorContactLine(inv);
+  const phone = formatPhone(inv.phone || "") || String(inv.phone || "").trim();
+  const e164 = phoneDigits(phone);
+  const email = String(inv.email || "").trim();
+  const addr = String(inv.address || "").trim();
+  const note = String(inv.note || "").trim();
+  const isRe = String(inv.kind) === "realestate";
+  const mapped = isRe ? mappedInvestorListings(inv) : [];
+  const unmapped = isRe ? unmappedInvestorListings(inv) : [];
+  const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
+  const kindLab = isRe ? "Real estate office" : "Insurance office";
+  let listingLine = "";
+  if (isRe) {
+    const bits = [];
+    if (mapped.length) bits.push(`${mapped.length} on the map`);
+    if (unmapped.length) bits.push(`${unmapped.length} address-only`);
+    if (bits.length) listingLine = bits.join(" · ");
+    else if (looking) listingLine = "Looking up this office's listings…";
+    else listingLine = "No public listings yet";
+  }
+  const tel = e164 ? `<a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(phone)}</a>` : "";
+  const sms = e164 ? `<a class="hs-sms" href="sms:${escHousePop(e164)}">Text</a>` : "";
+  const mail = email ? `<a class="hs-mail" href="mailto:${escHousePop(email)}">${escHousePop(email)}</a>` : "";
+  const hunt =
+    !investorHasContact(inv) && looking
+      ? `<span class="hs-place-miss">${escHousePop(isRe ? "Looking up office phone…" : "Looking up this agency's phone…")}</span>`
+      : "";
+  const homes = [...mapped, ...unmapped];
+  const mappedShow = mapped.slice(0, 24);
+  const unmappedShow = unmapped.slice(0, Math.max(0, 24 - mappedShow.length));
+  const extra = homes.length > 24 ? `<p class="hs-inv-home-more">${homes.length - 24} more listings</p>` : "";
+  const list =
+    isRe && homes.length
+      ? `<div class="hs-inv-homes">${mappedShow.map((h) => investorHomeRowHtml(h, true)).join("")}${unmappedShow.map((h) => investorHomeRowHtml(h, false)).join("")}${extra}</div>`
+      : isRe
+        ? `<p class="hs-place-miss">${escHousePop(listingLine)}</p>`
+        : "";
+  return `<p class="hs-pin hs-pin-ready hs-pin-office" data-inv="${escHousePop(inv.id)}"><strong>${escHousePop(name)}</strong>${escHousePop([kindLab, relationshipLabel(inv)].filter(Boolean).join(" · "))}</p>
+<div class="hs-place hs-inv-peek">
+  ${who && who !== name ? `<span class="hs-who">${escHousePop(who)}</span>` : ""}
+  ${addr ? `<span class="hs-inv-peek-addr">${escHousePop(addr)}</span>` : ""}
+  ${listingLine && homes.length ? `<span class="hs-inv-peek-count">${escHousePop(listingLine)}</span>` : ""}
+  ${note ? `<span class="hs-inv-peek-note">${escHousePop(note)}</span>` : ""}
+  ${hunt}
+  <div class="hs-place-actions">
+    ${tel}${sms}${mail}
+    <button type="button" class="hs-inv-promote" data-inv-act="promote">${escHousePop(promoteButtonLabel(inv))}</button>
+    <button type="button" class="hs-inv-edit" data-inv-act="edit">Edit</button>
+  </div>
+  ${list}
+</div>`;
+}
+
+function listingPeekHtml(home, inv, place = {}) {
+  const addr = String(home?.address || place.address || "Listed home").trim();
+  const price = String(home?.price || "").trim();
+  const url = String(home?.url || "").trim();
+  const who = investorDisplayName(inv);
+  const check = zillowSearchUrl(addr);
+  const link = url
+    ? `<a class="hs-list hs-zillow" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
+    : "";
+  const verify =
+    check && check !== url
+      ? `<a class="hs-list hs-inv-verify" href="${escHousePop(check)}" target="_blank" rel="noopener">Zillow</a>`
+      : "";
+  const mapped = validInvestorCoord(home?.lat, home?.lon);
+  const hint = [who, price, mapped ? listingProvenance(home) : "Address only — not pinned"].filter(Boolean).join(" · ");
+  const placeData = {
+    ...place,
+    address: addr,
+    zillow_url: place.zillow_url || check,
+  };
+  return `<p class="hs-pin hs-pin-ready hs-pin-listing" data-inv="${escHousePop(inv?.id || "")}"><strong class="hs-addr-copy" role="button" tabindex="0" title="Tap to copy address" data-copy="${escHousePop(addr)}">${escHousePop(addr)}</strong>${escHousePop(hint)}</p>
+<div class="hs-inv-listing-bar">
+  <button type="button" class="hs-inv-back" data-inv-act="office">Office</button>
+  ${link}${verify}
+</div>
+${placeContactHtml(placeData, escHousePop)}`;
+}
+
+function bindInvestorPeek(root) {
+  if (!root) return;
+  bindPlaceLinks(root);
+  bindHailAddrCopy(root);
+  if (root._hsInvPeekBound) return;
+  root._hsInvPeekBound = true;
+  root.addEventListener("click", (ev) => {
+    const inv = peekInvestorFromSheet(root);
+    const homeBtn = ev.target?.closest?.("[data-inv-home]");
+    if (homeBtn && root.contains(homeBtn)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const home = listingFromPeekBtn(homeBtn, inv);
+      handleListingTap(home, inv);
+      return;
+    }
+    const btn = ev.target?.closest?.("[data-inv-act]");
+    if (!btn || !root.contains(btn)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const act = btn.dataset.invAct;
+    if (act === "promote" && inv) fieldOverlay.onInvestorPromote?.(inv);
+    if (act === "edit" && inv) fieldOverlay.onInvestorEdit?.(inv);
+    if (act === "office" && inv) showInvestorPeek(inv);
+  });
+}
+
+function peekInvestorFromSheet(root) {
+  const id = root?.querySelector?.("[data-inv]")?.dataset?.inv;
+  if (!id) return null;
+  return (fieldOverlay.investors || []).find((x) => String(x.id) === String(id)) || null;
+}
+
+function paintPeekSheet(html, inv) {
+  const root = document.getElementById("hs-sheet");
+  if (!root) return null;
+  root.innerHTML = html;
+  bindInvestorPeek(root);
+  if (inv) bindPlaceLinks(root);
+  revealHailAddressPeek();
+  return root;
+}
+
+/** Office card in the HailScope peek — phone, listings, no storms. */
+export function showInvestorPeek(inv) {
+  if (!inv) return;
+  peekKind = "investor";
+  paintPeekSheet(investorPeekHtml(inv), inv);
+}
+
+let listingPeekGen = 0;
+let peekKind = "hail";
+
+function listingPeekStillOpen(invId) {
+  const root = document.getElementById("hs-sheet");
+  if (!root?.querySelector(".hs-pin-listing")) return false;
+  if (invId && root.querySelector(".hs-pin-listing")?.dataset?.inv && root.querySelector(".hs-pin-listing").dataset.inv !== String(invId)) {
+    return false;
+  }
+  return peekKind === "listing";
+}
+
+/** Listed home in the peek: listing links + full county parcel, no Search storms. */
+export async function showListingPeek(home, inv, settings = {}) {
+  if (!home) return;
+  peekKind = "listing";
+  const gen = ++listingPeekGen;
+  const addr = String(home.address || "").trim();
+  paintPeekSheet(
+    listingPeekHtml(home, inv, { address: addr, assessor_checked: false, zillow_url: zillowSearchUrl(addr) }),
+    inv,
+  );
+  const lat = Number(home.lat);
+  const lon = Number(home.lon);
+  if (!validInvestorCoord(lat, lon)) {
+    const root = document.getElementById("hs-sheet");
+    const place = root?.querySelector(".hs-place");
+    if (place) {
+      place.outerHTML = placeContactHtml(
+        { address: addr, assessor_checked: true, zillow_url: zillowSearchUrl(addr) },
+        escHousePop,
+      );
+      bindPlaceLinks(root);
+    }
+    return;
+  }
+  await mergePlaceOwner(
+    settings,
+    lat,
+    lon,
+    addr,
+    { address: addr, lat, lon },
+    { ok: true, address: addr, lat, lon },
+    (partial) => {
+      if (gen !== listingPeekGen || !listingPeekStillOpen(inv?.id)) return;
+      const root = document.getElementById("hs-sheet");
+      const place = root?.querySelector(".hs-place");
+      const html = placeContactHtml({ ...partial, address: addr }, escHousePop);
+      if (place) place.outerHTML = html;
+      else root?.insertAdjacentHTML("beforeend", html);
+      bindPlaceLinks(root);
+    },
+  );
+}
+
+function handleListingTap(home, inv) {
+  if (validInvestorCoord(home?.lat, home?.lon)) {
+    flyToPin(Number(home.lat), Number(home.lon), 18, { stay: true });
+  }
+  if (typeof fieldOverlay.onListingSelect === "function") fieldOverlay.onListingSelect(home, inv);
+  else void showListingPeek(home, inv, {});
+}
+
 function paintInvestorRegions(inv) {
   if (!investorRegionLayer) return;
   investorRegionLayer.clearLayers();
@@ -9467,12 +9700,7 @@ function paintInvestorRegions(inv) {
       .on("click", (e) => {
         window.L.DomEvent.stop(e);
         suppressMapTap(700);
-      })
-      .bindPopup(listingPopupHtml(home, inv), {
-        className: "hs-zone-popup hs-inv-popup",
-        closeButton: true,
-        maxWidth: 260,
-        offset: [0, -6],
+        handleListingTap(home, inv);
       })
       .addTo(investorRegionLayer);
   }
@@ -9535,11 +9763,13 @@ function openInvestorPopupSoon(marker, delayMs = 40) {
 function selectInvestorOnMap(inv, marker) {
   selectedInvestorId = inv?.id ? String(inv.id) : "";
   paintInvestorRegions(inv);
-  const zoomed = fitInvestorRegions(inv);
-  openInvestorPopupSoon(marker, zoomed ? 320 : 40);
+  fitInvestorRegions(inv);
+  void marker;
   const needListings = String(inv?.kind) === "realestate" && !(inv?.listings || []).length;
   const needContact = !investorHasContact(inv);
   if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
+  if (typeof fieldOverlay.onInvestorSelect === "function") fieldOverlay.onInvestorSelect(inv);
+  else showInvestorPeek(inv);
 }
 
 let lastInvestorPaintSig = "";
@@ -9622,14 +9852,16 @@ export function focusInvestorPin(id, { popup = true } = {}) {
   lastInvestorPaintSig = "";
   paintInvestorLayer({ force: true });
   const inv = (fieldOverlay.investors || []).find((x) => String(x.id) === selectedInvestorId);
-  const marker = investorMarkers.get(selectedInvestorId);
   if (inv) paintInvestorRegions(inv);
-  const zoomed = inv ? fitInvestorRegions(inv) : false;
-  if (popup) openInvestorPopupSoon(marker, zoomed ? 320 : 40);
+  if (inv) fitInvestorRegions(inv);
   if (inv) {
     const needListings = String(inv.kind) === "realestate" && !(inv.listings || []).length;
     const needContact = !investorHasContact(inv);
     if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
+    if (popup) {
+      if (typeof fieldOverlay.onInvestorSelect === "function") fieldOverlay.onInvestorSelect(inv);
+      else showInvestorPeek(inv);
+    }
   }
 }
 
@@ -9834,6 +10066,8 @@ export function setFieldOverlay({
   onInvestorPromote,
   onInvestorDelete,
   onInvestorNeedPublic,
+  onInvestorSelect,
+  onListingSelect,
   onInvestorViewChange,
   lookingInvestorIds = null,
 } = {}) {
@@ -9858,6 +10092,8 @@ export function setFieldOverlay({
     onInvestorPromote,
     onInvestorDelete,
     onInvestorNeedPublic,
+    onInvestorSelect,
+    onListingSelect,
     onInvestorViewChange,
     lookingInvestorIds,
   };
@@ -10776,7 +11012,7 @@ export function revealHailAddressPeek() {
   // No house yet: idle peek — storms stay off until Search storms
   if (!Number.isFinite(pinLat) && !Number.isFinite(pinLon)) {
     const sheet = document.getElementById("hs-sheet");
-    if (sheet && !sheet.querySelector(".hs-pin") && !sheet.querySelector(".hs-date") && !sheet.querySelector("#hs-hail-search")) {
+    if (sheet && !sheet.querySelector(".hs-pin") && !sheet.querySelector(".hs-date") && !sheet.querySelector("#hs-hail-search") && !sheet.querySelector(".hs-inv-peek")) {
       const esc = window.__pipWxEsc || ((s) => String(s ?? ""));
       paintHailSearchIdle(sheet, esc);
     }
@@ -12123,6 +12359,7 @@ export function clearSelectedStormDate() {
 /** Update address/contacts while storm list still loading — avoids wiping the sheet. */
 export function patchHailScopePartial(root, partial, esc) {
   if (!root) return;
+  if (root.querySelector(".hs-pin-office, .hs-pin-listing, .hs-inv-peek")) return;
   const addr = partial.address || "Dropped pin";
   const box = document.getElementById("hs-addr-q");
   if (box && addr && parseStreetAddress(addr).house && !/^map\s*view$/i.test(addr)) box.value = addr;
@@ -12212,6 +12449,7 @@ function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 /** One coordinated map + sheet refresh after dossier data arrives. */
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
+  if (root.querySelector(".hs-pin-office, .hs-pin-listing, .hs-inv-peek")) return;
   if (Number(data._meta?.fetchedKm) > 0) lastHailFetchedKm = Number(data._meta.fetchedKm);
   if (data?.hail) lastDossierDataRef = data;
   syncHailStormDateSelection(data);
@@ -12750,6 +12988,7 @@ function bindHailAddrCopy(root) {
 
 export function renderHailScopeSheet(root, data, esc, { onRefetch, drawMap = true } = {}) {
   if (!root) return;
+  peekKind = "hail";
   const days = hailScopeDays(data);
   // Never prune checked dates from progressive loads / filter churn.
   root.innerHTML = hailScopeHtml(data, days, esc);

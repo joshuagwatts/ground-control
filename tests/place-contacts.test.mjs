@@ -47,7 +47,7 @@ import {
   persistedRentFlagsAt,
 } from "../www/contacts.js";
 import { parseOsmXmlNodes, isUsableHttpBody } from "../www/net.js";
-import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel, pickBuildingFacts, formatAssessorRecordLine, parseOkCountyAssessorHtml, parseOkCountyBuildingDetailHtml, mailingLooksAbsentee, ownerEntityKind } from "../www/assessor.js";
+import { formatOwnerName, formatMailing, parcelMatchesPin, pickParcel, pickBuildingFacts, formatAssessorRecordLine, formatAssessorFactRows, parseOkCountyAssessorHtml, parseOkCountyBuildingDetailHtml, mailingLooksAbsentee, ownerEntityKind } from "../www/assessor.js";
 
 function assert(ok, msg) {
   if (!ok) throw new Error(msg);
@@ -198,6 +198,53 @@ const gisLine = formatAssessorRecordLine({
   building: { sale_date: "2005", market_value: 295000, acres: 0.2135, subdivision: "CAPITOL VIEW SECOND" },
 });
 assert(/Sale 2005/.test(gisLine) && /Market \$295,000/.test(gisLine) && /0.21 ac/.test(gisLine), "gis-only roof facts");
+const factRows = formatAssessorFactRows({
+  name: "Riley William A III Rev Trust",
+  mail: "PO BOX 12, Edmond, OK 73083",
+  situs: "2521 TREDINGTON WAY EDMOND",
+  account: "R123456",
+  acct_type: "Residential",
+  building: {
+    ...bld,
+    roof_cover: "Composition Shingle",
+    roof_type: "Gable",
+    year_remodel: 2013,
+    stories: 1.5,
+    beds: 3,
+    baths: 2,
+    market_value: 295000,
+    assessed_value: 26550,
+    land_value: 40000,
+    improvement_value: 255000,
+    acres: 0.2135,
+    subdivision: "CAPITOL VIEW SECOND",
+    legal: "LT 12 BLK 3 CAPITOL VIEW SECOND",
+    hvac: "Central",
+    quality: "Average",
+    condition: "Average",
+    foundation: "Slab",
+  },
+  permits: [{ date: "1/3/2024", number: "B23-00923", description: "Reroof Composition", cost: 12000 }],
+});
+const factMap = Object.fromEntries(factRows.map((r) => [r.label, r.value]));
+assert(factMap["Year built"] === "1998", "fact year");
+assert(factMap["Remodeled"] === "2013", "fact remodel");
+assert(/2,100 sf/.test(factMap["Living area"] || ""), "fact sf");
+assert(factMap.Beds === "3" && factMap.Baths === "2", "fact beds baths");
+assert(factMap["Roof cover"] === "Composition Shingle" && factMap["Roof type"] === "Gable", "fact roof");
+assert(/\$295,000/.test(factMap["Market value"] || ""), "fact market");
+assert(/\$26,550/.test(factMap.Assessed || ""), "fact assessed");
+assert(/\$40,000/.test(factMap.Land || ""), "fact land");
+assert(/\$255,000/.test(factMap.Improvements || ""), "fact imp");
+assert(/0.21 ac/.test(factMap.Lot || ""), "fact acres");
+assert(factMap.Subdivision === "CAPITOL VIEW SECOND", "fact subdivision");
+assert(/LT 12/.test(factMap.Legal || ""), "fact legal");
+assert(factMap.Account === "R123456", "fact account");
+assert(factMap.Situs.includes("TREDINGTON"), "fact situs");
+assert(/PO BOX 12/.test(factMap.Mailing || ""), "fact mailing");
+assert(/Reroof/.test(factMap["Roof permit"] || ""), "fact roof permit");
+assert(!factRows.some((r) => r.label === "Account type"), "skip generic residential acct");
+assert(factRows.length >= 18, `all assessor facts, got ${factRows.length}`);
 
 assert(
   !isUsableHttpBody("<html><h1>CORS proxy temporarily paused</h1><p>Proxy requests are unavailable</p></html>", "https://services8.arcgis.com/x/FeatureServer/0/query?f=json"),
