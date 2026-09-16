@@ -1888,8 +1888,11 @@ body.wx-map-expanded .hs-sheet {
 }
 /* Loaded map-view / pin copy already says what to do — don't stack the hint */
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready::after {
-  content: none;
-  display: none;
+  content: "Swipe up for storm dates";
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-office::after,
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready.hs-pin-office::after {

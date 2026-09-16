@@ -2830,7 +2830,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     if (wxState.address && parseStreetAddress(wxState.address).house) addrBox.value = wxState.address;
     else addrBox.value = "";
   }
-  revealHailStormSheet();
+  revealHailAddressPeek();
   setStatus("Loading storms…");
   try {
     const data = await pinDossier(db.settings, lat, lon, {
@@ -2847,7 +2847,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
         if (!knownAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
         wxState.data = partial;
         if ((partial.hail || []).length) {
-          syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: true });
+          syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: false });
           setStatus(`Loading storms… ${(partial.hail || []).length} dates`);
         } else {
           patchHailScopePartial($("#hs-sheet"), partial, esc);
@@ -2862,7 +2862,7 @@ async function onHailTap(lat, lon, { address: prefAddr } = {}) {
     }
     wxState.address = data.address || "";
     wxState.data = data;
-    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: true });
+    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: false });
     const fetchedDays = Number(data._meta?.fetchedDays) || 0;
     if (!(data.hail || []).length && fetchedDays < 730) {
       if (sheet) {

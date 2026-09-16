@@ -12484,10 +12484,7 @@ export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, rev
     renderHailScopeSheet(root, data, esc, { onRefetch, drawMap: false });
   }
   if (revealSheet) revealHailStormSheet({ interactive: true, scroll: false });
-  else if (hailScopeDays(data).length && hailBottomTier === "address") {
-    // Dates loaded while address peek was up — open the list without waiting for a swipe.
-    revealHailStormSheet({ interactive: true, scroll: false });
-  }
+  // Address peek keeps the parcel card in front. Swipe up (or tap the pin again) for storm dates.
 }
 
 function hailScopePinHtml(data, esc) {
