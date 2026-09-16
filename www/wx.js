@@ -49,9 +49,9 @@ import {
   investorDisplayName,
   investorContactLine,
   investorHasContact,
-  investorListingBounds,
   listingIsExact,
   mappedInvestorListings,
+  listingsForSelectedOffice,
   unmappedInvestorListings,
   isPartner,
   promoteButtonLabel,
@@ -9376,29 +9376,8 @@ function bindInvestorMarker(_marker, _inv) {
 
 const LISTING_DRAW_MAX = 36;
 
-function listingInMapView(home, pad = 0.012) {
-  if (!validInvestorCoord(home?.lat, home?.lon) || !map) return false;
-  const b = map.getBounds?.();
-  if (!b?.isValid?.()) return true;
-  return (
-    home.lat >= b.getSouth() - pad &&
-    home.lat <= b.getNorth() + pad &&
-    home.lon >= b.getWest() - pad &&
-    home.lon <= b.getEast() + pad
-  );
-}
-
 function listingsToDraw(inv) {
-  const homes = mappedInvestorListings(inv);
-  const inView = homes.filter((h) => listingInMapView(h));
-  if (inView.length) return inView.slice(0, LISTING_DRAW_MAX);
-  const c = map?.getCenter?.();
-  const lat = Number.isFinite(c?.lat) ? c.lat : Number(inv?.lat);
-  const lon = Number.isFinite(c?.lng) ? c.lng : Number(inv?.lon);
-  return homes
-    .slice()
-    .sort((a, b) => haversineKm(lat, lon, a.lat, a.lon) - haversineKm(lat, lon, b.lat, b.lon))
-    .slice(0, 8);
+  return listingsForSelectedOffice(inv, { maxKm: 14, limit: LISTING_DRAW_MAX });
 }
 
 const GEO_SOURCE_LABEL = {
@@ -9611,6 +9590,7 @@ function paintPeekSheet(html, inv) {
 export function showInvestorPeek(inv) {
   if (!inv) return;
   peekKind = "investor";
+  listingPeekGen += 1;
   paintPeekSheet(investorPeekHtml(inv), inv);
 }
 
@@ -9726,27 +9706,55 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
   });
 }
 
-function fitInvestorRegions(inv) {
+function frameSelectedOffice(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
-  const homes = mappedInvestorListings(inv);
-  if (!homes.length) return false;
-  if (homes.some((h) => listingInMapView(h))) return false;
-  const box = investorListingBounds(inv);
-  if (!box) return false;
-  const spanKm = haversineKm(box.south, box.west, box.north, box.east);
-  if (spanKm > 14) return false;
+  if (!validInvestorCoord(inv?.lat, inv?.lon)) return false;
+  const homes = listingsForSelectedOffice(inv, { maxKm: 8, limit: 24 });
+  const near = homes.filter((h) => haversineKm(inv.lat, inv.lon, h.lat, h.lon) <= 8);
   try {
-    map.fitBounds(
-      [
-        [box.south, box.west],
-        [box.north, box.east],
-      ],
-      { padding: [40, 40], maxZoom: 15, animate: false },
-    );
+    if (near.length) {
+      map.fitBounds([[inv.lat, inv.lon], ...near.map((h) => [h.lat, h.lon])], {
+        padding: [40, 40],
+        maxZoom: 15,
+        animate: false,
+      });
+      return true;
+    }
+    map.setView([inv.lat, inv.lon], 14, { animate: false });
     return true;
   } catch {
     return false;
   }
+}
+
+function officeNeedsPublic(inv) {
+  if (!inv) return false;
+  if (!investorHasContact(inv)) return true;
+  return String(inv.kind) === "realestate" && mappedInvestorListings(inv).length < 1;
+}
+
+function selectInvestorOnMap(inv, marker) {
+  selectedInvestorId = inv?.id ? String(inv.id) : "";
+  listingPeekGen += 1;
+  peekKind = "investor";
+  void marker;
+  for (const [id, m] of investorMarkers) {
+    try {
+      m.setZIndexOffset(id === selectedInvestorId ? 400 : 0);
+    } catch {
+      /* marker may have been cleared */
+    }
+  }
+  paintInvestorRegions(inv);
+  if (officeNeedsPublic(inv)) fieldOverlay.onInvestorNeedPublic?.(inv);
+  if (typeof fieldOverlay.onInvestorSelect === "function") fieldOverlay.onInvestorSelect(inv);
+  else showInvestorPeek(inv);
+  requestAnimationFrame(() => {
+    if (String(inv?.id) !== selectedInvestorId) return;
+    frameSelectedOffice(inv);
+    lastInvestorPaintSig = "";
+    paintInvestorLayer({ force: true });
+  });
 }
 
 function openInvestorPopupSoon(marker, delayMs = 40) {
@@ -9760,16 +9768,13 @@ function openInvestorPopupSoon(marker, delayMs = 40) {
   }, delayMs);
 }
 
-function selectInvestorOnMap(inv, marker) {
-  selectedInvestorId = inv?.id ? String(inv.id) : "";
-  paintInvestorRegions(inv);
-  fitInvestorRegions(inv);
-  void marker;
-  const needListings = String(inv?.kind) === "realestate" && !(inv?.listings || []).length;
-  const needContact = !investorHasContact(inv);
-  if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
-  if (typeof fieldOverlay.onInvestorSelect === "function") fieldOverlay.onInvestorSelect(inv);
-  else showInvestorPeek(inv);
+/** After listings land for the selected star, re-frame so the gold dots are on camera. */
+export function frameInvestorListings(inv) {
+  if (!inv || String(inv.id) !== String(selectedInvestorId)) return false;
+  const moved = frameSelectedOffice(inv);
+  lastInvestorPaintSig = "";
+  paintInvestorLayer({ force: true });
+  return moved;
 }
 
 let lastInvestorPaintSig = "";
@@ -9820,7 +9825,7 @@ function paintInvestorLayer({ force = false } = {}) {
     list.map((inv) => `${inv.id}:${inv.phone || ""}`).join(","),
     homes.map((h) => `${Number(h.lat).toFixed(4)},${Number(h.lon).toFixed(4)}`).join(";"),
     investorViewBucket(),
-    fieldOverlay.lookingInvestorIds?.size || 0,
+    selectedInvestorId && fieldOverlay.lookingInvestorIds?.has?.(String(selectedInvestorId)) ? 1 : 0,
   ].join("|");
   if (!force && sig === lastInvestorPaintSig) return;
   lastInvestorPaintSig = sig;
@@ -9848,21 +9853,27 @@ function paintInvestorLayer({ force = false } = {}) {
 
 /** Select a heart/star pin, paint that office's listings, and open contact info. */
 export function focusInvestorPin(id, { popup = true } = {}) {
-  selectedInvestorId = String(id || "");
+  const inv = (fieldOverlay.investors || []).find((x) => String(x.id) === String(id || ""));
+  if (!inv) {
+    selectedInvestorId = String(id || "");
+    lastInvestorPaintSig = "";
+    paintInvestorLayer({ force: true });
+    return;
+  }
+  if (popup) {
+    selectInvestorOnMap(inv);
+    return;
+  }
+  selectedInvestorId = String(inv.id);
   lastInvestorPaintSig = "";
   paintInvestorLayer({ force: true });
-  const inv = (fieldOverlay.investors || []).find((x) => String(x.id) === selectedInvestorId);
-  if (inv) paintInvestorRegions(inv);
-  if (inv) fitInvestorRegions(inv);
-  if (inv) {
-    const needListings = String(inv.kind) === "realestate" && !(inv.listings || []).length;
-    const needContact = !investorHasContact(inv);
-    if (needListings || needContact) fieldOverlay.onInvestorNeedPublic?.(inv);
-    if (popup) {
-      if (typeof fieldOverlay.onInvestorSelect === "function") fieldOverlay.onInvestorSelect(inv);
-      else showInvestorPeek(inv);
-    }
-  }
+  paintInvestorRegions(inv);
+  requestAnimationFrame(() => {
+    if (String(inv.id) !== selectedInvestorId) return;
+    frameSelectedOffice(inv);
+    lastInvestorPaintSig = "";
+    paintInvestorLayer({ force: true });
+  });
 }
 
 function markDivIcon(mark, zoomUi = zoomUiScale()) {
@@ -10969,13 +10980,21 @@ export function syncHailBottomChrome() {
   if (useDesktopChrome() && hailBottomTier !== "hidden") {
     hailBottomTier = "sheet";
   }
+  const wantSheet = hailBottomTier === "sheet";
+  const wantAddr = hailBottomTier === "address" || hailBottomTier === "sheet";
+  let chromeChanged = false;
   if (panel) {
-    panel.classList.toggle("hs-sheet-open", hailBottomTier === "sheet");
-    panel.classList.toggle("hs-addr-open", hailBottomTier === "address" || hailBottomTier === "sheet");
+    const hadSheet = panel.classList.contains("hs-sheet-open");
+    const hadAddr = panel.classList.contains("hs-addr-open");
+    panel.classList.toggle("hs-sheet-open", wantSheet);
+    panel.classList.toggle("hs-addr-open", wantAddr);
+    chromeChanged = hadSheet !== wantSheet || hadAddr !== wantAddr;
   }
   // Completed jobs / field marks ride with the storm sheet tier
-  field?.classList.toggle("hs-field-open", hailBottomTier === "sheet");
-  refreshMapSize();
+  const hadField = Boolean(field?.classList.contains("hs-field-open"));
+  field?.classList.toggle("hs-field-open", wantSheet);
+  if (hadField !== wantSheet) chromeChanged = true;
+  if (chromeChanged) refreshMapSize();
 }
 
 function pulseBottomPanel({ light = false } = {}) {
@@ -11011,6 +11030,7 @@ export function revealHailAddressPeek() {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const fromHidden = hailBottomTier === "hidden" || shell?.classList.contains("expanded");
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
+  const alreadyPeek = hailBottomTier === "address" && !wasExpanded;
   hailBottomTier = "address";
   syncHailBottomChrome();
   // No house yet: idle peek — storms stay off until Search storms
@@ -11024,6 +11044,7 @@ export function revealHailAddressPeek() {
   if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
+  if (alreadyPeek) return;
   if (fromHidden) pulseBottomPanel();
   scheduleSheetScroll(scrollViewToAddressPeek, { waitForMap: wasExpanded });
 }

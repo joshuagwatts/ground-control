@@ -38,6 +38,7 @@ import {
   listingIsExact,
   mappedInvestorListings,
   unmappedInvestorListings,
+  listingsForSelectedOffice,
 } from "../www/investors.js";
 import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
@@ -393,6 +394,36 @@ const mixed = normalizeInvestor({
 assert(mappedInvestorListings(mixed).length === 2, "rooftop and approximate homes draw; a street centreline does not");
 assert(!mappedInvestorListings(mixed).some((h) => /Centreline/.test(h.address)), "the street-centreline home is never drawn");
 assert(unmappedInvestorListings(mixed).length === 2, "centreline and un-geocoded homes stay listed as address-only");
+const nearFar = normalizeInvestor({
+  kind: "realestate",
+  name: "Near Far Realty",
+  lat: 35.47,
+  lon: -97.52,
+  listings: [
+    { address: "1 Near St, OKC, OK", lat: 35.475, lon: -97.525, precision: "rooftop" },
+    { address: "2 Also Near Ave, OKC, OK", lat: 35.48, lon: -97.53, precision: "approx" },
+    { address: "3 Across Town, Edmond, OK", lat: 35.65, lon: -97.48, precision: "rooftop" },
+    { address: "4 Street only, OKC, OK", lat: 35.471, lon: -97.521, precision: "street" },
+  ],
+});
+const officeDots = listingsForSelectedOffice(nearFar, { maxKm: 12, limit: 36 });
+assert(officeDots.length === 2, "gold dots stay near the selected office when nearby homes exist");
+assert(
+  officeDots.every((h) => /Near/.test(h.address)),
+  "a home across town does not steal the selected office's gold-dot set",
+);
+const farOnly = normalizeInvestor({
+  kind: "realestate",
+  name: "Spread Realty",
+  lat: 35.47,
+  lon: -97.52,
+  listings: [{ address: "9 Far Rd, Edmond, OK", lat: 35.65, lon: -97.48, precision: "rooftop" }],
+});
+assert(
+  listingsForSelectedOffice(farOnly, { maxKm: 12 }).length === 1,
+  "if nothing is nearby, still show the nearest mapped home so a star is never blank",
+);
+assert(listingsForSelectedOffice(mixed, { limit: 8 }).length === 2, "undrawable rows never become gold dots");
 assert(listingIsExact(mixed.listings[0]) && !listingIsExact(mixed.listings[1]), "only a verified home reads as exact");
 assert(normalizeListing({ lat: 1, lon: 2 }).precision === "approx", "a listing with no precision is treated as approximate");
 const exactBox = investorListingBounds(mixed);

@@ -60,6 +60,7 @@ import {
   setFieldOverlay,
   patchInvestorOverlay,
   focusInvestorPin,
+  frameInvestorListings,
   showInvestorPeek,
   showListingPeek,
   mapIsLive,
@@ -76,7 +77,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.329";
+} from "./wx.js?v=0.2.330";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1469,6 +1470,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
+    if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(next);
   } finally {
     investorPublicBusy.delete(id);
     paintInvestorMap();

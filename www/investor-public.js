@@ -22,6 +22,7 @@ import {
   listingFromBizRow,
   listingIsExact,
   listingIsMappable,
+  mappedInvestorListings,
   normalizeInvestor,
   normalizeListing,
   osmInvestorKind,
@@ -1309,6 +1310,13 @@ async function listingsFromPages(urls, inv) {
   return out;
 }
 
+function pinListingGeo(next, geo, office) {
+  if (!geo) return next;
+  const pinned = { ...next, lat: geo.lat, lon: geo.lon, precision: geo.precision, geoSource: geo.geoSource };
+  if (!inOklahoma(geo.lat, geo.lon) || !listingNearOffice(office, pinned)) return next;
+  return pinned;
+}
+
 export async function fetchInvestorListings(inv) {
   if (!inv || String(inv.kind) !== "realestate") return [];
   const urls = listingUrlsForOffice(inv).slice(0, 3);
@@ -1325,18 +1333,12 @@ export async function fetchInvestorListings(inv) {
   const out = [];
   let geoLeft = MAX_LISTING_GEOCODE;
   for (const row of rows.slice(0, MAX_FETCH_LISTINGS)) {
-    const next = { ...row };
+    let next = { ...row };
     if (!validInvestorCoord(next.lat, next.lon) && geoLeft > 0) {
       const parts = next.parts || listingAddressParts(next.address);
       if (parts) {
         geoLeft -= 1;
-        const geo = await geocodeListing(parts, office);
-        if (geo) {
-          next.lat = geo.lat;
-          next.lon = geo.lon;
-          next.precision = geo.precision;
-          next.geoSource = geo.geoSource;
-        }
+        next = pinListingGeo(next, await geocodeListing(parts, office), office);
       }
     }
     // An address we could not pin to a roof still belongs in the agent's list — just not as a dot.
@@ -1354,11 +1356,31 @@ function allListings(inv) {
   return Array.isArray(inv?.listings) ? inv.listings : [];
 }
 
+/** Geocode address-only rows we already scraped so gold dots can actually draw. */
+async function geocodeExistingListings(inv, listings) {
+  const office = { lat: Number(inv?.lat), lon: Number(inv?.lon) };
+  const out = [];
+  let geoLeft = MAX_LISTING_GEOCODE;
+  for (const row of listings || []) {
+    let next = { ...row };
+    if (!listingIsMappable(next) && geoLeft > 0 && String(next.address || "").trim()) {
+      const parts = listingAddressParts(next.address);
+      if (parts) {
+        geoLeft -= 1;
+        next = pinListingGeo(next, await geocodeListing(parts, office), office);
+      }
+    }
+    out.push(normalizeListing(next));
+  }
+  return out;
+}
+
 /** Fill missing phone/email and, for a selected star, the agent's actual sale homes. */
 export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0 } = {}) {
   if (!inv) return null;
   const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
-  const wantListings = String(inv.kind) === "realestate" && deep && allListings(inv).length < 2;
+  const mappedCount = mappedInvestorListings(inv).length;
+  const wantListings = String(inv.kind) === "realestate" && deep && mappedCount < 2;
   const listingsP = wantListings
     ? withDeadline(fetchInvestorListings(inv), budget + 8000, [])
     : Promise.resolve(allListings(inv));
@@ -1368,15 +1390,24 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
   ]);
   let listings = allListings(inv);
   if (Array.isArray(found) && found.length) listings = found;
+  if (
+    String(inv.kind) === "realestate" &&
+    deep &&
+    mappedInvestorListings({ listings }).length < 1 &&
+    listings.some((row) => String(row?.address || "").trim())
+  ) {
+    listings = await withDeadline(geocodeExistingListings(inv, listings), Math.min(budget, 12000), listings);
+  }
   const extra = { ...(contacts || {}), listings };
   const next = mergeInvestorPublic(inv, extra);
   const betterContact = (next.phone && next.phone !== inv.phone) || (next.email && next.email !== inv.email);
   const betterList =
     allListings(next).length > allListings(inv).length ||
-    investorListings(next).length > investorListings(inv).length;
+    investorListings(next).length > investorListings(inv).length ||
+    mappedInvestorListings(next).length > mappedInvestorListings(inv).length;
   if (!betterContact && !betterList && !(next.website && !inv.website)) {
     if (investorHasContact(inv) && String(inv.kind) !== "realestate") return null;
-    if (String(inv.kind) === "realestate" && allListings(inv).length) return null;
+    if (String(inv.kind) === "realestate" && mappedInvestorListings(inv).length) return null;
   }
   return next;
 }

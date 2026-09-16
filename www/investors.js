@@ -640,6 +640,29 @@ export function mappedInvestorListings(inv) {
   return (Array.isArray(inv?.listings) ? inv.listings : []).filter(listingIsMappable);
 }
 
+function listingKm(aLat, aLon, bLat, bLon) {
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLon = ((bLon - aLon) * Math.PI) / 180;
+  const x =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(x));
+}
+
+/** Gold dots for the selected star: homes near that office, nearest first. */
+export function listingsForSelectedOffice(inv, { maxKm = 12, limit = 36 } = {}) {
+  const homes = mappedInvestorListings(inv);
+  if (!homes.length) return [];
+  const lat = Number(inv?.lat);
+  const lon = Number(inv?.lon);
+  if (!validInvestorCoord(lat, lon)) return homes.slice(0, limit);
+  const ranked = homes
+    .map((h) => ({ h, km: listingKm(lat, lon, Number(h.lat), Number(h.lon)) }))
+    .sort((a, b) => a.km - b.km);
+  const near = ranked.filter((x) => x.km <= maxKm);
+  return (near.length ? near : ranked).slice(0, limit).map((x) => x.h);
+}
+
 /** Listings we know the address of but refuse to place on the map. */
 export function unmappedInvestorListings(inv) {
   return (Array.isArray(inv?.listings) ? inv.listings : []).filter(
