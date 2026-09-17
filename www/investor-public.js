@@ -958,6 +958,8 @@ export const LISTING_LOOKUP_MS = 12000;
 const LISTING_PAGE_MS = 4000;
 const LISTING_GEO_WORKERS = 4;
 const LISTING_READER = "https://r.jina.ai/";
+/** kvCORE public listings are the shared OKC MLS dump, not one office's inventory. */
+const FALLBACK_MLS_WEBSITE = "https://www.mcgrawrealtors.com/";
 
 export function withDeadline(promise, ms, fallback = null) {
   let timer = 0;
@@ -1689,9 +1691,14 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
   }
   const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
   let rows = await hunt(website);
-  if (!rows.length && !website) {
-    const found = await discoverOfficeWebsite(inv);
-    if (found) rows = await hunt(found);
+  if (!rows.length) {
+    const fallback = await listingsFromIdxJson(FALLBACK_MLS_WEBSITE, inv);
+    rows = pickOfficeListings([], fallback).filter((row) => {
+      if (String(row?.attribution || "") !== "nearby") return true;
+      if (!validInvestorCoord(row.lat, row.lon)) return true;
+      return listingNearOffice(inv, row);
+    });
+    notify(rows);
   }
   return geocodeListingRows(inv, rows, { onMapped });
 }
