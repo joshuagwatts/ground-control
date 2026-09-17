@@ -65,6 +65,7 @@ import {
   fillInvestorStormDates,
   showListingPeek,
   mapIsLive,
+  isInvestorSelected,
   refreshMapSize,
   defaultMapCenter,
   mapCenterCoords,
@@ -1464,6 +1465,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
       persistSoon();
       paintFieldSheetSoon();
       const cur = hit.investor || partial;
+      if (!isInvestorSelected(id)) return;
       const sheet = $("#hs-sheet");
       if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
       const homes = mappedInvestorListings(cur).filter(listingIsOfficeOwned);
@@ -1490,6 +1492,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     persistSoon();
     paintFieldSheetSoon();
     if (!deep) return;
+    if (!isInvestorSelected(id)) return;
     const homes = mappedInvestorListings(next).filter(listingIsOfficeOwned);
     const unmapped = unmappedInvestorListings(next).filter(listingIsOfficeOwned).length;
     const bits = [next.phone, next.email].filter(Boolean);
@@ -2586,6 +2589,7 @@ function officeStormOnRefetch(gen) {
 /** Open storm dates under the office so a date tap can overlay hail on their homes. */
 function offerStormsForSelectedOffice(inv) {
   if (String(inv?.kind) !== "realestate") return;
+  if (!isInvestorSelected(inv?.id)) return;
   showInvestorPeek(inv);
   const sheet = $("#hs-sheet");
   if (!sheet?.querySelector(`.hs-pin-office[data-inv="${inv.id}"]`)) return;

@@ -9887,6 +9887,10 @@ export function clearSelectedInvestor() {
   return true;
 }
 
+export function isInvestorSelected(id) {
+  return Boolean(id) && String(selectedInvestorId) === String(id);
+}
+
 function openInvestorPopupSoon(marker, delayMs = 40) {
   if (!marker) return;
   setTimeout(() => {
