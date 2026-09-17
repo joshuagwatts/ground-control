@@ -81,7 +81,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.345";
+} from "./wx.js?v=0.2.346";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1592,11 +1592,14 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     // Portfolio scrape on tap: county parcels under the investor's owner name(s)
     // become gold dots, so one tap shows the locations they control. Gated like
     // the website hunt — no re-scrape when listings are already on the map.
+    // The result is reported in the status line so a silent miss is visible.
+    let portfolioScrape = null;
     if (runDeep && String(next.kind) === "realestate" && officeOwnedMappedCount(next) < OFFICE_LISTING_HUNT_BELOW) {
       try {
-        await scrapePortfolioForInvestor(next);
+        portfolioScrape = await scrapePortfolioForInvestor(next);
       } catch (err) {
         console.warn("portfolio scrape failed", err);
+        portfolioScrape = { error: true, added: 0 };
       }
     }
     // Fold county parcels + hunt listings by address: verified / owned / listed.
@@ -1619,6 +1622,16 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     const bits = [next.phone, next.email].filter(Boolean);
     if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
     if (unmapped) bits.push(`${unmapped} address-only`);
+    if (portfolioScrape) {
+      const n = Number(portfolioScrape.added) || 0;
+      bits.push(
+        portfolioScrape.error
+          ? "county lookup failed"
+          : n
+            ? `${n} county propert${n === 1 ? "y" : "ies"}`
+            : "no county parcels found",
+      );
+    }
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
