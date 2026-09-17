@@ -70,6 +70,9 @@ import {
   parseArcGisMatch,
   summarizeAgentAccuracy,
   listingUrlsForOffice,
+  listingReaderUrl,
+  parseStreetAddressesFromText,
+  officeWebsiteFromOsm,
   withDeadline,
   SHALLOW_LOOKUP_MS,
   DEEP_LOOKUP_MS,
@@ -189,6 +192,21 @@ const parsedHomes = parseSaleListingsFromHtml(`
 `);
 assert(parsedHomes.some((h) => /Imhoff/i.test(h.address)), "realtor detail listing");
 assert(parsedHomes.some((h) => /Westheimer/i.test(h.address)), "zillow detail listing");
+const pageHomes = parseSaleListingsFromHtml(
+  "Featured: 1711 Spoke St, Oklahoma City, OK 73108 and 325 SW 14th Street, Oklahoma City, OK.",
+);
+assert(pageHomes.some((h) => /Spoke/i.test(h.address)), "office-site street lines become sale homes");
+assert(pageHomes.some((h) => /14th/i.test(h.address)), "second free-text street is kept");
+const streets = parseStreetAddressesFromText(
+  "Listed 1711 Spoke St Oklahoma City OK. Office at 100 Main St, Oklahoma City, OK.",
+  { officeAddress: "100 Main St, Oklahoma City, OK", cityHint: "Oklahoma City" },
+);
+assert(streets.some((h) => /Spoke/i.test(h.address)), "free-text parser finds a listed house");
+assert(!streets.some((h) => /100 Main/i.test(h.address)), "the office door is not a gold-dot listing");
+assert(
+  listingReaderUrl("https://verbode.com/listings").startsWith("https://r.jina.ai/https://verbode.com/listings"),
+  "listing HTML goes through the CORS-open reader first",
+);
 
 const ld = parseJsonLdBusinesses(`<script type="application/ld+json">{"@type":"InsuranceAgency","name":"Devin Smith","telephone":"4052907108","email":"devin@okcjakes.com","address":{"streetAddress":"3639 NW 63rd Street","addressLocality":"Oklahoma City"}}</script>`);
 assert(ld.some((r) => /290-7108/.test(r.phone) && r.email.includes("okcjakes")), "agency json-ld phone+email");
@@ -569,10 +587,28 @@ const listingUrls = listingUrlsForOffice({
   address: "Oklahoma City, OK",
   website: "https://golddotsouth.example/about",
 });
-assert(listingUrls.length === 4, "realtor + zillow + site + /listings, no duplicate slash URL");
+assert(listingUrls.length >= 5, "office site paths plus listing hosts");
 assert(listingUrls.filter((u) => /realtor\.com/.test(u)).length === 1, "one realtor agent page, not two slash variants");
 assert(listingUrls.some((u) => /zillow\.com/.test(u)), "zillow agent page is included");
 assert(listingUrls.includes("https://golddotsouth.example/listings"), "the office site listings path is included");
+assert(listingUrls.includes("https://golddotsouth.example/homes"), "the office /homes path is included");
+assert(
+  listingUrls[0] === "https://golddotsouth.example/about",
+  "the office website is asked before realtor/zillow, which 429",
+);
+assert(
+  officeWebsiteFromOsm(
+    { name: "Verbode", lat: 35.47, lon: -97.52 },
+    [
+      {
+        lat: 35.47,
+        lon: -97.52,
+        tags: { name: "Verbode", office: "estate_agent", website: "https://verbode.com/" },
+      },
+    ],
+  ) === "https://verbode.com/",
+  "OSM website is used for listing scrape without waiting on contacts",
+);
 assert(
   listingUrlsForOffice({ name: "Seabrooke Realty", address: "Oklahoma City, OK" }).some((u) => /oklahoma-city/.test(u)),
   "Oklahoma City, OK is not slugged as a state abbreviation",

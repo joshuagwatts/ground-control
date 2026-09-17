@@ -40,7 +40,7 @@ const DDG_HTML = "https://html.duckduckgo.com/html/?q=";
 const MAX_LISTINGS = 40;
 const MAX_FETCH_LISTINGS = 16;
 const MAX_LISTING_GEOCODE = 10;
-const MAX_LISTING_KM = 35;
+const MAX_LISTING_KM = 48;
 
 const PEOPLE_SEARCH =
   /facebook\.com|instagram\.com|linkedin\.com|truepeoplesearch|beenverified|spokeo|fastpeoplesearch|thatsthem|intelius|radaris|cyberbackground|whitepages\.com\/name|411\.com\/people|anywho\.com\/people/i;
@@ -316,6 +316,40 @@ async function fetchPage(url, ms = 12000, extra = {}, opts = {}) {
   }
 }
 
+/** CORS-open reader so Pages can see an office site without waiting on dead cors.sh relays. */
+export function listingReaderUrl(url) {
+  const href = String(url || "").trim();
+  if (!/^https?:\/\//i.test(href) || isPeopleSearchUrl(href)) return "";
+  if (/^https?:\/\/r\.jina\.ai\//i.test(href)) return href;
+  return `${LISTING_READER}${href}`;
+}
+
+function listingReaderBlocked(body) {
+  const t = String(body || "");
+  if (t.length < 80) return true;
+  const head = t.slice(0, 900);
+  return /returned error 429|Access Denied|Just a moment|Enable JavaScript|anomaly\/images\/challenge/i.test(head);
+}
+
+async function fetchListingPage(url, ms = LISTING_PAGE_MS) {
+  const href = String(url || "").trim();
+  if (!/^https?:\/\//i.test(href) || isPeopleSearchUrl(href)) return null;
+  const reader = listingReaderUrl(href);
+  if (reader) {
+    try {
+      const { body } = await httpGet(reader, Math.min(Number(ms) || LISTING_PAGE_MS, 4500), {
+        Accept: "text/plain,*/*",
+      });
+      if (!listingReaderBlocked(body)) return { html: String(body), url: href };
+    } catch {
+      /* native / direct next — never wait on cors.sh for listing HTML */
+    }
+  }
+  return fetchPage(href, Math.min(Number(ms) || LISTING_PAGE_MS, 3000), listingBrowserHeaders({ zillow: /zillow/i.test(href) }), {
+    skipPublicRelays: true,
+  });
+}
+
 function contactsFromHtml(html, website = "") {
   const hit = extractContactsFromHtml(String(html || "").slice(0, 220000), {}, { requireAddress: false }) || {};
   const tels = extractPhones(html);
@@ -559,6 +593,47 @@ function pushListing(out, seen, row) {
   out.push(n);
 }
 
+const OK_CITY_RE =
+  /\b(Oklahoma City|Tulsa|Edmond|Norman|Broken Arrow|Moore|Midwest City|Lawton|Stillwater|Enid|Muskogee|Bartlesville|Shawnee|Owasso|Yukon|Bethany|Del City|Jenks|Bixby|Sapulpa|Ponca City|Ardmore|Altus|Guymon|Woodward|McAlester|Ada|Durant|Claremore|Tahlequah|Coweta|Nichols Hills|The Village|Warr Acres|Mustang|Choctaw|Harrah|Newcastle|Noble|Moore|Piedmont|Guthrie|El Reno|Washington|Purcell|Blanchard|Newalla|Choctaw)\b/i;
+
+/**
+ * Free-text streets on an office site (Jina markdown, contact pages, IDX crumbs).
+ * Realtor/Zillow slugs are preferred when present; this is what actually fills
+ * gold dots when those hosts 429.
+ */
+export function parseStreetAddressesFromText(text, { officeAddress = "", cityHint = "Oklahoma City" } = {}) {
+  const blob = String(text || "").replace(/<[^>]+>/g, " ");
+  const officeHouse = houseFromAddress(officeAddress);
+  const officeStreet = streetKey(parseStreetAddress(officeAddress).street || officeAddress);
+  const out = [];
+  const seen = new Set();
+  const re =
+    /\b(\d{1,6}[A-Za-z]?)\s+((?:(?:N|S|E|W|NE|NW|SE|SW|North|South|East|West)\.?\s+)?)([A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,4}?)\s+(St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Blvd|Boulevard|Ln|Lane|Ct|Court|Cir|Circle|Pl|Place|Way|Ter|Terrace|Pkwy|Parkway|Trl|Trail|Hwy|Highway|Loop)\.?\b(?:\s*,?\s*([A-Za-z .']{3,28}))?(?:\s*,?\s*(OK|Oklahoma)\b)?(?:\s+(\d{5}))?/gi;
+  let m;
+  while ((m = re.exec(blob)) && out.length < MAX_LISTINGS) {
+    const suffix = String(m[4] || "").replace(/\.$/, "");
+    if (!STREET_SUFFIX.has(suffix.toLowerCase())) continue;
+    const street = `${m[1]} ${m[2] || ""}${m[3]} ${suffix}`.replace(/\s+/g, " ").trim();
+    if (
+      officeHouse &&
+      houseFromStreet(street) === officeHouse &&
+      streetKey(street.replace(/^\d+[A-Za-z]?\s+/, "")) === officeStreet
+    ) {
+      continue;
+    }
+    let city = String(m[5] || "").trim();
+    if (/^(ok|oklahoma|united|states|suite|apt|unit|the|and|for|sale|listed)$/i.test(city)) city = "";
+    const named = (city && OK_CITY_RE.test(city) && city.match(OK_CITY_RE)?.[1]) || blob.slice(m.index, m.index + 80).match(OK_CITY_RE)?.[1] || "";
+    if (named) city = named;
+    else if (!city && OK_CITY_RE.test(cityHint)) city = cityHint;
+    else if (!city) city = "Oklahoma City";
+    const zip = m[7] || "";
+    const parts = { house: m[1], street, city, state: "OK", zip };
+    pushListing(out, seen, { ...parts, address: joinAddressParts(parts), source: "page" });
+  }
+  return out;
+}
+
 /** Homes attributed to this office/agent — never a city-wide dump. */
 export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
   const blob = String(html || "");
@@ -641,6 +716,15 @@ export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
 
   if (officeName && out.length > 12 && !namesLikelySame(officeName, blob.slice(0, 4000))) {
     /* city search pages can leak unrelated homes — keep only if the office is named nearby */
+  }
+  if (out.length < 6) {
+    const cityHint = (() => {
+      const named = blob.match(OK_CITY_RE);
+      return named ? named[1] : "";
+    })();
+    for (const row of parseStreetAddressesFromText(blob, { cityHint })) {
+      pushListing(out, seen, row);
+    }
   }
   return out.slice(0, MAX_LISTINGS);
 }
@@ -867,9 +951,10 @@ export async function fetchOsmOfficesInBounds(bounds) {
 export const SHALLOW_LOOKUP_MS = 7000;
 export const DEEP_LOOKUP_MS = 20000;
 /** Wall clock for a selected star's sale homes — contacts can keep running after this. */
-export const LISTING_LOOKUP_MS = 10000;
+export const LISTING_LOOKUP_MS = 12000;
 const LISTING_PAGE_MS = 4000;
 const LISTING_GEO_WORKERS = 4;
+const LISTING_READER = "https://r.jina.ai/";
 
 export function withDeadline(promise, ms, fallback = null) {
   let timer = 0;
@@ -933,19 +1018,29 @@ export function listingUrlsForOffice(inv) {
   const name = inv?.name || inv?.company;
   const city = citySlug(investorCity(inv));
   const slug = officeSlug(name);
-  const urls = [
-    `https://www.realtor.com/realestateagents/${slug}_${city}_ok`,
-    `https://www.zillow.com/${city}-ok/realtor/${slug}/`,
-  ];
+  const urls = [];
   if (inv?.website) {
     urls.push(inv.website);
     try {
-      urls.push(`${new URL(inv.website).origin}/listings`);
+      const origin = new URL(inv.website).origin;
+      for (const path of ["/listings", "/homes", "/properties", "/featured-listings"]) {
+        urls.push(`${origin}${path}`);
+      }
     } catch {
       /* ignore */
     }
   }
-  return [...new Set(urls.filter(Boolean))].slice(0, 4);
+  urls.push(
+    `https://www.realtor.com/realestateagents/${slug}_${city}_ok`,
+    `https://www.zillow.com/${city}-ok/realtor/${slug}/`,
+  );
+  return [...new Set(urls.filter(Boolean))].slice(0, 7);
+}
+
+/** Website already on the OSM pin — listing scrape must not wait on the contact hunt. */
+export function officeWebsiteFromOsm(inv, osmHits = []) {
+  const el = pickOsmOfficeForInvestor(inv, osmHits);
+  return tagsToContacts(el?.tags || {}).website || "";
 }
 
 /**
@@ -1308,11 +1403,7 @@ export function listingNearOffice(office, home, maxKm = MAX_LISTING_KM) {
 }
 
 async function listingsFromPages(urls, inv) {
-  const pages = await Promise.all(
-    urls.slice(0, 4).map((url) =>
-      fetchPage(url, LISTING_PAGE_MS, listingBrowserHeaders({ zillow: /zillow/i.test(url) }), { skipPublicRelays: true }),
-    ),
-  );
+  const pages = await Promise.all(urls.slice(0, 7).map((url) => fetchListingPage(url, LISTING_PAGE_MS)));
   const out = [];
   const seen = new Set();
   for (const page of pages) {
@@ -1324,19 +1415,33 @@ async function listingsFromPages(urls, inv) {
   return out;
 }
 
-function pinListingGeo(next, geo, office) {
-  if (!geo) return next;
-  const pinned = { ...next, lat: geo.lat, lon: geo.lon, precision: geo.precision, geoSource: geo.geoSource };
-  if (!inOklahoma(geo.lat, geo.lon) || !listingNearOffice(office, pinned)) return next;
-  return pinned;
+async function discoverOfficeWebsite(inv) {
+  if (isOfficeWebsite(inv?.website)) return inv.website;
+  const name = inv?.name || inv?.company;
+  const city = investorCity(inv);
+  if (!name) return "";
+  const q = `"${name}" ${city} OK (realty OR realtor OR "real estate") (official OR homepage OR website)`;
+  const page = await fetchListingPage(`${DDG_HTML}${encodeURIComponent(q)}`, 4000);
+  if (!page?.html) return "";
+  for (const u of extractSearchResultUrls(page.html, { limit: 8 })) {
+    if (isOfficeWebsite(u)) return u;
+  }
+  return "";
 }
 
-async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, workers = LISTING_GEO_WORKERS } = {}) {
+function pinListingGeo(next, geo) {
+  if (!geo) return next;
+  if (!inOklahoma(geo.lat, geo.lon)) return next;
+  return { ...next, lat: geo.lat, lon: geo.lon, precision: geo.precision, geoSource: geo.geoSource };
+}
+
+async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, workers = LISTING_GEO_WORKERS, onMapped } = {}) {
   const office = { lat: Number(inv?.lat), lon: Number(inv?.lon) };
   const todo = (rows || []).slice(0, MAX_FETCH_LISTINGS);
   const out = [];
   let cursor = 0;
   let geoLeft = limit;
+  let mappedPainted = 0;
   const n = Math.min(workers, Math.max(1, todo.length));
   async function worker() {
     while (cursor < todo.length) {
@@ -1347,25 +1452,50 @@ async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, work
         const parts = next.parts || listingAddressParts(next.address);
         if (parts) {
           geoLeft -= 1;
-          next = pinListingGeo(next, await geocodeListing(parts, office), office);
+          next = pinListingGeo(next, await geocodeListing(parts, office));
         }
       }
       if (!validInvestorCoord(next.lat, next.lon) || !inOklahoma(next.lat, next.lon)) {
         if (next.address) out.push(normalizeListing({ ...next, lat: null, lon: null, precision: "street" }));
         continue;
       }
-      if (!listingNearOffice(office, next)) continue;
+      if (!listingNearOffice(office, next)) {
+        if (next.address) out.push(normalizeListing({ ...next, lat: null, lon: null, precision: "street" }));
+        continue;
+      }
       out.push(normalizeListing(next));
+      if (typeof onMapped === "function" && listingIsMappable(next)) {
+        mappedPainted += 1;
+        if (mappedPainted <= 3 || mappedPainted === out.filter(listingIsMappable).length) {
+          try {
+            onMapped(out.slice());
+          } catch {
+            /* peek optional */
+          }
+        }
+      }
     }
   }
   await Promise.all(Array.from({ length: n }, () => worker()));
   return out.slice(0, MAX_FETCH_LISTINGS);
 }
 
-export async function fetchInvestorListings(inv) {
+export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMapped } = {}) {
   if (!inv || String(inv.kind) !== "realestate") return [];
-  const rows = await listingsFromPages(listingUrlsForOffice(inv), inv);
-  return geocodeListingRows(inv, rows);
+  const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
+  let rows = await listingsFromPages(listingUrlsForOffice({ ...inv, website }), inv);
+  if (!rows.length && !website) {
+    const found = await discoverOfficeWebsite(inv);
+    if (found) rows = await listingsFromPages(listingUrlsForOffice({ ...inv, website: found }), inv);
+  }
+  if (typeof onScraped === "function" && rows.length) {
+    try {
+      onScraped(rows);
+    } catch {
+      /* peek optional */
+    }
+  }
+  return geocodeListingRows(inv, rows, { onMapped });
 }
 
 function allListings(inv) {
@@ -1378,10 +1508,24 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
   const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
   const mappedCount = mappedInvestorListings(inv).length;
   const wantListings = String(inv.kind) === "realestate" && deep && mappedCount < 2;
+  const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
+  const seeded = website && website !== inv.website ? { ...inv, website } : inv;
   const listingsP = wantListings
-    ? withDeadline(fetchInvestorListings(inv), LISTING_LOOKUP_MS, [])
+    ? withDeadline(
+        fetchInvestorListings(seeded, {
+          osmHits,
+          onScraped: (rows) => {
+            if (typeof onPartial === "function") onPartial(mergeInvestorPublic(seeded, { listings: rows }));
+          },
+          onMapped: (rows) => {
+            if (typeof onPartial === "function") onPartial(mergeInvestorPublic(seeded, { listings: rows }));
+          },
+        }),
+        LISTING_LOOKUP_MS,
+        [],
+      )
     : Promise.resolve(allListings(inv));
-  const contactsP = withDeadline(enrichInvestorContacts(inv, { deep, osmHits, budgetMs: budget }), budget + 1500);
+  const contactsP = withDeadline(enrichInvestorContacts(seeded, { deep, osmHits, budgetMs: budget }), budget + 1500);
 
   const found = await listingsP;
   let listings = allListings(inv);
@@ -1406,7 +1550,7 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
 
   const contacts = await contactsP;
   const extra = { ...(contacts || {}), listings };
-  const next = mergeInvestorPublic(inv, extra);
+  const next = mergeInvestorPublic(seeded, extra);
   const betterContact = (next.phone && next.phone !== inv.phone) || (next.email && next.email !== inv.email);
   const betterList =
     allListings(next).length > allListings(inv).length ||

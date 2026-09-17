@@ -9386,7 +9386,7 @@ function bindInvestorMarker(_marker, _inv) {
 const LISTING_DRAW_MAX = 36;
 
 function listingsToDraw(inv) {
-  return listingsForSelectedOffice(inv, { maxKm: 14, limit: LISTING_DRAW_MAX });
+  return listingsForSelectedOffice(inv, { maxKm: 28, limit: LISTING_DRAW_MAX });
 }
 
 const GEO_SOURCE_LABEL = {
@@ -9718,12 +9718,11 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
 function frameSelectedOffice(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
   if (!validInvestorCoord(inv?.lat, inv?.lon)) return false;
-  const homes = listingsForSelectedOffice(inv, { maxKm: 8, limit: 24 });
-  const near = homes.filter((h) => haversineKm(inv.lat, inv.lon, h.lat, h.lon) <= 8);
+  const homes = listingsForSelectedOffice(inv, { maxKm: 28, limit: 24 });
   try {
-    if (near.length) {
-      map.fitBounds([[inv.lat, inv.lon], ...near.map((h) => [h.lat, h.lon])], {
-        padding: [40, 40],
+    if (homes.length) {
+      map.fitBounds([[inv.lat, inv.lon], ...homes.map((h) => [h.lat, h.lon])], {
+        padding: [48, 48],
         maxZoom: 15,
         animate: false,
       });

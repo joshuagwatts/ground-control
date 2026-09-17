@@ -419,7 +419,12 @@ function corsOpenWeatherHost(h) {
 }
 
 function corsOpenPlacesHost(h) {
-  return h === "photon.komoot.io" || h.endsWith(".komoot.io") || h === "geocode.arcgis.com";
+  return (
+    h === "photon.komoot.io" ||
+    h.endsWith(".komoot.io") ||
+    h === "geocode.arcgis.com" ||
+    h === "r.jina.ai"
+  );
 }
 
 function corsOpenGisHost(url) {
