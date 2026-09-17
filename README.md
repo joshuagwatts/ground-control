@@ -52,11 +52,11 @@ https://joshuagwatts.github.io/ground-control/?v=0.2.307
 
 This is the working crew link. Hail Search storms lives here. Hearts and stars do **not**.
 
-**Alpha sandbox (hearts, stars, and hail — v0.2.338)**
+**Alpha sandbox (hearts, stars, and hail — v0.2.339)**
 
-https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.338
+https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.339
 
-Hearts and Stars stay **off** until you tap them. Offices in the map frame preload public phones from OSM. A selected star hides the other stars, opens that office's card, and draws **that office's** sale homes as gold dots — never leftover MLS labeled "for sale near this office." Tap the selected star again to deselect (other stars come back). Tap empty map to deselect without dropping a house pin. Storm dates stay under the office so a date tap can overlay hail on those homes. Gold listing dots open that house's county assessor record in the same peek. House taps show the full parcel card (year built, sf, roof, sale, market, mailing, permits) instead of a one-line chip. Search storms uses the same NCEI hail fetch as the working 0.2.307 / APK 2.309 zones. Hard-refresh once if a phone still shows an older build.
+Hearts and Stars stay **off** until you tap them. Offices in the map frame preload public phones from OSM. A selected star hides the other stars, opens that office's card, and draws **that office's** sale homes as solid gold dots. Phone preload pauses so the selected office's listings can finish. Tap the selected star again to deselect (other stars come back). Tap empty map to deselect without dropping a house pin. Storm dates stay under the office so a date tap can overlay hail on those homes. Gold listing dots open that house's county assessor record in the same peek. House taps show the full parcel card (year built, sf, roof, sale, market, mailing, permits) instead of a one-line chip. Search storms uses the same NCEI hail fetch as the working 0.2.307 / APK 2.309 zones. Hard-refresh once if a phone still shows an older build.
 
 LAN preview (`npm start` → `http://192.168.x.x:4173`) still works for local demos.
 

@@ -55,6 +55,7 @@ import {
   listingIsOfficeOwned,
   listingDotKey,
   mappedInvestorListings,
+  officeOwnedMappedCount,
   listingsForSelectedOffice,
   unmappedInvestorListings,
   shouldShowInvestorPin,
@@ -9734,9 +9735,10 @@ function listingDotStyle(home) {
   const exact = listingIsExact(home);
   return {
     exact,
-    radius: exact ? 6 : 7,
-    fillOpacity: exact ? 0.92 : 0.16,
-    dashArray: exact ? null : "3 3",
+    radius: exact ? 8 : 7,
+    fillOpacity: exact ? 0.98 : 0.9,
+    weight: exact ? 2 : 1.6,
+    dashArray: null,
   };
 }
 
@@ -9754,13 +9756,15 @@ function paintInvestorRegions(inv) {
       prev.home = home;
       prev.inv = inv;
       const style = listingDotStyle(home);
-      if (prev.exact !== style.exact) {
+      if (prev.exact !== style.exact || prev.fillOpacity !== style.fillOpacity) {
         prev.marker.setStyle({
           radius: style.radius,
+          weight: style.weight,
           fillOpacity: style.fillOpacity,
           dashArray: style.dashArray,
         });
         prev.exact = style.exact;
+        prev.fillOpacity = style.fillOpacity;
       }
       continue;
     }
@@ -9770,7 +9774,7 @@ function paintInvestorRegions(inv) {
       className: "hs-inv-listing-hit",
       radius: style.radius,
       color: "#0b0b0d",
-      weight: 1,
+      weight: style.weight,
       fillColor: "#fbbf24",
       fillOpacity: style.fillOpacity,
       dashArray: style.dashArray,
@@ -9784,7 +9788,7 @@ function paintInvestorRegions(inv) {
         handleListingTap(hit?.home || home, hit?.inv || inv);
       })
       .addTo(investorRegionLayer);
-    listingMarkers.set(key, { marker, exact: style.exact, home, inv });
+    listingMarkers.set(key, { marker, exact: style.exact, fillOpacity: style.fillOpacity, home, inv });
   }
   for (const [key, row] of listingMarkers) {
     if (next.has(key)) continue;
@@ -9842,7 +9846,7 @@ function frameSelectedOffice(inv) {
 function officeNeedsPublic(inv) {
   if (!inv) return false;
   if (!investorHasContact(inv)) return true;
-  return String(inv.kind) === "realestate" && mappedInvestorListings(inv).filter(listingIsOfficeOwned).length < 1;
+  return String(inv.kind) === "realestate" && officeOwnedMappedCount(inv) < 1;
 }
 
 function selectInvestorOnMap(inv, marker) {
@@ -9889,6 +9893,10 @@ export function clearSelectedInvestor() {
 
 export function isInvestorSelected(id) {
   return Boolean(id) && String(selectedInvestorId) === String(id);
+}
+
+export function hasSelectedInvestor() {
+  return Boolean(selectedInvestorId);
 }
 
 function openInvestorPopupSoon(marker, delayMs = 40) {

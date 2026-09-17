@@ -66,6 +66,7 @@ import {
   showListingPeek,
   mapIsLive,
   isInvestorSelected,
+  hasSelectedInvestor,
   refreshMapSize,
   defaultMapCenter,
   mapCenterCoords,
@@ -79,7 +80,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.338";
+} from "./wx.js?v=0.2.339";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -107,6 +108,7 @@ import {
   investorInBounds,
   mappedInvestorListings,
   unmappedInvestorListings,
+  officeOwnedMappedCount,
   listingIsOfficeOwned,
 } from "./investors.js";
 import {
@@ -1314,6 +1316,8 @@ let officeSweepWaits = 0;
 let lastOsmOfficeEls = [];
 const officeContactTried = new Set();
 const investorPublicBusy = new Set();
+/** Selected star asked for a listing hunt while a shallow phone lookup already held this id. */
+const pendingDeepLookups = new Set();
 /** Offices waiting on a public-contact lookup, newest frame first. */
 const officeLookupQueue = [];
 const officeLookupQueued = new Set();
@@ -1356,9 +1360,18 @@ function officeLookupStatus() {
   setStatus(`${withPhone} of ${view.length} offices in view have a public phone${tail}`);
 }
 
+function dropQueuedOffice(id) {
+  const key = String(id || "");
+  if (!key || !officeLookupQueued.has(key)) return;
+  officeLookupQueued.delete(key);
+  const i = officeLookupQueue.findIndex((x) => String(x?.id) === key);
+  if (i >= 0) officeLookupQueue.splice(i, 1);
+}
+
 function queueOfficeLookup(inv) {
   const id = String(inv?.id || "");
   if (!id || officeLookupQueued.has(id) || officeContactTried.has(id) || investorPublicBusy.has(id)) return;
+  if (isInvestorSelected(id)) return;
   officeLookupQueued.add(id);
   officeLookupQueue.push(inv);
 }
@@ -1369,6 +1382,7 @@ function queueOfficeLookup(inv) {
  * that cancellation is why a frame full of offices only ever resolved its first pin.
  */
 function runOfficeLookups() {
+  if (hasSelectedInvestor()) return;
   while (officeLookupWorkers < OFFICE_LOOKUP_WORKERS && officeLookupQueue.length) {
     officeLookupWorkers += 1;
     void (async () => {
@@ -1377,6 +1391,11 @@ function runOfficeLookups() {
           if (!investorOfficesWanted()) break;
           const inv = officeLookupQueue.shift();
           officeLookupQueued.delete(String(inv?.id || ""));
+          if (hasSelectedInvestor()) {
+            officeLookupQueue.unshift(inv);
+            officeLookupQueued.add(String(inv?.id || ""));
+            break;
+          }
           const frame = mapFrameBounds();
           if (frame && !investorInBounds(inv, frame, 0.02)) continue;
           await enrichInvestorPublic(inv, { deep: false });
@@ -1453,7 +1472,14 @@ function paintInvestorMap() {
 
 async function enrichInvestorPublic(inv, { deep = false } = {}) {
   const id = String(inv?.id || "");
-  if (!id || investorPublicBusy.has(id)) return;
+  if (!id) return;
+  if (deep) {
+    pendingDeepLookups.add(id);
+    dropQueuedOffice(id);
+  }
+  if (investorPublicBusy.has(id)) return;
+  const runDeep = deep || pendingDeepLookups.has(id);
+  pendingDeepLookups.delete(id);
   investorPublicBusy.add(id);
   paintInvestorMap();
   try {
@@ -1473,15 +1499,15 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
         const bits = [cur.phone, cur.email].filter(Boolean);
         bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
         setStatus(`${investorDisplayName(cur)} · ${bits.join(" · ")}`);
-        if (homes.length > mappedInvestorListings(inv).filter(listingIsOfficeOwned).length) frameInvestorListings(cur);
+        if (homes.length > officeOwnedMappedCount(inv)) frameInvestorListings(cur);
         offerStormsForSelectedOffice(cur);
       }
       paintInvestorMap();
     };
     const next = await enrichInvestorFromPublic(inv, {
-      deep,
+      deep: runDeep,
       osmHits: lastOsmOfficeEls,
-      onPartial: deep ? applyPartial : undefined,
+      onPartial: runDeep ? applyPartial : undefined,
     });
     officeContactTried.add(id);
     if (!next) return;
@@ -1491,7 +1517,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     // Several lookups finish at once — batch the write and the sheet redraw.
     persistSoon();
     paintFieldSheetSoon();
-    if (!deep) return;
+    if (!runDeep) return;
     if (!isInvestorSelected(id)) return;
     const homes = mappedInvestorListings(next).filter(listingIsOfficeOwned);
     const unmapped = unmappedInvestorListings(next).filter(listingIsOfficeOwned).length;
@@ -1501,11 +1527,15 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
-    if (homes.length > mappedInvestorListings(inv).filter(listingIsOfficeOwned).length) frameInvestorListings(next);
+    if (homes.length > officeOwnedMappedCount(inv)) frameInvestorListings(next);
     offerStormsForSelectedOffice(next);
   } finally {
     investorPublicBusy.delete(id);
     paintInvestorMap();
+    if (pendingDeepLookups.has(id)) {
+      const fresh = fieldInvestors().find((x) => String(x.id) === id) || inv;
+      void enrichInvestorPublic(fresh, { deep: true });
+    }
   }
 }
 
@@ -1606,6 +1636,8 @@ function paintFieldMap() {
       hailTapGen += 1;
       officeStormOfferedFor = "";
       clearSelectedStormDate();
+      runOfficeLookups();
+      scheduleInViewOfficePreload();
       const sheet = $("#hs-sheet");
       if (!sheet) return;
       const refetch = async (filters) => {

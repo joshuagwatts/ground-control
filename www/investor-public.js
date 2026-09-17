@@ -22,7 +22,9 @@ import {
   listingFromBizRow,
   listingIsExact,
   listingIsMappable,
+  listingIsOfficeOwned,
   mappedInvestorListings,
+  officeOwnedMappedCount,
   normalizeInvestor,
   normalizeListing,
   osmInvestorKind,
@@ -954,7 +956,7 @@ export async function fetchOsmOfficesInBounds(bounds) {
 export const SHALLOW_LOOKUP_MS = 7000;
 export const DEEP_LOOKUP_MS = 20000;
 /** Wall clock for a selected star's sale homes — contacts can keep running after this. */
-export const LISTING_LOOKUP_MS = 12000;
+export const LISTING_LOOKUP_MS = 16000;
 const LISTING_PAGE_MS = 4000;
 const LISTING_GEO_WORKERS = 4;
 const LISTING_READER = "https://r.jina.ai/";
@@ -1697,7 +1699,7 @@ function allListings(inv) {
 export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0, onPartial } = {}) {
   if (!inv) return null;
   const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
-  const mappedCount = mappedInvestorListings(inv).length;
+  const mappedCount = officeOwnedMappedCount(inv);
   const wantListings = String(inv.kind) === "realestate" && deep && mappedCount < 2;
   const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
   const seeded = website && website !== inv.website ? { ...inv, website } : inv;
@@ -1719,9 +1721,10 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
   const contactsP = withDeadline(enrichInvestorContacts(seeded, { deep, osmHits, budgetMs: budget }), budget + 1500);
 
   const found = await listingsP;
-  let listings = allListings(inv);
-  const scraped = Array.isArray(found) && found.length ? found : null;
-  if (scraped) listings = scraped;
+  let listings = allListings(inv).filter(listingIsOfficeOwned);
+  const foundList = Array.isArray(found) ? found.filter(listingIsOfficeOwned) : [];
+  if (foundList.length) listings = foundList;
+  const scraped = foundList.length ? foundList : null;
   if (
     String(inv.kind) === "realestate" &&
     deep &&
@@ -1749,7 +1752,7 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
     mappedInvestorListings(next).length > mappedInvestorListings(inv).length;
   if (!betterContact && !betterList && !(next.website && !inv.website)) {
     if (investorHasContact(inv) && String(inv.kind) !== "realestate") return null;
-    if (String(inv.kind) === "realestate" && mappedInvestorListings(inv).length) return null;
+    if (String(inv.kind) === "realestate" && officeOwnedMappedCount(inv)) return null;
   }
   return next;
 }

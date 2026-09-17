@@ -646,6 +646,11 @@ export function mappedInvestorListings(inv) {
   return (Array.isArray(inv?.listings) ? inv.listings : []).filter(listingIsMappable);
 }
 
+/** Gold dots / hunt: this office's mapped homes only — unmatched MLS leftovers do not count. */
+export function officeOwnedMappedCount(inv) {
+  return mappedInvestorListings(inv).filter(listingIsOfficeOwned).length;
+}
+
 function listingKm(aLat, aLon, bLat, bLon) {
   const dLat = ((bLat - aLat) * Math.PI) / 180;
   const dLon = ((bLon - aLon) * Math.PI) / 180;

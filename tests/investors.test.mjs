@@ -44,6 +44,7 @@ import {
   investorPropertyCount,
   investorPropertyCountLabel,
   shouldShowInvestorPin,
+  officeOwnedMappedCount,
 } from "../www/investors.js";
 import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
@@ -679,6 +680,7 @@ assert(
   listingsForSelectedOffice(leftover).length === 1 && listingIsOfficeOwned(listingsForSelectedOffice(leftover)[0]),
   "saved unmatched MLS leftovers never become gold dots",
 );
+assert(officeOwnedMappedCount(leftover) === 1, "leftover MLS does not count as this office's mapped homes");
 const starA = { id: "a", kind: "realestate", name: "A" };
 const starB = { id: "b", kind: "realestate", name: "B" };
 const heartPin = { id: "h", kind: "insurance", name: "H" };
