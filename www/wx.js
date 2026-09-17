@@ -12662,7 +12662,8 @@ function hailScopeHtml(data, days, esc) {
 
 function paintHailScopeDateSelection(root, data, esc, { scrollTo = null, scrollRow = true } = {}) {
   if (!root) return;
-  const pinEl = root.querySelector(".hs-pin");
+  const officePeek = Boolean(root.querySelector(".hs-pin-office, .hs-inv-peek"));
+  const pinEl = officePeek ? null : root.querySelector(".hs-pin");
   if (pinEl) {
     const tmp = document.createElement("div");
     tmp.innerHTML = hailScopePinHtml(data, esc);
