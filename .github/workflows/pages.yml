@@ -2,7 +2,7 @@ name: Pages
 
 on:
   push:
-    branches: [main, alpha]
+    branches: [main, alpha, muse]
   workflow_dispatch:
 
 permissions:
@@ -31,18 +31,27 @@ jobs:
         with:
           ref: alpha
           path: alpha
-      - name: Stage team at / and experiments at /alpha/
+      - name: Checkout muse sandbox
+        uses: actions/checkout@v4
+        with:
+          ref: muse
+          path: muse
+      - name: Stage team at / and experiments at /alpha/ and /muse/
         run: |
           if [ -n "${{ secrets.TEAM_SWDI_PROXY_URL }}" ]; then
             echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > team/www/proxy-config.js
             echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > alpha/www/proxy-config.js
+            echo "export const TEAM_SWDI_PROXY = \"${{ secrets.TEAM_SWDI_PROXY_URL }}\";" > muse/www/proxy-config.js
           fi
           mkdir -p _site
           cp -a team/www/. _site/
           mkdir -p _site/alpha
           cp -a alpha/www/. _site/alpha/
+          mkdir -p _site/muse
+          cp -a muse/www/. _site/muse/
           touch _site/.nojekyll
           touch _site/alpha/.nojekyll
+          touch _site/muse/.nojekyll
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
