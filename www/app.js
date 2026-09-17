@@ -81,7 +81,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.344";
+} from "./wx.js?v=0.2.345";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -3472,6 +3472,19 @@ function render() {
 }
 
 function boot() {
+  // One-tap team token install: opening the app with ?gh_token=... saves it
+  // to Settings → Team sync, then scrubs itself from the address bar.
+  try {
+    const u = new URL(location.href);
+    const t = (u.searchParams.get("gh_token") || "").trim();
+    if (t) {
+      db.settings.github_token = t;
+      persist();
+      u.searchParams.delete("gh_token");
+      history.replaceState(null, "", u.toString());
+      setTimeout(() => setStatus("Team token saved — Push/Pull ready"), 800);
+    }
+  } catch {}
   renderPrivacy();
   $("#privacy-tog").onclick = () => {
     const secure = privacyOn(db.settings);
