@@ -9599,7 +9599,12 @@ function paintPeekSheet(html, inv) {
   bindInvestorPeek(root);
   if (inv) bindPlaceLinks(root);
   const officePeek = Boolean(root.querySelector(".hs-pin-office"));
-  revealHailAddressPeek({ scroll: !officePeek });
+  if (officePeek && hailBottomTier === "sheet") {
+    // Phone/email refresh must not tuck storm dates back into the address peek.
+    syncHailBottomChrome();
+  } else {
+    revealHailAddressPeek({ scroll: !officePeek });
+  }
   return root;
 }
 
@@ -9608,12 +9613,15 @@ export function showInvestorPeek(inv) {
   if (!inv) return;
   peekKind = "investor";
   listingPeekGen += 1;
-  hailStormPage = 0;
+  const sameOffice = Boolean(
+    inv?.id && document.querySelector(`#hs-sheet .hs-pin-office[data-inv="${inv.id}"]`),
+  );
+  if (!sameOffice) hailStormPage = 0;
   const root = paintPeekSheet(investorPeekHtml(inv), inv);
   if (String(inv.kind) === "realestate" && root) {
     fillInvestorStormDates(root, lastDossierDataRef, escHousePop, { onRefetch: root._hsOnRefetch });
   }
-  if (root?.querySelector(".hs-pin-office")) {
+  if (root?.querySelector(".hs-pin-office") && !sameOffice) {
     scheduleSheetScroll(scrollViewToAddressPeek);
   }
 }
