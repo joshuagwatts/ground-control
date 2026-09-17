@@ -2555,6 +2555,10 @@ body.wx-map-expanded .hs-field {
   margin-top: 0.45rem;
   padding-top: 0.4rem;
   border-top: 1px solid var(--line);
+  overflow-anchor: none;
+}
+#hs-sheet:has(.hs-pin-office) {
+  overflow-anchor: none;
 }
 .hs-inv-storm-hint {
   font-size: 12px;

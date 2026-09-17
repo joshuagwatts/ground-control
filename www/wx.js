@@ -9527,8 +9527,8 @@ function investorPeekHtml(inv) {
     <button type="button" class="hs-inv-edit" data-inv-act="edit">Edit</button>
   </div>
   ${list}
-  ${isRe ? `<div class="hs-inv-storms"></div>` : ""}
-</div>`;
+</div>
+${isRe ? `<div class="hs-inv-storms"></div>` : ""}`;
 }
 
 function listingPeekHtml(home, inv, place = {}) {
@@ -9598,7 +9598,8 @@ function paintPeekSheet(html, inv) {
   root.innerHTML = html;
   bindInvestorPeek(root);
   if (inv) bindPlaceLinks(root);
-  revealHailAddressPeek();
+  const officePeek = Boolean(root.querySelector(".hs-pin-office"));
+  revealHailAddressPeek({ scroll: !officePeek });
   return root;
 }
 
@@ -9607,9 +9608,13 @@ export function showInvestorPeek(inv) {
   if (!inv) return;
   peekKind = "investor";
   listingPeekGen += 1;
+  hailStormPage = 0;
   const root = paintPeekSheet(investorPeekHtml(inv), inv);
   if (String(inv.kind) === "realestate" && root) {
     fillInvestorStormDates(root, lastDossierDataRef, escHousePop, { onRefetch: root._hsOnRefetch });
+  }
+  if (root?.querySelector(".hs-pin-office")) {
+    scheduleSheetScroll(scrollViewToAddressPeek);
   }
 }
 
@@ -9620,6 +9625,10 @@ export function fillInvestorStormDates(root, data, esc, { onRefetch } = {}) {
   if (!slot) {
     slot = document.createElement("div");
     slot.className = "hs-inv-storms";
+    root.appendChild(slot);
+  } else if (slot.parentElement && slot.parentElement !== root) {
+    // Dates used to live inside .hs-place; keep them as a sibling so address-peek
+    // scroll cannot land on the last storm row.
     root.appendChild(slot);
   }
   const live = data || lastDossierDataRef;
@@ -10821,13 +10830,23 @@ export function flyToPin(lat, lon, zoom = HOUSE_ZOOM, opts = {}) {
 /** Expand / collapse map — swipe down on the address bar for fullscreen; swipe up from tabs to peek again. */
 const MAP_SHELL_MS = 420;
 
+/** Office contact card — never the storm-date list under it. */
+export function addressPeekScrollTarget(sheet, search = null) {
+  if (!sheet) return search || null;
+  const officePin = sheet.querySelector?.(".hs-pin-office");
+  if (officePin) {
+    return sheet.querySelector(".hs-inv-peek") || officePin;
+  }
+  return sheet.querySelector(".hs-place") || sheet.querySelector(".hs-pin") || search || null;
+}
+
 function scrollViewToAddressPeek() {
   const view = document.getElementById("view");
   const search = document.getElementById("hs-search");
-  const place = document.querySelector("#hs-sheet .hs-place") || document.querySelector("#hs-sheet .hs-pin");
+  const sheet = document.getElementById("hs-sheet");
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   if (!view || !shell) return;
-  const target = place || search;
+  const target = addressPeekScrollTarget(sheet, search);
   if (target) {
     const gap = Math.round(view.clientHeight * 0.08);
     const top = target.getBoundingClientRect().bottom + view.scrollTop - view.clientHeight + gap;
@@ -11190,10 +11209,11 @@ function scheduleSheetScroll(fn, { waitForMap = false } = {}) {
 }
 
 /** Slide up address search only — storm sheet stays hidden until explicitly opened. */
-export function revealHailAddressPeek() {
+export function revealHailAddressPeek({ scroll = true } = {}) {
   const shell = document.getElementById("hs-map-shell") || document.getElementById("wx-map-shell");
   const fromHidden = hailBottomTier === "hidden" || shell?.classList.contains("expanded");
   const wasExpanded = Boolean(shell?.classList.contains("expanded"));
+  const officePeek = Boolean(document.querySelector("#hs-sheet .hs-pin-office"));
   const alreadyPeek = hailBottomTier === "address" && !wasExpanded;
   hailBottomTier = "address";
   syncHailBottomChrome();
@@ -11208,9 +11228,9 @@ export function revealHailAddressPeek() {
   if (wasExpanded) {
     setWxMapExpanded(false, { scrollToSheet: false });
   }
-  if (alreadyPeek) return;
+  if (alreadyPeek && !officePeek) return;
   if (fromHidden) pulseBottomPanel();
-  scheduleSheetScroll(scrollViewToAddressPeek, { waitForMap: wasExpanded });
+  if (scroll) scheduleSheetScroll(scrollViewToAddressPeek, { waitForMap: wasExpanded });
 }
 
 /** Optional hook when storm sheet opens with no house pin (e.g. show idle Search storms UI). */
@@ -12795,7 +12815,7 @@ function paintHailScopeDateSelection(root, data, esc, { scrollTo = null, scrollR
     row.classList.toggle("on", on);
     row.setAttribute("aria-pressed", on ? "true" : "false");
   });
-  if (jumpKey && scrollRow) {
+  if (jumpKey && scrollRow && !officePeek) {
     const row = box.querySelector(`.hs-date[data-storm-date="${jumpKey}"]`);
     if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }

@@ -22,6 +22,7 @@ import {
   lsrFirstDays,
   eventHitsInvestorUi,
   mapClickHitsInvestor,
+  addressPeekScrollTarget,
 } from "../www/wx.js";
 
 function assert(cond, msg) {
@@ -251,5 +252,33 @@ assert(eventHitsInvestorUi({ originalEvent: { target: fakeEl("hs-inv-listing-hit
 assert(!eventHitsInvestorUi({ target: fakeEl("leaflet-container") }), "empty map still loads storms");
 assert(mapClickHitsInvestor({ target: fakeEl("hs-inv-pin") }), "mapClickHitsInvestor sees a star DOM hit");
 assert(!mapClickHitsInvestor({ target: fakeEl("leaflet-container") }), "mapClickHitsInvestor leaves empty map alone");
+
+const officePin = { id: "office-pin" };
+const officePeek = { id: "office-peek" };
+const stormSlot = { id: "storms" };
+const officeSheet = {
+  querySelector(sel) {
+    if (sel === ".hs-pin-office") return officePin;
+    if (sel === ".hs-inv-peek") return officePeek;
+    if (sel === ".hs-place") return officePeek;
+    if (sel === ".hs-pin") return officePin;
+    if (sel === ".hs-inv-storms") return stormSlot;
+    return null;
+  },
+};
+assert(addressPeekScrollTarget(officeSheet, { id: "search" }) === officePeek, "star select scrolls to the office card");
+assert(addressPeekScrollTarget(officeSheet) !== stormSlot, "star select does not scroll to the storm-date list");
+
+const housePlace = { id: "house-place" };
+const housePin = { id: "house-pin" };
+const houseSheet = {
+  querySelector(sel) {
+    if (sel === ".hs-pin-office") return null;
+    if (sel === ".hs-place") return housePlace;
+    if (sel === ".hs-pin") return housePin;
+    return null;
+  },
+};
+assert(addressPeekScrollTarget(houseSheet) === housePlace, "house pin still scrolls to the place card");
 
 console.log("hail-days ok");
