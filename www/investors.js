@@ -661,9 +661,17 @@ export function listingDotKey(home) {
   return `${Number(home.lat).toFixed(5)}:${Number(home.lon).toFixed(5)}`;
 }
 
-/** Gold dots for the selected star: homes near that office, nearest first. */
+/** True while a star is selected: other real-estate stars hide; hearts stay. */
+export function shouldShowInvestorPin(inv, selected) {
+  if (!inv) return false;
+  if (String(inv.id) === String(selected?.id || "")) return true;
+  if (selected && String(selected.kind) === "realestate" && String(inv.kind) === "realestate") return false;
+  return true;
+}
+
+/** Gold dots for the selected star: this office's homes, nearest first. Unmatched MLS never draws. */
 export function listingsForSelectedOffice(inv, { maxKm = 12, limit = 36 } = {}) {
-  const homes = mappedInvestorListings(inv);
+  const homes = mappedInvestorListings(inv).filter(listingIsOfficeOwned);
   if (!homes.length) return [];
   const lat = Number(inv?.lat);
   const lon = Number(inv?.lon);
@@ -684,7 +692,7 @@ export function unmappedInvestorListings(inv) {
 
 /** South/west/north/east box covering this agent's actual sale homes. */
 export function investorListingBounds(inv) {
-  const homes = mappedInvestorListings(inv);
+  const homes = mappedInvestorListings(inv).filter(listingIsOfficeOwned);
   let south = 90;
   let north = -90;
   let west = 180;

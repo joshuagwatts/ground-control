@@ -43,6 +43,7 @@ import {
   listingsForSelectedOffice,
   investorPropertyCount,
   investorPropertyCountLabel,
+  shouldShowInvestorPin,
 } from "../www/investors.js";
 import { migrateInvestorOfficeSettings } from "../www/store.js";
 import {
@@ -663,7 +664,29 @@ assert(!idxRowBelongsToOffice("McGraw Realtors", { brokername: "eXp Realty, LLC"
 const pickedOffice = pickOfficeListings([{ address: "1711 Spoke St, Oklahoma City, OK", attribution: "office" }], idxNearby);
 assert(pickedOffice.length === 1 && /Spoke/i.test(pickedOffice[0].address), "office-site homes beat a nearby MLS dump");
 const pickedNearby = pickOfficeListings([], idxNearby);
-assert(pickedNearby.length === 1 && !listingIsOfficeOwned(pickedNearby[0]), "nearby MLS is kept only when this office has no public homes");
+assert(pickedNearby.length === 0, "unmatched MLS is never drawn as this office's homes");
+const leftover = normalizeInvestor({
+  kind: "realestate",
+  name: "Seabrooke Realty",
+  lat: 35.47,
+  lon: -97.52,
+  listings: [
+    { address: "1711 Spoke St", lat: 35.46, lon: -97.53, precision: "rooftop", attribution: "office" },
+    { address: "422 SE 17th Street", lat: 35.45, lon: -97.48, precision: "rooftop", attribution: "nearby" },
+  ],
+});
+assert(
+  listingsForSelectedOffice(leftover).length === 1 && listingIsOfficeOwned(listingsForSelectedOffice(leftover)[0]),
+  "saved unmatched MLS leftovers never become gold dots",
+);
+const starA = { id: "a", kind: "realestate", name: "A" };
+const starB = { id: "b", kind: "realestate", name: "B" };
+const heartPin = { id: "h", kind: "insurance", name: "H" };
+assert(shouldShowInvestorPin(starA, starA), "the selected star stays");
+assert(!shouldShowInvestorPin(starB, starA), "other stars hide while a star is selected");
+assert(shouldShowInvestorPin(heartPin, starA), "hearts stay while a star is selected");
+assert(shouldShowInvestorPin(starB, heartPin), "stars return when a heart is selected");
+assert(shouldShowInvestorPin(starB, null), "all stars show with nothing selected");
 const counted = normalizeInvestor({
   kind: "realestate",
   name: "McGraw Realtors",

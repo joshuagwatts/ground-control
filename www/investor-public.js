@@ -1137,27 +1137,21 @@ export function parseIdxListingsFromJson(json, { officeName = "" } = {}) {
 }
 
 /**
- * Office-site HTML and broker-matched IDX rows beat a city MLS dump.
- * Only when this office has no public homes do we keep nearby sales (labeled nearby).
+ * Office-site HTML and broker-matched IDX rows only.
+ * Unmatched city MLS leftovers are never this office's homes — do not draw them.
  */
 export function pickOfficeListings(htmlRows, idxRows) {
   const office = [];
-  const nearby = [];
   const officeSeen = new Set();
-  const nearSeen = new Set();
   for (const row of htmlRows || []) {
-    const attr = String(row?.attribution || "office").toLowerCase() === "nearby" ? "nearby" : "office";
-    pushListing(attr === "nearby" ? nearby : office, attr === "nearby" ? nearSeen : officeSeen, {
-      ...row,
-      attribution: attr,
-    });
+    if (String(row?.attribution || "office").toLowerCase() === "nearby") continue;
+    pushListing(office, officeSeen, { ...row, attribution: "office" });
   }
   for (const row of idxRows || []) {
-    const attr = String(row?.attribution || "").toLowerCase() === "office" ? "office" : "nearby";
-    if (attr === "office") pushListing(office, officeSeen, { ...row, attribution: "office" });
-    else pushListing(nearby, nearSeen, { ...row, attribution: "nearby" });
+    if (String(row?.attribution || "").toLowerCase() !== "office") continue;
+    pushListing(office, officeSeen, { ...row, attribution: "office" });
   }
-  return office.length ? office : nearby;
+  return office;
 }
 
 /** Website already on the OSM pin — listing scrape must not wait on the contact hunt. */
@@ -1681,11 +1675,7 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
       const extra = extraUrls.length ? await listingsFromPages(extraUrls, inv) : [];
       picked = pickOfficeListings(extra, idxRows);
     }
-    picked = picked.filter((row) => {
-      if (String(row?.attribution || "") !== "nearby") return true;
-      if (!validInvestorCoord(row.lat, row.lon)) return true;
-      return listingNearOffice(inv, row);
-    });
+    picked = picked.filter((row) => String(row?.attribution || "") !== "nearby");
     notify(picked);
     return picked;
   }
@@ -1693,11 +1683,7 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
   let rows = await hunt(website);
   if (!rows.length) {
     const fallback = await listingsFromIdxJson(FALLBACK_MLS_WEBSITE, inv);
-    rows = pickOfficeListings([], fallback).filter((row) => {
-      if (String(row?.attribution || "") !== "nearby") return true;
-      if (!validInvestorCoord(row.lat, row.lon)) return true;
-      return listingNearOffice(inv, row);
-    });
+    rows = pickOfficeListings([], fallback).filter((row) => String(row?.attribution || "") !== "nearby");
     notify(rows);
   }
   return geocodeListingRows(inv, rows, { onMapped });

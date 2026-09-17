@@ -78,7 +78,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.337";
+} from "./wx.js?v=0.2.338";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1466,15 +1466,12 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
       const cur = hit.investor || partial;
       const sheet = $("#hs-sheet");
       if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
-      const homes = mappedInvestorListings(cur);
+      const homes = mappedInvestorListings(cur).filter(listingIsOfficeOwned);
       if (homes.length) {
         const bits = [cur.phone, cur.email].filter(Boolean);
-        const officeHomes = homes.filter(listingIsOfficeOwned);
-        const nearbyHomes = homes.filter((h) => !listingIsOfficeOwned(h));
-        if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
-        else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
+        bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
         setStatus(`${investorDisplayName(cur)} · ${bits.join(" · ")}`);
-        if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(cur);
+        if (homes.length > mappedInvestorListings(inv).filter(listingIsOfficeOwned).length) frameInvestorListings(cur);
         offerStormsForSelectedOffice(cur);
       }
       paintInvestorMap();
@@ -1493,18 +1490,15 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     persistSoon();
     paintFieldSheetSoon();
     if (!deep) return;
-    const homes = mappedInvestorListings(next);
-    const unmapped = unmappedInvestorListings(next).length;
+    const homes = mappedInvestorListings(next).filter(listingIsOfficeOwned);
+    const unmapped = unmappedInvestorListings(next).filter(listingIsOfficeOwned).length;
     const bits = [next.phone, next.email].filter(Boolean);
-    const officeHomes = homes.filter(listingIsOfficeOwned);
-    const nearbyHomes = homes.filter((h) => !listingIsOfficeOwned(h));
-    if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
-    else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
+    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
     if (unmapped) bits.push(`${unmapped} address-only`);
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
-    if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(next);
+    if (homes.length > mappedInvestorListings(inv).filter(listingIsOfficeOwned).length) frameInvestorListings(next);
     offerStormsForSelectedOffice(next);
   } finally {
     investorPublicBusy.delete(id);
@@ -1604,6 +1598,22 @@ function paintFieldMap() {
       );
       if (String(inv?.kind) === "realestate") offerStormsForSelectedOffice(inv);
       else showInvestorPeek(inv);
+    },
+    onInvestorDeselect: () => {
+      hailTapGen += 1;
+      officeStormOfferedFor = "";
+      clearSelectedStormDate();
+      const sheet = $("#hs-sheet");
+      if (!sheet) return;
+      const refetch = async (filters) => {
+        const fresh = await viewportDossier(db.settings, filters);
+        if (fresh) {
+          wxState.data = fresh;
+          wxState.viewport = true;
+        }
+        return fresh;
+      };
+      paintHailSearchIdle(sheet, esc, { onRefetch: refetch });
     },
     onListingSelect: (home, inv) => {
       hailTapGen += 1;

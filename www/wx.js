@@ -57,6 +57,7 @@ import {
   mappedInvestorListings,
   listingsForSelectedOffice,
   unmappedInvestorListings,
+  shouldShowInvestorPin,
   isPartner,
   promoteButtonLabel,
   relationshipLabel,
@@ -421,6 +422,7 @@ let fieldOverlay = {
   onInvestorDelete: null,
   onInvestorNeedPublic: null,
   onInvestorSelect: null,
+  onInvestorDeselect: null,
   onListingSelect: null,
   onInvestorViewChange: null,
   lookingInvestorIds: null,
@@ -9347,16 +9349,14 @@ function investorPopupHtml(inv) {
   const addr = String(inv.address || "").trim();
   const note = String(inv.note || "").trim();
   const isRe = String(inv.kind) === "realestate";
-  const homes = isRe ? mappedInvestorListings(inv) : [];
-  const unmapped = isRe ? unmappedInvestorListings(inv).length : 0;
+  const homes = isRe ? mappedInvestorListings(inv).filter(listingIsOfficeOwned) : [];
+  const unmapped = isRe ? unmappedInvestorListings(inv).filter(listingIsOfficeOwned).length : 0;
   const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
   let listingLine = "";
   if (isRe) {
     const bits = [];
     const officeHomes = homes.filter(listingIsOfficeOwned);
-    const nearbyHomes = homes.filter((h) => !listingIsOfficeOwned(h));
     if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
-    else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
     // Addresses we refused to place are still worth showing — silently dropping them looks like a bug.
     if (unmapped) bits.push(`${unmapped} we could not pin to a house`);
     listingLine = bits.length ? bits.join(" · ") : looking ? "Looking up this office's listings…" : "";
@@ -9419,9 +9419,7 @@ function listingPopupHtml(home, inv) {
   const addr = String(home?.address || "Listed home").trim();
   const price = String(home?.price || "").trim();
   const url = String(home?.url || "").trim();
-  const who = listingIsOfficeOwned(home)
-    ? investorDisplayName(inv)
-    : `For sale near ${investorDisplayName(inv)}`;
+  const who = investorDisplayName(inv);
   const check = zillowSearchUrl(addr);
   const link = url
     ? `<a class="hs-list" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
@@ -9468,15 +9466,12 @@ function investorHomeRowHtml(home, mapped) {
   const a = listingAttr(home);
   const exact = listingIsExact(home);
   const lab = [a.addr || "Listed home", a.price].filter(Boolean).join(" · ");
-  const nearby = !listingIsOfficeOwned(home);
-  const hint = nearby
-    ? "For sale near this office — not listed as this agent's"
-    : mapped
-      ? exact
-        ? "On the map"
-        : "Approximate pin"
-      : "Address only — not on the map";
-  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}${nearby ? " nearby" : ""}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}</strong><span>${escHousePop(hint)}</span></button>`;
+  const hint = mapped
+    ? exact
+      ? "On the map"
+      : "Approximate pin"
+    : "Address only — not on the map";
+  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}</strong><span>${escHousePop(hint)}</span></button>`;
 }
 
 function investorPeekHtml(inv) {
@@ -9488,17 +9483,14 @@ function investorPeekHtml(inv) {
   const addr = String(inv.address || "").trim();
   const note = String(inv.note || "").trim();
   const isRe = String(inv.kind) === "realestate";
-  const mapped = isRe ? mappedInvestorListings(inv) : [];
-  const unmapped = isRe ? unmappedInvestorListings(inv) : [];
+  const mapped = isRe ? mappedInvestorListings(inv).filter(listingIsOfficeOwned) : [];
+  const unmapped = isRe ? unmappedInvestorListings(inv).filter(listingIsOfficeOwned) : [];
   const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
   const kindLab = isRe ? "Real estate office" : "Insurance office";
   let listingLine = "";
   if (isRe) {
     const bits = [];
-    const officeHomes = mapped.filter(listingIsOfficeOwned);
-    const nearbyHomes = mapped.filter((h) => !listingIsOfficeOwned(h));
-    if (officeHomes.length) bits.push(`${officeHomes.length} of this office's listings on the map`);
-    else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
+    if (mapped.length) bits.push(`${mapped.length} of this office's listings on the map`);
     if (unmapped.length) bits.push(`${unmapped.length} address-only`);
     if (bits.length) listingLine = bits.join(" · ");
     else if (looking) listingLine = "Looking up this office's listings…";
@@ -9542,9 +9534,7 @@ function listingPeekHtml(home, inv, place = {}) {
   const addr = String(home?.address || place.address || "Listed home").trim();
   const price = String(home?.price || "").trim();
   const url = String(home?.url || "").trim();
-  const who = listingIsOfficeOwned(home)
-    ? investorDisplayName(inv)
-    : `For sale near ${investorDisplayName(inv)}`;
+  const who = investorDisplayName(inv);
   const check = zillowSearchUrl(addr);
   const link = url
     ? `<a class="hs-list hs-zillow" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
@@ -9857,7 +9847,7 @@ function frameSelectedOffice(inv) {
 function officeNeedsPublic(inv) {
   if (!inv) return false;
   if (!investorHasContact(inv)) return true;
-  return String(inv.kind) === "realestate" && mappedInvestorListings(inv).length < 1;
+  return String(inv.kind) === "realestate" && mappedInvestorListings(inv).filter(listingIsOfficeOwned).length < 1;
 }
 
 function selectInvestorOnMap(inv, marker) {
@@ -9883,6 +9873,21 @@ function selectInvestorOnMap(inv, marker) {
     frameSelectedOffice(inv);
     paintInvestorLayer();
   });
+}
+
+/** Tap the selected star again, or an empty map, to put other stars back and drop gold dots. */
+export function clearSelectedInvestor() {
+  if (!selectedInvestorId) return false;
+  selectedInvestorId = "";
+  listingPeekGen += 1;
+  peekKind = "hail";
+  listingHomesFramedFor = "";
+  listingCameraFor = "";
+  lastInvestorPaintSig = "";
+  paintInvestorRegions(null);
+  paintInvestorLayer({ force: true });
+  if (typeof fieldOverlay.onInvestorDeselect === "function") fieldOverlay.onInvestorDeselect();
+  return true;
 }
 
 function openInvestorPopupSoon(marker, delayMs = 40) {
@@ -9940,16 +9945,20 @@ function paintInvestorLayer({ force = false } = {}) {
   }
   const showIns = fieldOverlay.showInsuranceInvestors === true;
   const showRe = fieldOverlay.showRealEstateInvestors === true;
+  const selected =
+    (fieldOverlay.investors || []).find((x) => String(x.id) === String(selectedInvestorId)) || null;
   let list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).filter(
-    (inv) => inv.id === selectedInvestorId || investorNearMap(inv),
+    (inv) =>
+      shouldShowInvestorPin(inv, selected) && (String(inv.id) === String(selectedInvestorId) || investorNearMap(inv)),
   );
   if (!list.length) {
-    list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).slice(0, 40);
+    list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe })
+      .filter((inv) => shouldShowInvestorPin(inv, selected))
+      .slice(0, 40);
   }
-  const selected =
-    (fieldOverlay.investors || []).find((x) => String(x.id) === String(selectedInvestorId)) ||
-    list.find((x) => x.id === selectedInvestorId) ||
-    null;
+  if (selected && shouldShowInvestorPin(selected, selected) && !list.some((x) => String(x.id) === String(selected.id))) {
+    list = [selected, ...list];
+  }
   paintInvestorRegions(selected);
   const sig = [
     showIns ? 1 : 0,
@@ -9964,16 +9973,23 @@ function paintInvestorLayer({ force = false } = {}) {
   investorLayer.clearLayers();
   investorMarkers.clear();
   for (const inv of list) {
+    const selectedStar = String(inv.id) === String(selectedInvestorId);
     const marker = window.L.marker([inv.lat, inv.lon], {
       pane: "investors",
       icon: investorDivIcon(inv),
       keyboard: false,
-      title: [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
-      zIndexOffset: inv.id === selectedInvestorId ? 400 : 0,
+      title: selectedStar
+        ? "Tap to deselect"
+        : [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
+      zIndexOffset: selectedStar ? 400 : 0,
     })
       .on("click", (e) => {
         window.L.DomEvent.stop(e);
         suppressMapTap(900);
+        if (String(inv.id) === selectedInvestorId) {
+          clearSelectedInvestor();
+          return;
+        }
         selectInvestorOnMap(inv, marker);
       })
       .addTo(investorLayer);
@@ -10210,6 +10226,7 @@ export function setFieldOverlay({
   onInvestorDelete,
   onInvestorNeedPublic,
   onInvestorSelect,
+  onInvestorDeselect,
   onListingSelect,
   onInvestorViewChange,
   lookingInvestorIds = null,
@@ -10236,6 +10253,7 @@ export function setFieldOverlay({
     onInvestorDelete,
     onInvestorNeedPublic,
     onInvestorSelect,
+    onInvestorDeselect,
     onListingSelect,
     onInvestorViewChange,
     lookingInvestorIds,
@@ -10656,6 +10674,11 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
   }
   map.on("click", (e) => {
     if (wxSuppressMapTap || mapClickHitsInvestor(e)) return;
+    // Empty-map tap with a star selected: deselect. Do not drop a house pin.
+    if (selectedInvestorId) {
+      clearSelectedInvestor();
+      return;
+    }
     // Storm overlay mode: taps hit zones for info — don't drop/move the blue pin.
     if (hasSelectedStormDates()) return;
     let { lat, lng } = e.latlng;
