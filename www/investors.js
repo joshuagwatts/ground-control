@@ -655,6 +655,12 @@ function listingKm(aLat, aLon, bLat, bLon) {
   return 2 * 6371 * Math.asin(Math.sqrt(x));
 }
 
+/** Stable map key so a gold dot is not rebuilt when the camera moves. */
+export function listingDotKey(home) {
+  if (!listingIsMappable(home)) return "";
+  return `${Number(home.lat).toFixed(5)}:${Number(home.lon).toFixed(5)}`;
+}
+
 /** Gold dots for the selected star: homes near that office, nearest first. */
 export function listingsForSelectedOffice(inv, { maxKm = 12, limit = 36 } = {}) {
   const homes = mappedInvestorListings(inv);

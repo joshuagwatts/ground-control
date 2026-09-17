@@ -37,6 +37,7 @@ import {
   normalizeListing,
   listingIsExact,
   listingIsOfficeOwned,
+  listingDotKey,
   mappedInvestorListings,
   unmappedInvestorListings,
   listingsForSelectedOffice,
@@ -454,6 +455,12 @@ assert(
   "if nothing is nearby, still show the nearest mapped home so a star is never blank",
 );
 assert(listingsForSelectedOffice(mixed, { limit: 8 }).length === 2, "undrawable rows never become gold dots");
+assert(
+  listingDotKey({ lat: 35.448362233792, lon: -97.5202658, precision: "rooftop" }) ===
+    listingDotKey({ lat: 35.44836223, lon: -97.5202658, precision: "rooftop" }),
+  "a gold-dot key ignores geocode jitter so pan/rebuild does not recreate the marker",
+);
+assert(!listingDotKey({ lat: 35.47, lon: -97.52, precision: "street" }), "a street-centre pin is not a glued gold dot");
 assert(investorPropertyCount(mixed) === 4, "property count includes mapped and address-only homes");
 assert(investorPropertyCountLabel(4) === "4 properties", "plural property label");
 assert(investorPropertyCountLabel(1) === "1 property", "singular property label");

@@ -53,6 +53,7 @@ import {
   investorPropertyCountLabel,
   listingIsExact,
   listingIsOfficeOwned,
+  listingDotKey,
   mappedInvestorListings,
   listingsForSelectedOffice,
   unmappedInvestorListings,
@@ -9735,32 +9736,74 @@ function handleListingTap(home, inv) {
   else void showListingPeek(home, inv, {});
 }
 
+const listingMarkers = new Map();
+let listingHomesFramedFor = "";
+let listingCameraFor = "";
+
+function listingDotStyle(home) {
+  const exact = listingIsExact(home);
+  return {
+    exact,
+    radius: exact ? 6 : 7,
+    fillOpacity: exact ? 0.92 : 0.16,
+    dashArray: exact ? null : "3 3",
+  };
+}
+
+/** Gold dots stay on the map across pan/zoom — add/remove only when the home set changes. */
 function paintInvestorRegions(inv) {
   if (!investorRegionLayer) return;
-  investorRegionLayer.clearLayers();
-  if (!inv || String(inv.kind) !== "realestate") return;
-  for (const home of listingsToDraw(inv)) {
-    const exact = listingIsExact(home);
-    const tip = `${home.address || "Listed home"}${exact ? "" : " (approximate)"}`;
-    window.L.circleMarker([home.lat, home.lon], {
+  const homes = inv && String(inv.kind) === "realestate" ? listingsToDraw(inv) : [];
+  const next = new Set();
+  for (const home of homes) {
+    const key = listingDotKey(home);
+    if (!key) continue;
+    next.add(key);
+    const prev = listingMarkers.get(key);
+    if (prev) {
+      prev.home = home;
+      prev.inv = inv;
+      const style = listingDotStyle(home);
+      if (prev.exact !== style.exact) {
+        prev.marker.setStyle({
+          radius: style.radius,
+          fillOpacity: style.fillOpacity,
+          dashArray: style.dashArray,
+        });
+        prev.exact = style.exact;
+      }
+      continue;
+    }
+    const style = listingDotStyle(home);
+    const marker = window.L.circleMarker([home.lat, home.lon], {
       pane: "investorListings",
       className: "hs-inv-listing-hit",
-      radius: exact ? 6 : 7,
+      radius: style.radius,
       color: "#0b0b0d",
       weight: 1,
-      // A dot we could not verify to the house reads as a hollow ring, never a solid pin.
       fillColor: "#fbbf24",
-      fillOpacity: exact ? 0.92 : 0.16,
-      dashArray: exact ? null : "3 3",
+      fillOpacity: style.fillOpacity,
+      dashArray: style.dashArray,
       keyboard: false,
-      title: tip,
+      title: `${home.address || "Listed home"}${style.exact ? "" : " (approximate)"}`,
     })
       .on("click", (e) => {
         window.L.DomEvent.stop(e);
         suppressMapTap(700);
-        handleListingTap(home, inv);
+        const hit = listingMarkers.get(key);
+        handleListingTap(hit?.home || home, hit?.inv || inv);
       })
       .addTo(investorRegionLayer);
+    listingMarkers.set(key, { marker, exact: style.exact, home, inv });
+  }
+  for (const [key, row] of listingMarkers) {
+    if (next.has(key)) continue;
+    try {
+      investorRegionLayer.removeLayer(row.marker);
+    } catch {
+      /* layer already gone */
+    }
+    listingMarkers.delete(key);
   }
 }
 
@@ -9787,9 +9830,14 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
 function frameSelectedOffice(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
   if (!validInvestorCoord(inv?.lat, inv?.lon)) return false;
+  const id = String(inv.id || "");
+  if (!id) return false;
   const homes = listingsForSelectedOffice(inv, { maxKm: 28, limit: 24 });
   try {
     if (homes.length) {
+      if (listingHomesFramedFor === id) return false;
+      listingHomesFramedFor = id;
+      listingCameraFor = id;
       map.fitBounds([[inv.lat, inv.lon], ...homes.map((h) => [h.lat, h.lon])], {
         padding: [48, 48],
         maxZoom: 15,
@@ -9797,6 +9845,8 @@ function frameSelectedOffice(inv) {
       });
       return true;
     }
+    if (listingCameraFor === id) return false;
+    listingCameraFor = id;
     map.setView([inv.lat, inv.lon], 14, { animate: false });
     return true;
   } catch {
@@ -9814,6 +9864,8 @@ function selectInvestorOnMap(inv, marker) {
   selectedInvestorId = inv?.id ? String(inv.id) : "";
   listingPeekGen += 1;
   peekKind = "investor";
+  listingHomesFramedFor = "";
+  listingCameraFor = "";
   void marker;
   for (const [id, m] of investorMarkers) {
     try {
@@ -9829,8 +9881,7 @@ function selectInvestorOnMap(inv, marker) {
   requestAnimationFrame(() => {
     if (String(inv?.id) !== selectedInvestorId) return;
     frameSelectedOffice(inv);
-    lastInvestorPaintSig = "";
-    paintInvestorLayer({ force: true });
+    paintInvestorLayer();
   });
 }
 
@@ -9845,12 +9896,11 @@ function openInvestorPopupSoon(marker, delayMs = 40) {
   }, delayMs);
 }
 
-/** After listings land for the selected star, re-frame so the gold dots are on camera. */
+/** After listings land for the selected star, frame once so the gold dots are on camera. */
 export function frameInvestorListings(inv) {
   if (!inv || String(inv.id) !== String(selectedInvestorId)) return false;
   const moved = frameSelectedOffice(inv);
-  lastInvestorPaintSig = "";
-  paintInvestorLayer({ force: true });
+  paintInvestorRegions(inv);
   return moved;
 }
 
@@ -9884,7 +9934,10 @@ function paintInvestorLayer({ force = false } = {}) {
   }
   ensureFieldPanes();
   if (!investorLayer) investorLayer = window.L.layerGroup().addTo(map);
-  if (!investorRegionLayer) investorRegionLayer = window.L.layerGroup().addTo(map);
+  if (!investorRegionLayer) {
+    investorRegionLayer = window.L.layerGroup().addTo(map);
+    listingMarkers.clear();
+  }
   const showIns = fieldOverlay.showInsuranceInvestors === true;
   const showRe = fieldOverlay.showRealEstateInvestors === true;
   let list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).filter(
@@ -9893,14 +9946,16 @@ function paintInvestorLayer({ force = false } = {}) {
   if (!list.length) {
     list = visibleInvestors(fieldOverlay.investors, { showInsurance: showIns, showRealEstate: showRe }).slice(0, 40);
   }
-  const selected = list.find((x) => x.id === selectedInvestorId) || null;
-  const homes = selected ? listingsToDraw(selected) : [];
+  const selected =
+    (fieldOverlay.investors || []).find((x) => String(x.id) === String(selectedInvestorId)) ||
+    list.find((x) => x.id === selectedInvestorId) ||
+    null;
+  paintInvestorRegions(selected);
   const sig = [
     showIns ? 1 : 0,
     showRe ? 1 : 0,
     selectedInvestorId,
     list.map((inv) => `${inv.id}:${inv.phone || ""}`).join(","),
-    homes.map((h) => `${Number(h.lat).toFixed(4)},${Number(h.lon).toFixed(4)}`).join(";"),
     investorViewBucket(),
     selectedInvestorId && fieldOverlay.lookingInvestorIds?.has?.(String(selectedInvestorId)) ? 1 : 0,
   ].join("|");
@@ -9908,7 +9963,6 @@ function paintInvestorLayer({ force = false } = {}) {
   lastInvestorPaintSig = sig;
   investorLayer.clearLayers();
   investorMarkers.clear();
-  paintInvestorRegions(selected);
   for (const inv of list) {
     const marker = window.L.marker([inv.lat, inv.lon], {
       pane: "investors",
@@ -9942,14 +9996,15 @@ export function focusInvestorPin(id, { popup = true } = {}) {
     return;
   }
   selectedInvestorId = String(inv.id);
+  listingHomesFramedFor = "";
+  listingCameraFor = "";
   lastInvestorPaintSig = "";
   paintInvestorLayer({ force: true });
   paintInvestorRegions(inv);
   requestAnimationFrame(() => {
     if (String(inv.id) !== selectedInvestorId) return;
     frameSelectedOffice(inv);
-    lastInvestorPaintSig = "";
-    paintInvestorLayer({ force: true });
+    paintInvestorLayer();
   });
 }
 
