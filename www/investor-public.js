@@ -580,12 +580,19 @@ export function listingAddressParts(address) {
   return { ...parts, address: joinAddressParts(parts) };
 }
 
+function listingDedupeKey(row) {
+  const house = houseFromStreet(row?.street || row?.address || "");
+  const street = streetKey(String(row?.street || row?.address || "").replace(/^\d+[A-Za-z]?\s+/, ""));
+  if (house && street) return `${house}:${street}`;
+  if (row?.address) return nameKey(row.address).replace(/\s+/g, "");
+  if (validInvestorCoord(row?.lat, row?.lon)) return `${Number(row.lat).toFixed(5)}:${Number(row.lon).toFixed(5)}`;
+  return "";
+}
+
 function pushListing(out, seen, row) {
   const n = normalizeListing(row);
   if (!n.address && !validInvestorCoord(n.lat, n.lon)) return;
-  const key = n.address
-    ? nameKey(n.address).replace(/\s+/g, "")
-    : `${Number(n.lat).toFixed(5)}:${Number(n.lon).toFixed(5)}`;
+  const key = listingDedupeKey({ ...row, address: n.address, lat: n.lat, lon: n.lon });
   if (!key || seen.has(key)) return;
   seen.add(key);
   // Structured pieces ride along until geocoding; normalizeListing drops them before save.
@@ -1029,12 +1036,14 @@ export function listingUrlsForOffice(inv) {
     } catch {
       /* ignore */
     }
+    // Realtor/Zillow 429 through every reader and hold Promise.all open.
+    return [...new Set(urls.filter(Boolean))].slice(0, 5);
   }
   urls.push(
     `https://www.realtor.com/realestateagents/${slug}_${city}_ok`,
     `https://www.zillow.com/${city}-ok/realtor/${slug}/`,
   );
-  return [...new Set(urls.filter(Boolean))].slice(0, 7);
+  return [...new Set(urls.filter(Boolean))].slice(0, 4);
 }
 
 /** Website already on the OSM pin — listing scrape must not wait on the contact hunt. */
@@ -1102,8 +1111,41 @@ function houseNumbersMatch(want, got) {
     .includes(a);
 }
 
+const STREET_CANON = {
+  street: "st",
+  st: "st",
+  avenue: "ave",
+  ave: "ave",
+  road: "rd",
+  rd: "rd",
+  drive: "dr",
+  dr: "dr",
+  boulevard: "blvd",
+  blvd: "blvd",
+  lane: "ln",
+  ln: "ln",
+  court: "ct",
+  ct: "ct",
+  circle: "cir",
+  cir: "cir",
+  place: "pl",
+  pl: "pl",
+  terrace: "ter",
+  ter: "ter",
+  parkway: "pkwy",
+  pkwy: "pkwy",
+  trail: "trl",
+  trl: "trl",
+  highway: "hwy",
+  hwy: "hwy",
+};
+
 function streetKey(s) {
-  return nameKey(s).replace(/\b(north|south|east|west|n|s|e|w|ne|nw|se|sw)\b/g, "").replace(/\s+/g, " ").trim();
+  return nameKey(s)
+    .replace(/\b(north|south|east|west|n|s|e|w|ne|nw|se|sw)\b/g, "")
+    .replace(/\b(street|st|avenue|ave|road|rd|drive|dr|boulevard|blvd|lane|ln|court|ct|circle|cir|place|pl|terrace|ter|parkway|pkwy|trail|trl|highway|hwy)\b/g, (w) => STREET_CANON[w] || w)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** Grade one geocoder candidate against the address we asked for. Negative = unusable. */

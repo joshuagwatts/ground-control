@@ -193,10 +193,11 @@ const parsedHomes = parseSaleListingsFromHtml(`
 assert(parsedHomes.some((h) => /Imhoff/i.test(h.address)), "realtor detail listing");
 assert(parsedHomes.some((h) => /Westheimer/i.test(h.address)), "zillow detail listing");
 const pageHomes = parseSaleListingsFromHtml(
-  "Featured: 1711 Spoke St, Oklahoma City, OK 73108 and 325 SW 14th Street, Oklahoma City, OK.",
+  "Featured: 1711 Spoke St, Oklahoma City, OK 73108 and 1711 Spoke Street, Oklahoma City, OK 73108 and 325 SW 14th Street, Oklahoma City, OK.",
 );
 assert(pageHomes.some((h) => /Spoke/i.test(h.address)), "office-site street lines become sale homes");
 assert(pageHomes.some((h) => /14th/i.test(h.address)), "second free-text street is kept");
+assert(pageHomes.filter((h) => /Spoke/i.test(h.address)).length === 1, "Spoke St and Spoke Street are one home");
 const streets = parseStreetAddressesFromText(
   "Listed 1711 Spoke St Oklahoma City OK. Office at 100 Main St, Oklahoma City, OK.",
   { officeAddress: "100 Main St, Oklahoma City, OK", cityHint: "Oklahoma City" },
@@ -587,15 +588,17 @@ const listingUrls = listingUrlsForOffice({
   address: "Oklahoma City, OK",
   website: "https://golddotsouth.example/about",
 });
-assert(listingUrls.length >= 5, "office site paths plus listing hosts");
-assert(listingUrls.filter((u) => /realtor\.com/.test(u)).length === 1, "one realtor agent page, not two slash variants");
-assert(listingUrls.some((u) => /zillow\.com/.test(u)), "zillow agent page is included");
+assert(listingUrls.length >= 4, "office site plus listing paths");
+assert(!listingUrls.some((u) => /realtor\.com|zillow\.com/.test(u)), "a known office site does not wait on realtor/zillow 429s");
 assert(listingUrls.includes("https://golddotsouth.example/listings"), "the office site listings path is included");
 assert(listingUrls.includes("https://golddotsouth.example/homes"), "the office /homes path is included");
 assert(
   listingUrls[0] === "https://golddotsouth.example/about",
-  "the office website is asked before realtor/zillow, which 429",
+  "the office website is asked first",
 );
+const portalUrls = listingUrlsForOffice({ name: "Seabrooke Realty", address: "Oklahoma City, OK" });
+assert(portalUrls.some((u) => /realtor\.com/.test(u)), "offices without a site still try the agent page");
+assert(portalUrls.some((u) => /zillow\.com/.test(u)), "offices without a site still try zillow");
 assert(
   officeWebsiteFromOsm(
     { name: "Verbode", lat: 35.47, lon: -97.52 },
