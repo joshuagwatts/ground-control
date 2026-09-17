@@ -39,9 +39,10 @@ const CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/locations
 const ARCGIS_GEOCODER_URL = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates";
 const OK_EXTENT = { west: -103.05, south: 33.55, east: -94.35, north: 37.05 };
 const DDG_HTML = "https://html.duckduckgo.com/html/?q=";
+const DDG_LITE = "https://lite.duckduckgo.com/lite/?q=";
 const MAX_LISTINGS = 40;
-const MAX_FETCH_LISTINGS = 16;
-const MAX_LISTING_GEOCODE = 10;
+const MAX_FETCH_LISTINGS = 24;
+const MAX_LISTING_GEOCODE = 16;
 const MAX_LISTING_KM = 48;
 
 const PEOPLE_SEARCH =
@@ -49,9 +50,14 @@ const PEOPLE_SEARCH =
 const JUNK_MAIL =
   /example\.com$|noreply|no-reply|privacy@|support@duckduckgo|sentry\.io$|wixpress|godaddy|wordpress\.com$|png$|jpg$|gif$|keen\.io$|cloudflare|schema\.org|placeholder|sentry|wix\.com$|thebbb\.org$|bbb\.org$|yellowpages\.com$|yelp\.com$|facebook\.com$|google\.com$|interactiveblue\.com$|squarespace\.com$|hubspot\.com$|mailchimp\.com$|constantcontact\.com$/i;
 const DIRECTORY_HOST =
-  /yellowpages\.com|bbb\.org|thebbb\.org|yelp\.com|facebook\.com|duckduckgo|realtor\.com|zillow\.com|redfin\.com|homes\.com|chamberofcommerce\.com/i;
+  /yellowpages\.com|bbb\.org|thebbb\.org|yelp\.com|facebook\.com|duckduckgo|realtor\.com|zillow\.com|redfin\.com|homes\.com|chamberofcommerce\.com|superpages\.com|manta\.com|mapquest\.com|bizapedia\.com|allbiz\.com|citysquares\.com|us-info\.com|ratemyagent\.com|rocketreach\.co|pages24\.com|directionus\.com|yellowbot\.com|birdeye\.com|prospectb2b\.com|erealestatepro\.com|opendi\.|homestars\.com|realty\.com|homesandland\.com|bing\.com/i;
+/** City-wide portals — never treat these as this office's listing site. */
+const LISTING_PORTAL_HOST =
+  /trulia\.com|crexi\.com|showcase\.com|loopnet\.com|land\.com|landsearch\.com|mls\.com|apartments\.com|hotpads|zumper|movoto|homesnap|cortera|findglocal|locations\.kw\.com|okchomesellers\.com/i;
 const GENERIC_NAME =
   /^(the|and|llc|inc|co|corp|agency|insurance|ins|realty|real|estate|realtor|realtors|group|company|associates|office|agent|agents|farm|state|farmers|allstate|nationwide)$/i;
+const FRANCHISE_TOKEN =
+  /^(keller|williams|century|coldwell|banker|remax|exp|compass|berkshire|hathaway|sotheby|fathom|weichert|epique|better|homes|gardens)$/i;
 
 function clip(s, n) {
   return String(s || "").trim().slice(0, n);
@@ -79,6 +85,11 @@ export function namesLikelySame(a, b) {
   const setB = new Set(B);
   const hit = A.filter((t) => setB.has(t)).length;
   return hit >= Math.min(2, A.length, B.length) || (A.length === 1 && setB.has(A[0]));
+}
+
+/** Tokens that distinguish this office from a franchise brand (Mulinix, Seabrooke, McGraw). */
+export function officeUniqueTokens(name) {
+  return nameTokens(name).filter((t) => !FRANCHISE_TOKEN.test(t));
 }
 
 export function officeBrandKey(s) {
@@ -626,8 +637,10 @@ export function parseStreetAddressesFromText(text, { officeAddress = "", cityHin
     ) {
       continue;
     }
+    if (/images? were found|no images|directions|click here|^beds$|^baths$/i.test(street)) continue;
     let city = String(m[5] || "").trim();
     if (/^(ok|oklahoma|united|states|suite|apt|unit|the|and|for|sale|listed)$/i.test(city)) city = "";
+    if (city && !OK_CITY_RE.test(city)) city = "";
     const named = (city && OK_CITY_RE.test(city) && city.match(OK_CITY_RE)?.[1]) || blob.slice(m.index, m.index + 80).match(OK_CITY_RE)?.[1] || "";
     if (named) city = named;
     else if (!city && OK_CITY_RE.test(cityHint)) city = cityHint;
@@ -956,8 +969,8 @@ export async function fetchOsmOfficesInBounds(bounds) {
 export const SHALLOW_LOOKUP_MS = 7000;
 export const DEEP_LOOKUP_MS = 20000;
 /** Wall clock for a selected star's sale homes — contacts can keep running after this. */
-export const LISTING_LOOKUP_MS = 16000;
-const LISTING_PAGE_MS = 4000;
+export const LISTING_LOOKUP_MS = 32000;
+const LISTING_PAGE_MS = 5000;
 const LISTING_GEO_WORKERS = 4;
 const LISTING_READER = "https://r.jina.ai/";
 /** kvCORE public listings are the shared OKC MLS dump, not one office's inventory. */
@@ -967,6 +980,56 @@ const FALLBACK_MLS_WEBSITE = "https://www.mcgrawrealtors.com/";
 export function listingFallbackWebsite(inv) {
   const blob = `${inv?.name || ""} ${inv?.company || ""} ${inv?.website || ""}`;
   return /mcgraw/i.test(blob) ? FALLBACK_MLS_WEBSITE : "";
+}
+
+/**
+ * Office inventory URLs we have already verified. Search can miss these when
+ * DuckDuckGo ranks Zillow city dumps first — that is not nearby MLS, it is
+ * this office's own public site.
+ */
+export function knownOfficeListingSites(inv) {
+  const blob = nameKey(`${inv?.name || ""} ${inv?.company || ""} ${inv?.website || ""}`);
+  const out = [];
+  if (/\bseabrooke\b/.test(blob)) {
+    out.push(
+      "https://www.keyrealtyokc.com/active-listings",
+      "https://seabrooke.appfolio.com/listings",
+    );
+  }
+  if (/\bmcgraw\b/.test(blob)) {
+    out.push("https://www.mcgrawrealtors.com/", "https://www.mcgrawpropertymanagement.com/oklahoma-city-rentals");
+  }
+  if (/\bmulinix\b/.test(blob)) out.push("https://kwnorman.kw.com/");
+  if (/\bverbode\b/.test(blob)) out.push("https://verbode.com/");
+  return out;
+}
+
+/** Keep office sites + this office's Appfolio; drop city portals and other brokers' rentals. */
+export function listingSourceFitsOffice(url, inv) {
+  const href = String(url || "").trim();
+  if (!/^https?:\/\//i.test(href)) return false;
+  let host = "";
+  let path = "";
+  try {
+    const u = new URL(href);
+    host = u.hostname.toLowerCase();
+    path = u.pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (DIRECTORY_HOST.test(host) || LISTING_PORTAL_HOST.test(host) || PEOPLE_SEARCH.test(href)) return false;
+  const isAppfolio = /appfolio\.com$/i.test(host);
+  if (!isOfficeWebsite(href) && !isAppfolio) return false;
+  const unique = officeUniqueTokens(inv?.name || inv?.company);
+  if (isAppfolio && unique.length && !unique.some((t) => host.includes(t))) return false;
+  if (/^(www\.)?(coldwellbanker|century21|remax|exprealty)\.com$/i.test(host)) return false;
+  if (/kw\.com$/i.test(host)) {
+    const office = nameKey(inv?.name || inv?.company);
+    if (unique.some((t) => `${host} ${path}`.includes(t))) return true;
+    if (/\bmulinix\b/.test(office) && /kwnorman/i.test(host)) return true;
+    if (unique.length) return false;
+  }
+  return true;
 }
 
 export function withDeadline(promise, ms, fallback = null) {
@@ -1033,14 +1096,14 @@ export function listingUrlsForOffice(inv) {
     urls.push(inv.website);
     try {
       const origin = new URL(inv.website).origin;
-      for (const path of ["/listings", "/homes", "/properties", "/featured-listings", "/idx/featured", "/idx"]) {
-        urls.push(`${origin}${path}`);
-      }
+      const paths = /appfolio\.com/i.test(origin)
+        ? ["/listings", "/listings/listings"]
+        : ["/listings", "/homes", "/properties", "/featured-listings", "/active-listings", "/homes-for-sale", "/idx/featured", "/idx"];
+      for (const path of paths) urls.push(`${origin}${path}`);
     } catch {
       /* ignore */
     }
-    // Realtor/Zillow city dumps are not this office's homes — never attribute them.
-    return [...new Set(urls.filter(Boolean))].slice(0, 7);
+    return [...new Set(urls.filter(Boolean))].slice(0, 8);
   }
   return [];
 }
@@ -1048,7 +1111,7 @@ export function listingUrlsForOffice(inv) {
 /** kvCORE (and similar) public JSON — lat/lon already on the row, no geocode wait. */
 export function idxJsonUrlsForOffice(website) {
   const href = String(website || "").trim();
-  if (!isOfficeWebsite(href)) return [];
+  if (!isOfficeWebsite(href) || /appfolio\.com/i.test(href)) return [];
   try {
     const origin = new URL(href).origin;
     return [`${origin}/wp-json/kvcoreidx/v1/api/public/listings?limit=40`];
@@ -1086,6 +1149,13 @@ export function idxRowBelongsToOffice(officeName, row) {
   if (!name) return false;
   const broker = String(row?.brokername || "").trim();
   const agent = String(row?.agentname || "").trim();
+  const blob = nameKey(`${broker} ${agent}`);
+  const unique = officeUniqueTokens(name);
+  if (unique.length) {
+    const hit = unique.filter((t) => blob.includes(t));
+    if (!hit.length) return false;
+    return namesLikelySame(name, broker) || namesLikelySame(name, agent) || hit.length === unique.length;
+  }
   return (
     namesLikelySame(name, broker) ||
     officesLikelySame(name, broker) ||
@@ -1596,17 +1666,70 @@ async function listingsFromIdxJson(website, inv) {
 }
 
 async function discoverOfficeWebsite(inv) {
-  if (isOfficeWebsite(inv?.website)) return inv.website;
+  const sources = await discoverOfficeListingSources(inv);
+  return sources[0] || "";
+}
+
+function scoreListingSource(url, inv) {
+  if (!listingSourceFitsOffice(url, inv)) return -1;
+  const unique = officeUniqueTokens(inv?.name || inv?.company);
+  let host = "";
+  let path = "";
+  try {
+    const u = new URL(url);
+    host = u.hostname.toLowerCase();
+    path = u.pathname.toLowerCase();
+  } catch {
+    return -1;
+  }
+  let s = 1;
+  if (unique.some((t) => host.includes(t))) s += 8;
+  if (unique.some((t) => path.includes(t))) s += 2;
+  if (/appfolio\.com$/i.test(host)) s += 5;
+  if (/active-listings|homes-for-sale|\/listings/i.test(path)) s += 3;
+  return s;
+}
+
+function urlsFromSearchPage(html) {
+  const out = extractSearchResultUrls(html, { limit: 20 });
+  const re = /\bhttps?:\/\/[^\s)\]"'<>]+/gi;
+  let m;
+  while ((m = re.exec(String(html || ""))) && out.length < 30) {
+    const href = String(m[0] || "").replace(/[.,;]+$/, "");
+    if (/^https?:\/\//i.test(href)) out.push(href);
+  }
+  return out;
+}
+
+/** Office sites + Appfolio inventory pages from DDG Lite (html.duckduckgo.com is captcha'd). */
+export async function discoverOfficeListingSources(inv) {
   const name = inv?.name || inv?.company;
   const city = investorCity(inv);
-  if (!name) return "";
-  const q = `"${name}" ${city} OK (realty OR realtor OR "real estate") (official OR homepage OR website)`;
-  const page = await fetchListingPage(`${DDG_HTML}${encodeURIComponent(q)}`, 4000);
-  if (!page?.html) return "";
-  for (const u of extractSearchResultUrls(page.html, { limit: 8 })) {
-    if (isOfficeWebsite(u)) return u;
+  if (!name) return [];
+  const queries = [
+    `${name} ${city} OK appfolio listings`,
+    `"${name}" ${city} OK ("active listings" OR listings OR website)`,
+  ];
+  const pages = await Promise.all(
+    queries.map((q) => fetchListingPage(`${DDG_LITE}${encodeURIComponent(q)}`, 5500)),
+  );
+  const ranked = [];
+  const seen = new Set();
+  for (const page of pages) {
+    if (!page?.html) continue;
+    for (const u of urlsFromSearchPage(page.html)) {
+      const key = String(u || "")
+        .replace(/\/$/, "")
+        .toLowerCase();
+      if (!key || seen.has(key)) continue;
+      const s = scoreListingSource(u, inv);
+      if (s < 0) continue;
+      seen.add(key);
+      ranked.push({ u, s });
+    }
   }
-  return "";
+  ranked.sort((a, b) => b.s - a.s);
+  return ranked.map((row) => row.u).slice(0, 4);
 }
 
 function pinListingGeo(next, geo) {
@@ -1673,30 +1796,59 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
     }
   };
   async function hunt(site) {
-    if (!isOfficeWebsite(site)) return [];
+    if (!isOfficeWebsite(site) && !/appfolio\.com/i.test(String(site || ""))) return [];
     const idxP = listingsFromIdxJson(site, inv);
     const homeP = listingsFromPages([site], inv);
     const [idxRows, homeRows] = await Promise.all([idxP, homeP]);
     let picked = pickOfficeListings(homeRows, idxRows);
-    if (!picked.length) {
+    if (picked.length < 4) {
       const extraUrls = listingUrlsForOffice({ ...inv, website: site }).filter((u) => u !== site);
       const extra = extraUrls.length ? await listingsFromPages(extraUrls, inv) : [];
-      picked = pickOfficeListings(extra, idxRows);
+      picked = pickOfficeListings([...homeRows, ...extra], idxRows);
     }
     picked = picked.filter((row) => String(row?.attribution || "") !== "nearby");
     notify(picked);
     return picked;
   }
-  let website = inv.website || officeWebsiteFromOsm(inv, osmHits);
-  if (!isOfficeWebsite(website)) website = await discoverOfficeWebsite(inv);
-  let rows = await hunt(website);
-  const fallback = listingFallbackWebsite({ ...inv, website });
-  if (!rows.length && fallback && fallback !== website) {
-    const extra = await listingsFromIdxJson(fallback, inv);
-    rows = pickOfficeListings([], extra).filter((row) => String(row?.attribution || "") !== "nearby");
-    notify(rows);
+  const sites = [];
+  const seenSite = new Set();
+  const pushSite = (raw) => {
+    const u = String(raw || "").trim();
+    if (!u) return;
+    const key = u.replace(/\/$/, "").toLowerCase();
+    if (seenSite.has(key)) return;
+    if (!isOfficeWebsite(u) && !/appfolio\.com/i.test(u)) return;
+    seenSite.add(key);
+    sites.push(u);
+  };
+  pushSite(inv.website);
+  pushSite(officeWebsiteFromOsm(inv, osmHits));
+  for (const u of knownOfficeListingSites(inv)) pushSite(u);
+  const foundP = discoverOfficeListingSources(inv);
+  let bag = [];
+  const bagSeen = new Set();
+  const absorb = (rows) => {
+    for (const row of rows || []) pushListing(bag, bagSeen, row);
+  };
+  let hunted = 0;
+  if (sites.length) {
+    absorb(await hunt(sites[0]));
+    hunted = 1;
   }
-  return geocodeListingRows(inv, rows, { onMapped });
+  if (bag.length < 6) {
+    for (const u of await foundP) pushSite(u);
+    for (const site of sites.slice(hunted)) {
+      absorb(await hunt(site));
+      if (bag.length >= 8) break;
+    }
+  }
+  const fallback = listingFallbackWebsite({ ...inv, website: sites[0] || inv.website });
+  if (!bag.length && fallback) {
+    const extra = await listingsFromIdxJson(fallback, inv);
+    absorb(pickOfficeListings([], extra).filter((row) => String(row?.attribution || "") !== "nearby"));
+    notify(bag);
+  }
+  return geocodeListingRows(inv, bag, { onMapped });
 }
 
 function allListings(inv) {

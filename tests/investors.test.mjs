@@ -81,6 +81,9 @@ import {
   idxRowBelongsToOffice,
   listingReaderUrl,
   listingFallbackWebsite,
+  knownOfficeListingSites,
+  listingSourceFitsOffice,
+  officeUniqueTokens,
   parseStreetAddressesFromText,
   officeWebsiteFromOsm,
   investorCity,
@@ -599,7 +602,7 @@ assert((await withDeadline(never, 60, "gave up")) === "gave up", "a hung lookup 
 assert(Date.now() - t0 < 1500, "and it gives up on time");
 assert((await withDeadline(Promise.reject(new Error("boom")), 500, "fell back")) === "fell back", "a failed lookup falls back");
 assert(SHALLOW_LOOKUP_MS < DEEP_LOOKUP_MS, "the in-view sweep is cheaper than a tapped office");
-assert(LISTING_LOOKUP_MS < DEEP_LOOKUP_MS, "sale homes must not wait on the full 20s contact budget");
+assert(LISTING_LOOKUP_MS >= 24000, "office-site hunt needs time for Lite search plus listing pages");
 const listingUrls = listingUrlsForOffice({
   name: "Gold Dot South Realty",
   address: "Oklahoma City, OK",
@@ -610,6 +613,7 @@ assert(!listingUrls.some((u) => /realtor\.com|zillow\.com/.test(u)), "a known of
 assert(listingUrls.includes("https://golddotsouth.example/listings"), "the office site listings path is included");
 assert(listingUrls.includes("https://golddotsouth.example/homes"), "the office /homes path is included");
 assert(listingUrls.includes("https://golddotsouth.example/idx/featured"), "IDX featured path is included when the site is known");
+assert(listingUrls.includes("https://golddotsouth.example/active-listings"), "active-listings path is hunted on the office site");
 assert(
   listingUrls[0] === "https://golddotsouth.example/about",
   "the office website is asked first",
@@ -663,6 +667,48 @@ const idxNearby = parseIdxListingsFromJson(
 assert(idxNearby.length === 1 && !listingIsOfficeOwned(idxNearby[0]), "unmatched IDX row is nearby, not this agent's");
 assert(idxRowBelongsToOffice("Keller Williams Realty", { brokername: "Keller Williams Central OK" }), "KW brand matches KW broker");
 assert(!idxRowBelongsToOffice("McGraw Realtors", { brokername: "eXp Realty, LLC" }), "McGraw does not claim eXp MLS rows");
+assert(
+  officeUniqueTokens("Keller Williams Realty Mulinix").includes("mulinix") &&
+    !officeUniqueTokens("Keller Williams Realty Mulinix").includes("keller"),
+  "franchise tokens do not count as this office",
+);
+assert(
+  !idxRowBelongsToOffice("Keller Williams Realty Mulinix", { brokername: "Keller Williams Central OK" }),
+  "Mulinix does not claim KW Central OK MLS rows",
+);
+assert(
+  idxRowBelongsToOffice("Keller Williams Realty Mulinix", { brokername: "Keller Williams Realty Mulinix", agentname: "Pat" }),
+  "Mulinix matches its own broker name",
+);
+assert(
+  !parseStreetAddressesFromText("No images were found on Street. Click here for directions.").length,
+  "listing-page junk is not a house street",
+);
+assert(
+  parseStreetAddressesFromText("1711 Spoke St Oklahoma City OK 73111").some((r) => /Spoke/i.test(r.address)),
+  "a real OKC street still parses",
+);
+assert(
+  knownOfficeListingSites({ name: "Seabrooke Realty" }).some((u) => /keyrealtyokc\.com/i.test(u)) &&
+    knownOfficeListingSites({ name: "Seabrooke Realty" }).some((u) => /seabrooke\.appfolio\.com/i.test(u)),
+  "Seabrooke hunts Key Realty sales and its Appfolio rentals",
+);
+assert(!knownOfficeListingSites({ name: "Dean Fleshmans Real Estate" }).length, "Dean is not given someone else's listing site");
+assert(
+  knownOfficeListingSites({ name: "Keller Williams Realty Mulinix" }).some((u) => /kwnorman\.kw\.com/i.test(u)),
+  "Mulinix hunts the Norman KW office site",
+);
+assert(listingSourceFitsOffice("https://seabrooke.appfolio.com/listings", { name: "Seabrooke Realty" }), "this office's Appfolio is in");
+assert(
+  !listingSourceFitsOffice("https://okchomerealtyservices.appfolio.com/listings", { name: "Seabrooke Realty" }),
+  "another broker's Appfolio is not Seabrooke",
+);
+assert(!listingSourceFitsOffice("https://www.zillow.com/oklahoma-city-ok/", { name: "Seabrooke Realty" }), "Zillow city dump is not this office");
+assert(listingSourceFitsOffice("https://www.keyrealtyokc.com/active-listings", { name: "Seabrooke Realty" }), "Key Realty sales page is in");
+assert(
+  !listingSourceFitsOffice("https://kwnorman.kw.com/", { name: "Seabrooke Realty" }),
+  "KW Norman is not Seabrooke's site",
+);
 const pickedOffice = pickOfficeListings([{ address: "1711 Spoke St, Oklahoma City, OK", attribution: "office" }], idxNearby);
 assert(pickedOffice.length === 1 && /Spoke/i.test(pickedOffice[0].address), "office-site homes beat a nearby MLS dump");
 const pickedNearby = pickOfficeListings([], idxNearby);
