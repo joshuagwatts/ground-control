@@ -62,6 +62,7 @@ import {
   focusInvestorPin,
   frameInvestorListings,
   showInvestorPeek,
+  fillInvestorStormDates,
   showListingPeek,
   mapIsLive,
   refreshMapSize,
@@ -77,7 +78,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.334";
+} from "./wx.js?v=0.2.335";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1470,6 +1471,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
         bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
         setStatus(`${investorDisplayName(cur)} · ${bits.join(" · ")}`);
         if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(cur);
+        if (homes.length) offerStormsForSelectedOffice(cur);
       }
       paintInvestorMap();
     };
@@ -1496,6 +1498,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
     if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(next);
+    if (homes.length) offerStormsForSelectedOffice(next);
   } finally {
     investorPublicBusy.delete(id);
     paintInvestorMap();
@@ -1588,6 +1591,7 @@ function paintFieldMap() {
     onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv, { deep: true }),
     onInvestorSelect: (inv) => {
       hailTapGen += 1;
+      officeStormOfferedFor = "";
       setStatus(
         [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
       );
@@ -2549,6 +2553,61 @@ function onMapHold(lat, lon) {
 
 let wxRenderGen = 0;
 let hailTapGen = 0;
+let officeStormOfferedFor = "";
+
+function officeStormOnRefetch(gen) {
+  return async (filters) => {
+    if (gen !== hailTapGen) return null;
+    const fresh = await viewportDossier(db.settings, filters);
+    if (gen !== hailTapGen) return null;
+    wxState.data = fresh;
+    return fresh;
+  };
+}
+
+/** After gold dots land, open storm dates under the office so a date tap can overlay hail. */
+function offerStormsForSelectedOffice(inv) {
+  if (String(inv?.kind) !== "realestate") return;
+  if (!mappedInvestorListings(inv).length) return;
+  const sheet = $("#hs-sheet");
+  if (!sheet?.querySelector(`.hs-pin-office[data-inv="${inv.id}"]`)) return;
+  showInvestorPeek(inv);
+  revealHailStormSheet({ interactive: true, scroll: false });
+  const onRefetch = officeStormOnRefetch(hailTapGen);
+  if (wxState.data) fillInvestorStormDates(sheet, wxState.data, esc, { onRefetch });
+  if (wxState.data && hailScopeDays(wxState.data).length) return;
+  if (officeStormOfferedFor === String(inv.id)) return;
+  officeStormOfferedFor = String(inv.id);
+  void loadStormsForOfficeListings(inv, onRefetch);
+}
+
+async function loadStormsForOfficeListings(inv, onRefetch) {
+  const gen = hailTapGen;
+  const id = String(inv?.id || "");
+  if (!id) return;
+  setMapViewHailArmed(true);
+  const refetch = onRefetch || officeStormOnRefetch(gen);
+  try {
+    const data = await viewportDossier(db.settings, undefined, {
+      onPartial: (partial) => {
+        if (gen !== hailTapGen) return;
+        wxState.data = partial;
+        const sheet = $("#hs-sheet");
+        if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) {
+          fillInvestorStormDates(sheet, partial, esc, { onRefetch: refetch });
+        }
+      },
+    });
+    if (gen !== hailTapGen || !data) return;
+    wxState.data = data;
+    const sheet = $("#hs-sheet");
+    if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) {
+      fillInvestorStormDates(sheet, data, esc, { onRefetch: refetch });
+    }
+  } catch {
+    /* keep the office card even if storms miss */
+  }
+}
 
 function wireHsShell(cfg) {
   const styles = $("#hs-styles");
@@ -2712,6 +2771,7 @@ async function renderWx() {
       if (wxPinSelected()) return;
       const sheet = $("#hs-sheet");
       if (!sheet) return;
+      if (sheet.querySelector(".hs-pin-office, .hs-pin-listing, .hs-inv-peek")) return;
       if (wxState.viewport && wxState.data && !wxState.data._meta?.idle) {
         if (!sheet.querySelector(".hs-date") && !sheet.querySelector("#hs-hail-search")) {
           syncHailScopeView(sheet, wxState.data, esc, {

@@ -9521,6 +9521,7 @@ function investorPeekHtml(inv) {
     <button type="button" class="hs-inv-edit" data-inv-act="edit">Edit</button>
   </div>
   ${list}
+  ${isRe ? `<div class="hs-inv-storms"></div>` : ""}
 </div>`;
 }
 
@@ -9595,12 +9596,66 @@ function paintPeekSheet(html, inv) {
   return root;
 }
 
-/** Office card in the HailScope peek — phone, listings, no storms. */
+/** Office card in the HailScope peek — listings first, storm dates stay clickable under it. */
 export function showInvestorPeek(inv) {
   if (!inv) return;
   peekKind = "investor";
   listingPeekGen += 1;
-  paintPeekSheet(investorPeekHtml(inv), inv);
+  const root = paintPeekSheet(investorPeekHtml(inv), inv);
+  if (String(inv.kind) === "realestate" && root) {
+    fillInvestorStormDates(root, lastDossierDataRef, escHousePop, { onRefetch: root._hsOnRefetch });
+  }
+}
+
+/** Keep storm dates under a selected office so a date tap can overlay hail on their homes. */
+export function fillInvestorStormDates(root, data, esc, { onRefetch } = {}) {
+  if (!root?.querySelector(".hs-pin-office")) return;
+  let slot = root.querySelector(".hs-inv-storms");
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.className = "hs-inv-storms";
+    root.appendChild(slot);
+  }
+  const live = data || lastDossierDataRef;
+  if (live) lastDossierDataRef = live;
+  if (typeof onRefetch === "function") root._hsOnRefetch = onRefetch;
+  const days = live ? hailScopeDays(live) : [];
+  const waiting = Boolean(live?._meta?.loading);
+  if (!days.length) {
+    const hint = waiting
+      ? "Loading storm dates for these homes…"
+      : "Homes are on the map. Search storms, then tap a date to overlay hail for this agent.";
+    slot.innerHTML = `<p class="hs-inv-storm-hint">${esc(hint)}</p>${
+      waiting ? "" : `<button type="button" class="hs-inv-storm-search" data-hs-storm-search>Search storms</button>`
+    }<div class="hs-dates" hidden></div>`;
+    const box = slot.querySelector(".hs-dates");
+    if (box && live) {
+      box._hsData = live;
+      box._hsEsc = esc;
+    }
+    slot.querySelector("[data-hs-storm-search]")?.addEventListener("click", () => {
+      const run = root._hsOnRefetch;
+      if (typeof run === "function") {
+        const hintEl = slot.querySelector(".hs-inv-storm-hint");
+        if (hintEl) hintEl.textContent = "Loading storm dates for these homes…";
+        void Promise.resolve(run())
+          .then((fresh) => {
+            if (fresh) fillInvestorStormDates(root, fresh, esc, { onRefetch: run });
+          })
+          .catch(() => {});
+        return;
+      }
+      try {
+        hailSearchClickHook?.();
+      } catch {
+        /* search optional */
+      }
+    });
+    return;
+  }
+  slot.innerHTML = `<p class="hs-inv-storm-hint">Tap a storm date to overlay hail on this agent's homes</p>
+    <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport: true, data: live })}</div>`;
+  bindHailScopeDates(root, live, esc, { onRefetch: root._hsOnRefetch });
 }
 
 let listingPeekGen = 0;
@@ -12445,6 +12500,10 @@ function scheduleSelectedStormZoneRedraw(hailRows, windRows = [], zoneRows = nul
 /** Soft sheet patch — keep selected dates lit while list/radar keep loading. */
 function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
   if (!root || !data) return;
+  if (root.querySelector(".hs-pin-office, .hs-inv-peek")) {
+    fillInvestorStormDates(root, data, esc, { onRefetch });
+    return;
+  }
   const viewport = Boolean(data.viewport || data._meta?.viewport);
   if (!viewport) {
     const place = root.querySelector(".hs-place");
@@ -12482,7 +12541,16 @@ function softUpdateHailScopeSheet(root, data, esc, { onRefetch } = {}) {
 /** One coordinated map + sheet refresh after dossier data arrives. */
 export function syncHailScopeView(root, data, esc, { onRefetch, fit = false, revealSheet = false } = {}) {
   if (!root || !data) return;
-  if (root.querySelector(".hs-pin-office, .hs-pin-listing, .hs-inv-peek")) return;
+  if (root.querySelector(".hs-pin-office, .hs-inv-peek")) {
+    fillInvestorStormDates(root, data, esc, { onRefetch });
+    if (hasSelectedStormDates()) {
+      const hailRows = mapHailRows(data, wxFilters);
+      const zoneRows = hailRowsForZones(data, wxFilters);
+      scheduleSelectedStormZoneRedraw(hailRows, [], zoneRows);
+    }
+    return;
+  }
+  if (root.querySelector(".hs-pin-listing")) return;
   if (Number(data._meta?.fetchedKm) > 0) lastHailFetchedKm = Number(data._meta.fetchedKm);
   if (data?.hail) lastDossierDataRef = data;
   syncHailStormDateSelection(data);

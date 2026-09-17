@@ -1901,7 +1901,7 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-office::after,
 .hs-bottom-panel.hs-addr-open:not(.hs-sheet-open) .hs-pin.hs-pin-ready.hs-pin-office::after {
-  content: "Gold dots are this office's listings";
+  content: "Swipe up to overlay storms on these listings";
   display: block;
   font-size: 11px;
   color: var(--muted);
@@ -2547,6 +2547,32 @@ body.wx-map-expanded .hs-field {
 }
 .hs-inv-home strong { font-size: 13px; font-weight: 650; }
 .hs-inv-home span { font-size: 11px; color: var(--muted); }
+.hs-inv-storms {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  margin-top: 0.45rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
+.hs-inv-storm-hint {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #f3e6c4;
+  margin: 0;
+}
+.hs-inv-storm-search {
+  align-self: flex-start;
+  border-radius: 999px;
+  border: 1px solid #fbbf24;
+  background: #2a2110;
+  color: #fde68a;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  padding: 0.4rem 0.75rem;
+}
 .hs-inv-home.loose { border-style: dashed; }
 .hs-inv-home-more { font-size: 12px; color: var(--muted); margin: 0; }
 .hs-inv-listing-bar {
