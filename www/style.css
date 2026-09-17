@@ -2519,12 +2519,14 @@ body.wx-map-expanded .hs-field {
 }
 .hs-inv-peek-addr,
 .hs-inv-peek-count,
-.hs-inv-peek-note {
+.hs-inv-peek-note,
+.hs-inv-peek-regions {
   font-size: 12px;
   line-height: 1.35;
   color: var(--muted);
 }
 .hs-inv-peek-count { color: #f3e6c4; }
+.hs-inv-peek-regions { color: #fbbf24; }
 .hs-inv-homes {
   display: flex;
   flex-direction: column;
@@ -3466,6 +3468,43 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 }
 .hs-inv-listing.loose .hs-inv-listing-dot {
   background: #f59e0b;
+}
+/* Cross-source verified: county records + listing site agree on this address. */
+.hs-inv-listing.verified .hs-inv-listing-dot::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 7px;
+  height: 4px;
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.9);
+}
+.hs-inv-verified {
+  font-style: normal;
+  color: #4ade80;
+  font-weight: 700;
+}
+/* Property inside a selected storm day's hail swath — red ring on the gold dot. */
+.hs-inv-listing.storm-hit .hs-inv-listing-dot {
+  box-shadow: 0 0 0 2px #0b0b0d, 0 0 0 5px rgba(239, 68, 68, 0.95), 0 0 16px 4px rgba(239, 68, 68, 0.75);
+  animation: hs-storm-hit-pulse 1.6s ease-in-out infinite;
+}
+@keyframes hs-storm-hit-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+}
+.hs-inv-storm-hits {
+  margin-top: 6px;
+}
+.hs-inv-storm-hit {
+  margin: 2px 0;
+  font-size: 12.5px;
+  color: #fca5a5;
+}
+.hs-inv-storm-hit strong {
+  color: #ef4444;
 }
 .hs-inv-listing-dot::before {
   content: "";

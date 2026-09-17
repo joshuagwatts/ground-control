@@ -911,14 +911,27 @@ export function mergeInvestorPublic(base, extra = {}) {
     ...((extra.listings || []).length ? extra.listings : []),
     ...(base.listings || []),
   ];
-  const seen = new Set();
+  const seen = new Map();
   const mergedListings = [];
   for (const row of listings) {
     const n = normalizeListing(row);
     const key = n.address ? nameKey(n.address).replace(/\s+/g, "") : `${n.lat}:${n.lon}`;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    mergedListings.push(n);
+    if (!key) continue;
+    const prevI = seen.get(key);
+    if (prevI == null) {
+      seen.set(key, mergedListings.length);
+      mergedListings.push(n);
+      continue;
+    }
+    // Same address string from both sources: the county-assessor parcel wins
+    // (parcel-precision coords), grafting the listing's URL onto it.
+    const prev = mergedListings[prevI];
+    if (n.source === "county assessor" && prev.source !== "county assessor") {
+      if (!n.url && prev.url) n.url = prev.url;
+      mergedListings[prevI] = n;
+    } else if (prev.source === "county assessor" && n.source !== "county assessor" && !prev.url && n.url) {
+      prev.url = n.url;
+    }
   }
   return normalizeInvestor({
     ...base,

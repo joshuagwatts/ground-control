@@ -2,7 +2,7 @@
 
 import { uid } from "./store.js";
 import { OK_RENT_CITY_ROWS } from "./ok-rent-cities.js";
-import { formatPhone, phoneDigits } from "./contacts.js";
+import { formatPhone, phoneDigits, sameHouse, parseStreetAddress } from "./contacts.js";
 
 export const INVESTOR_KINDS = [
   {
@@ -623,15 +623,93 @@ export function listingIsOfficeOwned(row) {
   return String(row?.attribution || "office").toLowerCase() !== "nearby";
 }
 
+/**
+ * Cross-source address match: "123 N Main St, Edmond" (county situs) and
+ * "123 Main Street, Edmond, OK" (listing site) are the same property.
+ * sameHouse handles number + street-stem; we add a city guard so
+ * "123 Main St" in two different towns does not false-positive.
+ */
+export function samePropertyAddress(a, b) {
+  if (!sameHouse(a, b)) return false;
+  const ca = String(parseStreetAddress(a).city || "").toLowerCase();
+  const cb = String(parseStreetAddress(b).city || "").toLowerCase();
+  if (ca && cb && ca !== cb) return false;
+  return true;
+}
+
+/** Verification tiers after cross-referencing county parcels with listings. */
+export const VERIFICATIONS = new Set(["confirmed", "county", "listing", "nearby"]);
+
+export const VERIFICATION_LABELS = {
+  confirmed: "verified",
+  county: "owned",
+  listing: "listed",
+  nearby: "nearby",
+};
+
+/**
+ * Fold county-assessor parcels and listing-site results into one property list.
+ * A parcel + a listing at the same address become one "confirmed" property
+ * (parcel coords win — they are parcel-precision; the listing's URL is kept).
+ * Leftovers: unmatched parcels -> "county", unmatched office listings ->
+ * "listing", nearby leftovers -> "nearby". Idempotent; recomputes every run.
+ * Returns { confirmed, county, listing, nearby }.
+ */
+export function reconcileInvestorListings(inv) {
+  const rows = Array.isArray(inv?.listings) ? inv.listings : [];
+  const parcels = [];
+  const market = [];
+  const rest = [];
+  for (const r of rows) {
+    if (r?.source === "county assessor" && r?.address) parcels.push(r);
+    else if (r?.source !== "county assessor" && r?.address) market.push(r);
+    else rest.push(r);
+  }
+  const usedMarket = new Set();
+  const out = [];
+  for (const p of parcels) {
+    const m = market.find((x) => !usedMarket.has(x) && samePropertyAddress(p.address, x.address));
+    const wasConfirmed = String(p.verification || "").toLowerCase() === "confirmed";
+    const merged = { ...p, verification: m || wasConfirmed ? "confirmed" : "county" };
+    if (m) {
+      usedMarket.add(m);
+      if (!merged.url && m.url) merged.url = m.url;
+      const srcs = ["county assessor", m.source || "listing"].filter((s, i, a) => s && a.indexOf(s) === i);
+      merged.sources = srcs.join(" + ");
+    }
+    out.push(normalizeListing(merged));
+  }
+  for (const m of market) {
+    if (usedMarket.has(m)) continue;
+    out.push(normalizeListing({ ...m, verification: listingIsOfficeOwned(m) ? "listing" : "nearby" }));
+  }
+  for (const r of rest) out.push(normalizeListing(r));
+  inv.listings = out;
+  return verificationCounts(inv);
+}
+
+/** { confirmed, county, listing, nearby } counts for an investor's listings. */
+export function verificationCounts(inv) {
+  const counts = { confirmed: 0, county: 0, listing: 0, nearby: 0 };
+  for (const r of Array.isArray(inv?.listings) ? inv.listings : []) {
+    const v = String(r?.verification || "").toLowerCase();
+    if (v in counts) counts[v] += 1;
+  }
+  return counts;
+}
+
 export function normalizeListing(raw = {}) {
   const lat = Number(raw.lat);
   const lon = Number(raw.lon);
+  const verification = String(raw.verification || "").toLowerCase();
   return {
     address: clip(raw.address, 160),
     price: clip(raw.price, 24),
     url: clip(raw.url, 240),
     source: clip(raw.source, 40) || "listing",
+    sources: clip(raw.sources, 80),
     attribution: String(raw.attribution || "").toLowerCase() === "nearby" ? "nearby" : "office",
+    verification: VERIFICATIONS.has(verification) ? verification : "",
     lat: Number.isFinite(lat) ? lat : null,
     lon: Number.isFinite(lon) ? lon : null,
     precision: normalizeListingPrecision(raw.precision),
@@ -741,6 +819,7 @@ export function normalizeInvestor(raw = {}) {
     website: clip(raw.website, 200),
     address: clip(raw.address, 200),
     note: clip(raw.note, 800),
+    ownerNames: clip(raw.ownerNames, 160),
     regions: names,
     regionText: names.join(", "),
     listings,
@@ -790,6 +869,20 @@ export function investorsOfKind(list, kind) {
 
 export function investorDisplayName(inv) {
   return String(inv?.name || inv?.company || investorKindMeta(inv?.kind).label).trim();
+}
+
+/**
+ * Owner name(s) to search county assessor records with — explicit field first,
+ * falls back to the investor's own name. Comma-separated in the composer.
+ */
+export function investorOwnerNames(inv) {
+  const raw = String(inv?.ownerNames || "").trim();
+  const parts = raw
+    ? raw.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  if (parts.length) return [...new Set(parts)];
+  const fallback = String(inv?.name || "").trim();
+  return fallback ? [fallback] : [];
 }
 
 /** How many sale homes this office has, mapped or address-only. Nearby MLS leftovers do not count. */

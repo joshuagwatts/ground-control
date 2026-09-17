@@ -11,6 +11,10 @@ import {
   matchCountyRegion,
   matchCityRegion,
   investorDisplayName,
+  investorOwnerNames,
+  samePropertyAddress,
+  reconcileInvestorListings,
+  verificationCounts,
   investorGlyphSvg,
   promoteButtonLabel,
   normalizeInvestor,
@@ -756,5 +760,41 @@ const counted = normalizeInvestor({
   ],
 });
 assert(investorPropertyCount(counted) === 1, "nearby MLS leftovers do not count as this office's property total");
+
+// investorOwnerNames — explicit field wins, falls back to the investor's name
+assert(
+  JSON.stringify(investorOwnerNames({ ownerNames: "John Smith, Smith Holdings LLC", name: "Johnny" })) ===
+    JSON.stringify(["John Smith", "Smith Holdings LLC"]),
+  "explicit owner names split on commas",
+);
+assert(JSON.stringify(investorOwnerNames({ name: "Johnny" })) === JSON.stringify(["Johnny"]), "falls back to investor name");
+assert(JSON.stringify(investorOwnerNames({})) === JSON.stringify([]), "no names -> empty");
+
+// samePropertyAddress — county situs vs listing-site formatting is the same property
+assert(samePropertyAddress("123 N Main St, Edmond", "123 Main Street, Edmond, OK"), "directional + suffix variants match");
+assert(samePropertyAddress("2625 NW 168TH TER OKLAHOMA CITY", "2625 NW 168th Ter, Oklahoma City, OK 73120"), "case + zip variants match");
+assert(!samePropertyAddress("123 Main St, Edmond", "125 Main St, Edmond"), "different house number does not match");
+assert(!samePropertyAddress("123 Main St, Edmond", "123 Main St, Moore"), "different city does not match");
+assert(!samePropertyAddress("123 Main St, Edmond", "123 Oak Ave, Edmond"), "different street does not match");
+
+// reconcileInvestorListings — county parcels + listings fold by address
+const reconInv = {
+  kind: "realestate",
+  listings: [
+    { address: "123 N Main St, Edmond", lat: 35.65, lon: -97.48, precision: "parcel", source: "county assessor", attribution: "office", url: "" },
+    { address: "123 Main Street, Edmond, OK", lat: 35.6501, lon: -97.4801, precision: "rooftop", source: "zillow", attribution: "office", url: "https://zillow/x" },
+    { address: "77 County Rd, Edmond", lat: 35.7, lon: -97.5, precision: "parcel", source: "county assessor", attribution: "office", url: "" },
+    { address: "9 Market St, Edmond", lat: 35.66, lon: -97.49, precision: "rooftop", source: "zillow", attribution: "office", url: "https://zillow/y" },
+    { address: "5 Far Away Ln, Edmond", lat: 35.8, lon: -97.6, precision: "rooftop", source: "zillow", attribution: "nearby", url: "" },
+  ],
+};
+const counts = reconcileInvestorListings(reconInv);
+assert(counts.confirmed === 1 && counts.county === 1 && counts.listing === 1 && counts.nearby === 1, "one of each tier");
+assert(reconInv.listings.length === 4, "matched pair folds into one property");
+const confirmed = reconInv.listings.find((r) => r.verification === "confirmed");
+assert(confirmed && confirmed.lat === 35.65 && confirmed.url === "https://zillow/x", "confirmed keeps parcel coords + listing URL");
+assert(verificationCounts(reconInv).confirmed === 1, "counts recompute from rows");
+const counts2 = reconcileInvestorListings(reconInv);
+assert(counts2.confirmed === 1 && reconInv.listings.length === 4, "reconcile is idempotent");
 
 console.log("investors ok");

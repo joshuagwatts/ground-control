@@ -56,10 +56,15 @@ import {
   listingDotKey,
   mappedInvestorListings,
   officeOwnedMappedCount,
+  verificationCounts,
+  VERIFICATION_LABELS,
   OFFICE_LISTING_HUNT_BELOW,
   listingsForSelectedOffice,
   unmappedInvestorListings,
   shouldShowInvestorPin,
+  resolveInvestorRegions,
+  investorRegionBounds,
+  regionSummary,
   isPartner,
   promoteButtonLabel,
   relationshipLabel,
@@ -406,6 +411,11 @@ let doneLayer = null;
 let investorLayer = null;
 let investorRegionLayer = null;
 let selectedInvestorId = "";
+let selectedInvestorRef = null;
+/** listingDotKeys currently inside a selected storm day's hail swath. */
+const stormHitListingKeys = new Set();
+/** Per-date hit summaries for the selected investor: [{ date, hits, total }]. */
+let stormHitSummary = [];
 const investorMarkers = new Map();
 let fieldOverlay = {
   marks: [],
@@ -3735,6 +3745,16 @@ export function selectStormDate(date, { fit = false, requireDate, hailRows, zone
       behavior: "smooth",
       block: "center",
     });
+  }
+  if (selectedInvestorId) {
+    // Storm-hit intersection for the selected star: recolor dots, update the peek line.
+    try {
+      recomputeStormHits();
+      updateInvestorStormHitLine();
+      if (selectedInvestorRef) paintInvestorRegions(selectedInvestorRef);
+    } catch (err) {
+      console.warn("storm hit refresh failed", err);
+    }
   }
 }
 
@@ -9471,13 +9491,14 @@ function listingFromPeekBtn(btn, inv) {
 function investorHomeRowHtml(home, mapped) {
   const a = listingAttr(home);
   const exact = listingIsExact(home);
+  const verified = String(home?.verification || "").toLowerCase() === "confirmed";
   const lab = [a.addr || "Listed home", a.price].filter(Boolean).join(" · ");
   const hint = mapped
     ? exact
       ? "On the map"
       : "Approximate pin"
     : "Address only — not on the map";
-  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}</strong><span>${escHousePop(hint)}</span></button>`;
+  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}${verified ? ` <em class="hs-inv-verified">✓</em>` : ""}</strong><span>${escHousePop(hint)}</span></button>`;
 }
 
 function investorPeekHtml(inv) {
@@ -9497,6 +9518,14 @@ function investorPeekHtml(inv) {
   let listingLine = "";
   if (isRe) {
     const bits = [];
+    // Cross-source verification first: county records vs listing sites, lined up by address.
+    const vc = verificationCounts(inv);
+    const vBits = [
+      vc.confirmed ? `${vc.confirmed} ${VERIFICATION_LABELS.confirmed}` : "",
+      vc.county ? `${vc.county} ${VERIFICATION_LABELS.county}` : "",
+      vc.listing ? `${vc.listing} ${VERIFICATION_LABELS.listing}` : "",
+    ].filter(Boolean);
+    if (vBits.length) bits.push(vBits.join(" · "));
     if (mapped.length) bits.push(`${mapped.length} of this office's listings on the map`);
     if (unmapped.length) bits.push(`${unmapped.length} address-only`);
     if (bits.length) listingLine = bits.join(" · ");
@@ -9513,6 +9542,7 @@ function investorPeekHtml(inv) {
   const homes = [...mapped, ...unmapped];
   const mappedShow = mapped.slice(0, 24);
   const unmappedShow = unmapped.slice(0, Math.max(0, 24 - mappedShow.length));
+  const regions = isRe ? regionSummary(inv) : "";
   const extra = homes.length > 24 ? `<p class="hs-inv-home-more">${homes.length - 24} more listings</p>` : "";
   const list =
     isRe && homes.length
@@ -9524,6 +9554,7 @@ function investorPeekHtml(inv) {
 <div class="hs-place hs-inv-peek">
   ${who && who !== name ? `<span class="hs-who">${escHousePop(who)}</span>` : ""}
   ${addr ? `<span class="hs-inv-peek-addr">${escHousePop(addr)}</span>` : ""}
+  ${regions ? `<span class="hs-inv-peek-regions">${escHousePop(regions)}</span>` : ""}
   ${listingLine && homes.length ? `<span class="hs-inv-peek-count">${escHousePop(listingLine)}</span>` : ""}
   ${note ? `<span class="hs-inv-peek-note">${escHousePop(note)}</span>` : ""}
   ${hunt}
@@ -9685,6 +9716,11 @@ export function fillInvestorStormDates(root, data, esc, { onRefetch } = {}) {
   slot.innerHTML = `<p class="hs-inv-storm-hint">Tap a storm date to overlay hail on these homes</p>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport: true, data: live })}</div>`;
   bindHailScopeDates(root, live, esc, { onRefetch: root._hsOnRefetch });
+  try {
+    updateInvestorStormHitLine();
+  } catch {
+    /* hit line optional */
+  }
 }
 
 let listingPeekGen = 0;
@@ -9753,6 +9789,9 @@ function handleListingTap(home, inv) {
 const listingMarkers = new Map();
 let listingHomesFramedFor = "";
 let listingCameraFor = "";
+/** Territory shape layers (county boxes / city circles) for the selected star. */
+const investorRegionShapes = [];
+let investorRegionShapesFor = "";
 
 function listingDotStyle(home) {
   const exact = listingIsExact(home);
@@ -9767,17 +9806,72 @@ function listingDotStyle(home) {
 
 function listingDivIcon(home) {
   const exact = listingIsExact(home);
+  const hit = stormHitListingKeys.has(listingDotKey(home));
+  const verified = String(home?.verification || "").toLowerCase() === "confirmed";
   return window.L.divIcon({
-    className: `hs-inv-listing ${exact ? "exact" : "loose"}`,
+    className: `hs-inv-listing ${exact ? "exact" : "loose"}${hit ? " storm-hit" : ""}${verified ? " verified" : ""}`,
     html: `<span class="hs-inv-listing-dot" title=""></span>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
   });
 }
 
+/** Territory shapes for the selected real-estate star: county boxes and city circles
+ * from the investor's region list. Drawn once per selection — regions don't move. */
+function paintInvestorTerritory(inv) {
+  if (!investorRegionLayer) return;
+  const key = inv && String(inv.kind) === "realestate" ? String(inv.id || "") : "";
+  if (key === investorRegionShapesFor) return;
+  for (const layer of investorRegionShapes.splice(0)) {
+    try {
+      investorRegionLayer.removeLayer(layer);
+    } catch {
+      /* layer already gone */
+    }
+  }
+  investorRegionShapesFor = key;
+  if (!key) return;
+  for (const shape of resolveInvestorRegions(inv)) {
+    const color = shape.color || "#fbbf24";
+    let layer = null;
+    try {
+      if (shape.ring?.length >= 4) {
+        layer = window.L.polygon(shape.ring, {
+          pane: "investorRegions",
+          color,
+          weight: 3,
+          dashArray: "8 5",
+          fillColor: color,
+          fillOpacity: 0.2,
+          interactive: false,
+          className: "hs-inv-region",
+        });
+      } else if (Number.isFinite(shape.lat) && Number.isFinite(shape.lon) && Number(shape.radiusM) > 0) {
+        layer = window.L.circle([shape.lat, shape.lon], {
+          pane: "investorRegions",
+          radius: Number(shape.radiusM),
+          color,
+          weight: 3,
+          fillColor: color,
+          fillOpacity: 0.18,
+          interactive: false,
+          className: "hs-inv-region",
+        });
+      }
+    } catch {
+      layer = null;
+    }
+    if (layer) {
+      layer.addTo(investorRegionLayer);
+      investorRegionShapes.push(layer);
+    }
+  }
+}
+
 /** Gold house dots stay on the map across pan/zoom — add/remove only when the home set changes. */
 function paintInvestorRegions(inv) {
   if (!investorRegionLayer) return;
+  paintInvestorTerritory(inv);
   const homes = inv && String(inv.kind) === "realestate" ? listingsToDraw(inv) : [];
   const next = new Set();
   for (const home of homes) {
@@ -9790,9 +9884,13 @@ function paintInvestorRegions(inv) {
       prev.home = home;
       prev.inv = inv;
       const style = listingDotStyle(home);
-      if (prev.exact !== style.exact) {
+      const hitNow = stormHitListingKeys.has(key);
+      const verifiedNow = String(home?.verification || "").toLowerCase() === "confirmed";
+      if (prev.exact !== style.exact || prev.stormHit !== hitNow || prev.verified !== verifiedNow) {
         prev.marker.setIcon(listingDivIcon(home));
         prev.exact = style.exact;
+        prev.stormHit = hitNow;
+        prev.verified = verifiedNow;
       }
       try {
         prev.marker.setTooltipContent?.(title);
@@ -9817,7 +9915,14 @@ function paintInvestorRegions(inv) {
         handleListingTap(hit?.home || home, hit?.inv || inv);
       })
       .addTo(investorRegionLayer);
-    listingMarkers.set(key, { marker, exact: listingIsExact(home), home, inv });
+    listingMarkers.set(key, {
+      marker,
+      exact: listingIsExact(home),
+      stormHit: stormHitListingKeys.has(key),
+      verified: String(home?.verification || "").toLowerCase() === "confirmed",
+      home,
+      inv,
+    });
   }
   for (const [key, row] of listingMarkers) {
     if (next.has(key)) continue;
@@ -9852,19 +9957,23 @@ function visibleInvestors(list, { showInsurance = true, showRealEstate = true } 
 
 function frameSelectedOffice(inv) {
   if (!map || !window.L || String(inv?.kind) !== "realestate") return false;
-  if (!validInvestorCoord(inv?.lat, inv?.lon)) return false;
-  const id = String(inv.id || "");
+  const id = String(inv?.id || "");
   if (!id) return false;
+  if (listingHomesFramedFor === id) return false;
   const homes = listingsForSelectedOffice(inv, { maxKm: 28, limit: 24 });
-  if (!homes.length) return false;
+  const regionBox = investorRegionBounds(inv);
+  const pts = [];
+  if (validInvestorCoord(inv?.lat, inv?.lon)) pts.push([inv.lat, inv.lon]);
+  for (const h of homes) pts.push([h.lat, h.lon]);
+  if (regionBox) pts.push([regionBox.south, regionBox.west], [regionBox.north, regionBox.east]);
+  if (!pts.length) return false;
   try {
-    if (listingHomesFramedFor === id) return false;
     listingHomesFramedFor = id;
     listingCameraFor = id;
-    map.fitBounds([[inv.lat, inv.lon], ...homes.map((h) => [h.lat, h.lon])], {
+    map.fitBounds(pts, {
       padding: [48, 48],
-      maxZoom: 15,
-      animate: false,
+      maxZoom: regionBox ? 12 : 15,
+      animate: Boolean(regionBox),
     });
     return true;
   } catch {
@@ -9880,6 +9989,9 @@ function officeNeedsPublic(inv) {
 
 function selectInvestorOnMap(inv, marker) {
   selectedInvestorId = inv?.id ? String(inv.id) : "";
+  selectedInvestorRef = inv || null;
+  stormHitListingKeys.clear();
+  stormHitSummary = [];
   listingPeekGen += 1;
   peekKind = "investor";
   listingHomesFramedFor = "";
@@ -9893,6 +10005,14 @@ function selectInvestorOnMap(inv, marker) {
     }
   }
   paintInvestorRegions(inv);
+  if (hasSelectedStormDates()) {
+    // Dates were picked before this star — intersect now so dots + peek line are right.
+    try {
+      recomputeStormHits();
+    } catch (err) {
+      console.warn("storm hit refresh failed", err);
+    }
+  }
   if (officeNeedsPublic(inv)) fieldOverlay.onInvestorNeedPublic?.(inv);
   if (typeof fieldOverlay.onInvestorSelect === "function") fieldOverlay.onInvestorSelect(inv);
   else showInvestorPeek(inv);
@@ -9908,6 +10028,9 @@ function selectInvestorOnMap(inv, marker) {
 export function clearSelectedInvestor() {
   if (!selectedInvestorId) return false;
   selectedInvestorId = "";
+  selectedInvestorRef = null;
+  stormHitListingKeys.clear();
+  stormHitSummary = [];
   listingPeekGen += 1;
   peekKind = "hail";
   listingHomesFramedFor = "";
@@ -9926,6 +10049,83 @@ export function isInvestorSelected(id) {
 
 export function hasSelectedInvestor() {
   return Boolean(selectedInvestorId);
+}
+
+/**
+ * Storm-hit intersection: which of the selected investor's listings fall inside
+ * the hail swath rings of each selected storm date. Uses the same rings the map
+ * draws (buildHailTraceDayBands), so the highlight always matches the overlay.
+ * Refreshes stormHitListingKeys (dot styling) and stormHitSummary (peek line).
+ */
+export function recomputeStormHits() {
+  stormHitListingKeys.clear();
+  stormHitSummary = [];
+  const inv = selectedInvestorRef;
+  if (!inv || String(inv.kind) !== "realestate") return stormHitSummary;
+  const homes = listingsToDraw(inv);
+  const dates = selectedStormDateList();
+  if (!homes.length || !dates.length) return stormHitSummary;
+  const rows =
+    (lastHailRows && lastHailRows.length ? lastHailRows : lastDossierDataRef?.hail) || [];
+  for (const date of dates) {
+    const dayKey = String(date).slice(0, 10);
+    const dayRows = rows.filter((r) => String(r?.date || "").slice(0, 10) === dayKey);
+    if (!dayRows.length) continue;
+    let bands = [];
+    try {
+      bands = buildHailTraceDayBands(dayKey, dayRows).filter(
+        (b) => Array.isArray(b?.ring) && b.ring.length >= 3,
+      );
+    } catch {
+      bands = [];
+    }
+    if (!bands.length) continue;
+    const hits = [];
+    for (const home of homes) {
+      if (!Number.isFinite(home?.lat) || !Number.isFinite(home?.lon)) continue;
+      if (bands.some((b) => pointInLatLonRing(home.lat, home.lon, b.ring))) {
+        const key = listingDotKey(home);
+        if (key) {
+          stormHitListingKeys.add(key);
+          hits.push(key);
+        }
+      }
+    }
+    stormHitSummary.push({ date: dayKey, hits, total: homes.length });
+  }
+  return stormHitSummary;
+}
+
+/** Latest per-date hit summary for the selected investor (see recomputeStormHits). */
+export function stormHitSummaryForSelectedInvestor() {
+  return stormHitSummary;
+}
+
+/** Refresh the "N of M properties in the swath" line inside the investor peek. */
+export function updateInvestorStormHitLine() {
+  const root = document.getElementById("hs-sheet");
+  const slot = root?.querySelector(".hs-inv-storms");
+  if (!slot) return;
+  const esc = window.__pipWxEsc || ((s) => String(s ?? ""));
+  let line = slot.querySelector(".hs-inv-storm-hits");
+  const summary = stormHitSummaryForSelectedInvestor();
+  if (!summary.length) {
+    if (line) line.remove();
+    return;
+  }
+  const html = summary
+    .map((s) => {
+      const n = s.hits.length;
+      const what = n === 0 ? "none" : n === 1 ? "<strong>1 property</strong>" : `<strong>${n} properties</strong>`;
+      return `<p class="hs-inv-storm-hit">${esc(prettyStormDate(s.date))} — ${what} of ${s.total} in the hail swath</p>`;
+    })
+    .join("");
+  if (!line) {
+    line = document.createElement("div");
+    line.className = "hs-inv-storm-hits";
+    slot.appendChild(line);
+  }
+  line.innerHTML = html;
 }
 
 function openInvestorPopupSoon(marker, delayMs = 40) {

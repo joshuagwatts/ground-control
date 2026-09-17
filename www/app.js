@@ -110,6 +110,9 @@ import {
   unmappedInvestorListings,
   officeOwnedMappedCount,
   listingIsOfficeOwned,
+  normalizeListing,
+  investorOwnerNames,
+  reconcileInvestorListings,
   OFFICE_LISTING_HUNT_BELOW,
 } from "./investors.js";
 import {
@@ -122,6 +125,7 @@ import { OK_INVESTOR_SEED } from "./ok-investors.js";
 import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
 import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
 import { parseStreetAddress, isOklahomaLatLon } from "./contacts.js";
+import { searchAssessorByOwner } from "./assessor.js";
 import { APP_VERSION, CACHE_BUST } from "./version.js";
 import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
 
@@ -1474,6 +1478,57 @@ function paintInvestorMap() {
   });
 }
 
+/**
+ * Portfolio scrape: pull every parcel with the investor's owner name(s) on
+ * county assessor records and merge them into their listings as parcel-precision,
+ * office-attributed homes. Public records — no permission needed.
+ * Mutates inv.listings; returns { added, total, names }.
+ */
+async function scrapePortfolioForInvestor(inv) {
+  const names = investorOwnerNames(inv);
+  const listings = Array.isArray(inv.listings) ? [...inv.listings] : [];
+  const seen = new Set(
+    listings.map((l) => `${String(l.address || "").toLowerCase()}|${Number(l.lat).toFixed(4)},${Number(l.lon).toFixed(4)}`),
+  );
+  let added = 0;
+  for (const name of names) {
+    let parcels = [];
+    try {
+      parcels = await searchAssessorByOwner(name);
+    } catch {
+      parcels = [];
+    }
+    for (const p of parcels) {
+      const key = `${String(p.situs || "").toLowerCase()}|${Number(p.lat).toFixed(4)},${Number(p.lon).toFixed(4)}`;
+      if (!p.situs || seen.has(key)) continue;
+      seen.add(key);
+      listings.push(
+        normalizeListing({
+          address: p.situs,
+          lat: p.lat,
+          lon: p.lon,
+          precision: "parcel",
+          source: "county assessor",
+          geoSource: "assessor",
+          attribution: "office",
+          url: p.url || "",
+        }),
+      );
+      added += 1;
+      if (listings.length >= 40) break;
+    }
+    if (listings.length >= 40) break;
+  }
+  inv.listings = listings;
+  const counts = reconcileInvestorListings(inv);
+  const verifiedBits = [
+    counts.confirmed ? `${counts.confirmed} verified` : "",
+    counts.county ? `${counts.county} owned` : "",
+    counts.listing ? `${counts.listing} listed` : "",
+  ].filter(Boolean);
+  return { added, total: listings.length, names, counts, verifiedBits };
+}
+
 async function enrichInvestorPublic(inv, { deep = false } = {}) {
   const id = String(inv?.id || "");
   if (!id) return;
@@ -1532,6 +1587,12 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     });
     officeContactTried.add(id);
     if (!next) return;
+    // Fold county parcels + hunt listings by address: verified / owned / listed.
+    try {
+      reconcileInvestorListings(next);
+    } catch (err) {
+      console.warn("listing reconcile failed", err);
+    }
     const hit = upsertInvestor(savedInvestors(), next);
     db.investors = hit.list;
     invalidateInvestorCache();
@@ -1894,6 +1955,12 @@ function fillInvestorComposer() {
       <label>Location<input id="hs-comp-addr" maxlength="200" value="${esc(d.address || "")}" placeholder="Office or home base" /></label>
       ${
         re
+          ? `<label>Owner name(s) on county records<input id="hs-inv-owners" maxlength="160" value="${esc(d.ownerNames || "")}" placeholder="Legal name or LLC, comma separated" /></label>
+             <div class="hs-composer-actions"><button type="button" id="hs-comp-scrape">Find their properties</button><span class="muted" id="hs-scrape-note"></span></div>`
+          : ""
+      }
+      ${
+        re
           ? `<label>Notes on their turf<textarea id="hs-inv-regions" rows="2" maxlength="400" placeholder="Optional — listings load from public sale pages">${esc(d.regionText || "")}</textarea></label>`
           : ""
       }
@@ -1940,6 +2007,40 @@ function fillInvestorComposer() {
   bind("#hs-comp-addr", "address");
   bind("#hs-comp-note", "note");
   bind("#hs-inv-regions", "regionText");
+  bind("#hs-inv-owners", "ownerNames");
+  const scrapeBtn = el.querySelector("#hs-comp-scrape");
+  if (scrapeBtn) {
+    scrapeBtn.onclick = async () => {
+      const note = el.querySelector("#hs-scrape-note");
+      const names = investorOwnerNames(investorDraft);
+      if (!names.length) {
+        if (note) note.textContent = "Add an owner name first.";
+        return;
+      }
+      scrapeBtn.disabled = true;
+      const label = scrapeBtn.textContent;
+      scrapeBtn.textContent = "Searching county records…";
+      if (note) note.textContent = "";
+      try {
+        const res = await scrapePortfolioForInvestor(investorDraft);
+        if (note) {
+          note.textContent = res.added
+            ? `Found ${res.added} ${res.added === 1 ? "property" : "properties"}${res.verifiedBits.length ? ` (${res.verifiedBits.join(" · ")})` : ""} — Save to keep.`
+            : `No parcels under ${res.names.join(", ")}.`;
+        }
+        setStatus(
+          res.added
+            ? `${investorDisplayName(investorDraft)} · ${res.added} properties from county records`
+            : "No county parcels found for that name",
+        );
+      } catch (err) {
+        if (note) note.textContent = "County search failed — try again.";
+      } finally {
+        scrapeBtn.disabled = false;
+        scrapeBtn.textContent = label;
+      }
+    };
+  }
   $("#hs-comp-x").onclick = () => closeComposer();
   $("#hs-comp-save").onclick = () => saveInvestorDraft();
   const del = $("#hs-comp-del");

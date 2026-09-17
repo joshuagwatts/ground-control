@@ -769,6 +769,152 @@ async function arcgisQuery(url, params) {
   return (data.features || []).map((f) => f.attributes).filter(Boolean);
 }
 
+/** Owner-name fields per county layer, for the portfolio scrape (name -> parcels). */
+const OWNER_FIELDS = {
+  "ok-county": ["name1", "name2", "name3"],
+  cleveland: ["GIS_Owner1", "GIS_Owner2", "COUNTY_OWNER_1", "COUNTY_OWNER_2"],
+  tulsa: ["Owner", "Name1", "Name2"],
+  creek: ["ownername"],
+  osage: ["OwnerName"],
+  rogers: ["OWNERSNAM"],
+  wagoner: ["OwnersName"],
+};
+
+/** Searchable tokens from a person or LLC name — uppercase, punctuation stripped. */
+export function ownerSearchTokens(name) {
+  return String(name || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+}
+
+function sqlEscape(s) {
+  return String(s).replace(/'/g, "''");
+}
+
+/**
+ * ArcGIS where clause for an owner-name search: every token must appear in at
+ * least one of the county's owner fields. "John Smith" matches "SMITH JOHN A".
+ */
+export function ownerSearchWhere(layerId, name) {
+  const fields = OWNER_FIELDS[layerId] || [];
+  const tokens = ownerSearchTokens(name);
+  if (!fields.length || !tokens.length) return "";
+  return tokens
+    .map((tok) => `(${fields.map((f) => `UPPER(${f}) LIKE '%${sqlEscape(tok)}%'`).join(" OR ")})`)
+    .join(" AND ");
+}
+
+/** Centroid of an ArcGIS polygon geometry (rings are [x=lon, y=lat]). */
+export function geometryCentroid(geom) {
+  const rings = geom?.rings;
+  if (!Array.isArray(rings) || !rings.length) return null;
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const ring of rings) {
+    if (!Array.isArray(ring)) continue;
+    for (const pt of ring) {
+      if (!Array.isArray(pt) || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+      sx += pt[0];
+      sy += pt[1];
+      n += 1;
+    }
+  }
+  if (!n) return null;
+  return { lon: sx / n, lat: sy / n };
+}
+
+function validLatLon(lat, lon) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lon) <= 180 &&
+    !(lat === 0 && lon === 0)
+  );
+}
+
+async function arcgisQueryGeom(url, params) {
+  const q = new URLSearchParams({
+    f: "json",
+    returnGeometry: "true",
+    outSR: "4326",
+    geometryPrecision: "5",
+    resultRecordCount: "200",
+    ...params,
+  });
+  const { body } = await httpGet(`${url}?${q}`, 15000);
+  let data = {};
+  try {
+    data = JSON.parse(body || "{}");
+  } catch {
+    return [];
+  }
+  if (data.error) return [];
+  return data.features || [];
+}
+
+/**
+ * Portfolio scrape: every parcel with this owner name on county records.
+ * No permission needed — the data is public. Returns situs + parcel centroid.
+ */
+export async function searchAssessorByOwner(name, { counties = null, limit = 200 } = {}) {
+  const tokens = ownerSearchTokens(name);
+  if (!tokens.length) return [];
+  const layers = LAYERS.filter((l) => !counties || counties.includes(l.id));
+  const perLayer = await Promise.all(
+    layers.map(async (layer) => {
+      const where = ownerSearchWhere(layer.id, name);
+      if (!where) return [];
+      let feats = [];
+      try {
+        feats = await arcgisQueryGeom(layer.url, {
+          where,
+          outFields: layer.outFields,
+          resultRecordCount: String(limit),
+        });
+      } catch {
+        return [];
+      }
+      const out = [];
+      for (const f of feats) {
+        const c = geometryCentroid(f.geometry);
+        if (!c || !validLatLon(c.lat, c.lon)) continue;
+        let parcel = null;
+        try {
+          parcel = pickParcel(f.attributes || {}, layer);
+        } catch {
+          parcel = null;
+        }
+        if (!parcel?.situs) continue;
+        out.push({
+          county: layer.source || layer.id,
+          owner: parcel.name || "",
+          situs: parcel.situs,
+          city: parcel.city || "",
+          lat: Math.round(c.lat * 1e6) / 1e6,
+          lon: Math.round(c.lon * 1e6) / 1e6,
+          parcelId: parcel.account || "",
+          source: "county assessor",
+          url: parcel.url || "",
+        });
+      }
+      return out;
+    }),
+  );
+  const seen = new Set();
+  const out = [];
+  for (const row of perLayer.flat()) {
+    const key = `${row.county}|${row.situs}|${row.parcelId}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
 function chooseRow(rows, layer, pin) {
   for (const row of rows) {
     const hit = pickParcel(row, layer);
