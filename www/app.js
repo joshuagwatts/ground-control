@@ -80,7 +80,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.340";
+} from "./wx.js?v=0.2.341";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1318,6 +1318,8 @@ const officeContactTried = new Set();
 const investorPublicBusy = new Set();
 /** Selected star asked for a listing hunt while a shallow phone lookup already held this id. */
 const pendingDeepLookups = new Set();
+/** Selected office whose sale-home scrape is still running. */
+const listingHuntBusy = new Set();
 /** Offices waiting on a public-contact lookup, newest frame first. */
 const officeLookupQueue = [];
 const officeLookupQueued = new Set();
@@ -1466,6 +1468,7 @@ function paintInvestorMap() {
       showInsuranceInvestors: investorHeartsOn(),
       showRealEstateInvestors: investorStarsOn(),
       lookingInvestorIds: investorPublicBusy,
+      huntingListingsIds: listingHuntBusy,
     });
   });
 }
@@ -1481,7 +1484,17 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
   const runDeep = deep || pendingDeepLookups.has(id);
   pendingDeepLookups.delete(id);
   investorPublicBusy.add(id);
+  const huntListings = runDeep && String(inv.kind) === "realestate" && officeOwnedMappedCount(inv) < 2;
+  if (huntListings) listingHuntBusy.add(id);
   paintInvestorMap();
+  const listingsSettled = () => {
+    listingHuntBusy.delete(id);
+    paintInvestorMap();
+    if (!isInvestorSelected(id)) return;
+    const cur = fieldInvestors().find((x) => String(x.id) === id) || inv;
+    const sheet = $("#hs-sheet");
+    if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
+  };
   try {
     const applyPartial = (partial) => {
       if (!partial) return;
@@ -1508,6 +1521,13 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
       deep: runDeep,
       osmHits: lastOsmOfficeEls,
       onPartial: runDeep ? applyPartial : undefined,
+      onListingsSettled: huntListings ? listingsSettled : undefined,
+      onListingsResume: huntListings
+        ? () => {
+            listingHuntBusy.add(id);
+            paintInvestorMap();
+          }
+        : undefined,
     });
     officeContactTried.add(id);
     if (!next) return;
@@ -1530,6 +1550,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     if (homes.length > officeOwnedMappedCount(inv)) frameInvestorListings(next);
     offerStormsForSelectedOffice(next);
   } finally {
+    listingHuntBusy.delete(id);
     investorPublicBusy.delete(id);
     paintInvestorMap();
     if (pendingDeepLookups.has(id)) {
@@ -1657,6 +1678,7 @@ function paintFieldMap() {
     },
     onInvestorViewChange: () => scheduleInViewOfficePreload(),
     lookingInvestorIds: investorPublicBusy,
+    huntingListingsIds: listingHuntBusy,
     onInvestorPromote: (inv) => {
       const nextRel = promoteRelationship(inv);
       const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
@@ -2630,10 +2652,13 @@ function offerStormsForSelectedOffice(inv) {
   setTimeout(() => refreshMapSize(), 280);
   const onRefetch = officeStormOnRefetch(hailTapGen);
   if (wxState.data) fillInvestorStormDates(sheet, wxState.data, esc, { onRefetch });
-  if (wxState.data && hailScopeDays(wxState.data).length) return;
   if (officeStormOfferedFor === String(inv.id)) return;
   officeStormOfferedFor = String(inv.id);
-  void loadStormsForOfficeListings(inv, onRefetch);
+  // Let the listing scrape use the connection budget first — storm refetch can wait.
+  window.setTimeout(() => {
+    if (!isInvestorSelected(inv?.id)) return;
+    void loadStormsForOfficeListings(inv, onRefetch);
+  }, wxState.data && hailScopeDays(wxState.data).length ? 2800 : 400);
 }
 
 async function loadStormsForOfficeListings(inv, onRefetch) {

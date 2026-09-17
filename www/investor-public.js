@@ -963,6 +963,12 @@ const LISTING_READER = "https://r.jina.ai/";
 /** kvCORE public listings are the shared OKC MLS dump, not one office's inventory. */
 const FALLBACK_MLS_WEBSITE = "https://www.mcgrawrealtors.com/";
 
+/** Only McGraw itself can use the shared MLS dump as this office's homes. */
+export function listingFallbackWebsite(inv) {
+  const blob = `${inv?.name || ""} ${inv?.company || ""} ${inv?.website || ""}`;
+  return /mcgraw/i.test(blob) ? FALLBACK_MLS_WEBSITE : "";
+}
+
 export function withDeadline(promise, ms, fallback = null) {
   let timer = 0;
   return Promise.race([
@@ -1681,11 +1687,13 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
     notify(picked);
     return picked;
   }
-  const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
+  let website = inv.website || officeWebsiteFromOsm(inv, osmHits);
+  if (!isOfficeWebsite(website)) website = await discoverOfficeWebsite(inv);
   let rows = await hunt(website);
-  if (!rows.length) {
-    const fallback = await listingsFromIdxJson(FALLBACK_MLS_WEBSITE, inv);
-    rows = pickOfficeListings([], fallback).filter((row) => String(row?.attribution || "") !== "nearby");
+  const fallback = listingFallbackWebsite({ ...inv, website });
+  if (!rows.length && fallback && fallback !== website) {
+    const extra = await listingsFromIdxJson(fallback, inv);
+    rows = pickOfficeListings([], extra).filter((row) => String(row?.attribution || "") !== "nearby");
     notify(rows);
   }
   return geocodeListingRows(inv, rows, { onMapped });
@@ -1696,7 +1704,7 @@ function allListings(inv) {
 }
 
 /** Fill missing phone/email and, for a selected star, the agent's actual sale homes. */
-export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0, onPartial } = {}) {
+export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = [], budgetMs = 0, onPartial, onListingsSettled, onListingsResume } = {}) {
   if (!inv) return null;
   const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
   const mappedCount = officeOwnedMappedCount(inv);
@@ -1720,10 +1728,54 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
     : Promise.resolve(allListings(inv));
   const contactsP = withDeadline(enrichInvestorContacts(seeded, { deep, osmHits, budgetMs: budget }), budget + 1500);
 
-  const found = await listingsP;
+  let found = await listingsP;
+  if (typeof onListingsSettled === "function") {
+    try {
+      onListingsSettled();
+    } catch {
+      /* peek optional */
+    }
+  }
   let listings = allListings(inv).filter(listingIsOfficeOwned);
-  const foundList = Array.isArray(found) ? found.filter(listingIsOfficeOwned) : [];
+  let foundList = Array.isArray(found) ? found.filter(listingIsOfficeOwned) : [];
   if (foundList.length) listings = foundList;
+  const contacts = await contactsP;
+  const foundSite = isOfficeWebsite(contacts?.website) ? contacts.website : "";
+  const usedSite = isOfficeWebsite(seeded.website) ? seeded.website : "";
+  if (wantListings && !foundList.length && foundSite && foundSite !== usedSite) {
+    if (typeof onListingsResume === "function") {
+      try {
+        onListingsResume();
+      } catch {
+        /* peek optional */
+      }
+    }
+    found = await withDeadline(
+      fetchInvestorListings(
+        { ...seeded, website: foundSite },
+        {
+          osmHits,
+          onScraped: (rows) => {
+            if (typeof onPartial === "function") onPartial(mergeInvestorPublic({ ...seeded, website: foundSite }, { listings: rows }));
+          },
+          onMapped: (rows) => {
+            if (typeof onPartial === "function") onPartial(mergeInvestorPublic({ ...seeded, website: foundSite }, { listings: rows }));
+          },
+        },
+      ),
+      LISTING_LOOKUP_MS,
+      [],
+    );
+    foundList = Array.isArray(found) ? found.filter(listingIsOfficeOwned) : [];
+    if (foundList.length) listings = foundList;
+    if (typeof onListingsSettled === "function") {
+      try {
+        onListingsSettled();
+      } catch {
+        /* peek optional */
+      }
+    }
+  }
   const scraped = foundList.length ? foundList : null;
   if (
     String(inv.kind) === "realestate" &&
@@ -1734,7 +1786,7 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
   ) {
     listings = await withDeadline(geocodeListingRows(inv, listings), LISTING_LOOKUP_MS, listings);
   }
-  if (typeof onPartial === "function" && wantListings) {
+  if (typeof onPartial === "function" && wantListings && foundList.length) {
     try {
       onPartial(mergeInvestorPublic(inv, { listings }));
     } catch {
@@ -1742,7 +1794,6 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
     }
   }
 
-  const contacts = await contactsP;
   const extra = { ...(contacts || {}), listings };
   const next = mergeInvestorPublic(seeded, extra);
   const betterContact = (next.phone && next.phone !== inv.phone) || (next.email && next.email !== inv.email);

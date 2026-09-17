@@ -427,6 +427,7 @@ let fieldOverlay = {
   onListingSelect: null,
   onInvestorViewChange: null,
   lookingInvestorIds: null,
+  huntingListingsIds: null,
 };
 const livePinMarkers = { marks: new Map(), done: new Map() };
 
@@ -9353,6 +9354,7 @@ function investorPopupHtml(inv) {
   const homes = isRe ? mappedInvestorListings(inv).filter(listingIsOfficeOwned) : [];
   const unmapped = isRe ? unmappedInvestorListings(inv).filter(listingIsOfficeOwned).length : 0;
   const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
+  const huntingListings = fieldOverlay.huntingListingsIds?.has?.(String(inv.id));
   let listingLine = "";
   if (isRe) {
     const bits = [];
@@ -9360,7 +9362,7 @@ function investorPopupHtml(inv) {
     if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
     // Addresses we refused to place are still worth showing — silently dropping them looks like a bug.
     if (unmapped) bits.push(`${unmapped} we could not pin to a house`);
-    listingLine = bits.length ? bits.join(" · ") : looking ? "Looking up this office's listings…" : "";
+    listingLine = bits.length ? bits.join(" · ") : huntingListings ? "Looking up this office's listings…" : "";
   }
   const missContact =
     !investorHasContact(inv) && looking
@@ -9487,6 +9489,7 @@ function investorPeekHtml(inv) {
   const mapped = isRe ? mappedInvestorListings(inv).filter(listingIsOfficeOwned) : [];
   const unmapped = isRe ? unmappedInvestorListings(inv).filter(listingIsOfficeOwned) : [];
   const looking = fieldOverlay.lookingInvestorIds?.has?.(String(inv.id));
+  const huntingListings = fieldOverlay.huntingListingsIds?.has?.(String(inv.id));
   const kindLab = isRe ? "Real estate office" : "Insurance office";
   let listingLine = "";
   if (isRe) {
@@ -9494,7 +9497,7 @@ function investorPeekHtml(inv) {
     if (mapped.length) bits.push(`${mapped.length} of this office's listings on the map`);
     if (unmapped.length) bits.push(`${unmapped.length} address-only`);
     if (bits.length) listingLine = bits.join(" · ");
-    else if (looking) listingLine = "Looking up this office's listings…";
+    else if (huntingListings) listingLine = "Looking up this office's listings…";
     else listingLine = "No public listings yet";
   }
   const tel = e164 ? `<a class="hs-tel" href="tel:${escHousePop(e164)}">${escHousePop(phone)}</a>` : "";
@@ -10256,6 +10259,7 @@ export function setFieldOverlay({
   onListingSelect,
   onInvestorViewChange,
   lookingInvestorIds = null,
+  huntingListingsIds = null,
 } = {}) {
   const prevDots = fieldOverlay.showHailDots !== false;
   const prevFlags = fieldOverlay.showPhoneFlags === true;
@@ -10283,6 +10287,7 @@ export function setFieldOverlay({
     onListingSelect,
     onInvestorViewChange,
     lookingInvestorIds,
+    huntingListingsIds,
   };
   if (prevDots !== (showHailDots !== false) && (lastHailRows.length || lastWindRows.length)) {
     lastHailDrawSig = "";

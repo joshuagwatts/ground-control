@@ -80,6 +80,7 @@ import {
   pickOfficeListings,
   idxRowBelongsToOffice,
   listingReaderUrl,
+  listingFallbackWebsite,
   parseStreetAddressesFromText,
   officeWebsiteFromOsm,
   investorCity,
@@ -665,6 +666,10 @@ assert(!idxRowBelongsToOffice("McGraw Realtors", { brokername: "eXp Realty, LLC"
 const pickedOffice = pickOfficeListings([{ address: "1711 Spoke St, Oklahoma City, OK", attribution: "office" }], idxNearby);
 assert(pickedOffice.length === 1 && /Spoke/i.test(pickedOffice[0].address), "office-site homes beat a nearby MLS dump");
 const pickedNearby = pickOfficeListings([], idxNearby);
+assert(pickedNearby.length === 0, "unmatched MLS is never drawn as this office's homes");
+assert(listingFallbackWebsite({ name: "McGraw Realtors" }) === "https://www.mcgrawrealtors.com/", "McGraw may use its own MLS dump");
+assert(!listingFallbackWebsite({ name: "Dean Fleshmans Real Estate" }), "other offices do not scrape McGraw leftover MLS");
+assert(!listingFallbackWebsite({ name: "Verbode" }), "Verbode hunts its own site, not the city MLS dump");
 assert(pickedNearby.length === 0, "unmatched MLS is never drawn as this office's homes");
 const leftover = normalizeInvestor({
   kind: "realestate",
