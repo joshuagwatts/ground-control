@@ -1445,14 +1445,20 @@ export function listingNearOffice(office, home, maxKm = MAX_LISTING_KM) {
 }
 
 async function listingsFromPages(urls, inv) {
-  const pages = await Promise.all(urls.slice(0, 7).map((url) => fetchListingPage(url, LISTING_PAGE_MS)));
   const out = [];
   const seen = new Set();
-  for (const page of pages) {
-    if (!page?.html) continue;
+  const absorb = (page) => {
+    if (!page?.html) return;
     for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company })) {
       pushListing(out, seen, { ...row, url: row.url || page.url });
     }
+  };
+  const list = urls.filter(Boolean).slice(0, 7);
+  if (!list.length) return out;
+  absorb(await fetchListingPage(list[0], LISTING_PAGE_MS));
+  if (out.length < 2 && list.length > 1) {
+    const pages = await Promise.all(list.slice(1).map((url) => fetchListingPage(url, LISTING_PAGE_MS)));
+    for (const page of pages) absorb(page);
   }
   return out;
 }
