@@ -1,0 +1,22 @@
+node_modules/
+.DS_Store
+dist/
+*.apk
+*.aab
+.env
+.env.*
+.gradle/
+build/
+local.properties
+# Keystore files — never commit. CI writes upload.jks from GitHub secrets.
+*.jks
+*.keystore
+android/app/upload.jks
+.idea/
+android/app/src/main/assets/public/
+www/data/ok-rent-flags-progress.json
+www/data/ok-biz-flags-progress.json
+www/data/ok-rent-zillow-progress.json
+www/data/ok-biz-osm-map-progress.json
+tmp/
+*.log

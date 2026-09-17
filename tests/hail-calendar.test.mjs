@@ -1,0 +1,119 @@
+import {
+  parseStormDay,
+  centralStormDay,
+  calendarWeeks,
+  renderStormCalendar,
+  defaultCalendarMonth,
+  HAIL_EXTREME_IN,
+  HAIL_PIN_CALENDAR_IN,
+} from "../www/hail-calendar.js";
+import {
+  collapseHailByDate,
+  hailCalendarHighlightDays,
+  hailCalendarStormDays,
+  setWxPin,
+  clearWxPin,
+  selectStormDate,
+  filterRowsToSelectedStormDays,
+  spcDayStamp,
+} from "../www/wx.js";
+
+function assert(ok, msg) {
+  if (!ok) throw new Error(msg);
+}
+
+assert(parseStormDay("2024-05-15") === "2024-05-15", "iso day");
+assert(parseStormDay("2024-05-15T18:30:00Z") === "2024-05-15", "iso datetime");
+assert(parseStormDay("202405151230") === "2024-05-15", "compact SWDI ZTIME");
+assert(parseStormDay("2024/05/15 12:30") === "2024-05-15", "slash date");
+assert(parseStormDay("") === "", "empty");
+
+// Evening CDT storm stamped next UTC day still belongs on the Central calendar day.
+assert(centralStormDay("2026-03-11T00:00:19Z") === "2026-03-10", "00Z CDT evening → prior Central day");
+assert(centralStormDay("2026-03-10T23:00:00Z") === "2026-03-10", "late UTC afternoon still Central Mar 10");
+assert(centralStormDay("2026-03-10") === "2026-03-10", "bare date unchanged");
+
+const weeks = calendarWeeks(2024, 4);
+assert(weeks.length >= 4 && weeks[0].length === 7, "may 2024 grid");
+const mayFifteen = weeks.flat().find((c) => c.inMonth && c.day === 15);
+assert(mayFifteen?.iso === "2024-05-15", "may 15 cell");
+
+const html = renderStormCalendar({
+  year: 2024,
+  month: 4,
+  highlightDays: new Set(["2024-05-15"]),
+  stormDays: new Set(["2024-05-15", "2024-05-20"]),
+  selectedDays: new Set(["2024-05-15"]),
+  esc: (s) => String(s),
+});
+assert(/hs-cal-hail/.test(html) && /hs-cal-pick/.test(html) && !/disabled/.test(html.split("2024-05-20")[1]?.slice(0, 80) || ""), "render pickable storm days");
+
+const def = defaultCalendarMonth(new Set(["2023-08-02", "2024-05-15"]));
+assert(def.year === 2024 && def.month === 4, "default month from latest hail");
+
+const compactRow = {
+  date: "2024051512",
+  lat: 35.47,
+  lon: -97.52,
+  size_in: "1.25",
+  source: "noaa-swdi-radar",
+  distance_km: 1,
+};
+const [collapsed] = collapseHailByDate([compactRow]);
+assert(collapsed?.date === "2024-05-15", `compact row collapses to calendar day, got ${collapsed?.date}`);
+
+setWxPin(35.467, -97.516);
+const pinData = {
+  lat: 35.467,
+  lon: -97.516,
+  hail: [
+    {
+      date: "2026-05-15",
+      lat: 35.468,
+      lon: -97.516,
+      size_in: "1.25",
+      source: "iem-lsr",
+      distance_km: 0.2,
+    },
+    {
+      date: "2026-06-01",
+      lat: 35.55,
+      lon: -97.516,
+      size_in: "2.50",
+      source: "noaa-swdi-radar",
+      distance_km: 8,
+    },
+  ],
+};
+const pinDays = hailCalendarHighlightDays(pinData, { viewport: false });
+assert(!pinDays.has("2026-05-15"), "map-view calendar skips sub-extreme hail");
+assert(pinDays.has("2026-06-01"), "map-view calendar highlights ≥2″ hail");
+
+const vpData = {
+  viewport: true,
+  hail: [
+    { date: "2026-05-15", lat: 35.47, lon: -97.52, size_in: "2.25", source: "noaa-spc", distance_km: 2 },
+    { date: "2026-06-01", lat: 35.47, lon: -97.52, size_in: "1.25", source: "noaa-spc", distance_km: 2 },
+  ],
+};
+const vpDays = hailCalendarHighlightDays(vpData, { viewport: true });
+assert(vpDays.has("2026-05-15"), "map view extreme day");
+assert(!vpDays.has("2026-06-01"), "map view skips sub-extreme");
+
+const allDays = hailCalendarStormDays(vpData, { viewport: true });
+assert(allDays.has("2026-05-15") && allDays.has("2026-06-01"), "storm day set includes all loaded hail");
+
+assert(HAIL_EXTREME_IN === 2 && HAIL_PIN_CALENDAR_IN === 1, "threshold constants");
+
+assert(spcDayStamp("2026-07-04") === "260704", "SPC day stamp for July 4 2026");
+
+selectStormDate("2024-07-05", { toggle: false });
+const mixedRows = [
+  { date: "2024-07-05", lat: 35.47, lon: -97.52, size_in: "0.5", source: "iem-lsr" },
+  { date: "2024-06-01", lat: 35.47, lon: -97.52, size_in: "3.0", source: "noaa-swdi-radar" },
+];
+const pickedOnly = filterRowsToSelectedStormDays(mixedRows);
+assert(pickedOnly.length === 1 && pickedOnly[0].date === "2024-07-05", "storm draw keeps selected day only");
+selectStormDate(null);
+
+console.log("hail-calendar ok");

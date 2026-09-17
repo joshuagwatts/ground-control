@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0b0d" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="HomeScope" />
+  <meta http-equiv="Permissions-Policy" content="geolocation=(self)" />
+  <title>HomeScope</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="./style.css?v=0.2.343" />
+</head>
+<body>
+  <header class="ho-top">
+    <span class="ho-brand" id="ho-brand">HomeScope</span>
+    <span class="ho-ver" id="ho-ver"></span>
+  </header>
+
+  <main class="ho-main">
+    <section class="ho-hero" id="ho-hero">
+      <ol class="ho-steps" id="ho-steps" aria-label="Progress">
+        <li data-step="address" class="on">Address</li>
+        <li data-step="storms">Hail</li>
+        <li data-step="report">Report</li>
+      </ol>
+      <h1>See the hail that hit your roof</h1>
+      <p>
+        Find your Oklahoma roof on the map, by search, or with GPS. Unlock a free High Ground hail report with roof age
+        and contact info — emailed from our CRM.
+      </p>
+    </section>
+
+    <section class="ho-panel" id="panel-address" data-panel="address">
+      <h2>Your Oklahoma address</h2>
+      <p class="lead">
+        Search, use your location, or zoom the map and tap your roof — we’ll load verified hail over that pin.
+      </p>
+      <form class="ho-goto" id="addr-form" autocomplete="off">
+        <div class="ho-goto-row">
+          <input
+            type="search"
+            id="addr-q"
+            name="address"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            enterkeyhint="search"
+            placeholder="Start typing an Oklahoma address…"
+            aria-autocomplete="list"
+            aria-controls="addr-suggest"
+            aria-expanded="false"
+            required
+          />
+          <button type="submit" class="primary" id="addr-go">Search</button>
+        </div>
+        <div class="ho-suggest-wrap" id="addr-suggest-wrap" hidden>
+          <ul class="ho-suggest" id="addr-suggest" role="listbox" aria-label="Suggested addresses"></ul>
+        </div>
+      </form>
+      <div class="ho-locate-row">
+        <button type="button" class="ho-locate-btn" id="addr-locate">Use my location</button>
+        <p class="ho-locate-hint">Allow location when prompted — we’ll zoom to your roof and load hail.</p>
+      </div>
+      <p class="ho-status" id="addr-status" role="status">Zoom the map and tap your home, or search above.</p>
+    </section>
+
+    <section class="ho-panel ho-map-panel" id="panel-map" data-panel="map">
+      <div class="ho-map ho-map-pick" id="ho-map" aria-label="Home map — tap to select your roof"></div>
+      <div class="ho-hail-legend" aria-hidden="true">
+        <span class="ho-leg-swatch" style="--c:#fafafa"></span><span>.5–.75″</span>
+        <span class="ho-leg-swatch" style="--c:#eceff1"></span><span>.75–1″</span>
+        <span class="ho-leg-swatch" style="--c:#ffc107"></span><span>1–1.5″</span>
+        <span class="ho-leg-swatch" style="--c:#ff9800"></span><span>1.5–2″</span>
+        <span class="ho-leg-swatch" style="--c:#e53935"></span><span>2–2.5″</span>
+        <span class="ho-leg-swatch" style="--c:#8e24aa"></span><span>2.5″+</span>
+        <span class="ho-leg-note">Blue pin = home · tap map to select · nested swaths = HailTrace size bands</span>
+      </div>
+    </section>
+
+    <section class="ho-panel" id="panel-storms" data-panel="storms" hidden>
+      <h2>Storms over your home</h2>
+      <p class="lead">
+        Verified near-roof or zone-over-home dates only. Opening map stacks the top 10. Tap a stacked date to solo it, or tap
+        other dates (including Load more) to overlay any mix. History keeps loading in the background — no filter flip needed.
+      </p>
+
+      <p class="ho-mini-label">History</p>
+      <div class="ho-chips" id="filter-years" role="group" aria-label="History window">
+        <button type="button" class="ho-chip" data-years="2">2 years</button>
+        <button type="button" class="ho-chip" data-years="5">5 years</button>
+        <button type="button" class="ho-chip on" data-years="10">10 years</button>
+      </div>
+      <p class="ho-mini-label">Min hail size</p>
+      <div class="ho-chips" id="filter-hail" role="group" aria-label="Minimum hail size">
+        <button type="button" class="ho-chip on" data-hail="0.5">≥ .5″</button>
+        <button type="button" class="ho-chip" data-hail="0.75">≥ .75″</button>
+        <button type="button" class="ho-chip" data-hail="1">≥ 1″</button>
+        <button type="button" class="ho-chip" data-hail="1.5">≥ 1.5″</button>
+        <button type="button" class="ho-chip" data-hail="2">≥ 2″</button>
+      </div>
+      <p class="ho-mini-label">Rank list</p>
+      <div class="ho-chips" id="filter-sort" role="group" aria-label="Storm ranking">
+        <button type="button" class="ho-chip on" data-sort="intense">Most intense</button>
+        <button type="button" class="ho-chip" data-sort="recent">Most recent</button>
+      </div>
+
+      <p class="ho-status" id="storm-status" role="status">Waiting for address…</p>
+      <ul class="ho-storm-list" id="storm-list"></ul>
+      <div class="ho-more-wrap" id="storm-more-wrap" hidden>
+        <button type="button" class="ho-more-btn" id="storm-more">Load more storms</button>
+        <p class="ho-more-meta" id="storm-more-meta"></p>
+      </div>
+    </section>
+
+    <section class="ho-panel ho-report-cta-panel" id="panel-report-cta" data-panel="storms" hidden>
+      <h2>Free hail report</h2>
+      <p class="lead">
+        Review the dates above, then unlock a High Ground report for this roof — emailed from our CRM.
+      </p>
+      <div class="ho-actions ho-actions-report">
+        <button type="button" class="primary" id="make-report" disabled>Answer questions · Get report</button>
+      </div>
+    </section>
+
+    <section class="ho-panel ho-report-panel" id="panel-report" data-panel="report" hidden>
+      <article class="hg-doc" id="hg-doc" aria-label="Hail report document"></article>
+      <div class="ho-actions ho-report-actions no-print">
+        <button type="button" class="primary" id="print-report">Print / Save PDF</button>
+        <button type="button" id="dl-html">Download report</button>
+        <button type="button" id="share-report">Share link</button>
+      </div>
+      <p class="ho-status no-print" id="share-status" role="status"></p>
+    </section>
+  </main>
+
+  <!-- Report unlock — CRM lead + roof age, then email report -->
+  <div class="ho-gate-modal" id="report-gate" hidden>
+    <button type="button" class="ho-gate-scrim" id="gate-scrim" aria-label="Close"></button>
+    <div class="ho-gate-sheet" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+      <h2 id="gate-title">A few questions first</h2>
+      <p class="lead">
+        Roof age changes what the storm history means. Answer these, then we’ll deep-search hail and build a clear
+        High Ground report for this address.
+      </p>
+      <form id="gate-form" class="ho-gate">
+        <p class="ho-mini-label" id="gate-roof-label">About how old is your roof?</p>
+        <div class="ho-chips" id="gate-roof-mode" role="group" aria-labelledby="gate-roof-label">
+          <button type="button" class="ho-chip" data-roof="lt2">Under 2 yrs</button>
+          <button type="button" class="ho-chip" data-roof="y2_5">2–5 yrs</button>
+          <button type="button" class="ho-chip" data-roof="y5_10">5–10 yrs</button>
+          <button type="button" class="ho-chip" data-roof="y10">10+ yrs</button>
+          <button type="button" class="ho-chip" data-roof="year">Exact year</button>
+          <button type="button" class="ho-chip on" data-roof="idk">Not sure</button>
+        </div>
+        <div class="ho-row" id="gate-roof-inputs" hidden>
+          <input type="number" id="gate-roof-year" min="1970" max="2030" placeholder="Year last replaced (e.g. 2019)" />
+        </div>
+        <label class="ho-lab">Full name
+          <input type="text" id="gate-name" name="name" autocomplete="name" enterkeyhint="next" placeholder="Jordan Smith" />
+        </label>
+        <label class="ho-lab">Email
+          <input type="email" id="gate-email" name="email" autocomplete="email" enterkeyhint="next" inputmode="email" placeholder="you@email.com" />
+        </label>
+        <label class="ho-lab">Phone
+          <input type="tel" id="gate-phone" name="phone" autocomplete="tel" enterkeyhint="go" inputmode="tel" placeholder="(405) 555-0100" />
+        </label>
+        <button type="button" class="primary ho-gate-btn" id="gate-submit">Build my hail report</button>
+      </form>
+      <p class="ho-status" id="gate-status" role="status"></p>
+      <p class="ho-disclaimer" id="ho-disclaimer-gate"></p>
+    </div>
+  </div>
+
+  <!-- Deep-search wait — keep the homeowner patient while radar/history fills in -->
+  <div class="ho-deep-modal" id="deep-search" hidden aria-live="polite" aria-busy="true">
+    <div class="ho-deep-card" role="status">
+      <div class="ho-deep-radar" aria-hidden="true">
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-ring"></span>
+        <span class="ho-deep-beam"></span>
+        <span class="ho-deep-core"></span>
+      </div>
+      <p class="ho-deep-kicker">High Ground · HomeScope</p>
+      <h2 class="ho-deep-title" id="deep-search-title">Deep searching hail</h2>
+      <p class="ho-deep-msg" id="deep-search-msg">Pulling NOAA radar and spotter history for this roof…</p>
+      <div class="ho-deep-bar" aria-hidden="true"><span class="ho-deep-bar-fill" id="deep-search-bar"></span></div>
+      <p class="ho-deep-hint">This can take a minute — hang tight while we load more storm data.</p>
+    </div>
+  </div>
+
+  <footer class="ho-foot">
+    <span class="ho-foot-brand">High Ground</span>
+    · HomeScope ·
+    <a href="https://www.highgroundokc.com/" target="_blank" rel="noopener">highgroundokc.com</a>
+    ·
+    <a href="tel:+14052520058">(405) 252-0058</a>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script type="module" src="./boot.js?v=0.2.343"></script>
+</body>
+</html>

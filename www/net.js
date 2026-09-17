@@ -1,0 +1,935 @@
+import { withLanBypass } from "./proton.js";
+import { TEAM_SWDI_PROXY } from "./proxy-config.js";
+
+const UA =
+  "Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
+
+/** CapacitorHttp — core plugin (Bridge always registers it). Prefer request() then get/post. */
+function nativeHttp() {
+  const cap = typeof window !== "undefined" ? window.Capacitor : null;
+  const plugins = cap && (cap.Plugins || cap.plugins);
+  return (plugins && plugins.CapacitorHttp) || null;
+}
+
+export function hasNativeHttp() {
+  return Boolean(nativeHttp());
+}
+
+/** True when the GitHub Pages service worker is controlling this tab. */
+export function webProxyActive() {
+  return typeof navigator !== "undefined" && Boolean(navigator.serviceWorker?.controller);
+}
+
+/** Wait for the on-device / GitHub Pages SWDI proxy (web only). */
+export async function ensureWebProxyReady(timeoutMs = 12000) {
+  if (hasNativeHttp()) return true;
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return false;
+  if (navigator.serviceWorker.controller) return true;
+  try {
+    await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs)),
+    ]);
+    await new Promise((r) => setTimeout(r, 150));
+  } catch {
+    /* ignore */
+  }
+  return Boolean(navigator.serviceWorker.controller);
+}
+
+function sameOriginProxyUrl(target) {
+  try {
+    if (typeof location === "undefined") return null;
+    const proxy = new URL("proxy", location.href);
+    proxy.searchParams.set("url", target);
+    return proxy.toString();
+  } catch {
+    return null;
+  }
+}
+
+function teamProxyUrl(target) {
+  const base = String(TEAM_SWDI_PROXY || "").trim().replace(/\/+$/, "");
+  if (!base) return null;
+  return `${base}/?url=${encodeURIComponent(target)}`;
+}
+
+/** Reliable public CORS relay for large NOAA JSON (prefix URL, do not encode). */
+function corsShProxyUrl(target) {
+  return `https://cors.sh/${target}`;
+}
+
+async function httpGetViaCorsSh(url, timeoutMs) {
+  const proxy = corsShProxyUrl(url);
+  if (proxyLooksDown(proxy)) throw new Error("proxy cooling down");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
+    const body = unwrapProxyBody(await res.text());
+    if (!res.ok || !validProxyBody(body, url)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    noteProxyResult(proxy, true);
+    return { url, status: res.status, body };
+  } catch (e) {
+    noteProxyResult(proxy, false);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function httpGetViaServiceWorkerMessage(url, timeoutMs) {
+  const reg = await navigator.serviceWorker.ready;
+  const worker = reg.active || reg.waiting || reg.installing;
+  if (!worker) throw new Error("no service worker");
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+    const channel = new MessageChannel();
+    channel.port1.onmessage = (ev) => {
+      clearTimeout(timer);
+      const msg = ev.data || {};
+      if (msg.ok && validProxyBody(msg.body, url)) {
+        resolve({ url, status: Number(msg.status) || 200, body: unwrapProxyBody(msg.body) });
+      } else {
+        reject(new Error(msg.err || "proxy empty"));
+      }
+    };
+    worker.postMessage({ type: "GC_PROXY_GET", url }, [channel.port2]);
+  });
+}
+
+async function httpGetViaSameOriginProxy(url, timeoutMs) {
+  // Keyed on the target, not the relay: the worker's own fetch obeys CORS, so it
+  // carries NOAA happily and can never carry the Census geocoder. One dead target
+  // must not blacklist the leg for every other API.
+  const key = targetKey("sw", url);
+  if (proxyLooksDown(key)) throw new Error("same-origin proxy cooling down");
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    try {
+      await ensureWebProxyReady(Math.min(timeoutMs, 10000));
+      const hit = await httpGetViaServiceWorkerMessage(url, timeoutMs);
+      noteProxyResult(key, true);
+      return hit;
+    } catch {
+      /* fall through to fetch /proxy */
+    }
+  }
+  const proxyUrl = sameOriginProxyUrl(url);
+  if (!proxyUrl) throw new Error("no same-origin proxy");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(proxyUrl, { signal: ctrl.signal, redirect: "follow" });
+    const body = unwrapProxyBody(await res.text());
+    if (!res.ok || !validProxyBody(body, url)) throw new Error(res.ok ? "proxy empty" : `fetch ${res.status}`);
+    noteProxyResult(key, true);
+    return { url, status: res.status, body };
+  } catch (e) {
+    noteProxyResult(key, false);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function httpDiag() {
+  const cap = typeof window !== "undefined" ? window.Capacitor : null;
+  const http = nativeHttp();
+  return {
+    platform: cap?.getPlatform?.() || (cap ? "native?" : "web"),
+    nativeHttp: Boolean(http),
+    methods: http ? Object.keys(http).filter((k) => typeof http[k] === "function").slice(0, 12) : [],
+  };
+}
+
+function parseCookie(setCookie) {
+  const parts = Array.isArray(setCookie) ? setCookie : [setCookie];
+  for (const part of parts) {
+    const raw = String(part || "");
+    const hit = raw.match(/pip_gate=([^;,\s]+)/i);
+    if (hit) return hit[1];
+  }
+  return "";
+}
+
+function assertPublic(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error("bad url");
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("need http(s)");
+  const host = (u.hostname || "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".local") || host === "127.0.0.1" || host === "::1") {
+    throw new Error("public web only");
+  }
+  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(host)) {
+    throw new Error("public web only");
+  }
+  return u.toString();
+}
+
+function assertLan(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error("bad url");
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("need http(s)");
+  const host = (u.hostname || "").toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    throw new Error("use your PC LAN IP, not localhost");
+  }
+  return u.toString();
+}
+
+function bodyToObject(data) {
+  if (data == null) return {};
+  if (typeof data === "object") return data;
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data || "{}");
+    } catch {
+      return { raw: data };
+    }
+  }
+  return {};
+}
+
+function bodyToText(data) {
+  if (data == null) return "";
+  if (typeof data === "string") return data;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
+
+async function nativeRequest(method, url, headers, body, timeoutMs, { responseType = "text" } = {}) {
+  const http = nativeHttp();
+  if (!http) return null;
+  const req = {
+    url,
+    method: method.toUpperCase(),
+    headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*", ...headers },
+    connectTimeout: timeoutMs,
+    readTimeout: timeoutMs,
+    disableRedirects: false,
+    // Listing pages are HTML — without this, some bridges try JSON and drop the body.
+    responseType,
+  };
+  if (body !== undefined) {
+    req.data = typeof body === "string" ? body : JSON.stringify(body);
+    if (!req.headers["Content-Type"] && !req.headers["content-type"]) {
+      req.headers["Content-Type"] = "application/json";
+    }
+  }
+  let res;
+  try {
+    if (typeof http.request === "function") {
+      res = await http.request(req);
+    } else if (method === "POST" && typeof http.post === "function") {
+      res = await http.post(req);
+    } else if (method === "GET" && typeof http.get === "function") {
+      res = await http.get(req);
+    } else {
+      return null;
+    }
+  } catch (e) {
+    const err = new Error(String(e?.message || e || "native http failed"));
+    err.status = 0;
+    throw err;
+  }
+  return {
+    status: Number(res?.status) || 0,
+    data: res?.data,
+    headers: res?.headers || {},
+    url: res?.url || url,
+  };
+}
+
+async function request(method, url, headers, body, timeoutMs, assertFn) {
+  const target = assertFn(url);
+  const publicCall = assertFn === assertPublic;
+
+  const native = await nativeRequest(method, target, headers, body, timeoutMs);
+  if (native) {
+    const status = native.status;
+    const data = bodyToObject(native.data);
+    let cookie = "";
+    for (const [k, v] of Object.entries(native.headers || {})) {
+      if (/^set-cookie$/i.test(k)) {
+        cookie = parseCookie(v);
+        if (cookie) break;
+      }
+    }
+    if (cookie) data._cookie = cookie;
+    if (!status) {
+      const err = new Error(
+        publicCall
+          ? "network failed — check mobile data/Wi‑Fi · Proton may be blocking this API"
+          : "network failed — Proton: Allow LAN connections · or same Wi‑Fi · Open-Firewall.bat as Admin",
+      );
+      err.status = 0;
+      throw err;
+    }
+    if (status >= 400) {
+      const detail =
+        (data && (data.detail || (typeof data.error === "string" ? data.error : data.error?.message))) ||
+        `http ${status}`;
+      const err = new Error(String(detail).slice(0, 180));
+      err.status = status;
+      throw err;
+    }
+    return data;
+  }
+
+  // Web / browser preview — CORS may block cloud APIs.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const init = {
+      method,
+      signal: ctrl.signal,
+      redirect: "follow",
+      headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*", ...headers },
+    };
+    if (body !== undefined) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(target, init);
+    const data = await res.json().catch(() => ({}));
+    const cookie = parseCookie(res.headers.get("set-cookie"));
+    if (cookie) data._cookie = cookie;
+    if (!res.ok) {
+      const detail =
+        (typeof data.error === "string" ? data.error : data.error?.message) || data.detail || `http ${res.status}`;
+      const err = new Error(String(detail).slice(0, 180));
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  } catch (e) {
+    if (e && e.status != null) throw e;
+    const msg = String(e?.message || e || "fetch failed");
+    if (/abort/i.test(msg)) throw new Error("timeout");
+    throw new Error(publicCall ? `fetch failed — ${msg.slice(0, 100)}` : msg);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}, opts = {}) {
+  const target = assertPublic(rewriteNoaaSwdiUrl(url));
+  const headers = { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...extraHeaders };
+  try {
+    if (new URL(target).hostname.toLowerCase() === "r.jina.ai") {
+      // Cloudflare challenges the spoofed Pixel UA on the listing reader.
+      headers["User-Agent"] = "GroundControl/1.0 (listings)";
+    }
+  } catch {
+    /* keep default UA */
+  }
+  const skipPublicRelays = opts.skipPublicRelays === true;
+  const ms = Number(timeoutMs) || 14000;
+
+  const native = await nativeRequest("GET", target, headers, undefined, ms);
+  if (native) {
+    const status = native.status;
+    if (!status) throw new Error("network failed — check data/Wi‑Fi · Proton may block this API");
+    if (status >= 400) throw new Error(`fetch ${status}`);
+    return { url: native.url || target, status, body: bodyToText(native.data) };
+  }
+
+  // Esri GIS advertises CORS * — skip public relays that are paused or rewrite JSON.
+  if (typeof window !== "undefined" && corsOpenGisHost(target)) {
+    try {
+      return await httpGetDirectBrowser(target, Math.min(ms, 8000));
+    } catch {
+      /* county HTML / locked GIS still needs a proxy */
+    }
+  }
+
+  // Photon + ArcGIS World Geocode also send CORS * — listing dots must not wait on a dead relay.
+  if (typeof window !== "undefined" && corsOpenPlacesHost(new URL(target).hostname.toLowerCase())) {
+    try {
+      return await httpGetDirectBrowser(target, Math.min(ms, 8000));
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // Browser: NOAA/IEM block CORS — go straight to proxies instead of a doomed direct fetch.
+  if (typeof window !== "undefined" && needsBrowserCorsProxy(target)) {
+    if (skipPublicRelays) {
+      // Listing HTML: native already missed. Dead cors.sh / allorigins waits are why a
+      // selected star sat on "looking up listings" for half a minute.
+      try {
+        return await httpGetViaSameOriginProxy(target, Math.min(ms, 5000));
+      } catch {
+        throw new Error("listing host blocked");
+      }
+    }
+    try {
+      return await httpGetViaCorsProxy(target, timeoutMs);
+    } catch {
+      /* fall through to direct attempt */
+    }
+  }
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(target, { signal: ctrl.signal, redirect: "follow", headers });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    const body = await res.text();
+    if (!validProxyBody(body, target)) throw new Error("empty");
+    return { url: res.url, status: res.status, body };
+  } catch (e) {
+    const msg = String(e?.message || e || "fetch failed");
+    if (/abort/i.test(msg)) throw new Error("timeout");
+    // Browser CORS (GitHub Pages / Safari): retry via public CORS proxies.
+    if (needsBrowserCorsProxy(target) && !skipPublicRelays) {
+      try {
+        return await httpGetViaCorsProxy(target, timeoutMs);
+      } catch {
+        /* fall through */
+      }
+    }
+    if (/^fetch \d/.test(msg)) throw e;
+    throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** NOAA moved SWDI to ncei; that host sends CORS headers so Pages can fetch it directly. */
+export function rewriteNoaaSwdiUrl(url) {
+  return String(url || "").replace(
+    /:\/\/(?:www\.)?ncdc\.noaa\.gov\/swdiws\//gi,
+    "://www.ncei.noaa.gov/swdiws/",
+  );
+}
+
+function corsOpenWeatherHost(h) {
+  return (
+    h === "ncei.noaa.gov" ||
+    h === "www.ncei.noaa.gov" ||
+    h === "spc.noaa.gov" ||
+    h === "www.spc.noaa.gov" ||
+    h === "api.weather.gov" ||
+    h === "mesonet.agron.iastate.edu"
+  );
+}
+
+function corsOpenPlacesHost(h) {
+  return (
+    h === "photon.komoot.io" ||
+    h.endsWith(".komoot.io") ||
+    h === "geocode.arcgis.com" ||
+    h === "r.jina.ai"
+  );
+}
+
+function corsOpenGisHost(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h.includes("arcgis.com") || h.endsWith("incog.org") || h.includes("clevelandcounty.com");
+  } catch {
+    return false;
+  }
+}
+
+async function httpGetDirectBrowser(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    const body = await res.text();
+    if (!validProxyBody(body, url)) throw new Error("empty");
+    return { url: res.url || url, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function needsBrowserCorsProxy(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    // These hail/weather hosts send CORS *. The Pages SW / cors.sh path 502s Search storms.
+    if (corsOpenWeatherHost(h) || corsOpenPlacesHost(h)) return false;
+    return (
+      h.endsWith("ncdc.noaa.gov") ||
+      h.endsWith("noaa.gov") ||
+      h.endsWith("weather.gov") ||
+      h.endsWith("mesonet.org") ||
+      h.endsWith("iowa.edu") ||
+      h.includes("overpass") ||
+      h.endsWith("openstreetmap.org") ||
+      h.endsWith("census.gov") ||
+      h.endsWith("zillow.com") ||
+      h.endsWith("apartments.com") ||
+      h.endsWith("rent.com") ||
+      h.endsWith("realtor.com") ||
+      h.endsWith("redfin.com") ||
+      h.endsWith("homes.com") ||
+      h.endsWith("statefarm.com") ||
+      h.endsWith("farmers.com") ||
+      h.endsWith("allstate.com") ||
+      h.endsWith("kw.com") ||
+      h.endsWith("411.com") ||
+      h.endsWith("whitepages.com") ||
+      h.endsWith("anywho.com") ||
+      h.endsWith("yellowpages.com") ||
+      h.includes("chamber") ||
+      h.includes("duckduckgo") ||
+      h.includes("arcgis.com") ||
+      h.endsWith("incog.org") ||
+      h.includes("clevelandcounty") ||
+      h.includes("oklahomacounty") ||
+      h.includes("assessor")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function corsProxyCandidates(url) {
+  const enc = encodeURIComponent(url);
+  const local = [];
+  const team = teamProxyUrl(url);
+  if (team) local.push(team);
+  try {
+    if (typeof location !== "undefined") {
+      const same = sameOriginProxyUrl(url);
+      if (same && !/:4173(?:\/|$)/.test(same)) local.push(same);
+    }
+    if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+      local.push(`http://127.0.0.1:4175/proxy?url=${enc}`);
+      local.push(`http://127.0.0.1:4174/proxy?url=${enc}`);
+      const same = sameOriginProxyUrl(url);
+      if (same && !/:4173(?:\/|$)/.test(same)) local.push(same);
+    }
+  } catch {
+    /* ignore */
+  }
+  return [
+    ...local,
+    corsShProxyUrl(url),
+    `https://api.allorigins.win/raw?url=${enc}`,
+    `https://api.allorigins.win/get?url=${enc}`,
+  ];
+}
+
+export function isUsableHttpBody(body, url = "") {
+  return validProxyBody(body, url);
+}
+
+function validProxyBody(body, url = "") {
+  const t = String(body || "").trim();
+  if (!t) return false;
+  if (/CORS proxy temporarily paused|proxy requests are unavailable/i.test(t)) return false;
+  if (/Error code:\s*404|File not found|Cannot GET \/proxy/i.test(t) && t.length < 800) return false;
+  const wantJson = /f=json|FeatureServer|arcgis/i.test(String(url || ""));
+  if (wantJson || t.startsWith("{") || t.startsWith("[")) {
+    try {
+      JSON.parse(t);
+      return true;
+    } catch {
+      if (wantJson) return false;
+    }
+  }
+  return t.length >= 80;
+}
+
+function unwrapProxyBody(body) {
+  const raw = String(body || "");
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{") && /"contents"\s*:/.test(trimmed.slice(0, 80))) {
+    try {
+      const j = JSON.parse(trimmed);
+      if (typeof j.contents === "string" && j.contents) return j.contents;
+    } catch {
+      /* keep raw */
+    }
+  }
+  return raw;
+}
+
+/**
+ * Public relays go down for days at a time — allorigins, cors.sh, codetabs and
+ * corsproxy.io were all refusing the Census geocoder during the last field check.
+ * Each one still costs its full timeout, so a phone walking a list of addresses
+ * spends the better part of a minute per address rediscovering the same outage.
+ * Two strikes and we stop asking for a while.
+ */
+const proxyOutages = new Map();
+const PROXY_STRIKES = 2;
+const PROXY_COOLDOWN_MS = 5 * 60 * 1000;
+
+function proxyKey(proxy) {
+  const s = String(proxy || "");
+  // Literal keys like "sw:census.gov" — the service worker's own fetch is still
+  // bound by CORS, so whether that leg works depends on the target, not the relay.
+  if (!s.includes("//")) return s;
+  try {
+    return new URL(s, typeof location !== "undefined" ? location.href : "https://x.invalid").host;
+  } catch {
+    return s;
+  }
+}
+
+function targetKey(prefix, url) {
+  try {
+    return `${prefix}:${new URL(url).host}`;
+  } catch {
+    return `${prefix}:?`;
+  }
+}
+
+export function proxyLooksDown(proxy, now = Date.now()) {
+  const rec = proxyOutages.get(proxyKey(proxy));
+  return Boolean(rec && rec.strikes >= PROXY_STRIKES && now < rec.until);
+}
+
+export function noteProxyResult(proxy, ok, now = Date.now()) {
+  const key = proxyKey(proxy);
+  if (ok) {
+    proxyOutages.delete(key);
+    return;
+  }
+  const rec = proxyOutages.get(key) || { strikes: 0, until: 0 };
+  rec.strikes += 1;
+  rec.until = now + PROXY_COOLDOWN_MS;
+  proxyOutages.set(key, rec);
+}
+
+/** Field crews restart the app rather than the browser — let a retry be forced. */
+export function resetProxyOutages() {
+  proxyOutages.clear();
+}
+
+async function fetchViaProxyUrl(proxy, url, timeoutMs) {
+  if (proxyLooksDown(proxy)) throw new Error("proxy cooling down");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(proxy, { signal: ctrl.signal, redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    const body = unwrapProxyBody(await res.text());
+    if (!validProxyBody(body, url)) throw new Error("proxy empty");
+    noteProxyResult(proxy, true);
+    return { url, status: res.status, body };
+  } catch (e) {
+    noteProxyResult(proxy, false);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function httpGetViaCorsProxy(url, timeoutMs) {
+  const perMs = Math.min(Math.max(Number(timeoutMs) || 14000, 16000), 36000);
+  let lastErr = "cors proxy failed";
+  const isNoaa = /ncdc\.noaa\.gov|noaa\.gov/i.test(url);
+  const enc = encodeURIComponent(url);
+
+  try {
+    if (typeof location !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+      for (const proxy of [`http://127.0.0.1:4175/proxy?url=${enc}`, `http://127.0.0.1:4174/proxy?url=${enc}`]) {
+        try {
+          return await fetchViaProxyUrl(proxy, url, Math.min(perMs, 8000));
+        } catch (e) {
+          lastErr = String(e?.message || e || lastErr);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // NOAA SWDI — cors.sh carries large JSON; try before slow/broken proxies.
+  if (isNoaa) {
+    try {
+      return await httpGetViaCorsSh(url, perMs);
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator && needsBrowserCorsProxy(url)) {
+    try {
+      return await httpGetViaSameOriginProxy(url, Math.min(perMs, 8000));
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  if (!isNoaa) {
+    try {
+      return await httpGetViaCorsSh(url, perMs);
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  const team = teamProxyUrl(url);
+  if (team) {
+    try {
+      return await fetchViaProxyUrl(team, url, perMs);
+    } catch (e) {
+      lastErr = String(e?.message || e || lastErr);
+    }
+  }
+
+  const proxies = corsProxyCandidates(url).filter(
+    (p) => p !== team && p !== sameOriginProxyUrl(url) && p !== corsShProxyUrl(url) && !/:4175\/proxy|:4174\/proxy/.test(p),
+  );
+  for (const proxy of proxies) {
+    try {
+      return await fetchViaProxyUrl(proxy, url, perMs);
+    } catch (e) {
+      lastErr = String(e?.message || e || "cors proxy failed");
+    }
+  }
+  throw new Error(lastErr);
+}
+
+export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {
+  return withLanBypass(() => request("GET", url, extraHeaders, undefined, timeoutMs, assertLan));
+}
+
+/** form-urlencoded POST — Overpass prefers this over huge GET query strings. */
+export async function httpPostForm(url, formBody, timeoutMs = 18000, extraHeaders = {}) {
+  const target = assertPublic(url);
+  const headers = {
+    "User-Agent": UA,
+    Accept: "application/json,*/*",
+    "Content-Type": "application/x-www-form-urlencoded",
+    ...extraHeaders,
+  };
+  const body = String(formBody || "");
+  const native = await nativeRequest("POST", target, headers, body, timeoutMs);
+  if (native) {
+    const status = native.status;
+    if (!status) throw new Error("network failed — check data/Wi‑Fi · Proton may block this API");
+    if (status >= 400) throw new Error(`fetch ${status}`);
+    return { url: native.url || target, status, body: bodyToText(native.data) };
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(target, { method: "POST", signal: ctrl.signal, headers, body });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    return { url: res.url, status: res.status, body: await res.text() };
+  } catch (e) {
+    const msg = String(e?.message || e || "fetch failed");
+    if (/abort/i.test(msg)) throw new Error("timeout");
+    // Browser CORS / blocked POST — fall back to GET through the same proxy path as httpGet.
+    if (needsBrowserCorsProxy(target) && /^data=/.test(body)) {
+      try {
+        return await httpGet(`${target}?${body}`, timeoutMs);
+      } catch {
+        /* fall through */
+      }
+    }
+    throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+const OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://lz4.overpass-api.de/api/interpreter",
+];
+
+/**
+ * Overpass 406s a generic Chrome UA — identify the app. Browsers refuse to set
+ * User-Agent, so on the web build this only takes effect through a relay that
+ * sends its own honest UA (the team worker, or the dev server's /proxy). That is
+ * why office discovery cannot lean on Overpass alone — see the Photon sweep.
+ */
+const OVERPASS_HEADERS = {
+  "User-Agent": "GroundControl/1.0 (https://github.com/joshuagwatts/ground-control)",
+  Accept: "application/json",
+};
+
+/** Run an Overpass QL query (POST first, GET + CORS proxy fallback). */
+export async function overpassJson(query, timeoutMs = 18000) {
+  const q = String(query || "").trim();
+  if (!q) throw new Error("empty overpass query");
+  const form = `data=${encodeURIComponent(q)}`;
+  let last = "overpass failed";
+  let empty = null;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const { body } = await httpPostForm(endpoint, form, timeoutMs, OVERPASS_HEADERS);
+      const data = JSON.parse(body || "{}");
+      if (Array.isArray(data.elements) && data.elements.length) return data;
+      if (Array.isArray(data.elements)) empty = data;
+    } catch (e) {
+      last = String(e?.message || e || "overpass failed");
+    }
+    try {
+      const { body } = await httpGet(`${endpoint}?${form}`, Math.min(timeoutMs, 12000), OVERPASS_HEADERS);
+      const data = JSON.parse(body || "{}");
+      if (Array.isArray(data.elements) && data.elements.length) return data;
+      if (Array.isArray(data.elements)) empty = data;
+    } catch (e) {
+      last = String(e?.message || e || "overpass failed");
+    }
+  }
+  if (empty) return empty;
+  throw new Error(last);
+}
+
+function clampOsmMapBbox(south, west, north, east, max = 0.04) {
+  let s = Number(south);
+  let n = Number(north);
+  let w = Number(west);
+  let e = Number(east);
+  if (n - s > max) {
+    const mid = (s + n) / 2;
+    s = mid - max / 2;
+    n = mid + max / 2;
+  }
+  if (e - w > max) {
+    const mid = (w + e) / 2;
+    w = mid - max / 2;
+    e = mid + max / 2;
+  }
+  return { south: s, west: w, north: n, east: e };
+}
+
+/** Parse OSM API 0.6 map XML nodes into Overpass-shaped `{ tags, lat, lon }` elements. */
+export function parseOsmXmlNodes(xml) {
+  const out = [];
+  const re = /<node\b([^>]*)>([\s\S]*?)<\/node>/gi;
+  let m;
+  while ((m = re.exec(String(xml || "")))) {
+    const attrs = m[1];
+    const inner = m[2];
+    const lat = Number((attrs.match(/\blat="([^"]+)"/) || [])[1]);
+    const lon = Number((attrs.match(/\blon="([^"]+)"/) || [])[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const tags = {};
+    const tre = /<tag k="([^"]+)" v="([^"]*)"/g;
+    let t;
+    while ((t = tre.exec(inner))) tags[t[1]] = t[2];
+    if (!Object.keys(tags).length) continue;
+    out.push({ type: "node", lat, lon, tags });
+  }
+  return out;
+}
+
+/** Viewport dump from api.openstreetmap.org — works when Overpass mirrors are down. */
+export async function osmMapJson(south, west, north, east, timeoutMs = 22000) {
+  let last = "osm map failed";
+  for (const max of [0.04, 0.025, 0.015]) {
+    const b = clampOsmMapBbox(south, west, north, east, max);
+    const url = `https://api.openstreetmap.org/api/0.6/map?bbox=${b.west},${b.south},${b.east},${b.north}`;
+    try {
+      const { body } = await httpGet(url, timeoutMs);
+      return { elements: parseOsmXmlNodes(body) };
+    } catch (e) {
+      last = String(e?.message || e || "osm map failed");
+      if (!/fetch 4\d\d/.test(last)) break;
+    }
+  }
+  throw new Error(last);
+}
+
+export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {
+  return request("POST", url, headers, payload, timeoutMs, assertPublic);
+}
+
+export async function httpLanPostJson(url, headers, payload, timeoutMs = 60000) {
+  return withLanBypass(() => request("POST", url, headers, payload, timeoutMs, assertLan));
+}
+
+/** SSE stream from desktop Pip (CODE apply). Uses fetch ReadableStream — works in Capacitor WebView. */
+export async function* httpLanSSE(url, headers, payload, timeoutMs = 300000) {
+  const target = assertLan(url);
+  // Hold Wi‑Fi bind for the whole stream so Proton doesn't steal the route mid-apply.
+  let bound = false;
+  try {
+    const { vpnSystemActive, bindLanWifi, unbindLanNetwork } = await import("./proton.js");
+    if (await vpnSystemActive()) bound = await bindLanWifi();
+  } catch {
+    /* browser preview */
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = await res.json();
+        detail = j.detail || JSON.stringify(j);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() || "";
+      for (const ev of parts) {
+        if (!ev.startsWith("data: ")) continue;
+        try {
+          yield JSON.parse(ev.slice(6));
+        } catch {
+          /* skip bad chunk */
+        }
+      }
+    }
+  } finally {
+    clearTimeout(t);
+    if (bound) {
+      try {
+        const { unbindLanNetwork } = await import("./proton.js");
+        await unbindLanNetwork();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+export async function openUrl(url, opts = {}) {
+  const cap = window.Capacitor;
+  const system = Boolean(opts.system);
+  if (system && cap && cap.Plugins && cap.Plugins.App && cap.Plugins.App.openUrl) {
+    await cap.Plugins.App.openUrl({ url });
+    return;
+  }
+  if (cap && cap.Plugins && cap.Plugins.Browser) {
+    await cap.Plugins.Browser.open({ url });
+    return;
+  }
+  window.open(url, "_blank");
+}

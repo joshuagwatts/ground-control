@@ -1,0 +1,3469 @@
+import { load, save, uid } from "./store.js";
+import { chat, pipStatus, takeLastTurn } from "./brain.js";
+import { AGENT_META, agentLabel } from "./crew.js";
+import {
+  validateKeyed,
+  providerHealth,
+  hydrateHealth,
+  PROVIDERS,
+  keyTag,
+  keyHint,
+  clearHealth,
+  normalizeApiKey,
+  parseAgentRelay,
+  agentRelayComplete,
+  compareProviders,
+  isSpent,
+  clearSpent,
+  privacyOn,
+  cloudStatus,
+} from "./cloud.js";
+import { httpDiag, resetProxyOutages } from "./net.js";
+import {
+  loadMapConfig,
+  mountMap,
+  destroyMap,
+  setMapLayer,
+  pinDossier,
+  refetchDossier,
+  resolveMapCenter,
+  geocodeAddress,
+  geoCacheOk,
+  flyToPin,
+  setWxPin,
+  setHailScopeMode,
+  syncHailScopeView,
+  patchHailScopePartial,
+  baseLayerButtons,
+  bindWxMapScrollExpand,
+  bindSelectPinDblTap,
+  bindStormSheetOpen,
+  bindMapViewStormMove,
+  bindHailSearchClick,
+  paintHailSearchIdle,
+  setMapViewHailArmed,
+  wxPinSelected,
+  clearWxPin,
+  clearSelectedStormDate,
+  applyDonePinScaleLive,
+  revealHailAddressPeek,
+  revealHailStormSheet,
+  advanceHailBottomReveal,
+  hailTierGestureRecently,
+  syncHailBottomChrome,
+  setWxMapExpanded,
+  setMyLocationVisible,
+  viewportDossier,
+  hailScopeDays,
+  setWxUnits,
+  reverseGeocode,
+  setFieldOverlay,
+  patchInvestorOverlay,
+  focusInvestorPin,
+  frameInvestorListings,
+  showInvestorPeek,
+  fillInvestorStormDates,
+  showListingPeek,
+  mapIsLive,
+  isInvestorSelected,
+  hasSelectedInvestor,
+  refreshMapSize,
+  defaultMapCenter,
+  mapCenterCoords,
+  mapFrameBounds,
+  quickMapConfig,
+  hidePinScalePopover,
+  updatePinScaleLive,
+  hailScopeRadarBarHtml,
+  bindHailScopeRadar,
+  syncHailScopeRadar,
+  applyLoadedMapConfig,
+  getFlagKindFilter,
+  applyFlagKindFilters,
+} from "./wx.js?v=0.2.343";
+import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
+import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
+import { shareToChatGpt } from "./share.js";
+import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
+import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
+import { openMarkEditor } from "./damage.js";
+import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale, mergeMarksPack, serializeTeamMarksPack, markListIconHtml } from "./marks.js";
+import {
+  INVESTOR_KINDS,
+  newInvestor,
+  upsertInvestor,
+  removeInvestor,
+  promoteRelationship,
+  investorDisplayName,
+  investorPropertyCount,
+  investorPropertyCountLabel,
+  investorGlyphSvg,
+  relationshipLabel,
+  mergeListedAndSaved,
+  mergeInvestorListings,
+  fetchPhotonInvestorsNear,
+  fetchPhotonInvestorsInBounds,
+  officeSweepWorthIt,
+  investorHasContact,
+  investorInBounds,
+  mappedInvestorListings,
+  unmappedInvestorListings,
+  officeOwnedMappedCount,
+  listingIsOfficeOwned,
+  OFFICE_LISTING_HUNT_BELOW,
+} from "./investors.js";
+import {
+  applyOsmOfficesToInvestors,
+  enrichInvestorFromPublic,
+  fetchOsmOfficesInBounds,
+  listedInvestorsFromOsmElements,
+} from "./investor-public.js";
+import { OK_INVESTOR_SEED } from "./ok-investors.js";
+import { pushTeamJson, TEAM_MARKS_PATH, TEAM_DONE_PATH, teamAlphaLink } from "./team.js";
+import { parseDoneList, withCity, MAX_DONE, normalizeDoneHouse, mergeDonePack, serializeTeamDonePack } from "./done.js";
+import { parseStreetAddress, isOklahomaLatLon } from "./contacts.js";
+import { APP_VERSION, CACHE_BUST } from "./version.js";
+import { applyFormFactorClass, bindFormFactorResize, useDesktopChrome } from "./device.js";
+
+applyFormFactorClass();
+bindFormFactorResize();
+
+const $ = (s) => document.querySelector(s);
+let db = load();
+setWxUnits(db.settings.units || "imperial");
+let tab = "hailscope";
+const keyCheckTimers = {};
+let pendingChatImages = [];
+let wxState = { lat: null, lon: null, address: "", data: null, viewport: false };
+let wxWatch = null;
+let chatBusy = false;
+let lensBusy = false;
+let lensRunTimer = null;
+let lastLensSig = "";
+
+function lensPhotoSig(L) {
+  return `${L.photos.length}|${(L.photos || []).map((p) => `${p.at || 0}:${p.shot || ""}:${(p.url || "").length}`).join(";")}`;
+}
+
+function scheduleLensRun(delay = 500, { force = false } = {}) {
+  if (isPhoneApp() && lensMode() === "shingle") return;
+  clearTimeout(lensRunTimer);
+  lensRunTimer = setTimeout(() => {
+    lensRunTimer = null;
+    void runLens({ force });
+  }, delay);
+}
+
+function isPhoneApp() {
+  const p = window.Capacitor?.getPlatform?.();
+  return p === "android" || p === "ios";
+}
+let pendingShot = "granules_close";
+let markDraft = null;
+let investorDraft = null;
+let doneBusy = false;
+let selectedDoneId = null;
+
+hydrateHealth(db.settings.brain_health || {});
+
+function persist() {
+  save(db);
+}
+
+let persistTimer = 0;
+function persistSoon(ms = 400) {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    persistTimer = 0;
+    persist();
+  }, ms);
+}
+
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function setStatus(msg) {
+  const el = $("#status");
+  if (el) el.textContent = msg || "";
+}
+
+if (typeof window !== "undefined" && !window.__hsMapStatusBound) {
+  window.__hsMapStatusBound = true;
+  window.addEventListener("hs-map-status", (ev) => {
+    const msg = String(ev.detail?.msg || "").trim();
+    if (msg) setStatus(msg);
+  });
+}
+
+function isHailTab() {
+  return tab === "hailscope" || tab === "wx";
+}
+
+function leaveWx() {
+  if (wxWatch && typeof wxWatch.stop === "function") {
+    wxWatch.stop();
+    wxWatch = null;
+  }
+  hidePinScalePopover();
+  cancelWarmMapViewStorms();
+  setMapViewHailArmed(false);
+  setHailScopeMode(false);
+  destroyMap();
+  document.body.classList.remove("wx-tab", "hs-tab", "wx-map-expanded");
+}
+
+function renderPrivacy() {
+  const secure = privacyOn(db.settings);
+  const tog = $("#privacy-tog");
+  if (tog) {
+    tog.classList.toggle("on", secure);
+    tog.classList.toggle("leaky", !secure);
+    tog.textContent = secure ? "On-device" : "Cloud";
+    tog.title = isPhoneApp()
+      ? "Phone Lens shares guided photos to ChatGPT. Cloud mode is for web/API keys."
+      : secure
+        ? "Vision uses cloud API keys only when Cloud mode is on."
+        : "Cloud vision is on for Lens.";
+  }
+}
+
+function chatAgent() {
+  return String(db.settings.chat_agent || "pip").toLowerCase();
+}
+
+function setChatAgent(id, silent = false) {
+  const next = String(id || "pip").toLowerCase();
+  db.settings.chat_agent = next;
+  if (next === "pip" || next === "gc" || next === "auto") db.settings.brain_pin = "auto";
+  else if (next === "compare") db.settings.brain_pin = "compare";
+  else db.settings.brain_pin = next;
+  persist();
+  paintBrainStrip();
+  if (!silent) {
+    const meta = AGENT_META[next] || { label: agentLabel(next) };
+    setStatus(`AGENT · ${meta.label}`);
+  }
+}
+
+function agentOptions() {
+  const keyed = new Set(cloudStatus(db.settings).keyed || []);
+  const active = chatAgent();
+  const modes = [
+    { id: "pip", section: "modes" },
+    { id: "auto", section: "modes" },
+    { id: "compare", section: "modes" },
+  ];
+  const apis = [];
+  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+    if (keyed.has(id)) apis.push({ id, section: "apis" });
+  }
+  return { opts: [...modes, ...apis], keyed, active, health: providerHealth() };
+}
+
+function agentStatFor(id, { keyed, health }) {
+  if (id === "pip" || id === "gc" || id === "auto" || id === "compare") {
+    return { cls: "mode", text: id === "compare" ? "ALL" : id === "auto" ? "FAST" : "FIELD" };
+  }
+  if (!keyed.has(id)) return { cls: "bad", text: "NO KEY" };
+  if (isSpent(id)) return { cls: "bad", text: "MAXED" };
+  const ok = health[id]?.ok;
+  if (ok === true) return { cls: "live", text: "LIVE" };
+  if (ok === false) return { cls: "bad", text: "FAIL" };
+  return { cls: "key", text: "KEYED" };
+}
+
+function fillAgentPick() {
+  const lab = $("#agent-trig-lab");
+  const list = $("#agent-sheet-list");
+  const { opts, keyed, active, health } = agentOptions();
+  if (lab) lab.textContent = agentLabel(active);
+  if (!list) return;
+  const chunks = [];
+  let lastSec = "";
+  for (const o of opts) {
+    const sec = o.section === "modes" ? "modes" : "apis";
+    if (sec !== lastSec) {
+      lastSec = sec;
+      chunks.push(`<div class="agent-sec">${sec === "modes" ? "MODES" : "KEYED APIS"}</div>`);
+    }
+    const meta = AGENT_META[o.id] || { label: agentLabel(o.id), blurb: "" };
+    const stat = agentStatFor(o.id, { keyed, health });
+    chunks.push(`
+      <button type="button" class="agent-row${o.id === active ? " on" : ""}" data-agent="${esc(o.id)}">
+        <span class="agent-row-mark" aria-hidden="true"></span>
+        <span class="agent-row-body">
+          <span class="agent-row-name">${esc(meta.label || agentLabel(o.id))}</span>
+          <span class="agent-row-blurb">${esc(meta.blurb || "")}</span>
+        </span>
+        <span class="agent-row-stat ${esc(stat.cls)}">${esc(stat.text)}</span>
+      </button>`);
+  }
+  list.innerHTML = chunks.join("");
+  list.querySelectorAll("[data-agent]").forEach((btn) => {
+    btn.onclick = () => {
+      setChatAgent(btn.dataset.agent);
+      closeAgentSheet();
+    };
+  });
+}
+
+function openAgentSheet() {
+  fillAgentPick();
+  const sheet = $("#agent-sheet");
+  const trig = $("#agent-trig");
+  if (!sheet) return;
+  sheet.hidden = false;
+  void sheet.offsetWidth;
+  sheet.classList.add("open");
+  if (trig) {
+    trig.classList.add("open");
+    trig.setAttribute("aria-expanded", "true");
+  }
+}
+
+function closeAgentSheet() {
+  const sheet = $("#agent-sheet");
+  const trig = $("#agent-trig");
+  if (sheet) {
+    sheet.classList.remove("open");
+    sheet.hidden = true;
+  }
+  if (trig) {
+    trig.classList.remove("open");
+    trig.setAttribute("aria-expanded", "false");
+  }
+}
+
+function paintBrainStrip() {
+  fillAgentPick();
+}
+
+function paintKeyRows() {
+  const health = providerHealth();
+  for (const p of PROVIDERS) {
+    const input = document.querySelector(`.key-row input[data-field="${p.field}"]`);
+    const row = input?.closest(".key-row");
+    if (!row) continue;
+    const info = keyTag(db.settings, p, health[p.id]);
+    row.className = `key-row ${info.state}`;
+    const tag = row.querySelector(".key-tag");
+    if (tag) {
+      const hint = keyHint(db.settings, p);
+      tag.textContent = hint ? `${info.tag} · ${hint}` : info.tag;
+    }
+  }
+}
+
+function clearProviderKey(field) {
+  if (!field) return;
+  clearTimeout(keyCheckTimers[field]);
+  db.settings[field] = "";
+  const prov = PROVIDERS.find((p) => p.field === field);
+  if (prov) {
+    clearHealth(prov.id);
+    clearSpent(prov.id);
+    if (db.settings.brain_health) delete db.settings.brain_health[prov.id];
+  }
+  persist();
+  renderKeys();
+}
+
+function queueKeyValidate(field) {
+  clearTimeout(keyCheckTimers[field]);
+  keyCheckTimers[field] = setTimeout(async () => {
+    const prov = PROVIDERS.find((p) => p.field === field);
+    const key = normalizeApiKey(db.settings[field]);
+    if (!prov || !key) return;
+    clearHealth(prov.id);
+    clearSpent(prov.id);
+    paintKeyRows();
+    try {
+      db.settings[field] = key;
+      await validateKeyed(db.settings, { only: prov.id });
+      db.settings.brain_health = providerHealth();
+      persist();
+      paintBrainStrip();
+      paintKeyRows();
+    } catch {
+      /* ignore */
+    }
+  }, 450);
+}
+
+function formatInlineMd(s) {
+  let t = esc(s);
+  t = t.replace(/`([^`]+)`/g, "<code class=\"chat-inline\">$1</code>");
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return t;
+}
+
+function formatMdBlocks(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let list = null;
+  const flushList = () => {
+    if (!list) return;
+    out.push(`<${list.tag}>${list.items.join("")}</${list.tag}>`);
+    list = null;
+  };
+  for (const line of lines) {
+    const h = line.match(/^(#{1,3})\s+(.+)$/);
+    if (h) {
+      flushList();
+      out.push(`<h${h[1].length} class="chat-h">${formatInlineMd(h[2])}</h${h[1].length}>`);
+      continue;
+    }
+    const ul = line.match(/^\s*[-*…]\s+(.+)$/);
+    if (ul) {
+      if (!list || list.tag !== "ul") {
+        flushList();
+        list = { tag: "ul", items: [] };
+      }
+      list.items.push(`<li>${formatInlineMd(ul[1])}</li>`);
+      continue;
+    }
+    flushList();
+    if (!line.trim()) {
+      out.push("<br/>");
+      continue;
+    }
+    out.push(`<p class="chat-p">${formatInlineMd(line)}</p>`);
+  }
+  flushList();
+  return out.join("");
+}
+
+function formatChatBody(text) {
+  const raw = String(text || "");
+  const parts = [];
+  const re = /```(\w*)\n?([\s\S]*?)```/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(raw))) {
+    if (m.index > last) parts.push({ type: "text", v: raw.slice(last, m.index) });
+    parts.push({ type: "code", lang: m[1] || "", v: m[2] });
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) parts.push({ type: "text", v: raw.slice(last) });
+  if (!parts.length) return `<div class="chat-md">${formatMdBlocks(raw)}</div>`;
+  return parts
+    .map((p) => {
+      if (p.type === "code") {
+        const lang = p.lang ? `<span class="code-lang">${esc(p.lang)}</span>` : "";
+        return `<pre class="chat-code">${lang}<code>${esc(p.v.replace(/\s+$/, ""))}</code></pre>`;
+      }
+      return `<div class="chat-md">${formatMdBlocks(p.v)}</div>`;
+    })
+    .join("");
+}
+
+function routeKind(opts = {}) {
+  if (opts.local || opts.provider === "lite") return "local";
+  if (opts.leaked) return "leaked";
+  return "secure";
+}
+
+function routePillHtml(kind) {
+  if (!kind) return "";
+  const label = kind === "leaked" ? "LEAKED" : kind === "local" ? "LOCAL" : "SECURE";
+  return `<span class="route-pill ${kind}"><span class="route-dot" aria-hidden="true"></span>${label}</span>`;
+}
+
+function addLog(role, text, opts = {}) {
+  const div = document.createElement("div");
+  const route = role === "user" ? (opts.leaked ? "leaked" : "") : routeKind(opts);
+  div.className = `bubble ${role}${role === "pip" ? " pip" : ""}`;
+  const who =
+    role === "user"
+      ? "YOU"
+      : opts.agent === "compare"
+        ? "COMPARE"
+        : opts.agent && opts.agent !== "pip" && opts.agent !== "gc" && opts.agent !== "auto"
+          ? agentLabel(opts.brain || opts.provider || opts.agent)
+          : opts.brain
+            ? `GC  · ${String(opts.brain).toUpperCase()}`
+            : "GC";
+  const pill = routePillHtml(route);
+  const meta = opts.tokens ? `<div class="chat-meta">~${opts.tokens} TOK</div>` : "";
+  div.innerHTML = `<div class="who-row"><span class="who">${esc(who)}</span>${pill}</div><div class="body">${formatChatBody(text)}</div>${meta}`;
+  $("#log").appendChild(div);
+  $("#log").scrollTop = $("#log").scrollHeight;
+  return div;
+}
+
+function compareOverview(compare) {
+  const rows = Array.isArray(compare) ? compare : [];
+  const ok = rows.filter((c) => c && c.ok && c.text);
+  const bad = rows.filter((c) => c && !c.ok && !c.pending);
+  const lines = [`${ok.length} answered · ${bad.length} failed · ${rows.length} keyed`];
+  for (const c of ok) {
+    const name = String(c.label || c.provider || "?").toUpperCase();
+    const t = String(c.text).trim().split(/(?<=[.!?])\s+/)[0] || "";
+    lines.push(`  ${name}: ${t.slice(0, 100)}`);
+  }
+  return lines.join("\n");
+}
+
+function buildCompareTabs(rows) {
+  const okRows = rows.filter((r) => r.ok && r.text);
+  const badRows = rows.filter((r) => !r.ok && !r.pending);
+  const pendingRows = rows.filter((r) => r.pending);
+  const overview = { provider: "overview", label: "OVERVIEW", text: compareOverview(rows), ok: true, overview: true };
+  const tabs = [overview, ...okRows];
+  for (const p of pendingRows) tabs.push({ ...p, text: "Waiting…", ok: false, pending: true });
+  if (badRows.length) {
+    tabs.push({
+      provider: "errors",
+      label: "ERRORS",
+      text: badRows.map((c) => `${String(c.label || c.provider).toUpperCase()}\n${c.error || "no reply"}`).join("\n\n"),
+      ok: false,
+      errors: true,
+    });
+  }
+  return { tabs, okRows, badRows, rows };
+}
+
+function paintCompareBubble(div, state) {
+  const { tabs, okRows, badRows, rows } = buildCompareTabs(state.rows);
+  let idx = state.idx;
+  if (idx >= tabs.length) idx = 0;
+  state.idx = idx;
+  const row = tabs[idx] || tabs[0];
+  const tabHtml = tabs
+    .map((c, i) => {
+      const mark = c.errors ? " fail" : c.pending ? " wait" : "";
+      return `<button type="button" class="compare-tab ${i === idx ? "on" : ""}${mark}" data-ci="${i}">${esc(String(c.label || c.provider).toUpperCase())}</button>`;
+    })
+    .join("");
+  let body = formatChatBody(row.text || row.error || "no reply");
+  if (row.pending) body = `<p class="muted">Waiting for ${esc(String(row.label || "").toUpperCase())}…</p>`;
+  const meta = row.overview ? `${okRows.length}/${rows.length} answered` : row.errors ? `${badRows.length} failed` : String(row.model || "");
+  div.innerHTML = `<div class="who-row"><span class="who">COMPARE</span>${routePillHtml("leaked")}</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${esc(meta)}</div>`;
+  div.querySelectorAll(".compare-tab").forEach((b) => {
+    b.onclick = () => {
+      state.idx = Number(b.dataset.ci) || 0;
+      paintCompareBubble(div, state);
+    };
+  });
+  $("#log").scrollTop = $("#log").scrollHeight;
+}
+
+function beginCompareLog(providers) {
+  const rows = (providers || []).map((p) => ({ provider: p.id, label: p.label || p.id, text: "", ok: false, pending: true }));
+  const div = document.createElement("div");
+  div.className = "bubble pip compare-bubble compare-live";
+  const state = { rows, idx: 0, div, finalized: false };
+  paintCompareBubble(div, state);
+  $("#log").appendChild(div);
+  return state;
+}
+
+function updateCompareLog(state, allRows) {
+  if (!state || state.finalized) return;
+  state.rows = (allRows || []).map((r) => ({ ...r, pending: Boolean(r.pending) }));
+  paintCompareBubble(state.div, state);
+}
+
+function finalizeCompareLog(state, rows) {
+  if (!state) return;
+  state.finalized = true;
+  state.rows = rows || state.rows;
+  state.div.classList.remove("compare-live");
+  paintCompareBubble(state.div, state);
+}
+
+function paintChatAttach() {
+  const root = $("#chat-attach");
+  if (!root) return;
+  if (!pendingChatImages.length) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
+  root.hidden = false;
+  root.innerHTML = `<div class="chat-attach-row">${pendingChatImages
+    .map(
+      (u, i) =>
+        `<span class="chat-attach-item"><img src="${u}" alt=""><button type="button" class="chat-attach-x" data-i="${i}" aria-label="remove">×</button></span>`,
+    )
+    .join("")}<button type="button" id="chat-attach-clear">CLEAR</button></div>`;
+  root.querySelectorAll(".chat-attach-x").forEach((b) => {
+    b.onclick = () => {
+      pendingChatImages.splice(Number(b.dataset.i), 1);
+      paintChatAttach();
+    };
+  });
+  const clr = $("#chat-attach-clear");
+  if (clr) clr.onclick = () => {
+    pendingChatImages = [];
+    paintChatAttach();
+  };
+}
+
+async function attachChatPhoto() {
+  try {
+    const room = MAX_CHAT_PHOTOS - pendingChatImages.length;
+    if (room <= 0) {
+      setStatus(`MAX ${MAX_CHAT_PHOTOS} PHOTOS`);
+      return;
+    }
+    const files = await pickImageFiles({ capture: false, multiple: true });
+    for (const file of files.slice(0, room)) pendingChatImages.push(await fileToDataUrl(file, 1280, 0.72));
+    document.body.classList.add("comm");
+    paintChatAttach();
+    setStatus(`ATTACHED ${pendingChatImages.length}`);
+  } catch (e) {
+    if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 60).toUpperCase());
+  }
+}
+
+async function sendChat() {
+  const box = $("#input");
+  const text = (box.value || "").trim();
+  const images = pendingChatImages.slice();
+  const hasPhoto = images.length > 0;
+  if ((!text && !hasPhoto) || chatBusy) return;
+  chatBusy = true;
+  const sendBtn = $("#send");
+  if (sendBtn) sendBtn.disabled = true;
+  box.value = "";
+  const photoLine = images.length > 1 ? `[${images.length} photos attached]` : hasPhoto ? "[photo attached]" : "";
+  const userLine = hasPhoto ? (text ? `${text}\n${photoLine}` : photoLine) : text;
+  db.chat.push({ role: "user", content: userLine, image: hasPhoto, photos: images.length });
+  const userBubble = addLog("user", userLine);
+  if (hasPhoto) {
+    const row = document.createElement("div");
+    row.className = "chat-thumbs";
+    for (const url of images) {
+      const img = document.createElement("img");
+      img.src = url;
+      img.className = "chat-thumb";
+      img.alt = "attached";
+      row.appendChild(img);
+    }
+    userBubble.querySelector(".body")?.appendChild(row);
+  }
+  pendingChatImages = [];
+  paintChatAttach();
+  persist();
+
+  try {
+    if (!hasPhoto) {
+      const relay = parseAgentRelay(text);
+      if (relay && relay.to) {
+        setStatus("RELAY…");
+        const out = await agentRelayComplete(db.settings, {
+          fromId: relay.from || (chatAgent() !== "pip" && chatAgent() !== "auto" && chatAgent() !== "compare" ? chatAgent() : null),
+          toId: relay.to,
+          payload: text,
+          operator: db.settings.operator || "Joshua",
+          speak: Boolean(relay.speak),
+        });
+        db.chat.push({ role: "pip", content: out.text, brain: out.provider, leaked: true });
+        persist();
+        addLog("pip", out.text, { brain: out.provider, leaked: true, tokens: out.tokens, agent: out.speaker || relay.to });
+        setStatus(`RELAY … ${agentLabel(relay.to)}`);
+        return;
+      }
+    }
+
+    const compareLive = chatAgent() === "compare" || String(db.settings.brain_pin || "") === "compare" || /^\s*(compare|ask all)/i.test(text);
+    let cmpState = null;
+    if (compareLive) cmpState = beginCompareLog(compareProviders(db.settings, providerHealth()));
+
+    const out = await chat(db.settings, db.chat, text || (hasPhoto ? "Identify these roof photos. Do not guess a shingle product." : ""), (msg) => setStatus(msg), { company: db.settings.company, one_liner: db.settings.company }, db, {
+      ...(hasPhoto ? { image: images[0], images } : {}),
+      onComparePartial: cmpState ? (row, allRows) => updateCompareLog(cmpState, allRows) : undefined,
+    });
+    const turn = takeLastTurn();
+    const leaked = Boolean(out.leaked || turn.leaked);
+    if (out.compare) {
+      if (cmpState) finalizeCompareLog(cmpState, out.compare);
+      else {
+        const st = beginCompareLog(out.compare);
+        finalizeCompareLog(st, out.compare);
+      }
+    } else {
+      addLog("pip", out.text, {
+        brain: out.provider,
+        provider: out.provider,
+        agent: out.agent || chatAgent(),
+        leaked,
+        tokens: out.tokens,
+      });
+    }
+    db.chat.push({ role: "pip", content: out.text, brain: out.provider, leaked, compare: out.compare || null, agent: out.agent });
+    persist();
+    setStatus(pipStatus());
+  } catch (e) {
+    addLog("pip", String(e.message || e));
+    setStatus("CHAT FAIL");
+  } finally {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+function renderChatLog() {
+  const log = $("#log");
+  if (!log) return;
+  log.innerHTML = "";
+  if (!db.chat.length) {
+    addLog("pip", "CHAT is Super Chat. Paste keys in KEYS. COMPARE tabs every keyed API. LENS IDs shingles, marks damage, or IDs whatever is in the shot.");
+  }
+  for (const m of db.chat.slice(-80)) {
+    if (m.compare) {
+      const st = beginCompareLog(m.compare);
+      finalizeCompareLog(st, m.compare);
+    } else {
+      addLog(m.role === "user" ? "user" : "pip", m.content, {
+        brain: m.brain,
+        leaked: m.leaked,
+        agent: m.agent,
+      });
+    }
+  }
+}
+
+function lensPhotos() {
+  if (!db.lens) db.lens = { mode: "shingle", photos: [], shots: [], last: null, field: null };
+  if (!db.lens.mode) db.lens.mode = "shingle";
+  if (!Array.isArray(db.lens.photos)) db.lens.photos = [];
+  if (!Array.isArray(db.lens.shots)) db.lens.shots = [];
+  return db.lens;
+}
+
+function lensMode() {
+  return String(lensPhotos().mode || "shingle");
+}
+
+function shotSpec(id) {
+  return SHOTS.find((s) => s.id === id) || SHOTS[0];
+}
+
+function haveShots(L) {
+  return new Set((L.photos || []).map((p) => p.shot).filter(Boolean));
+}
+
+function nextShingleShot(L) {
+  const have = haveShots(L);
+  return SHINGLE_CORE.find((id) => !have.has(id)) || SHINGLE_EXTRA.find((id) => !have.has(id)) || null;
+}
+
+function cycleShot(id) {
+  const order = [...SHINGLE_CORE, ...SHINGLE_EXTRA];
+  const i = order.indexOf(id);
+  return order[(i + 1) % order.length] || SHINGLE_CORE[0];
+}
+
+function shingleCoreDone(L) {
+  const have = haveShots(L);
+  return SHINGLE_CORE.every((id) => have.has(id));
+}
+
+async function shareShinglePack({ auto = false } = {}) {
+  const L = lensPhotos();
+  const coreHave = SHINGLE_CORE.filter((id) => haveShots(L).has(id)).length;
+  if (!L.photos.length) return;
+  if (!shingleCoreDone(L)) {
+    setStatus(`Need ${SHINGLE_CORE.length - coreHave} more core shot${SHINGLE_CORE.length - coreHave === 1 ? "" : "s"}`);
+    return;
+  }
+  const rows = L.photos.filter((p) => p.mode !== "damage");
+  const text = buildSharePrompt(rows);
+  if (!auto) setStatus("Opening share…");
+  try {
+    const hit = await shareToChatGpt({ text, photos: rows });
+    setStatus(
+      hit.ok
+        ? `Share · ${hit.count} photo${hit.count === 1 ? "" : "s"} … pick ChatGPT`
+        : "Share failed",
+    );
+  } catch (e) {
+    if (/abort|cancel/i.test(String(e.message || e))) setStatus("Share cancelled");
+    else setStatus(String(e.message || e).slice(0, 64));
+  }
+}
+
+function setLensMode(mode, { openCamera = false } = {}) {
+  const L = lensPhotos();
+  L.mode = mode === "damage" ? "damage" : "shingle";
+  L.session = true;
+  persist();
+  pendingShot = L.mode === "shingle" ? nextShingleShot(L) || SHINGLE_CORE[0] : "damage";
+  renderLens();
+  if (openCamera) $("#lens-snap")?.click();
+}
+
+function damageCount(photos = []) {
+  return photos.reduce((n, p) => n + (Array.isArray(p.marks) ? p.marks.length : 0), 0);
+}
+
+function editDamagePhoto(index, opts = {}) {
+  const L = lensPhotos();
+  const photo = L.photos[index];
+  if (!photo) return;
+  const autoScan = opts.autoScan ?? !(photo.marks && photo.marks.length);
+  openMarkEditor({
+    url: photo.url,
+    marks: photo.marks || [],
+    settings: db.settings,
+    autoScan,
+    onSave: ({ url, markedUrl, marks }) => {
+      L.photos[index] = { ...photo, url, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() };
+      persist();
+      renderLens();
+      setStatus(marks.length ? `Marked · ${marks.length}` : "Saved frame");
+    },
+    onCancel: () => setStatus("Skipped marks"),
+  });
+}
+
+function renderLens() {
+  document.body.classList.remove("comm");
+  const L = lensPhotos();
+  const mode = lensMode();
+  const last = L.last;
+  const v = last?.verdict;
+  const k = v?.known || {};
+  const n = v?.narrowed || {};
+  const marksN = damageCount(L.photos);
+  const coreDone = shingleCoreDone(L);
+  const nextId = mode === "shingle" ? nextShingleShot(L) : null;
+  const next = nextId ? shotSpec(nextId) : null;
+  pendingShot = nextId || pendingShot || SHINGLE_CORE[0];
+  const have = haveShots(L);
+  const coreHave = SHINGLE_CORE.filter((id) => have.has(id)).length;
+
+  const phoneShingle = isPhoneApp() && mode === "shingle";
+  const roomLine = phoneShingle
+    ? "Take 4 guided roof photos, then share them into ChatGPT."
+    : cloudVisionReady(db.settings).length
+      ? "Cloud vision keys ready."
+      : "Add a vision key in Settings, or use phone Lens → ChatGPT.";
+
+  if (!L.session) {
+    $("#view").innerHTML = `
+      <div class="lens-pick">
+        <h3>Lens</h3>
+        <p class="muted">${roomLine}</p>
+        <p class="muted">What are you shooting?</p>
+        <button type="button" class="lens-pick-card" id="pick-shingle">
+          <strong>Shingle identifier</strong>
+          <span>${
+            isPhoneApp()
+              ? "App walks you through 4 required angles, then opens share — pick ChatGPT. Wrapper or back stamp optional for date."
+              : "Snap photos — Lens classifies angles and identifies automatically. 95% locks the product; wrapper or back stamp hits 100% on date."
+          }</span>
+        </button>
+        <button type="button" class="lens-pick-card" id="pick-damage">
+          <strong>Damage highlighter</strong>
+          <span>Circle bruises, granule loss, and lifts. We'll tighten this later.</span>
+        </button>
+      </div>`;
+    $("#pick-shingle").onclick = () => setLensMode("shingle", { openCamera: true });
+    $("#pick-damage").onclick = () => setLensMode("damage", { openCamera: true });
+    return;
+  }
+
+  const status = last?.status || (L.photos.length ? "READING" : "NEED_SHOTS");
+  const statusCls = status === "KNOW" || status === "ID" ? "know" : status === "NARROWED" ? "narrow" : "need";
+  const needHint =
+    mode === "shingle" && v?.needed?.[0] && Number(v?.pct) < 85
+      ? `${shotSpec(v.needed[0].id).label} would help — or keep snapping, Lens will sort it.`
+      : "";
+  const guideShot = next || shotSpec(pendingShot);
+  const guideHtml = phoneShingle
+    ? `<div class="lens-progress">${SHINGLE_CORE.map((id) => `<i class="${have.has(id) ? "have" : id === guideShot.id ? "now" : ""}" title="${esc(shotSpec(id).label)}"></i>`).join("")}</div>
+       <div class="lens-shot-card">
+         <div class="lens-shot-kicker">${coreDone ? "Core set complete · optional extras" : `Required ${coreHave + 1} of ${SHINGLE_CORE.length}`}</div>
+         <h3>${esc(guideShot.label)}</h3>
+         <p>${esc(guideShot.how)}</p>
+         <p class="muted">${esc(guideShot.why)}</p>
+       </div>`
+    : "";
+  const cardHtml =
+    mode === "damage"
+      ? formatChatBody(
+          marksN
+            ? `${marksN} mark(s) on ${L.photos.length} frame(s). Tap a thumb to edit.`
+            : "Snap the damaged area. Circles and arrows come next — we'll dial this in later.",
+        )
+      : phoneShingle
+        ? formatChatBody(
+            coreDone
+              ? "Core shots ready. Share opens with all photos + a shingle ID prompt — pick ChatGPT."
+              : `Snap each required angle above. ${SHINGLE_CORE.length - coreHave} more before ChatGPT share unlocks.`,
+          )
+        : lensBusy
+          ? formatChatBody("Reading photos…")
+          : last
+            ? formatChatBody(formatVerdict(last))
+            : formatChatBody(
+                L.photos.length ? "Tap Re-run to identify, or snap another photo." : "Snap the roof to start.",
+              );
+
+  const pct = phoneShingle
+    ? Math.round((coreHave / SHINGLE_CORE.length) * 100)
+    : Number.isFinite(Number(v?.pct))
+      ? Number(v.pct)
+      : L.photos.length
+        ? Math.min(40, L.photos.length * 10)
+        : 0;
+  const leader =
+    (status === "KNOW" && k.manufacturer
+      ? `${k.manufacturer} ${k.product}${k.color ? `  · ${k.color}` : ""}`
+      : "") ||
+    (n.manufacturer ? `${n.manufacturer}${n.product ? ` ${n.product}` : ""}${n.color ? `  · ${n.color}` : ""}` : "");
+  const meterHint = phoneShingle
+    ? coreDone
+      ? "Tap ChatGPT to share photos + prompt."
+      : `${guideShot.label}  — ${guideShot.how}`
+    : pct >= 100
+      ? "Locked. Date stamp read."
+      : pct >= 95
+        ? "Product locked. Back stamp or wrapper for 100% date."
+        : needHint || (L.photos.length ? "Keep snapping — Lens re-runs after each photo." : "Snap the roof to start.");
+  const meterHtml =
+    mode === "shingle" && !phoneShingle
+      ? `<div class="lens-meter${pct >= 95 ? " lock" : pct >= 70 ? " hot" : ""}">
+          <div class="lens-meter-top"><strong>${esc(leader || "Collecting tells")}</strong><span>${pct}%</span></div>
+          <div class="lens-meter-track"><i style="width:${pct}%"></i></div>
+          <p class="muted">${esc(meterHint)}</p>
+        </div>`
+      : phoneShingle
+        ? `<div class="lens-meter${coreDone ? " lock" : coreHave >= 2 ? " hot" : ""}">
+          <div class="lens-meter-top"><strong>${esc(coreDone ? "Ready for ChatGPT" : guideShot.label)}</strong><span>${pct}%</span></div>
+          <div class="lens-meter-track"><i style="width:${pct}%"></i></div>
+          <p class="muted">${esc(meterHint)}</p>
+        </div>`
+        : "";
+
+  $("#view").innerHTML = `
+    <div class="lens-wrap">
+      <div class="lens-session-head">
+        <button type="button" id="lens-back">Back</button>
+        <strong>${mode === "damage" ? "Damage highlighter" : "Shingle identifier"}</strong>
+        ${phoneShingle ? `<span class="lens-room on">ChatGPT</span>` : cloudVisionReady(db.settings).length ? `<span class="lens-room on">Cloud</span>` : `<span class="lens-room">Keys</span>`}
+      </div>
+      ${
+        mode === "shingle"
+          ? `${guideHtml}${meterHtml}${!phoneShingle && needHint ? `<p class="muted lens-need-hint">${esc(needHint)}</p>` : ""}`
+          : `<p class="muted">Snap the damaged area. Marking tools come after the photo.</p>`
+      }
+      <div class="actions">
+        <button type="button" id="lens-snap" class="primary">Snap</button>
+        ${mode === "shingle" ? `<button type="button" id="lens-gallery">Gallery</button>` : ""}
+        ${
+          phoneShingle
+            ? `<button type="button" id="lens-send-chatgpt"${coreDone ? ' class="primary"' : ""}${coreDone ? "" : " disabled"}>ChatGPT</button>`
+            : `<button type="button" id="lens-read"${L.photos.length ? "" : " disabled"}>${mode === "damage" ? "Mark last" : "Re-run"}</button>`
+        }
+        <button type="button" id="lens-clear">Start over</button>
+      </div>
+      <div class="lens-strip" id="lens-strip">${L.photos
+        .map(
+          (p, i) =>
+            `<span class="lens-thumb${p.marks?.length ? " marked" : ""}" data-edit="${i}"><img src="${p.markedUrl || p.url}" alt=""><em data-retag="${i}" title="Tap to override shot tag">${esc(p.shot === "damage" ? "Damage" : p.shot ? shotSpec(p.shot).label || p.shot : "…")}${p.marks?.length ? `  · ${p.marks.length}` : ""}</em><button type="button" data-drop="${i}">…</button></span>`,
+        )
+        .join("")}</div>
+      <div class="lens-status ${statusCls}">${esc(
+        phoneShingle
+          ? `${coreHave}/${SHINGLE_CORE.length} core  · ${coreDone ? "ready to share" : guideShot.label}`
+          : mode === "damage"
+            ? `${L.photos.length ? `${L.photos.length} frames` : "No frames"}${marksN ? `  · ${marksN} marks` : ""}`
+            : `${pct}%  · ${leader || (L.photos.length ? (lensBusy ? "reading…" : status.replace("_", " ")) : "waiting for photos")}`,
+      )}</div>
+      <div class="lens-card" id="lens-card">${cardHtml}</div>
+      ${
+        mode === "shingle" && status === "KNOW" && k.discontinued
+          ? `<div class="lens-disc">Discontinued · ${esc(k.manufacturer)} ${esc(k.product)}${k.replacedBy ? `  · current: ${esc(k.replacedBy)}` : ""}</div>`
+          : ""
+      }
+      ${
+        mode === "shingle" && n.candidates?.length && status !== "KNOW"
+          ? `<div class="lens-cands"><h3>Also in the running</h3>${n.candidates
+              .map((c) => `<p>${esc(c.maker)} ${esc(c.line)} ${esc(c.color || "")}${c.discontinued ? "  · discontinued" : ""}</p>`)
+              .join("")}</div>`
+          : ""
+      }
+      <div class="actions">
+        <button type="button" id="lens-to-job">Save to job</button>
+      </div>
+    </div>`;
+  $("#lens-back").onclick = () => {
+    L.session = false;
+    persist();
+    renderLens();
+  };
+  $("#lens-strip")?.querySelectorAll("[data-drop]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const i = Number(b.dataset.drop);
+      L.photos.splice(i, 1);
+      L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
+      L.last = null;
+      persist();
+      renderLens();
+      if (mode === "shingle" && L.photos.length) {
+        if (isPhoneApp()) bump();
+        else scheduleLensRun(500, { force: true });
+      }
+    };
+  });
+  $("#lens-strip")?.querySelectorAll("[data-retag]").forEach((em) => {
+    em.onclick = (e) => {
+      e.stopPropagation();
+      const i = Number(em.dataset.retag);
+      const p = L.photos[i];
+      if (!p || p.mode === "damage") return;
+      p.shot = cycleShot(p.shot || SHINGLE_CORE[0]);
+      L.shots = [...new Set(L.photos.map((x) => x.shot).filter(Boolean))];
+      L.last = null;
+      persist();
+      renderLens();
+      setStatus(`Retagged · ${shotSpec(p.shot).label}`);
+      if (!isPhoneApp()) scheduleLensRun(800, { force: true });
+    };
+  });
+  $("#lens-strip")?.querySelectorAll("[data-edit]").forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.edit);
+      if (lensMode() === "damage") editDamagePhoto(i);
+    };
+  });
+  const addFiles = async ({ capture, multiple = false }) => {
+    try {
+      const files = await pickImageFiles({ capture, multiple: multiple || !capture });
+      const room = MAX_CHAT_PHOTOS - L.photos.length;
+      const picked = files.slice(0, room);
+      if (!picked.length) return;
+      if (mode === "damage") {
+        for (const file of picked) {
+          const url = await fileToDataUrl(file, 1400, 0.78);
+          await new Promise((resolve) => {
+            openMarkEditor({
+              url,
+              marks: [],
+              settings: db.settings,
+              autoScan: true,
+              onSave: ({ url: raw, markedUrl, marks }) => {
+                L.photos.push({ url: raw, markedUrl, marks, shot: "damage", mode: "damage", at: Date.now() });
+                persist();
+                renderLens();
+                resolve();
+              },
+              onCancel: () => {
+                L.photos.push({ url, markedUrl: url, marks: [], shot: "damage", mode: "damage", at: Date.now() });
+                persist();
+                renderLens();
+                resolve();
+              },
+            });
+          });
+        }
+        return;
+      }
+      for (const file of picked) {
+        const shotId = pendingShot || nextShingleShot(L) || SHINGLE_CORE[0];
+        L.photos.push({
+          url: await fileToDataUrl(file, 1400, 0.78),
+          shot: isPhoneApp() ? shotId : "",
+          mode: "shingle",
+          at: Date.now(),
+        });
+      }
+      L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
+      L.last = null;
+      persist();
+      renderLens();
+      if (isPhoneApp()) {
+        bump();
+        if (shingleCoreDone(L)) setTimeout(() => shareShinglePack({ auto: true }), 700);
+      } else {
+        scheduleLensRun(500, { force: true });
+      }
+    } catch (e) {
+      if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 50));
+    }
+  };
+  $("#lens-snap").onclick = () => addFiles({ capture: true, multiple: false });
+  $("#lens-gallery")?.addEventListener("click", () => addFiles({ capture: false, multiple: true }));
+  $("#lens-clear").onclick = () => {
+    db.lens = { mode: lensMode(), photos: [], shots: [], last: null, field: null, session: true };
+    lastLensSig = "";
+    persist();
+    pendingShot = SHINGLE_CORE[0];
+    renderLens();
+  };
+  $("#lens-read")?.addEventListener("click", () => runLens());
+  $("#lens-send-chatgpt")?.addEventListener("click", () => shareShinglePack());
+  $("#lens-to-job").onclick = () => {
+    const job = newJob({
+      address: wxState.address || db.settings.city || "",
+      lat: wxState.lat || db.settings.lat,
+      lon: wxState.lon || db.settings.lon,
+      lens: last
+        ? { status: last.status, known: last.verdict?.known, needed: last.verdict?.needed, at: new Date().toISOString() }
+        : null,
+      damage_marks: marksN || undefined,
+      photos: L.photos.map((p) => p.shot),
+    });
+    upsertJob(db, job);
+    persist();
+    tab = "jobs";
+    render();
+    setStatus("Job saved");
+  };
+}
+
+
+async function runLens({ force = false } = {}) {
+  const L = lensPhotos();
+  const mode = lensMode();
+  if (!L.photos.length || lensBusy) return;
+  if (isPhoneApp() && mode === "shingle") {
+    return shareShinglePack();
+  }
+  const sig = lensPhotoSig(L);
+  if (!force && sig === lastLensSig && L.last) return;
+  lensBusy = true;
+  setStatus("Reading shots…");
+  try {
+    if (mode === "damage") {
+      editDamagePhoto(L.photos.length - 1, { autoScan: true });
+      setStatus("MARK LAST FRAME");
+      return;
+    }
+    if (mode === "field") {
+      const hit = await identifyImage(db.settings, L.photos[L.photos.length - 1].url, "lens");
+      const idLine = String(hit.text || "").match(/^ID:\s*(.+)$/im);
+      L.field = { id: (idLine && idLine[1].trim()) || "subject", text: hit.text, provider: hit.provider };
+      persist();
+      renderLens();
+      setStatus(`LENS · ${String(hit.provider || "ID").toUpperCase()}`);
+      lastLensSig = sig;
+      return;
+    }
+    setStatus("Reading shots…");
+    const hit = await identifyShingles(db.settings, L.photos, L.photos.map((p) => p.shot));
+    if (hit.photos?.length) {
+      L.photos = hit.photos;
+      L.shots = [...new Set(L.photos.map((p) => p.shot).filter(Boolean))];
+    }
+    L.last = hit;
+    lastLensSig = sig;
+    persist();
+    renderLens();
+    setStatus(
+      hit.verdict?.pct >= 100
+        ? "LENS · 100%"
+        : hit.verdict?.pct >= 95
+          ? "LENS · 95%"
+          : `LENS · ${Number(hit.verdict?.pct) || 0}%`,
+    );
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 70).toUpperCase());
+    const card = $("#lens-card");
+    if (card) card.innerHTML = formatChatBody(String(e.message || e));
+  } finally {
+    lensBusy = false;
+  }
+}
+
+function bump() {
+  try {
+    window.Capacitor?.Plugins?.Haptics?.impact?.({ style: "MEDIUM" });
+  } catch {
+    /* web preview */
+  }
+}
+
+async function copyText(text) {
+  const s = String(text || "");
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function fieldMarks() {
+  return Array.isArray(db.marks) ? db.marks : [];
+}
+
+function savedInvestors() {
+  return Array.isArray(db.investors) ? db.investors : [];
+}
+
+function hiddenInvestorIds() {
+  return Array.isArray(db.settings.hiddenInvestorIds) ? db.settings.hiddenInvestorIds : [];
+}
+
+let liveListedInvestors = [];
+/**
+ * Merging + normalising the whole office pool costs real main-thread time and it runs on
+ * every repaint. Cache it and let writers invalidate, so a map drag is not re-normalising
+ * hundreds of records per frame.
+ */
+let investorPoolCache = null;
+let fieldInvestorCache = null;
+
+function invalidateInvestorCache() {
+  investorPoolCache = null;
+  fieldInvestorCache = null;
+}
+
+function listedInvestorPool() {
+  if (!investorPoolCache) investorPoolCache = mergeInvestorListings([OK_INVESTOR_SEED, liveListedInvestors]);
+  return investorPoolCache;
+}
+
+function setLiveListedInvestors(list) {
+  liveListedInvestors = list;
+  invalidateInvestorCache();
+}
+
+function fieldInvestors() {
+  if (!fieldInvestorCache) {
+    fieldInvestorCache = mergeListedAndSaved(listedInvestorPool(), savedInvestors(), hiddenInvestorIds());
+  }
+  return fieldInvestorCache;
+}
+
+function investorHeartsOn() {
+  return db.settings.showInsuranceInvestors === true;
+}
+
+function investorStarsOn() {
+  return db.settings.showRealEstateInvestors === true;
+}
+
+function investorOfficesWanted() {
+  return investorHeartsOn() || investorStarsOn();
+}
+
+function officeMapHome() {
+  const c = defaultMapCenter(db.settings);
+  if (isOklahomaLatLon(c.lat, c.lon)) return c;
+  return { lat: 35.4676, lon: -97.5164 };
+}
+
+function startOfficeLayerHunt() {
+  const here = mapCenterCoords();
+  const home = officeMapHome();
+  if (!here || !isOklahomaLatLon(here.lat, here.lon)) {
+    flyToPin(home.lat, home.lon, 11, { stay: true });
+    schedulePhotonInvestorHunt(home.lat, home.lon);
+    scheduleInViewOfficePreload();
+    return;
+  }
+  schedulePhotonInvestorHunt(here.lat, here.lon);
+  scheduleInViewOfficePreload();
+}
+
+function shownFieldInvestors() {
+  const hearts = investorHeartsOn();
+  const stars = investorStarsOn();
+  return fieldInvestors().filter((inv) => {
+    if (inv.kind === "insurance") return hearts;
+    if (inv.kind === "realestate") return stars;
+    return false;
+  });
+}
+
+let photonHuntTimer = 0;
+function schedulePhotonInvestorHunt(lat, lon) {
+  if (!investorOfficesWanted()) return;
+  if (photonHuntTimer) clearTimeout(photonHuntTimer);
+  photonHuntTimer = setTimeout(() => {
+    photonHuntTimer = 0;
+    void huntPhotonInvestors(lat, lon);
+  }, 700);
+}
+
+async function huntPhotonInvestors(lat, lon) {
+  const wantIns = investorHeartsOn();
+  const wantRe = investorStarsOn();
+  if (!wantIns && !wantRe) return;
+  const extra = await fetchPhotonInvestorsNear(lat, lon, { insurance: wantIns, realestate: wantRe }).catch(() => []);
+  if (extra.length) setLiveListedInvestors(mergeInvestorListings([listedInvestorPool(), extra]));
+  paintInvestorMap();
+  paintFieldSheet();
+  scheduleInViewOfficePreload();
+}
+
+let officeViewTimer = 0;
+let officeSweepGen = 0;
+let officeSweepWaits = 0;
+let lastOsmOfficeEls = [];
+const officeContactTried = new Set();
+const investorPublicBusy = new Set();
+/** Selected star asked for a listing hunt while a shallow phone lookup already held this id. */
+const pendingDeepLookups = new Set();
+/** Selected office whose sale-home scrape is still running. */
+const listingHuntBusy = new Set();
+/** Offices waiting on a public-contact lookup, newest frame first. */
+const officeLookupQueue = [];
+const officeLookupQueued = new Set();
+let officeLookupWorkers = 0;
+
+/** Lookups that run at once. One-at-a-time is why only the first pin ever filled in. */
+const OFFICE_LOOKUP_WORKERS = 4;
+const OFFICE_LOOKUP_PER_SWEEP = 24;
+
+function scheduleInViewOfficePreload(delay = 260) {
+  if (!investorOfficesWanted()) return;
+  if (officeViewTimer) clearTimeout(officeViewTimer);
+  officeViewTimer = setTimeout(() => {
+    officeViewTimer = 0;
+    void preloadInViewOffices();
+  }, delay);
+}
+
+function inViewOffices(bounds = mapFrameBounds()) {
+  return shownFieldInvestors().filter((inv) => investorInBounds(inv, bounds));
+}
+
+/** "4 on the map · 2 address-only" — the sheet should never imply a dot we refused to draw. */
+function investorListingSummary(inv) {
+  const mapped = mappedInvestorListings(inv).length;
+  const unmapped = unmappedInvestorListings(inv).length;
+  if (!mapped && !unmapped) return "";
+  const bits = [];
+  if (mapped) bits.push(`${mapped} on the map`);
+  if (unmapped) bits.push(`${unmapped} address-only`);
+  return `<em>${esc(bits.join(" · "))}</em>`;
+}
+
+function officeLookupStatus() {
+  const view = inViewOffices();
+  if (!view.length) return;
+  const withPhone = view.filter((inv) => investorHasContact(inv)).length;
+  const pending = officeLookupQueue.length + officeLookupWorkers;
+  const tail = pending ? ` · looking up ${pending} more` : "";
+  setStatus(`${withPhone} of ${view.length} offices in view have a public phone${tail}`);
+}
+
+function dropQueuedOffice(id) {
+  const key = String(id || "");
+  if (!key || !officeLookupQueued.has(key)) return;
+  officeLookupQueued.delete(key);
+  const i = officeLookupQueue.findIndex((x) => String(x?.id) === key);
+  if (i >= 0) officeLookupQueue.splice(i, 1);
+}
+
+function queueOfficeLookup(inv) {
+  const id = String(inv?.id || "");
+  if (!id || officeLookupQueued.has(id) || officeContactTried.has(id) || investorPublicBusy.has(id)) return;
+  if (isInvestorSelected(id)) return;
+  officeLookupQueued.add(id);
+  officeLookupQueue.push(inv);
+}
+
+/**
+ * Drain the lookup queue with a few workers in parallel. Each office is skipped if it has
+ * left the frame by the time its turn comes, but a map nudge no longer cancels the sweep —
+ * that cancellation is why a frame full of offices only ever resolved its first pin.
+ */
+function runOfficeLookups() {
+  if (hasSelectedInvestor()) return;
+  while (officeLookupWorkers < OFFICE_LOOKUP_WORKERS && officeLookupQueue.length) {
+    officeLookupWorkers += 1;
+    void (async () => {
+      try {
+        while (officeLookupQueue.length) {
+          if (!investorOfficesWanted()) break;
+          const inv = officeLookupQueue.shift();
+          officeLookupQueued.delete(String(inv?.id || ""));
+          if (hasSelectedInvestor()) {
+            officeLookupQueue.unshift(inv);
+            officeLookupQueued.add(String(inv?.id || ""));
+            break;
+          }
+          const frame = mapFrameBounds();
+          if (frame && !investorInBounds(inv, frame, 0.02)) continue;
+          await enrichInvestorPublic(inv, { deep: false });
+        }
+      } finally {
+        officeLookupWorkers -= 1;
+        if (!officeLookupWorkers) officeLookupStatus();
+      }
+    })();
+  }
+}
+
+async function preloadInViewOffices() {
+  if (!investorOfficesWanted()) return;
+  const bounds = mapFrameBounds();
+  if (!officeSweepWorthIt(bounds)) {
+    // Layer flipped on before the map finished laying out — come back once it has.
+    if (officeSweepWaits < 8) {
+      officeSweepWaits += 1;
+      scheduleInViewOfficePreload(400);
+    }
+    return;
+  }
+  officeSweepWaits = 0;
+  const gen = ++officeSweepGen;
+  // Two sources, because neither is reliable alone: Overpass has the richer tagging
+  // but refuses browser User-Agents, while Photon answers any origin and so is the
+  // only sweep that survives on the web build.
+  const [els, photon] = await Promise.all([
+    fetchOsmOfficesInBounds(bounds).catch(() => []),
+    fetchPhotonInvestorsInBounds(bounds, {
+      insurance: investorHeartsOn(),
+      realestate: investorStarsOn(),
+    }).catch(() => []),
+  ]);
+  if (gen !== officeSweepGen) return;
+  lastOsmOfficeEls = els;
+  const extra = mergeInvestorListings([listedInvestorsFromOsmElements(els), photon]);
+  if (extra.length) setLiveListedInvestors(mergeInvestorListings([listedInvestorPool(), extra]));
+  setLiveListedInvestors(applyOsmOfficesToInvestors(liveListedInvestors, els));
+  paintInvestorMap();
+  paintFieldSheet();
+  const view = inViewOffices(bounds);
+  const missing = view.filter((inv) => !investorHasContact(inv));
+  for (const inv of missing.slice(0, OFFICE_LOOKUP_PER_SWEEP)) queueOfficeLookup(inv);
+  officeLookupStatus();
+  runOfficeLookups();
+}
+
+let investorPaintFrame = 0;
+let fieldSheetTimer = 0;
+
+function paintFieldSheetSoon(ms = 220) {
+  if (fieldSheetTimer) clearTimeout(fieldSheetTimer);
+  fieldSheetTimer = window.setTimeout(() => {
+    fieldSheetTimer = 0;
+    paintFieldSheet();
+  }, ms);
+}
+
+/** Several lookups land at once — coalesce their repaints into one frame. */
+function paintInvestorMap() {
+  if (investorPaintFrame) return;
+  investorPaintFrame = requestAnimationFrame(() => {
+    investorPaintFrame = 0;
+    patchInvestorOverlay({
+      investors: fieldInvestors(),
+      showInsuranceInvestors: investorHeartsOn(),
+      showRealEstateInvestors: investorStarsOn(),
+      lookingInvestorIds: investorPublicBusy,
+      huntingListingsIds: listingHuntBusy,
+    });
+  });
+}
+
+async function enrichInvestorPublic(inv, { deep = false } = {}) {
+  const id = String(inv?.id || "");
+  if (!id) return;
+  if (deep) {
+    pendingDeepLookups.add(id);
+    dropQueuedOffice(id);
+  }
+  if (investorPublicBusy.has(id)) return;
+  const runDeep = deep || pendingDeepLookups.has(id);
+  pendingDeepLookups.delete(id);
+  investorPublicBusy.add(id);
+  const huntListings = runDeep && String(inv.kind) === "realestate" && officeOwnedMappedCount(inv) < OFFICE_LISTING_HUNT_BELOW;
+  if (huntListings) listingHuntBusy.add(id);
+  paintInvestorMap();
+  const listingsSettled = () => {
+    listingHuntBusy.delete(id);
+    paintInvestorMap();
+    if (!isInvestorSelected(id)) return;
+    const cur = fieldInvestors().find((x) => String(x.id) === id) || inv;
+    const sheet = $("#hs-sheet");
+    if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
+  };
+  try {
+    const applyPartial = (partial) => {
+      if (!partial) return;
+      const hit = upsertInvestor(savedInvestors(), partial);
+      db.investors = hit.list;
+      invalidateInvestorCache();
+      persistSoon();
+      paintFieldSheetSoon();
+      const cur = hit.investor || partial;
+      if (!isInvestorSelected(id)) return;
+      const sheet = $("#hs-sheet");
+      if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
+      const homes = mappedInvestorListings(cur).filter(listingIsOfficeOwned);
+      if (homes.length) {
+        const bits = [cur.phone, cur.email].filter(Boolean);
+        bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+        setStatus(`${investorDisplayName(cur)} · ${bits.join(" · ")}`);
+        if (homes.length > officeOwnedMappedCount(inv)) frameInvestorListings(cur);
+        offerStormsForSelectedOffice(cur);
+      }
+      paintInvestorMap();
+    };
+    const next = await enrichInvestorFromPublic(inv, {
+      deep: runDeep,
+      osmHits: lastOsmOfficeEls,
+      onPartial: runDeep ? applyPartial : undefined,
+      onListingsSettled: huntListings ? listingsSettled : undefined,
+      onListingsResume: huntListings
+        ? () => {
+            listingHuntBusy.add(id);
+            paintInvestorMap();
+          }
+        : undefined,
+    });
+    officeContactTried.add(id);
+    if (!next) return;
+    const hit = upsertInvestor(savedInvestors(), next);
+    db.investors = hit.list;
+    invalidateInvestorCache();
+    // Several lookups finish at once — batch the write and the sheet redraw.
+    persistSoon();
+    paintFieldSheetSoon();
+    if (!runDeep) return;
+    if (!isInvestorSelected(id)) return;
+    const homes = mappedInvestorListings(next).filter(listingIsOfficeOwned);
+    const unmapped = unmappedInvestorListings(next).filter(listingIsOfficeOwned).length;
+    const bits = [next.phone, next.email].filter(Boolean);
+    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+    if (unmapped) bits.push(`${unmapped} address-only`);
+    if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
+    const sheet = $("#hs-sheet");
+    if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
+    if (homes.length > officeOwnedMappedCount(inv)) frameInvestorListings(next);
+    offerStormsForSelectedOffice(next);
+  } finally {
+    listingHuntBusy.delete(id);
+    investorPublicBusy.delete(id);
+    paintInvestorMap();
+    if (pendingDeepLookups.has(id)) {
+      const fresh = fieldInvestors().find((x) => String(x.id) === id) || inv;
+      void enrichInvestorPublic(fresh, { deep: true });
+    }
+  }
+}
+
+function doneHouses() {
+  return Array.isArray(db.done?.houses) ? db.done.houses : [];
+}
+
+function setMarkScale(mark, scale, { live = false } = {}) {
+  const next = { ...mark, iconScale: scale };
+  const { list } = upsertMark(fieldMarks(), next);
+  db.marks = list;
+  if (live) {
+    updatePinScaleLive("mark", mark.id, { ...next, iconScale: scale });
+    return;
+  }
+  persist();
+  paintFieldMap();
+}
+
+function selectedDoneHouse() {
+  if (!selectedDoneId) return null;
+  return doneHouses().find((h) => h.id === selectedDoneId) || null;
+}
+
+function donePinScaleUi() {
+  return clampPinScale(db.settings.done_pin_scale ?? 1);
+}
+
+function setAllDonePinScale(scale, { live = false } = {}) {
+  const next = clampPinScale(scale);
+  db.settings.done_pin_scale = next;
+  if (live) {
+    applyDonePinScaleLive(next);
+    wirePinSizeSlider();
+    return;
+  }
+  persist();
+  paintFieldMap();
+  paintFieldSheet();
+}
+
+function applyDonePinScale(scale, { live = false } = {}) {
+  setAllDonePinScale(scale, { live });
+}
+
+function wirePinSizeSlider() {
+  const wrap = $("#hs-map-pin-size");
+  const placed = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (wrap) wrap.hidden = !placed;
+  const pct = Math.round(donePinScaleUi() * 100);
+  const slider = $("#hs-done-pin-scale");
+  const lab = $("#hs-done-pin-scale-lab");
+  if (slider && document.activeElement !== slider) slider.value = String(pct);
+  if (lab) lab.textContent = `${pct}%`;
+  if (slider && !slider.dataset.wired) {
+    slider.dataset.wired = "1";
+    slider.oninput = () => {
+      const scale = clampPinScale(Number(slider.value) / 100);
+      if (lab) lab.textContent = `${Math.round(scale * 100)}%`;
+      applyDonePinScale(scale, { live: true });
+    };
+    slider.onchange = () => {
+      applyDonePinScale(clampPinScale(Number(slider.value) / 100), { live: false });
+    };
+  }
+}
+
+function paintFieldMap() {
+  applyFlagKindFilters({
+    residential: db.settings.showFlagResidential === true,
+    commercial: db.settings.showFlagCommercial === true,
+  });
+  setFieldOverlay({
+    marks: fieldMarks(),
+    done: doneHouses(),
+    investors: fieldInvestors(),
+    donePinScale: donePinScaleUi(),
+    showMarks: db.settings.showMarks !== false,
+    showDone: db.settings.showDone !== false,
+    showHailDots: db.settings.showHailDots !== false,
+    showPhoneFlags: db.settings.showPhoneFlags === true,
+    showInsuranceInvestors: investorHeartsOn(),
+    showRealEstateInvestors: investorStarsOn(),
+    onMark: (m) => openMarkComposer(m),
+    onMarkScale: (m, scale, opts) => setMarkScale(m, scale, opts),
+    onInvestorEdit: (inv) => openInvestorComposer(inv),
+    onInvestorNeedPublic: (inv) => void enrichInvestorPublic(inv, { deep: true }),
+    onInvestorSelect: (inv) => {
+      hailTapGen += 1;
+      officeStormOfferedFor = "";
+      setStatus(
+        [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
+      );
+      if (String(inv?.kind) === "realestate") offerStormsForSelectedOffice(inv);
+      else showInvestorPeek(inv);
+    },
+    onInvestorDeselect: () => {
+      hailTapGen += 1;
+      officeStormOfferedFor = "";
+      clearSelectedStormDate();
+      runOfficeLookups();
+      scheduleInViewOfficePreload();
+      const sheet = $("#hs-sheet");
+      if (!sheet) return;
+      const refetch = async (filters) => {
+        const fresh = await viewportDossier(db.settings, filters);
+        if (fresh) {
+          wxState.data = fresh;
+          wxState.viewport = true;
+        }
+        return fresh;
+      };
+      paintHailSearchIdle(sheet, esc, { onRefetch: refetch });
+    },
+    onListingSelect: (home, inv) => {
+      hailTapGen += 1;
+      setStatus(String(home?.address || "Listed home"));
+      void showListingPeek(home, inv, db.settings);
+    },
+    onInvestorViewChange: () => scheduleInViewOfficePreload(),
+    lookingInvestorIds: investorPublicBusy,
+    huntingListingsIds: listingHuntBusy,
+    onInvestorPromote: (inv) => {
+      const nextRel = promoteRelationship(inv);
+      const hit = upsertInvestor(savedInvestors(), { ...inv, relationship: nextRel });
+      db.investors = hit.list;
+      invalidateInvestorCache();
+      persist();
+      paintFieldMap();
+      paintFieldSheet();
+      const next = fieldInvestors().find((x) => x.id === inv.id);
+      if (next) focusInvestorPin(next.id, { popup: true });
+      setStatus(next ? `${investorDisplayName(next)} · ${relationshipLabel(next)}` : "Investor updated");
+    },
+    onDone: (h) => {
+      if (!h || !Number.isFinite(Number(h.lat))) return;
+      selectedDoneId = h.id;
+      const box = $("#hs-addr-q");
+      if (box && h.address) box.value = h.address;
+      flyToPin(Number(h.lat), Number(h.lon), 20);
+      paintFieldSheet();
+      void onHailTap(Number(h.lat), Number(h.lon), { address: h.address || "" });
+    },
+  });
+}
+
+function closeComposer() {
+  markDraft = null;
+  investorDraft = null;
+  const el = $("#hs-composer");
+  if (el) {
+    el.hidden = true;
+    el.innerHTML = "";
+  }
+}
+
+function composerKindButtons(kind, investorKind = "") {
+  const k = kind === "atlas" || kind === "disc" ? "ping" : kind;
+  const marks = COMPOSE_KINDS.map(
+    (x) =>
+      `<button type="button" class="hs-kind${x.id === k && !investorKind ? " on" : ""}" data-kind="${esc(x.id)}" style="--k:${x.color}">${esc(x.label)}</button>`,
+  ).join("");
+  const invs = INVESTOR_KINDS.map(
+    (x) =>
+      `<button type="button" class="hs-kind hs-kind-inv${x.id === investorKind ? " on" : ""}" data-investor="${esc(x.id)}" style="--k:${x.color}">${esc(x.id === "insurance" ? "Insurance" : "Real estate")}</button>`,
+  ).join("");
+  return `${marks}${invs}`;
+}
+
+function composerProductButtons(d) {
+  const pid = productIdOf(d) || db.settings.marksLastProduct || "";
+  const chips = mailerProducts()
+    .map(
+      (p) =>
+        `<button type="button" class="hs-prod${pid === p.id ? " on" : ""}" data-product="${esc(p.id)}" style="--k:${p.color}">${esc(p.short)}${p.discontinued ? "" : ""}</button>`,
+    )
+    .join("");
+  const otherOn = pid.startsWith("custom:") || pid === "other";
+  return `${chips}<button type="button" class="hs-prod${otherOn ? " on" : ""}" data-product="other">Other</button>`;
+}
+
+function applyProductToDraft(productId) {
+  if (!markDraft) return;
+  markDraft.kind = "ping";
+  if (productId === "other") {
+    markDraft.productId = markDraft.productId?.startsWith("custom:") ? markDraft.productId : "other";
+    if (!markDraft.label || mailerProducts().some((p) => p.label === markDraft.label)) markDraft.label = "";
+    return;
+  }
+  const prod = mailerProducts().find((p) => p.id === productId);
+  markDraft.productId = productId;
+  if (prod) markDraft.label = prod.label;
+}
+
+function fillComposer() {
+  if (investorDraft) {
+    fillInvestorComposer();
+    return;
+  }
+  const el = $("#hs-composer");
+  if (!el || !markDraft) return;
+  const d = markDraft;
+  const meta = kindMeta(d.kind);
+  const zone = d.kind === "zone";
+  const ping = isProductPing(d);
+  const prod = productForMark(d);
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="hs-composer-card">
+      <header>
+        <strong>${d.id && fieldMarks().some((m) => m.id === d.id) ? "Edit pin" : "Drop a pin"}</strong>
+        <button type="button" id="hs-comp-x">Close</button>
+      </header>
+      <div class="hs-kinds">${composerKindButtons(d.kind, "")}</div>
+      ${ping ? `<div class="hs-prods">${composerProductButtons(d)}</div>` : ""}
+      <label>${ping ? "Product" : "Label"}<input id="hs-comp-label" maxlength="80" value="${esc(d.label || prod?.label || meta.label)}" placeholder="GAF Timberline HD, Belmont, GlassMaster…" /></label>
+      <label>Address<input id="hs-comp-addr" value="${esc(d.address || "")}" placeholder="Looking up address…" /></label>
+      <label>Comment<textarea id="hs-comp-note" rows="3" maxlength="800" placeholder="We finished this neighborhood. Discontinued Atlas 3-tab…">${esc(d.note || "")}</textarea></label>
+      ${
+        zone
+          ? `<label>Zone size <span id="hs-comp-rad-lab">${Math.round(Number(d.radiusM) || 160)} m</span>
+              <input id="hs-comp-rad" type="range" min="40" max="800" step="10" value="${esc(String(d.radiusM || 160))}" />
+            </label>`
+          : ""
+      }
+      <div class="hs-composer-actions">
+        <button type="button" class="primary" id="hs-comp-save">Save pin</button>
+        ${fieldMarks().some((m) => m.id === d.id) ? `<button type="button" id="hs-comp-del">Delete</button>` : ""}
+      </div>
+    </div>`;
+  el.querySelectorAll(".hs-kind[data-kind]").forEach((b) => {
+    b.onclick = () => {
+      markDraft.kind = b.dataset.kind;
+      investorDraft = null;
+      if (markDraft.kind === "ping") {
+        applyProductToDraft(db.settings.marksLastProduct || "atlas-glassmaster");
+      } else {
+        markDraft.productId = "";
+        markDraft.label = kindMeta(markDraft.kind).label;
+      }
+      if (markDraft.kind === "zone" && !markDraft.radiusM) markDraft.radiusM = 160;
+      db.settings.marksLastKind = markDraft.kind;
+      persist();
+      fillComposer();
+    };
+  });
+  el.querySelectorAll(".hs-kind[data-investor]").forEach((b) => {
+    b.onclick = () => startInvestorDraft(b.dataset.investor);
+  });
+  el.querySelectorAll(".hs-prod").forEach((b) => {
+    b.onclick = () => {
+      applyProductToDraft(b.dataset.product);
+      db.settings.marksLastKind = "ping";
+      db.settings.marksLastProduct = markDraft.productId || b.dataset.product;
+      persist();
+      fillComposer();
+    };
+  });
+  const lab = $("#hs-comp-label");
+  if (lab) lab.oninput = () => {
+    markDraft.label = lab.value;
+  };
+  const addr = $("#hs-comp-addr");
+  if (addr) addr.oninput = () => {
+    markDraft.address = addr.value;
+  };
+  const note = $("#hs-comp-note");
+  if (note) note.oninput = () => {
+    markDraft.note = note.value;
+  };
+  const rad = $("#hs-comp-rad");
+  if (rad) {
+    rad.oninput = () => {
+      markDraft.radiusM = Number(rad.value);
+      const rl = $("#hs-comp-rad-lab");
+      if (rl) rl.textContent = `${Math.round(markDraft.radiusM)} m`;
+    };
+  }
+  $("#hs-comp-x").onclick = () => closeComposer();
+  $("#hs-comp-save").onclick = () => saveMarkDraft();
+  const del = $("#hs-comp-del");
+  if (del) del.onclick = () => {
+    db.marks = removeMark(fieldMarks(), markDraft.id);
+    persist();
+    closeComposer();
+    paintFieldMap();
+    paintFieldSheet();
+    setStatus("Pin removed");
+  };
+}
+
+function startInvestorDraft(kind) {
+  const lat = Number(investorDraft?.lat ?? markDraft?.lat);
+  const lon = Number(investorDraft?.lon ?? markDraft?.lon);
+  const address = String(investorDraft?.address || markDraft?.address || "");
+  const existing = investorDraft?.id && fieldInvestors().some((x) => x.id === investorDraft.id) ? investorDraft : null;
+  investorDraft = existing
+    ? { ...existing, kind }
+    : newInvestor({
+        kind,
+        lat,
+        lon,
+        address,
+        name: investorDraft?.name || "",
+        company: investorDraft?.company || "",
+        phone: investorDraft?.phone || "",
+        email: investorDraft?.email || "",
+        note: investorDraft?.note || "",
+        regionText: investorDraft?.regionText || "",
+        relationship: investorDraft?.relationship || "prospect",
+      });
+  fillComposer();
+}
+
+function fillInvestorComposer() {
+  const el = $("#hs-composer");
+  if (!el || !investorDraft) return;
+  const d = investorDraft;
+  const re = d.kind === "realestate";
+  const existing = fieldInvestors().some((x) => x.id === d.id);
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="hs-composer-card hs-inv-composer">
+      <header>
+        <strong>${existing ? "Edit investor" : re ? "Drop a real estate investor" : "Drop an insurance investor"}</strong>
+        <button type="button" id="hs-comp-x">Close</button>
+      </header>
+      <div class="hs-kinds">${composerKindButtons("", d.kind)}</div>
+      <p class="muted hs-inv-hint">${re ? "Outline star until you are working together, then promote to a gold star. Tap the pin to highlight that office's actual listings." : "Broken heart until a working relationship — then promote to a full red heart. Phone and email load from the public agency listing."}</p>
+      <label>Name<input id="hs-inv-name" maxlength="80" value="${esc(d.name || "")}" placeholder="Who to call" /></label>
+      <label>Company<input id="hs-inv-co" maxlength="80" value="${esc(d.company || "")}" placeholder="Agency or fund" /></label>
+      <label>Phone<input id="hs-inv-phone" maxlength="40" value="${esc(d.phone || "")}" placeholder="(405) 348-0100" inputmode="tel" /></label>
+      <label>Email<input id="hs-inv-email" maxlength="120" value="${esc(d.email || "")}" placeholder="name@company.com" inputmode="email" /></label>
+      <label>Location<input id="hs-comp-addr" maxlength="200" value="${esc(d.address || "")}" placeholder="Office or home base" /></label>
+      ${
+        re
+          ? `<label>Notes on their turf<textarea id="hs-inv-regions" rows="2" maxlength="400" placeholder="Optional — listings load from public sale pages">${esc(d.regionText || "")}</textarea></label>`
+          : ""
+      }
+      <label>Note<textarea id="hs-comp-note" rows="2" maxlength="800" placeholder="Last conversation, carrier mix, who they buy…">${esc(d.note || "")}</textarea></label>
+      <div class="hs-inv-rel">
+        <button type="button" class="hs-kind${d.relationship !== "partner" ? " on" : ""}" data-rel="prospect">${re ? "Stay in touch ★" : "Stay in touch ♡"}</button>
+        <button type="button" class="hs-kind${d.relationship === "partner" ? " on" : ""}" data-rel="partner">${re ? "Working · gold star" : "Working · red heart"}</button>
+      </div>
+      <div class="hs-composer-actions">
+        <button type="button" class="primary" id="hs-comp-save">Save investor</button>
+        ${existing ? `<button type="button" id="hs-comp-del">Delete</button>` : ""}
+      </div>
+    </div>`;
+  el.querySelectorAll(".hs-kind[data-kind]").forEach((b) => {
+    b.onclick = () => {
+      const lat = d.lat;
+      const lon = d.lon;
+      const address = d.address;
+      investorDraft = null;
+      markDraft = newMark({ lat, lon, address, kind: b.dataset.kind, label: kindMeta(b.dataset.kind).label });
+      if (markDraft.kind === "ping") applyProductToDraft(db.settings.marksLastProduct || "atlas-glassmaster");
+      fillComposer();
+    };
+  });
+  el.querySelectorAll(".hs-kind[data-investor]").forEach((b) => {
+    b.onclick = () => startInvestorDraft(b.dataset.investor);
+  });
+  el.querySelectorAll(".hs-kind[data-rel]").forEach((b) => {
+    b.onclick = () => {
+      investorDraft.relationship = b.dataset.rel === "partner" ? "partner" : "prospect";
+      fillInvestorComposer();
+    };
+  });
+  const bind = (id, key) => {
+    const inp = el.querySelector(id);
+    if (inp) inp.oninput = () => {
+      investorDraft[key] = inp.value;
+    };
+  };
+  bind("#hs-inv-name", "name");
+  bind("#hs-inv-co", "company");
+  bind("#hs-inv-phone", "phone");
+  bind("#hs-inv-email", "email");
+  bind("#hs-comp-addr", "address");
+  bind("#hs-comp-note", "note");
+  bind("#hs-inv-regions", "regionText");
+  $("#hs-comp-x").onclick = () => closeComposer();
+  $("#hs-comp-save").onclick = () => saveInvestorDraft();
+  const del = $("#hs-comp-del");
+  if (del) {
+    del.onclick = () => {
+      db.investors = removeInvestor(savedInvestors(), investorDraft.id);
+      invalidateInvestorCache();
+      if (String(investorDraft.id).startsWith("list:")) {
+        db.settings.hiddenInvestorIds = [...new Set([...hiddenInvestorIds(), String(investorDraft.id)])];
+        invalidateInvestorCache();
+      }
+      persist();
+      closeComposer();
+      paintFieldMap();
+      paintFieldSheet();
+      setStatus("Investor removed");
+    };
+  }
+}
+
+function saveInvestorDraft() {
+  if (!investorDraft) return;
+  if (!investorDraft.name && !investorDraft.company) {
+    investorDraft.name = investorDraft.kind === "realestate" ? "Real estate investor" : "Insurance investor";
+  }
+  const hit = upsertInvestor(savedInvestors(), investorDraft);
+  db.investors = hit.list;
+  invalidateInvestorCache();
+  if (hit.investor.kind === "insurance") db.settings.showInsuranceInvestors = true;
+  if (hit.investor.kind === "realestate") db.settings.showRealEstateInvestors = true;
+  persist();
+  closeComposer();
+  paintFieldMap();
+  paintFieldSheet();
+  focusInvestorPin(hit.investor.id, { popup: true });
+  setStatus(`${investorDisplayName(hit.investor)} saved`);
+}
+
+async function openInvestorComposer(seed) {
+  const lat = Number(seed.lat);
+  const lon = Number(seed.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  bump();
+  const existing = seed.id ? fieldInvestors().find((x) => x.id === seed.id) : null;
+  investorDraft = existing ? { ...existing } : newInvestor({ ...seed, lat, lon });
+  markDraft = newMark({ lat, lon, address: investorDraft.address || "", kind: "note" });
+  fillComposer();
+  if (!investorDraft.address) {
+    try {
+      const geo = await reverseGeocode(lat, lon);
+      if (investorDraft && !investorDraft.address && geo?.address) {
+        investorDraft.address = geo.address;
+        const inp = $("#hs-comp-addr");
+        if (inp && !inp.value) inp.value = geo.address;
+      }
+    } catch {
+      /* optional */
+    }
+  }
+}
+
+async function openMarkComposer(seed) {
+  const lat = Number(seed.lat);
+  const lon = Number(seed.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  bump();
+  investorDraft = null;
+  const existing = seed.id ? fieldMarks().find((m) => m.id === seed.id) : null;
+  let kind = existing?.kind || db.settings.marksLastKind || "ping";
+  if (kind === "atlas" || kind === "disc") kind = "ping";
+  const productId = existing?.productId || (kind === "ping" ? db.settings.marksLastProduct || "atlas-glassmaster" : "");
+  const prod = productId ? mailerProducts().find((p) => p.id === productId) : null;
+  markDraft = existing
+    ? { ...existing }
+    : newMark({
+        lat,
+        lon,
+        kind,
+        productId,
+        label: prod?.label || kindMeta(kind).label,
+        address: seed.address || "",
+        note: seed.note || "",
+      });
+  fillComposer();
+  if (!markDraft.address) {
+    try {
+      const geo = await reverseGeocode(lat, lon);
+      if (markDraft && !markDraft.address && geo?.address) {
+        markDraft.address = geo.address;
+        const inp = $("#hs-comp-addr");
+        if (inp && !inp.value) inp.value = geo.address;
+      }
+    } catch {
+      /* address optional */
+    }
+  }
+}
+
+function saveMarkDraft() {
+  if (!markDraft) return;
+  if (isProductPing(markDraft)) {
+    markDraft.kind = "ping";
+    if (!markDraft.productId || markDraft.productId === "other") {
+      markDraft.productId = customProductId(markDraft.label || "other");
+    }
+  }
+  const next = newMark({
+    ...markDraft,
+    label: String(markDraft.label || productForMark(markDraft)?.label || kindMeta(markDraft.kind).label).trim(),
+    note: String(markDraft.note || "").trim(),
+    address: String(markDraft.address || "").trim(),
+  });
+  const hit = upsertMark(fieldMarks(), next);
+  db.marks = hit.list;
+  db.settings.marksLastKind = next.kind;
+  if (next.productId) db.settings.marksLastProduct = next.productId;
+  persist();
+  closeComposer();
+  paintFieldMap();
+  paintFieldSheet();
+  setStatus(`${kindMeta(next.kind).label} saved`);
+}
+
+function selectedMarkKind() {
+  return $("#hs-mark-filter")?.value || "all";
+}
+
+function paintFieldSheet() {
+  const root = $("#hs-field");
+  if (!root) return;
+  const marks = fieldMarks();
+  const kind = selectedMarkKind();
+  const shown = filterMarks(marks, kind);
+  const houses = doneHouses();
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
+  const selHouse = selectedDoneHouse();
+  const invs = shownFieldInvestors();
+  root.innerHTML = `
+    <div class="hs-field-head">
+      <strong>Completed houses</strong>
+      <span class="muted">${placed.length ? `${placed.length} yellow pin${placed.length === 1 ? "" : "s"} on map` : "None loaded yet"}</span>
+    </div>
+    <p class="muted">Yellow pins = completed houses (Jobs tab). Hold the map to drop field marks, insurance hearts, or real estate stars. Hold any pin to resize marks.</p>
+    <div class="hs-mark-tools">
+      <button type="button" class="primary" id="hs-done-jobs">Manage in Jobs</button>
+      ${selHouse ? `<button type="button" id="hs-done-all-pins">Clear selection</button>` : ""}
+    </div>
+    <div class="hs-field-head">
+      <strong>Field marks</strong>
+      <span class="muted">${marks.length ? `${marks.length} dropped` : "Hold the map to drop a pin"} — hold any pin to resize</span>
+    </div>
+    <div class="hs-mark-tools">
+      <select id="hs-mark-filter" aria-label="Filter marks">
+        <option value="all"${kind === "all" ? " selected" : ""}>All marks</option>
+        <option value="work"${kind === "work" ? " selected" : ""}>Work done</option>
+        <option value="zone"${kind === "zone" ? " selected" : ""}>Work zone</option>
+        <option value="note"${kind === "note" ? " selected" : ""}>Notes</option>
+        <option value="asbestos"${kind === "asbestos" ? " selected" : ""}>Asbestos</option>
+        <option value="ping"${kind === "ping" ? " selected" : ""}>All product pings</option>
+        ${mailerProducts()
+          .map((p) => `<option value="p:${esc(p.id)}"${kind === `p:${p.id}` ? " selected" : ""}>${esc(p.label)}</option>`)
+          .join("")}
+      </select>
+      <button type="button" id="hs-mark-copy"${shown.length ? "" : " disabled"}>Copy list</button>
+      <button type="button" id="hs-mark-csv"${shown.length ? "" : " disabled"}>CSV</button>
+      <button type="button" id="hs-mark-letter"${shown.length ? "" : " disabled"}>Draft letter</button>
+      <button type="button" class="primary" id="hs-mark-push">Push to team</button>
+      <button type="button" id="hs-mark-pull">Pull team</button>
+    </div>
+    <p class="muted hs-team-hint">One tap publishes marks for everyone on the site. Pull loads the latest. Set a GitHub token in Settings → Team sync once.</p>
+    <div class="hs-mark-list">${
+      shown.length
+        ? shown
+            .map(
+              (m) =>
+                `<button type="button" class="hs-mark-row" data-id="${esc(m.id)}">${markListIconHtml(m)}<span><strong>${esc(m.label || kindMeta(m.kind).label)}</strong>${esc(m.address || `${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}`)}${m.note ? `<em>${esc(m.note)}</em>` : ""}</span></button>`,
+            )
+            .join("")
+        : `<p class="muted">Hold a house to ping Atlas, GAF HD, Belmont, Independence, or type any other product.</p>`
+    }</div>
+    <div class="hs-field-head">
+      <strong>Investors</strong>
+      <span class="muted">${invs.length ? `${invs.length} on map` : "Hearts / Stars off"}</span>
+    </div>
+    <div class="hs-mark-list hs-inv-list">${
+      invs.length
+        ? `${invs
+            .slice(0, 40)
+            .map((inv) => {
+              const n = investorPropertyCount(inv);
+              return `<button type="button" class="hs-mark-row hs-inv-row" data-inv="${esc(inv.id)}">${investorGlyphSvg(inv, { size: 18 })}<span><strong>${esc(investorDisplayName(inv))}${n ? `<span class="hs-inv-n">${n}</span>` : ""}</strong>${esc([inv.kind === "realestate" ? "Real estate" : "Insurance", relationshipLabel(inv), inv.phone || inv.email || inv.address].filter(Boolean).join(" · "))}${inv.kind === "realestate" ? investorListingSummary(inv) : ""}</span></button>`;
+            })
+            .join("")}${invs.length > 40 ? `<p class="muted">${invs.length - 40} more on the map</p>` : ""}`
+        : `<p class="muted">Turn on Hearts or Stars in the map bar to load offices. Tap a star to draw that office's listings. Phone and email load only for the office you select.</p>`
+    }</div>`;
+  const filter = $("#hs-mark-filter");
+  if (filter) filter.onchange = () => paintFieldSheet();
+  const goJobs = $("#hs-done-jobs");
+  if (goJobs) {
+    goJobs.onclick = () => {
+      tab = "jobs";
+      render();
+    };
+  }
+  const allPins = $("#hs-done-all-pins");
+  if (allPins) {
+    allPins.onclick = () => {
+      selectedDoneId = null;
+      hidePinScalePopover();
+      paintFieldSheet();
+    };
+  }
+  wirePinSizeSlider();
+  $("#hs-mark-copy").onclick = async () => {
+    const ok = await copyText(marksPlainList(shown));
+    setStatus(ok ? `Copied ${shown.length} marks` : "Copy failed");
+  };
+  $("#hs-mark-csv").onclick = async () => {
+    const ok = await copyText(marksCsv(shown));
+    setStatus(ok ? "CSV copied" : "Copy failed");
+  };
+  $("#hs-mark-letter").onclick = async () => {
+    const targets = shown.filter(isProductPing);
+    const pack = outreachDraft(targets.length ? targets : shown, {
+      company: db.settings.company || "Ground Control",
+      operator: db.settings.operator || "",
+    });
+    const ok = await copyText(`${pack.subject}\n\n${pack.body}`);
+    setStatus(ok ? `Letter drafted for ${pack.count} homes` : "Copy failed");
+  };
+  const pushBtn = $("#hs-mark-push");
+  if (pushBtn) pushBtn.onclick = () => void pushTeamMarksOneClick();
+  const pullBtn = $("#hs-mark-pull");
+  if (pullBtn) {
+    pullBtn.onclick = async () => {
+      setStatus("Pulling team marks…");
+      const res = await syncTeamMarksPack();
+      paintFieldMap();
+      paintFieldSheet();
+      if (!res.ok) setStatus("Team marks unavailable — check network");
+      else setStatus(`Team marks · ${fieldMarks().length} on map${res.added ? ` (+${res.added} new)` : ""}`);
+    };
+  }
+  root.querySelectorAll(".hs-mark-row[data-id]").forEach((b) => {
+    b.onclick = () => {
+      const m = fieldMarks().find((x) => x.id === b.dataset.id);
+      if (!m) return;
+      flyToPin(m.lat, m.lon, 20);
+      openMarkComposer(m);
+    };
+  });
+  root.querySelectorAll(".hs-inv-row[data-inv]").forEach((b) => {
+    b.onclick = () => {
+      const inv = fieldInvestors().find((x) => x.id === b.dataset.inv);
+      if (!inv) return;
+      flyToPin(inv.lat, inv.lon, 18, { stay: true });
+      focusInvestorPin(inv.id, { popup: true });
+    };
+  });
+}
+
+function paintRadarToggle() {
+  const el = $("#hs-radar-top");
+  if (!el) return;
+  const on = db.settings.showRadar === true;
+  el.classList.toggle("off", !on);
+  el.innerHTML = `<button type="button" id="hs-radar-btn" class="hs-radar-toggle ${on ? "on" : ""}" aria-label="Weather radar" title="Live precip radar"><span class="hs-radar-icon" aria-hidden="true"></span>Radar</button>`;
+  el.onclick = (e) => {
+    const b = e.target.closest("#hs-radar-btn");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    db.settings.showRadar = !(db.settings.showRadar === true);
+    persist();
+    paintRadarToggle();
+    paintHailScopeRadarBar();
+    syncHailScopeRadar(db.settings);
+  };
+}
+
+function paintHailScopeRadarBar() {
+  const shell = $("#hs-map-shell");
+  if (!shell) return;
+  syncHailScopeRadar(db.settings);
+  let bar = $("#hs-radar-bar");
+  const on = db.settings.showRadar === true;
+  if (!on) {
+    bar?.remove();
+    shell.classList.remove("hs-radar-open");
+    return;
+  }
+  const html = hailScopeRadarBarHtml(db.settings);
+  if (!html) {
+    bar?.remove();
+    shell.classList.remove("hs-radar-open");
+    return;
+  }
+  if (bar) bar.outerHTML = html;
+  else {
+    const mapEl = $("#wx-map");
+    if (mapEl) mapEl.insertAdjacentHTML("beforebegin", html);
+    else shell.insertAdjacentHTML("beforeend", html);
+  }
+  shell.classList.add("hs-radar-open");
+  bindHailScopeRadar(shell);
+}
+
+function syncLayerToggleStates(el) {
+  if (!el) return;
+  const flagsOn = db.settings.showPhoneFlags === true;
+  const ff = getFlagKindFilter();
+  el.querySelector('[data-ov="me"]')?.classList.toggle("on", db.settings.showMyLocation !== false);
+  el.querySelector('[data-ov="dots"]')?.classList.toggle("on", db.settings.showHailDots !== false);
+  el.querySelector('[data-ov="flags"]')?.classList.toggle("on", flagsOn);
+  el.querySelector('[data-ov="rent-flags"]')?.classList.toggle("on", ff.rental);
+  el.querySelector('[data-ov="biz-flags"]')?.classList.toggle("on", ff.business);
+  el.querySelector('[data-ov="done"]')?.classList.toggle("on", db.settings.showDone !== false);
+  el.querySelector('[data-ov="marks"]')?.classList.toggle("on", db.settings.showMarks !== false);
+  el.querySelector('[data-ov="hearts"]')?.classList.toggle("on", investorHeartsOn());
+  el.querySelector('[data-ov="stars"]')?.classList.toggle("on", investorStarsOn());
+}
+
+function paintLayerToggles() {
+  const el = $("#hs-layers");
+  if (!el) return;
+  if (!el._hsLayersMounted) {
+    el._hsLayersMounted = true;
+    el.innerHTML = `
+    <button type="button" data-ov="me" class="hs-me-toggle" aria-label="My location" title="Show my location"><span class="hs-me-dot" aria-hidden="true"></span></button>
+    <button type="button" data-ov="dots" class="hs-dots-toggle" aria-label="Hail signature dots" title="Spotter (red) and SWDI radar (size-colored) dots — not weather radar or rental flags"><span class="hs-dot-pair" aria-hidden="true"><i class="hs-dot-r"></i><i class="hs-dot-b"></i></span>Dots</button>
+    <button type="button" data-ov="flags" class="hs-flags-toggle" aria-label="Phone flags" title="Phone flags on map — green residential, blue commercial"><span class="hs-flag-ico gradient" aria-hidden="true"></span>Flags</button>
+    <button type="button" data-ov="rent-flags" class="hs-flag-kind-toggle" aria-label="Green residential flags" title="Show or hide green residential flags"><span class="hs-flag-ico green" aria-hidden="true"></span></button>
+    <button type="button" data-ov="biz-flags" class="hs-flag-kind-toggle" aria-label="Blue commercial flags" title="Show or hide blue commercial flags"><span class="hs-flag-ico blue" aria-hidden="true"></span></button>
+    <button type="button" data-ov="done">Done</button>
+    <button type="button" data-ov="marks">Marks</button>
+    <button type="button" data-ov="hearts" class="hs-inv-toggle" aria-label="Insurance investors" title="Insurance investors — broken heart until a working relationship, then a full red heart">${investorGlyphSvg({ kind: "insurance", relationship: "partner" }, { size: 14 })} Hearts</button>
+    <button type="button" data-ov="stars" class="hs-inv-toggle" aria-label="Real estate investors" title="Real estate investors — stars, tap to show the regions they control">${investorGlyphSvg({ kind: "realestate", relationship: "partner" }, { size: 14 })} Stars</button>`;
+    if (!el._hsFlagsStatusBound) {
+      el._hsFlagsStatusBound = true;
+      window.addEventListener("hs-phone-flags", (ev) => {
+        const msg = String(ev.detail?.msg || "").trim();
+        const btn = el.querySelector('[data-ov="flags"]');
+        if (btn) {
+          btn.title =
+            msg ||
+            "Green = residential. Blue = commercial. Master Flags loads the map view; green/blue toggles filter what you see.";
+        }
+        if (msg && db.settings.showPhoneFlags === true) setStatus(msg);
+      });
+      window.addEventListener("hs-flag-kind-filter", (ev) => {
+        db.settings.showFlagResidential = ev.detail?.rental === true;
+        db.settings.showFlagCommercial = ev.detail?.business === true;
+        persist();
+        syncLayerToggleStates(el);
+      });
+    }
+    el.onclick = (e) => {
+      const b = e.target.closest("button[data-ov]");
+      if (!b) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (b.dataset.ov === "me") {
+        db.settings.showMyLocation = !(db.settings.showMyLocation !== false);
+        setMyLocationVisible(db.settings.showMyLocation);
+        syncLayerToggleStates(el);
+        return;
+      }
+      if (b.dataset.ov === "dots") {
+        db.settings.showHailDots = !(db.settings.showHailDots !== false);
+        persist();
+        syncLayerToggleStates(el);
+        paintFieldMap();
+        setStatus(db.settings.showHailDots !== false ? "Hail dots on" : "Hail dots cleared");
+        return;
+      }
+      if (b.dataset.ov === "flags") {
+        db.settings.showPhoneFlags = !(db.settings.showPhoneFlags === true);
+        persist();
+        syncLayerToggleStates(el);
+        if (db.settings.showPhoneFlags === true) {
+          // If both kind toggles were left off, turn them on so Flags actually shows something.
+          if (!(db.settings.showFlagResidential === true) && !(db.settings.showFlagCommercial === true)) {
+            db.settings.showFlagResidential = true;
+            db.settings.showFlagCommercial = true;
+            persist();
+          }
+          applyFlagKindFilters({
+            residential: db.settings.showFlagResidential === true,
+            commercial: db.settings.showFlagCommercial === true,
+          });
+          syncLayerToggleStates(el);
+          cancelWarmMapViewStorms();
+          setStatus("Loading flags · map view…");
+        } else setStatus("Flags cleared");
+        paintFieldMap();
+        return;
+      }
+      if (b.dataset.ov === "rent-flags") {
+        db.settings.showFlagResidential = !(db.settings.showFlagResidential === true);
+        applyFlagKindFilters({ residential: db.settings.showFlagResidential === true });
+        persist();
+        syncLayerToggleStates(el);
+        setStatus(db.settings.showFlagResidential ? "Green residential flags on" : "Green residential flags off");
+        return;
+      }
+      if (b.dataset.ov === "biz-flags") {
+        db.settings.showFlagCommercial = !(db.settings.showFlagCommercial === true);
+        applyFlagKindFilters({ commercial: db.settings.showFlagCommercial === true });
+        persist();
+        syncLayerToggleStates(el);
+        setStatus(db.settings.showFlagCommercial ? "Blue commercial flags on" : "Blue commercial flags off");
+        return;
+      }
+      if (b.dataset.ov === "done") db.settings.showDone = !(db.settings.showDone !== false);
+      if (b.dataset.ov === "marks") db.settings.showMarks = !(db.settings.showMarks !== false);
+      if (b.dataset.ov === "hearts") {
+        db.settings.showInsuranceInvestors = !investorHeartsOn();
+        persist();
+        syncLayerToggleStates(el);
+        paintFieldMap();
+        paintFieldSheet();
+        if (investorHeartsOn()) {
+          startOfficeLayerHunt();
+          setStatus("Insurance hearts on · loading phones in view");
+        } else {
+          officePreloadGen += 1;
+          setStatus("Insurance hearts hidden");
+        }
+        return;
+      }
+      if (b.dataset.ov === "stars") {
+        db.settings.showRealEstateInvestors = !investorStarsOn();
+        persist();
+        syncLayerToggleStates(el);
+        paintFieldMap();
+        paintFieldSheet();
+        if (investorStarsOn()) {
+          startOfficeLayerHunt();
+          setStatus("Real estate stars on · loading phones in view");
+        } else {
+          officePreloadGen += 1;
+          setStatus("Real estate stars hidden");
+        }
+        return;
+      }
+      persist();
+      syncLayerToggleStates(el);
+      paintFieldMap();
+    };
+  }
+  syncLayerToggleStates(el);
+}
+
+async function ensureDoneHousesPlaced() {
+  const text = (db.done?.text || "").trim();
+  const lines = parseDoneList(text);
+  const houses = doneHouses();
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (!lines.length) {
+    if (placed) paintFieldMap();
+    return;
+  }
+  if (placed >= lines.length && houses.length >= lines.length) {
+    paintFieldMap();
+    return;
+  }
+  if (!doneBusy) await loadDoneAddresses();
+}
+
+async function loadDoneAddresses({ textId = "job-done-text" } = {}) {
+  if (doneBusy) return;
+  const text = document.querySelector("#" + textId)?.value ?? db.done?.text ?? "";
+  const parsed = parseDoneList(text);
+  if (!parsed.length) {
+    setStatus("Paste completed addresses first");
+    return;
+  }
+  const lines = parsed.slice(0, MAX_DONE);
+  if (!db.done) db.done = { text: "", houses: [], geo: {} };
+  db.done.text = text;
+  persist();
+  doneBusy = true;
+  paintFieldSheet();
+  const cityHint = db.settings.city || "Edmond, OK";
+  const geo = { ...(db.done.geo || {}) };
+  const houses = [];
+  let miss = 0;
+  try {
+    for (let i = 0; i < lines.length; i++) {
+      const addr = lines[i];
+      const q = withCity(addr, cityHint);
+      const cacheKey = q.toLowerCase();
+      setStatus(`Placing ${i + 1} of ${lines.length}…`);
+      let hit = geo[cacheKey];
+      if (!geoCacheOk(hit, q)) {
+        try {
+          const found = await geocodeAddress(q, { city: db.settings.city || "Edmond" });
+          const top = found[0];
+          hit = {
+            lat: top.lat,
+            lon: top.lon,
+            address: top.address || addr,
+            v: 2,
+            houseOk: Boolean(top.houseOk),
+            source: top.source || "",
+          };
+          geo[cacheKey] = hit;
+        } catch {
+          hit = { lat: null, lon: null, address: addr, v: 2, houseOk: false };
+          miss += 1;
+        }
+        await new Promise((r) => setTimeout(r, 900));
+      }
+      houses.push(
+        normalizeDoneHouse(
+          {
+            id: `done-${i}`,
+            address: hit.address || addr,
+            lat: hit.lat,
+            lon: hit.lon,
+          },
+          `done-${i}`,
+        ),
+      );
+    }
+    db.done = { text, houses, geo };
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    const n = houses.filter((h) => Number.isFinite(Number(h.lat))).length;
+    const capped = parsed.length > MAX_DONE ? `  — first ${MAX_DONE}` : "";
+    setStatus(`${n} yellow marker${n === 1 ? "" : "s"}${miss ? `  — ${miss} not found` : ""}${capped}`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+  } finally {
+    doneBusy = false;
+    paintFieldSheet();
+    if (tab === "jobs" && document.getElementById("job-done-text")) renderJobs();
+  }
+}
+
+function teamDoneSnapshot() {
+  return serializeTeamDonePack(db.done || {});
+}
+
+async function syncTeamDonePack() {
+  try {
+    const res = await fetch(`./data/team-done.json?v=${CACHE_BUST}`, { cache: "no-cache" });
+    if (!res.ok) return { ok: false, reason: "missing" };
+    const pack = await res.json();
+    const hasPack =
+      (Array.isArray(pack?.houses) && pack.houses.length) || String(pack?.text || "").trim();
+    if (!hasPack) return { ok: true, added: 0 };
+    const before = JSON.stringify(serializeTeamDonePack(db.done || {}));
+    const merged = mergeDonePack(db.done || {}, pack);
+    const after = JSON.stringify(serializeTeamDonePack(merged));
+    if (before === after) {
+      return {
+        ok: true,
+        added: 0,
+        placed: doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length,
+      };
+    }
+    const prevPlaced = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+    db.done = merged;
+    persist();
+    const placed = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+    return { ok: true, added: Math.max(0, placed - prevPlaced), placed };
+  } catch {
+    return { ok: false, reason: "fetch" };
+  }
+}
+
+async function downloadTeamDonePack() {
+  const pack = teamDoneSnapshot();
+  const placed = (pack.houses || []).filter((h) => Number.isFinite(Number(h.lat))).length;
+  if (!placed && !String(pack.text || "").trim()) {
+    setStatus("No done targets to share yet");
+    return;
+  }
+  const token = String(db.settings.github_token || "").trim();
+  if (!token) {
+    setStatus("Add GitHub token in Settings → Team sync (once), then Share");
+    return;
+  }
+  setStatus("Pushing done targets to team…");
+  try {
+    await syncTeamDonePack();
+    const next = serializeTeamDonePack(db.done || {});
+    await pushTeamJson(TEAM_DONE_PATH, next, token);
+    const n = (next.houses || []).filter((h) => Number.isFinite(Number(h.lat))).length;
+    setStatus(`Pushed ${n} done target${n === 1 ? "" : "s"} — team can Pull`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 96));
+  }
+}
+
+async function importTeamDoneFile(file) {
+  if (!file) return;
+  try {
+    const pack = JSON.parse(await file.text());
+    const merged = mergeDonePack(db.done || {}, pack);
+    db.done = merged;
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    const placed = doneHouses().filter((h) => Number.isFinite(Number(h.lat))).length;
+    setStatus(`Imported team pack — ${placed} yellow marker${placed === 1 ? "" : "s"}`);
+    if (tab === "jobs") renderJobs();
+    if (placed < parseDoneList(merged.text).length) void loadDoneAddresses();
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+  }
+}
+
+function teamMarksSnapshot() {
+  return serializeTeamMarksPack(fieldMarks());
+}
+
+async function syncTeamMarksPack() {
+  try {
+    const res = await fetch(`./data/team-marks.json?v=${CACHE_BUST}`, { cache: "no-cache" });
+    if (!res.ok) return { ok: false, reason: "missing" };
+    const pack = await res.json();
+    const remote = Array.isArray(pack?.marks) ? pack.marks : [];
+    if (!remote.length) return { ok: true, added: 0, total: fieldMarks().length };
+    const before = fieldMarks().length;
+    const merged = mergeMarksPack(fieldMarks(), remote);
+    const afterKey = JSON.stringify(merged.map((m) => m.id).sort());
+    const beforeKey = JSON.stringify(fieldMarks().map((m) => m.id).sort());
+    if (afterKey === beforeKey) return { ok: true, added: 0, total: fieldMarks().length };
+    db.marks = merged;
+    persist();
+    paintFieldSheet();
+    return { ok: true, added: Math.max(0, merged.length - before), total: merged.length };
+  } catch {
+    return { ok: false, reason: "fetch" };
+  }
+}
+
+async function downloadTeamMarksPack() {
+  return pushTeamMarksOneClick();
+}
+
+async function pushTeamMarksOneClick() {
+  const marks = fieldMarks();
+  const placed = marks.filter((m) => Number.isFinite(Number(m.lat)) && Number.isFinite(Number(m.lon))).length;
+  if (!placed) {
+    setStatus("No field marks to push yet");
+    return;
+  }
+  const token = String(db.settings.github_token || "").trim();
+  if (!token) {
+    setStatus("Add GitHub token in Settings → Team sync (once), then Push");
+    return;
+  }
+  setStatus("Pushing marks to team…");
+  try {
+    // Merge remote first so we never wipe a teammate's pins.
+    await syncTeamMarksPack();
+    const pack = serializeTeamMarksPack(fieldMarks());
+    await pushTeamJson(TEAM_MARKS_PATH, pack, token);
+    setStatus(`Pushed ${placed} mark${placed === 1 ? "" : "s"} — team can Pull`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 96));
+  }
+}
+
+async function importTeamMarksFile(file) {
+  if (!file) return;
+  try {
+    const pack = JSON.parse(await file.text());
+    const remote = Array.isArray(pack?.marks) ? pack.marks : [];
+    db.marks = mergeMarksPack(fieldMarks(), remote);
+    persist();
+    paintFieldMap();
+    paintFieldSheet();
+    setStatus(`Imported team marks — ${fieldMarks().length} on map`);
+  } catch (e) {
+    setStatus(String(e.message || e).slice(0, 64));
+  }
+}
+
+function onMapHold(lat, lon) {
+  openMarkComposer({ lat, lon });
+}
+
+let wxRenderGen = 0;
+let hailTapGen = 0;
+let officeStormOfferedFor = "";
+
+function officeStormOnRefetch(gen) {
+  return async (filters) => {
+    if (gen !== hailTapGen) return null;
+    const fresh = await viewportDossier(db.settings, filters);
+    if (gen !== hailTapGen) return null;
+    wxState.data = fresh;
+    return fresh;
+  };
+}
+
+/** Open storm dates under the office so a date tap can overlay hail on their homes. */
+function offerStormsForSelectedOffice(inv) {
+  if (String(inv?.kind) !== "realestate") return;
+  if (!isInvestorSelected(inv?.id)) return;
+  showInvestorPeek(inv);
+  const sheet = $("#hs-sheet");
+  if (!sheet?.querySelector(`.hs-pin-office[data-inv="${inv.id}"]`)) return;
+  revealHailStormSheet({ interactive: true, scroll: false });
+  refreshMapSize();
+  setTimeout(() => refreshMapSize(), 280);
+  const onRefetch = officeStormOnRefetch(hailTapGen);
+  if (wxState.data) fillInvestorStormDates(sheet, wxState.data, esc, { onRefetch });
+  if (officeStormOfferedFor === String(inv.id)) return;
+  officeStormOfferedFor = String(inv.id);
+  // Let the listing scrape use the connection budget first — storm refetch can wait.
+  window.setTimeout(() => {
+    if (!isInvestorSelected(inv?.id)) return;
+    void loadStormsForOfficeListings(inv, onRefetch);
+  }, wxState.data && hailScopeDays(wxState.data).length ? 2800 : 400);
+}
+
+async function loadStormsForOfficeListings(inv, onRefetch) {
+  const gen = hailTapGen;
+  const id = String(inv?.id || "");
+  if (!id) return;
+  setMapViewHailArmed(true);
+  const refetch = onRefetch || officeStormOnRefetch(gen);
+  try {
+    const data = await viewportDossier(db.settings, undefined, {
+      onPartial: (partial) => {
+        if (gen !== hailTapGen) return;
+        wxState.data = partial;
+        const sheet = $("#hs-sheet");
+        if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) {
+          fillInvestorStormDates(sheet, partial, esc, { onRefetch: refetch });
+          refreshMapSize();
+        }
+      },
+    });
+    if (gen !== hailTapGen || !data) return;
+    wxState.data = data;
+    const sheet = $("#hs-sheet");
+    if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) {
+      fillInvestorStormDates(sheet, data, esc, { onRefetch: refetch });
+      refreshMapSize();
+    }
+  } catch {
+    /* keep the office card even if storms miss */
+  }
+}
+
+function wireHsShell(cfg) {
+  const styles = $("#hs-styles");
+  if (styles && cfg) {
+    styles.innerHTML = baseLayerButtons(cfg, esc);
+    styles.onclick = (e) => {
+      const b = e.target.closest("button[data-layer]");
+      if (!b) return;
+      setMapLayer(b.dataset.layer);
+      styles.querySelectorAll("button[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
+    };
+  }
+  const searchForm = $("#hs-search");
+  if (searchForm) {
+    searchForm.onsubmit = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const q = ($("#hs-addr-q")?.value || "").trim();
+      if (!q) return;
+      const gen = hailTapGen;
+      setStatus("Finding place…");
+      try {
+        const hits = await geocodeAddress(q, { city: db.settings.city || "Edmond" });
+        if (gen !== hailTapGen) return;
+        const hit = hits[0];
+        if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
+        flyToPin(hit.lat, hit.lon, 20);
+        await onHailTap(hit.lat, hit.lon, { address: hit.address || q });
+      } catch (err) {
+        setStatus(String(err.message || err).slice(0, 48));
+      }
+    };
+    searchForm.addEventListener("click", (e) => e.stopPropagation());
+    searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
+    searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+  }
+  for (const id of ["hs-layers", "hs-composer", "hs-radar-top", "hs-radar-bar"]) {
+    const el = $(`#${id}`);
+    if (!el) continue;
+    el.addEventListener("click", (e) => e.stopPropagation());
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    el.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+  }
+}
+
+async function finishWxBoot(gen) {
+  void ensureDoneHousesPlaced();
+  try {
+    const center = await resolveMapCenter(db.settings);
+    if (gen !== wxRenderGen || !isHailTab() || !mapIsLive()) return;
+    persist();
+    const cfg = await loadMapConfig(db.settings);
+    if (gen !== wxRenderGen || !isHailTab() || !mapIsLive()) return;
+    cfg.center = { ...cfg.center, ...center };
+    wireHsShell(cfg);
+    applyLoadedMapConfig(cfg, db.settings);
+    paintHailScopeRadarBar();
+    refreshMapSize();
+    if (Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+      // Frame the map only — do not drop a select pin on boot
+      flyToPin(center.lat, center.lon, undefined, { stay: true });
+    }
+    // Storms stay idle until Search storms (or a house pin)
+  } catch (e) {
+    if (isHailTab()) setStatus(String(e.message || e).slice(0, 48));
+  }
+}
+
+
+/** Invalidate any in-flight map-view storm fetch (Flags should not compete with storms). */
+function cancelWarmMapViewStorms() {
+  hailTapGen += 1;
+}
+
+async function renderWx() {
+  document.body.classList.remove("comm");
+  setHailScopeMode(true);
+  document.body.classList.add("hs-tab", "wx-tab");
+
+  if (mapIsLive()) {
+    refreshMapSize();
+    paintLayerToggles();
+    paintFieldMap();
+    paintFieldSheet();
+    wirePinSizeSlider();
+    {
+      const c = defaultMapCenter(db.settings);
+      schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+    }
+    syncHailBottomChrome();
+    setWxMapExpanded(false);
+    if (wxState.data) revealHailStormSheet({ interactive: true, scroll: false });
+    else revealHailAddressPeek();
+    void ensureDoneHousesPlaced();
+    setStatus("");
+    return;
+  }
+
+  leaveWx();
+  setHailScopeMode(true);
+  document.body.classList.add("hs-tab", "wx-tab");
+  setStatus("");
+
+  wxRenderGen += 1;
+  const gen = wxRenderGen;
+
+  $("#view").innerHTML = `
+    <div class="hs-wrap">
+      <div class="hs-map-shell" id="hs-map-shell">
+        <div class="hs-layers" id="hs-layers"></div>
+        <div class="hs-radar-top" id="hs-radar-top"></div>
+        <div class="hs-map-bar" id="hs-map-bar">
+          <div class="hs-map-pin-size" id="hs-map-pin-size" hidden aria-label="Yellow pin size">
+            <span class="hs-map-pin-size-lab">Pins</span>
+            <span class="hs-pin-size-val" id="hs-done-pin-scale-lab">100%</span>
+            <input type="range" id="hs-done-pin-scale" min="25" max="250" step="5" value="100" aria-label="Yellow pin size" />
+          </div>
+          <div class="hs-styles" id="hs-styles"></div>
+        </div>
+        <div id="wx-map"></div>
+        <div class="hs-composer" id="hs-composer" hidden></div>
+      </div>
+      <div class="hs-bottom-panel" id="hs-bottom-panel">
+        <form class="hs-goto" id="hs-search" autocomplete="off">
+          <input type="search" id="hs-addr-q" placeholder="Address in Oklahoma" enterkeyhint="search" />
+        </form>
+        <div class="hs-sheet" id="hs-sheet">
+          <p class="hs-empty">Set filters, then Search storms — or turn on Flags.</p>
+        </div>
+        <div class="hs-field" id="hs-field"></div>
+      </div>
+    </div>`;
+
+  try {
+    const center = defaultMapCenter(db.settings);
+    const cfg = quickMapConfig(db.settings);
+    wireHsShell(cfg);
+    mountMap($("#wx-map"), cfg, { center, onTap: onHailTap, onHold: onMapHold, product: "hail", base: "sat", initialPin: false });
+    clearWxPin();
+    wxState.lat = null;
+    wxState.lon = null;
+    wxState.address = "";
+    wxState.data = null;
+    wxState.viewport = false;
+    bindWxMapScrollExpand($("#view"), $("#hs-map-shell"), $("#hs-sheet"), $("#tabs"));
+    bindSelectPinDblTap(onHailViewport);
+    bindHailSearchClick(() => {
+      setMapViewHailArmed(true);
+      void onHailViewport();
+    });
+    const refetchViewportStorms = async (filters) => {
+      const fresh = await viewportDossier(db.settings, filters);
+      if (fresh) {
+        wxState.data = fresh;
+        wxState.viewport = true;
+      }
+      return fresh;
+    };
+    bindStormSheetOpen(() => {
+      // No house pin: show idle Search storms UI — do not auto-fetch
+      if (wxPinSelected()) return;
+      const sheet = $("#hs-sheet");
+      if (!sheet) return;
+      if (sheet.querySelector(".hs-pin-office, .hs-pin-listing, .hs-inv-peek")) return;
+      if (wxState.viewport && wxState.data && !wxState.data._meta?.idle) {
+        if (!sheet.querySelector(".hs-date") && !sheet.querySelector("#hs-hail-search")) {
+          syncHailScopeView(sheet, wxState.data, esc, {
+            onRefetch: refetchViewportStorms,
+            revealSheet: false,
+          });
+        }
+        return;
+      }
+      paintHailSearchIdle(sheet, esc, { onRefetch: refetchViewportStorms });
+    });
+    bindMapViewStormMove(() => {
+      // Careful loading: pan never auto-fetches storms. Use Search storms / Search this view.
+    });
+    paintLayerToggles();
+    paintRadarToggle();
+    paintHailScopeRadarBar();
+    setMyLocationVisible(db.settings.showMyLocation !== false);
+    paintFieldMap();
+    paintFieldSheet();
+    wirePinSizeSlider();
+    {
+      const c = defaultMapCenter(db.settings);
+      schedulePhotonInvestorHunt(Number(wxState.lat) || c.lat, Number(wxState.lon) || c.lon);
+    }
+    syncHailBottomChrome();
+    // Interactive UI by default — fullscreen only via address-bar swipe down
+    setWxMapExpanded(false);
+    if (useDesktopChrome()) revealHailStormSheet({ interactive: true, scroll: false });
+    else revealHailAddressPeek();
+    refreshMapSize();
+    {
+      const sheetIdle = $("#hs-sheet");
+      if (sheetIdle && !wxPinSelected()) {
+        paintHailSearchIdle(sheetIdle, esc, { onRefetch: refetchViewportStorms });
+      }
+    }
+    void finishWxBoot(gen);
+  } catch (e) {
+    if (!isHailTab()) return;
+    $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
+  }
+}
+
+async function onHailViewport() {
+  const gen = ++hailTapGen;
+  setMapViewHailArmed(true);
+  clearSelectedStormDate();
+  clearWxPin();
+  wxState.lat = null;
+  wxState.lon = null;
+  wxState.address = "";
+  wxState.viewport = true;
+  wxState.data = null;
+  const addrBoxVp = $("#hs-addr-q");
+  if (addrBoxVp && /^map\s*view$/i.test(String(addrBoxVp.value || "").trim())) addrBoxVp.value = "";
+  const sheet = $("#hs-sheet");
+  if (sheet) {
+    sheet.innerHTML = '<p class="hs-pin hs-pin-ready">Searching visible area…</p><p class="hs-empty">Loading storm history…</p>';
+  }
+  setStatus("Loading storms…");
+  const onRefetch = async (filters) => {
+    if (gen !== hailTapGen) return null;
+    const fresh = await viewportDossier(db.settings, filters);
+    if (gen !== hailTapGen) return null;
+    wxState.data = fresh;
+    return fresh;
+  };
+  try {
+    let paintedDays = 0;
+    let lastPaintAt = 0;
+    const data = await viewportDossier(db.settings, undefined, {
+      onPartial: (partial) => {
+        if (gen !== hailTapGen || !isHailTab()) return;
+        wxState.data = partial;
+        const days = hailScopeDays(partial);
+        const n = days.length;
+        if (!n || !sheet) return;
+        const loading = Boolean(partial._meta?.loading);
+        const first = !sheet.querySelector(".hs-date");
+        const now = Date.now();
+        const readyFirst = n >= 3 || !loading || /spc|swdi-recent|done/.test(String(partial._meta?.partial || ""));
+        const grew = n > paintedDays;
+        const due = now - lastPaintAt > (first ? 0 : 320);
+        if ((first && readyFirst) || (!first && ((grew && due) || !loading))) {
+          paintedDays = n;
+          lastPaintAt = now;
+          syncHailScopeView(sheet, partial, esc, { onRefetch, fit: false, revealSheet: true });
+          setStatus(loading ? `Loading storms… ${n} dates` : `Storms ready · ${n} dates`);
+        }
+      },
+    });
+    if (gen !== hailTapGen || !isHailTab()) return;
+    if (!data) {
+      if (sheet) sheet.innerHTML = '<p class="hs-empty">Could not load storms for this map view.</p>';
+      setStatus("Storms unavailable");
+      return;
+    }
+    wxState.data = data;
+    syncHailScopeView(sheet, data, esc, { onRefetch, fit: false, revealSheet: true });
+    const n = hailScopeDays(data).length;
+    setStatus(n ? `Storms ready · ${n} dates` : "No storms in map view");
+  } catch (e) {
+    if (gen !== hailTapGen) return;
+    if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try again.</p>`;
+    setStatus("Storms unavailable");
+  }
+}
+
+async function onHailTap(lat, lon, { address: prefAddr } = {}) {
+  const gen = ++hailTapGen;
+  const samePin =
+    Number.isFinite(wxState.lat) &&
+    Number.isFinite(wxState.lon) &&
+    Math.abs(wxState.lat - lat) < 1e-5 &&
+    Math.abs(wxState.lon - lon) < 1e-5;
+  // Keep checked storm dates — accidental house taps should not wipe the overlay.
+  wxState.lat = lat;
+  wxState.lon = lon;
+  wxState.viewport = false;
+  schedulePhotonInvestorHunt(lat, lon);
+  const knownAddr = String(prefAddr || "").trim();
+  wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : wxState.address || "";
+  setWxPin(lat, lon);
+  const sheet = $("#hs-sheet");
+  const onRefetch = async (filters) => {
+    if (gen !== hailTapGen) return null;
+    const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
+    if (gen !== hailTapGen) return null;
+    wxState.data = fresh;
+    return fresh;
+  };
+  if (samePin && wxState.data && isHailTab()) {
+    revealHailStormSheet({ interactive: true, scroll: false });
+    syncHailScopeView(sheet, wxState.data, esc, { onRefetch, revealSheet: false });
+    setStatus(`Storms ready · ${hailScopeDays(wxState.data).length} dates`);
+    return;
+  }
+  wxState.data = null;
+  // Map taps must not reuse the previous house address — reverse-geocode the new pin.
+  if (!samePin) wxState.address = knownAddr && !/^map\s*view$/i.test(knownAddr) ? knownAddr : "";
+  const addr0 = wxState.address || "Dropped pin";
+  if (sheet) {
+    sheet.innerHTML = `<p class="hs-pin"><strong>${esc(addr0)}</strong>Finding storms…</p><p class="hs-empty">Loading storm history…</p>`;
+  }
+  const addrBox = $("#hs-addr-q");
+  // Never stuff viewport labels / stale pins into the search box
+  if (addrBox) {
+    if (wxState.address && parseStreetAddress(wxState.address).house) addrBox.value = wxState.address;
+    else addrBox.value = "";
+  }
+  revealHailAddressPeek();
+  setStatus("Loading storms…");
+  try {
+    const data = await pinDossier(db.settings, lat, lon, {
+      address: wxState.address,
+      onPartial: (partial) => {
+        if (gen !== hailTapGen || !isHailTab()) return;
+        // Ignore stale coords if a newer tap already moved the pin
+        if (Number.isFinite(partial.lat) && Number.isFinite(partial.lon)) {
+          const dLat = Math.abs(partial.lat - lat);
+          const dLon = Math.abs(partial.lon - lon);
+          if (dLat > 1e-5 || dLon > 1e-5) return;
+        }
+        const nextAddr = partial.address || "";
+        if (!knownAddr || parseStreetAddress(nextAddr).house) wxState.address = nextAddr;
+        wxState.data = partial;
+        if ((partial.hail || []).length) {
+          syncHailScopeView($("#hs-sheet"), partial, esc, { onRefetch, revealSheet: false });
+          setStatus(`Loading storms… ${(partial.hail || []).length} dates`);
+        } else {
+          patchHailScopePartial($("#hs-sheet"), partial, esc);
+        }
+      },
+    });
+    if (gen !== hailTapGen || !isHailTab()) return;
+    if (!data) {
+      if (sheet) sheet.innerHTML = `<p class="hs-empty">Could not load storm data. Try another pin.</p>`;
+      setStatus("Storms unavailable");
+      return;
+    }
+    wxState.address = data.address || "";
+    wxState.data = data;
+    syncHailScopeView($("#hs-sheet"), data, esc, { onRefetch, revealSheet: false });
+    const fetchedDays = Number(data._meta?.fetchedDays) || 0;
+    if (!(data.hail || []).length && fetchedDays < 730) {
+      if (sheet) {
+        const loading = sheet.querySelector(".hs-empty");
+        if (loading) loading.textContent = "Searching a longer hail window…";
+      }
+      setStatus("Loading storms… longer window");
+      const full = await onRefetch({ days: 730 });
+      if (gen !== hailTapGen || !isHailTab()) return;
+      if (full) {
+        wxState.data = full;
+        syncHailScopeView($("#hs-sheet"), full, esc, { onRefetch, revealSheet: false });
+      }
+    }
+    const n = hailScopeDays(wxState.data || data).length;
+    setStatus(n ? `Storms ready · ${n} dates` : "No storms at this pin");
+  } catch (e) {
+    if (gen !== hailTapGen) return;
+    if (sheet) sheet.innerHTML = `<p class="hs-empty">${esc(String(e.message || e))}. Check the network and try another pin.</p>`;
+    setStatus("Storms unavailable");
+  }
+}
+
+async function onWxTap(lat, lon) {
+  return onHailTap(lat, lon);
+}
+
+function renderJobs() {
+  leaveWx();
+  document.body.classList.remove("comm");
+  const jobs = db.jobs || [];
+  const marks = fieldMarks();
+  const houses = doneHouses();
+  const placed = houses.filter((h) => Number.isFinite(Number(h.lat)));
+  const rawText = String(db.done?.text || "");
+  $("#view").innerHTML = `
+    <h3>Jobs</h3>
+    <p class="muted">Roof inspections on this phone, completed houses, and drive-by field marks.</p>
+    <div class="actions"><button type="button" id="job-new" class="primary">New job</button></div>
+    <div class="job-list">${
+      jobs.length
+        ? jobs
+            .map(
+              (j) =>
+                `<article class="job-card" data-id="${esc(j.id)}">
+                  <strong>${esc(j.address || "Unpinned")}</strong>
+                  <p class="muted">${esc(jobSummary(j))}</p>
+                  <p class="muted">${esc(String(j.created || "").slice(0, 10))}</p>
+                  <div class="actions job-card-actions">
+                    <button type="button" data-job-edit="${esc(j.id)}">Edit</button>
+                    <button type="button" data-job-del="${esc(j.id)}">Delete</button>
+                  </div>
+                </article>`,
+            )
+            .join("")
+        : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
+    }</div>
+    <h3>Completed houses</h3>
+    <p class="muted">Paste finished addresses (one per line), then load yellow markers on HailScope. Push to team once — everyone Pulls (or auto on boot).</p>
+    <textarea id="job-done-text" rows="6" placeholder="400 S Bryant, Edmond, OK&#10;2521 Tredington Way, Edmond, OK">${esc(rawText)}</textarea>
+    <div class="actions">
+      <button type="button" class="primary" id="job-done-load"${doneBusy ? " disabled" : ""}>${doneBusy ? "Placing…" : "Load yellow markers"}</button>
+      <button type="button" id="job-done-clear"${houses.length ? "" : " disabled"}>Clear markers</button>
+    </div>
+    <div class="actions">
+      <button type="button" class="primary" id="job-done-share"${houses.length || rawText.trim() ? "" : " disabled"}>Push to team</button>
+      <button type="button" id="job-done-pull">Pull team</button>
+    </div>
+    <p class="muted">${placed.length ? `${placed.length} yellow marker${placed.length === 1 ? "" : "s"} ready — open HailScope to see them.` : "No yellow markers yet."}</p>
+    ${placed
+      .slice(0, 30)
+      .map((h) => `<article class="job-card"><strong>${esc(h.address || "House")}</strong></article>`)
+      .join("")}
+    <h3>Field marks</h3>
+    <p class="muted">${marks.length ? `${marks.length} pins. Hold the HailScope map to add Atlas / work / zone labels.` : "Hold a house on HailScope to drop a custom pin."}</p>
+    ${marks
+      .slice(0, 30)
+      .map(
+        (m) =>
+          `<article class="job-card"><strong>${esc(m.label || kindMeta(m.kind).label)}</strong><p class="muted">${esc(m.address || "")}</p>${m.note ? `<p class="muted">${esc(m.note)}</p>` : ""}</article>`,
+      )
+      .join("")}`;
+  $("#job-new").onclick = () => {
+    const job = newJob({ address: wxState.address || "", lat: wxState.lat, lon: wxState.lon });
+    upsertJob(db, job);
+    persist();
+    openJobEditor(job.id);
+  };
+  document.querySelectorAll("[data-job-edit]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openJobEditor(btn.getAttribute("data-job-edit"));
+    };
+  });
+  document.querySelectorAll("[data-job-del]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.getAttribute("data-job-del");
+      const job = (db.jobs || []).find((j) => String(j.id) === String(id));
+      if (!job) return;
+      if (!confirm(`Delete job "${job.address || "Unpinned"}"?`)) return;
+      deleteJob(db, id);
+      persist();
+      renderJobs();
+      setStatus("Job deleted");
+    };
+  });
+  const doneBox = $("#job-done-text");
+  if (doneBox) {
+    doneBox.oninput = () => {
+      if (!db.done) db.done = { text: "", houses: [] };
+      db.done.text = doneBox.value;
+      persistSoon();
+    };
+    doneBox.onblur = () => persist();
+  }
+  const loadBtn = $("#job-done-load");
+  if (loadBtn) loadBtn.onclick = () => void loadDoneAddresses({ textId: "job-done-text" });
+  const clr = $("#job-done-clear");
+  if (clr) {
+    clr.onclick = () => {
+      if (!db.done) db.done = { text: "", houses: [] };
+      db.done.houses = [];
+      persist();
+      paintFieldMap();
+      renderJobs();
+      setStatus("Cleared yellow markers");
+    };
+  }
+  const shareBtn = $("#job-done-share");
+  if (shareBtn) shareBtn.onclick = () => void downloadTeamDonePack();
+  const pullBtn = $("#job-done-pull");
+  if (pullBtn) {
+    pullBtn.onclick = async () => {
+      setStatus("Pulling team pack…");
+      const res = await syncTeamDonePack();
+      paintFieldMap();
+      renderJobs();
+      if (!res.ok) setStatus("Team pack unavailable");
+      else if (res.placed) {
+        setStatus(`Team pack ready — ${res.placed} yellow marker${res.placed === 1 ? "" : "s"}`);
+        void ensureDoneHousesPlaced();
+      } else setStatus("Team pack empty");
+    };
+  }
+}
+
+function openJobEditor(id) {
+  const job = (db.jobs || []).find((j) => String(j.id) === String(id));
+  if (!job) return;
+  leaveWx();
+  document.body.classList.remove("comm");
+  $("#view").innerHTML = `
+    <h3>Edit job</h3>
+    <label class="muted">Address</label>
+    <input id="job-edit-addr" type="text" value="${esc(job.address || "")}" placeholder="House address" />
+    <label class="muted">Notes</label>
+    <textarea id="job-edit-notes" rows="4" placeholder="Job notes">${esc(job.notes || "")}</textarea>
+    <label class="muted">Status</label>
+    <select id="job-edit-status">
+      <option value="open"${job.status === "open" || !job.status ? " selected" : ""}>Open</option>
+      <option value="done"${job.status === "done" ? " selected" : ""}>Done</option>
+      <option value="hold"${job.status === "hold" ? " selected" : ""}>On hold</option>
+    </select>
+    <div class="actions" style="margin-top:0.8rem">
+      <button type="button" class="primary" id="job-edit-save">Save</button>
+      <button type="button" id="job-edit-back">Back</button>
+      <button type="button" id="job-edit-del">Delete</button>
+    </div>`;
+  $("#job-edit-save").onclick = () => {
+    job.address = ($("#job-edit-addr")?.value || "").trim();
+    job.notes = ($("#job-edit-notes")?.value || "").trim();
+    job.status = $("#job-edit-status")?.value || "open";
+    upsertJob(db, job);
+    persist();
+    setStatus("Job saved");
+    renderJobs();
+  };
+  $("#job-edit-back").onclick = () => renderJobs();
+  $("#job-edit-del").onclick = () => {
+    if (!confirm(`Delete job "${job.address || "Unpinned"}"?`)) return;
+    deleteJob(db, job.id);
+    persist();
+    setStatus("Job deleted");
+    renderJobs();
+  };
+}
+function renderKeys() {
+  leaveWx();
+  document.body.classList.remove("comm");
+  const s = db.settings;
+  const health = providerHealth();
+  const keyedNow = PROVIDERS.filter((p) => normalizeApiKey(s[p.field])).map((p) => p.label.toUpperCase());
+  const diag = httpDiag();
+  const keyRows = PROVIDERS.map((p) => {
+    const info = keyTag(s, p, health[p.id]);
+    const hint = keyHint(s, p);
+    const has = Boolean(normalizeApiKey(s[p.field]));
+    const get = p.keyUrl ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Get key</a>` : "";
+    return `<div class="key-row ${esc(info.state)}">
+      <div class="key-meta"><span class="key-name">${esc(p.label)}</span><span class="key-tag">${esc(info.tag)}${hint ? `  · ${esc(hint)}` : ""}</span></div>
+      <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` … <button type="button" class="key-clear" data-field="${esc(p.field)}">Clear</button>` : ""}</p>
+      <input id="set-${esc(p.field)}" type="text" autocomplete="off" spellcheck="false" value="" placeholder="${esc(has ? "Paste to replace" : "Paste key — saves as you type")}" data-field="${esc(p.field)}" />
+    </div>`;
+  }).join("");
+  const phone = isPhoneApp();
+  const roomBlock = phone
+    ? `<p class="muted">Phone Lens shares guided photos to ChatGPT — no API keys needed for shingle ID. Keys below are optional for chat.</p>`
+    : "";
+  $("#view").innerHTML = `
+    <h3>Settings</h3>
+    <div class="field"><span>Name</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
+    <div class="field"><span>Company</span><input id="set-co" value="${esc(s.company || "")}" /></div>
+    <div class="field"><span>City</span><input id="set-city" value="${esc(s.city || "")}" placeholder="Edmond, OK" /></div>
+    <div class="field"><span>Units</span>
+      <select id="set-units">
+        <option value="imperial"${(s.units || "imperial") === "imperial" ? " selected" : ""}>Imperial — miles</option>
+        <option value="metric"${s.units === "metric" ? " selected" : ""}>Metric — kilometers</option>
+      </select>
+    </div>
+    ${roomBlock}
+    <p class="muted">Network: ${diag.nativeHttp ? "native" : "web fetch"} · ${esc(diag.platform)}</p>
+    <p class="muted">${phone ? "Chat keys optional on phone." : keyedNow.length ? `Saved: ${esc(keyedNow.join(" · "))}` : "Paste keys for web Lens or chat."}</p>
+    <h3>API keys</h3>
+    <p class="muted">${phone ? "Optional — for Super Chat if you want cloud replies on the phone." : "Chat and web Lens. Gemini, OpenAI, Anthropic, or OpenRouter."}</p>
+    <div class="key-list">${keyRows}</div>
+    <div class="actions"><button type="button" id="keys-test">Test keys</button></div>
+    <h3>Team alpha</h3>
+    <p class="muted">This copy is the alpha sandbox. The working team app stays at the root Pages URL and is not overwritten by this build.</p>
+    <p class="hs-alpha-url" id="set-alpha-url">${esc(teamAlphaLink(APP_VERSION))}</p>
+    <div class="actions"><button type="button" id="copy-alpha">Copy alpha link</button></div>
+    <h3>Team sync</h3>
+    <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
+    <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
+    <h3>Discontinued lookup</h3>
+    <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>
+    <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on this device.</p>`;
+  const op = $("#set-op");
+  if (op) op.oninput = () => {
+    db.settings.operator = op.value;
+    persist();
+  };
+  const co = $("#set-co");
+  if (co) co.oninput = () => {
+    db.settings.company = co.value;
+    persist();
+  };
+  const cityInp = $("#set-city");
+  if (cityInp) cityInp.oninput = () => {
+    db.settings.city = cityInp.value;
+    persist();
+  };
+  const units = $("#set-units");
+  if (units) {
+    units.onchange = () => {
+      db.settings.units = units.value === "metric" ? "metric" : "imperial";
+      setWxUnits(db.settings.units);
+      persist();
+    };
+  }
+  const ghTok = $("#set-gh-token");
+  if (ghTok) {
+    ghTok.oninput = () => {
+      db.settings.github_token = ghTok.value.trim();
+      persist();
+    };
+  }
+  const copyAlpha = $("#copy-alpha");
+  if (copyAlpha) {
+    copyAlpha.onclick = async () => {
+      const url = teamAlphaLink(APP_VERSION);
+      const ok = await copyText(url);
+      setStatus(ok ? "Alpha link copied" : url);
+    };
+  }
+  document.querySelectorAll(".key-row input[data-field]").forEach((inp) => {
+    inp.oninput = () => {
+      const field = inp.dataset.field;
+      db.settings[field] = inp.value;
+      persist();
+      queueKeyValidate(field);
+    };
+  });
+  document.querySelectorAll(".key-clear").forEach((b) => {
+    b.onclick = () => clearProviderKey(b.dataset.field);
+  });
+  $("#keys-test").onclick = async () => {
+    setStatus("Checking keys…");
+    try {
+      await validateKeyed(db.settings);
+      db.settings.brain_health = providerHealth();
+      persist();
+      renderKeys();
+      setStatus("Keys checked");
+    } catch (e) {
+      setStatus(String(e.message || e).slice(0, 50).toUpperCase());
+    }
+  };
+}
+
+function render() {
+  document.body.classList.toggle("wx-tab", isHailTab());
+  document.body.classList.toggle("hs-tab", isHailTab());
+  $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab || (isHailTab() && b.dataset.tab === "hailscope" && tab === "wx")));
+  if (tab === "lens") {
+    leaveWx();
+    renderLens();
+  } else if (isHailTab()) {
+    renderWx();
+  } else {
+    leaveWx();
+    if (tab === "jobs") renderJobs();
+    else if (tab === "keys") renderKeys();
+  }
+  renderPrivacy();
+  paintBrainStrip();
+}
+
+function boot() {
+  renderPrivacy();
+  $("#privacy-tog").onclick = () => {
+    const secure = privacyOn(db.settings);
+    db.settings.privacy_mode = secure ? "leaky" : "secure";
+    persist();
+    renderPrivacy();
+    setStatus(privacyOn(db.settings) ? "On-device — Lens blocked" : "Cloud — Lens on");
+  };
+  const commTog = $("#comm-tog");
+  if (commTog) {
+    commTog.onclick = () => {
+      document.body.classList.add("comm");
+      renderChatLog();
+      $("#input")?.focus();
+    };
+  }
+  $("#comm-close").onclick = () => document.body.classList.remove("comm");
+  $("#tabs").onclick = (e) => {
+    const b = e.target.closest("[data-tab]");
+    if (!b) return;
+    const next = b.dataset.tab;
+    if ((next === "hailscope" || next === "wx") && (tab === "hailscope" || tab === "wx") && mapIsLive()) {
+      // Tab swipe already advanced — iOS fires a click that would skip another tier.
+      if (hailTierGestureRecently()) return;
+      advanceHailBottomReveal();
+      return;
+    }
+    tab = next;
+    if (tab === "chat" || tab === "radio") {
+      $("#tabs").querySelectorAll("[data-tab]").forEach((btn) => btn.classList.toggle("on", btn.dataset.tab === "chat"));
+      document.body.classList.add("comm");
+      renderChatLog();
+      return;
+    }
+    document.body.classList.remove("comm");
+    render();
+  };
+  $("#send").onclick = () => sendChat();
+  $("#input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+  $("#attach-btn").onclick = () => attachChatPhoto();
+  $("#lens-btn").onclick = () => {
+    document.body.classList.remove("comm");
+    tab = "lens";
+    render();
+  };
+  $("#agent-trig").onclick = () => openAgentSheet();
+  $("#agent-sheet-bg").onclick = () => closeAgentSheet();
+  $("#agent-sheet-close").onclick = () => closeAgentSheet();
+  $("#input").addEventListener("paste", async (e) => {
+    const items = [...(e.clipboardData?.items || [])].filter((i) => i.type.startsWith("image/"));
+    if (!items.length) return;
+    e.preventDefault();
+    for (const it of items.slice(0, MAX_CHAT_PHOTOS - pendingChatImages.length)) {
+      const file = it.getAsFile();
+      if (file) pendingChatImages.push(await fileToDataUrl(file, 1280, 0.72));
+    }
+    document.body.classList.add("comm");
+    paintChatAttach();
+  });
+  render();
+  setStatus("");
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && isHailTab()) refreshMapSize();
+  });
+  // Coming back into signal is the one moment a written-off relay deserves
+  // another try, so a truck that drives out of a dead zone starts clean.
+  window.addEventListener("online", () => {
+    resetProxyOutages();
+    scheduleInViewOfficePreload(600);
+  });
+  let resizeMapTimer = 0;
+  window.addEventListener("resize", () => {
+    if (!isHailTab()) return;
+    if (resizeMapTimer) clearTimeout(resizeMapTimer);
+    resizeMapTimer = window.setTimeout(() => {
+      resizeMapTimer = 0;
+      refreshMapSize();
+    }, 150);
+  });
+  void import("@capacitor/app")
+    .then(({ App }) => {
+      App.addListener("appStateChange", ({ isActive }) => {
+        if (isActive && isHailTab()) refreshMapSize();
+      });
+    })
+    .catch(() => {});
+  void (async () => {
+    const doneRes = await syncTeamDonePack();
+    if (doneRes.ok && doneRes.placed) {
+      if (isHailTab()) paintFieldMap();
+      setStatus(`Team pack · ${doneRes.placed} done target${doneRes.placed === 1 ? "" : "s"}`);
+      void ensureDoneHousesPlaced();
+    }
+    const marksRes = await syncTeamMarksPack();
+    if (marksRes.ok && marksRes.added > 0) {
+      if (isHailTab()) paintFieldMap();
+      setStatus(`Team marks · ${marksRes.total} on map (+${marksRes.added} new)`);
+    }
+  })();
+}
+
+void matchCatalog;
+void uid;
+boot();

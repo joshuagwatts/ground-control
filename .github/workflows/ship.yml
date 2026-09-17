@@ -1,0 +1,217 @@
+name: Ship
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run sync-version
+      - run: npm test
+      - run: npm run check
+      - run: node scripts/check-app-imports.mjs
+      - run: npx cap sync android
+      - name: Ensure CapacitorHttp native plugin
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("android/app/src/main/assets/capacitor.plugins.json")
+          data = json.loads(p.read_text())
+          hit = {"pkg": "@capacitor/core", "classpath": "com.getcapacitor.plugin.CapacitorHttp"}
+          if not any(x.get("classpath") == hit["classpath"] for x in data):
+              data.append(hit)
+              p.write_text(json.dumps(data, indent="\t") + "\n")
+              print("added CapacitorHttp")
+          else:
+              print("CapacitorHttp already registered")
+          PY
+      - name: Decode upload keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import os, base64, pathlib, sys
+          raw = (os.environ.get("ANDROID_KEYSTORE_BASE64") or "").strip()
+          if not raw:
+              print("Missing ANDROID_KEYSTORE_BASE64 secret — cannot sign a phone update.")
+              sys.exit(1)
+          pathlib.Path("android/app/upload.jks").write_bytes(base64.b64decode(raw))
+          print("upload.jks ready")
+          PY
+      - name: Stamp Android version
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, os, re
+          pkg = json.loads(Path("package.json").read_text())
+          name = str(pkg.get("version") or "0.1.0")
+          run = max(1, int(os.environ.get("GITHUB_RUN_NUMBER") or "1"))
+          code = 1000 + run
+          p = Path("android/app/build.gradle")
+          t = p.read_text()
+          t = re.sub(r"versionCode \d+", f"versionCode {code}", t)
+          t = re.sub(r'versionName "[^"]+"', f'versionName "{name}.{run}"', t)
+          p.write_text(t)
+          print(f"Android {name}.{run} ({code})")
+          PY
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+      - name: Build signed release APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          chmod +x gradlew && ./gradlew assembleRelease
+      - name: Name the file GroundControl.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk GroundControl.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GroundControl-apk
+          path: GroundControl.apk
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run sync-version
+      - run: npx cap sync ios
+      - name: Build iOS (simulator)
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          APP=$(find build/Build/Products -name '*.app' -type d | head -n 1)
+          test -n "$APP"
+          mkdir -p ../../dist-ios
+          ditto "$APP" ../../dist-ios/GroundControl.app
+          cd ../../dist-ios && zip -r GroundControl-ios-simulator.zip GroundControl.app
+          echo "Built $APP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GroundControl-ios-simulator
+          path: dist-ios/GroundControl-ios-simulator.zip
+          if-no-files-found: error
+      - name: Build signed IPA when Apple secrets are present
+        id: ipa
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_BASE64: ${{ secrets.IOS_PROVISION_BASE64 }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          if [ -z "${IOS_CERTIFICATE_BASE64:-}" ] || [ -z "${IOS_PROVISION_BASE64:-}" ] || [ -z "${IOS_TEAM_ID:-}" ]; then
+            echo "No Apple signing secrets — simulator zip only. Add IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISION_BASE64, IOS_TEAM_ID for a device IPA."
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/ios_dist.p12"
+          PROF_PATH="$RUNNER_TEMP/gc.mobileprovision"
+          KEYCHAIN="$RUNNER_TEMP/ios-build.keychain-db"
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$IOS_PROVISION_BASE64" | base64 --decode > "$PROF_PATH"
+          security create-keychain -p "temp" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "temp" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "${IOS_CERTIFICATE_PASSWORD:-}" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed -e s/\"//g)
+          security set-key-partition-list -S apple-tool:,apple: -s -k "temp" "$KEYCHAIN"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROF_UUID=$(security cms -D -i "$PROF_PATH" | plutil -extract UUID raw -)
+          cp "$PROF_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PROF_UUID}.mobileprovision"
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/GroundControl.xcarchive \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            archive
+          xcodebuild -exportArchive \
+            -archivePath build/GroundControl.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist <(printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>method</key><string>ad-hoc</string><key>teamID</key><string>'"$IOS_TEAM_ID"'</string><key>compileBitcode</key><false/></dict></plist>')
+          cp build/export/*.ipa ../../GroundControl.ipa
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.ipa.outputs.built == 'true'
+        with:
+          name: GroundControl-ipa
+          path: GroundControl.ipa
+          if-no-files-found: error
+
+  release:
+    needs: [android]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+      - name: Flatten downloads
+        run: mv GroundControl-apk/GroundControl.apk GroundControl.apk
+      - name: Read package version
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
+        with:
+          tag_name: v${{ steps.pkg.outputs.version }}
+          name: Ground Control v${{ steps.pkg.outputs.version }}
+          make_latest: true
+          generate_release_notes: true
+          body: |
+            **Ground Control v${{ steps.pkg.outputs.version }}**
+
+            Sideload **GroundControl.apk**. After the first signed build, tap the APK to **update** — do not uninstall.
+
+            Check the version in the app header (`v${{ steps.pkg.outputs.version }}`) to confirm you are on this build.
+
+            Same package (`com.holowatts.groundcontrol`) and the same signing key every ship. Keys and jobs stay on the phone.
+
+            - **HailScope** — pin a place, filter storm dates, tap a date for hail zones
+            - **Lens** — shingle ID, damage marks, field ID
+            - **Chat** — Super Chat with COMPARE and multi-photo
+          files: |
+            GroundControl.apk
+          fail_on_unmatched_files: true

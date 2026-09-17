@@ -1,0 +1,21 @@
+{
+  "appId": "com.holowatts.groundcontrol",
+  "appName": "Ground Control",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true,
+    "adjustMarginsForEdgeToEdge": "disable",
+    "backgroundColor": "#0a0f0a"
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0a0f0a",
+    "preferredContentMode": "mobile",
+    "scrollEnabled": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
