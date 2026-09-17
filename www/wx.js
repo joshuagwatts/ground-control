@@ -9823,21 +9823,16 @@ function frameSelectedOffice(inv) {
   const id = String(inv.id || "");
   if (!id) return false;
   const homes = listingsForSelectedOffice(inv, { maxKm: 28, limit: 24 });
+  if (!homes.length) return false;
   try {
-    if (homes.length) {
-      if (listingHomesFramedFor === id) return false;
-      listingHomesFramedFor = id;
-      listingCameraFor = id;
-      map.fitBounds([[inv.lat, inv.lon], ...homes.map((h) => [h.lat, h.lon])], {
-        padding: [48, 48],
-        maxZoom: 15,
-        animate: false,
-      });
-      return true;
-    }
-    if (listingCameraFor === id) return false;
+    if (listingHomesFramedFor === id) return false;
+    listingHomesFramedFor = id;
     listingCameraFor = id;
-    map.setView([inv.lat, inv.lon], 14, { animate: false });
+    map.fitBounds([[inv.lat, inv.lon], ...homes.map((h) => [h.lat, h.lon])], {
+      padding: [48, 48],
+      maxZoom: 15,
+      animate: false,
+    });
     return true;
   } catch {
     return false;
@@ -9870,6 +9865,7 @@ function selectInvestorOnMap(inv, marker) {
   else showInvestorPeek(inv);
   requestAnimationFrame(() => {
     if (String(inv?.id) !== selectedInvestorId) return;
+    refreshMapSize();
     frameSelectedOffice(inv);
     paintInvestorLayer();
   });
@@ -9886,6 +9882,7 @@ export function clearSelectedInvestor() {
   lastInvestorPaintSig = "";
   paintInvestorRegions(null);
   paintInvestorLayer({ force: true });
+  refreshMapSize();
   if (typeof fieldOverlay.onInvestorDeselect === "function") fieldOverlay.onInvestorDeselect();
   return true;
 }
