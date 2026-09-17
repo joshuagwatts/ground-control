@@ -616,6 +616,11 @@ export function listingIsExact(row) {
   return validInvestorCoord(row?.lat, row?.lon) && EXACT_PRECISION.has(normalizeListingPrecision(row?.precision));
 }
 
+/** True when the home is this office's listing — not a nearby MLS leftover. */
+export function listingIsOfficeOwned(row) {
+  return String(row?.attribution || "office").toLowerCase() !== "nearby";
+}
+
 export function normalizeListing(raw = {}) {
   const lat = Number(raw.lat);
   const lon = Number(raw.lon);
@@ -624,6 +629,7 @@ export function normalizeListing(raw = {}) {
     price: clip(raw.price, 24),
     url: clip(raw.url, 240),
     source: clip(raw.source, 40) || "listing",
+    attribution: String(raw.attribution || "").toLowerCase() === "nearby" ? "nearby" : "office",
     lat: Number.isFinite(lat) ? lat : null,
     lon: Number.isFinite(lon) ? lon : null,
     precision: normalizeListingPrecision(raw.precision),
@@ -765,12 +771,13 @@ export function investorDisplayName(inv) {
   return String(inv?.name || inv?.company || investorKindMeta(inv?.kind).label).trim();
 }
 
-/** How many sale homes this office has, mapped or address-only. */
+/** How many sale homes this office has, mapped or address-only. Nearby MLS leftovers do not count. */
 export function investorPropertyCount(inv) {
   if (String(inv?.kind) !== "realestate") return 0;
   const rows = Array.isArray(inv?.listings) ? inv.listings : [];
   let n = 0;
   for (const row of rows) {
+    if (!listingIsOfficeOwned(row)) continue;
     if (String(row?.address || "").trim() || listingIsMappable(row)) n += 1;
   }
   return n;

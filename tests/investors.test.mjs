@@ -36,6 +36,7 @@ import {
   PHOTON_INSURANCE_TERMS,
   normalizeListing,
   listingIsExact,
+  listingIsOfficeOwned,
   mappedInvestorListings,
   unmappedInvestorListings,
   listingsForSelectedOffice,
@@ -70,9 +71,15 @@ import {
   parseArcGisMatch,
   summarizeAgentAccuracy,
   listingUrlsForOffice,
+  idxJsonUrlsForOffice,
+  parseJsonPayload,
+  parseIdxListingsFromJson,
+  pickOfficeListings,
+  idxRowBelongsToOffice,
   listingReaderUrl,
   parseStreetAddressesFromText,
   officeWebsiteFromOsm,
+  investorCity,
   withDeadline,
   SHALLOW_LOOKUP_MS,
   DEEP_LOOKUP_MS,
@@ -592,13 +599,14 @@ assert(listingUrls.length >= 4, "office site plus listing paths");
 assert(!listingUrls.some((u) => /realtor\.com|zillow\.com/.test(u)), "a known office site does not wait on realtor/zillow 429s");
 assert(listingUrls.includes("https://golddotsouth.example/listings"), "the office site listings path is included");
 assert(listingUrls.includes("https://golddotsouth.example/homes"), "the office /homes path is included");
+assert(listingUrls.includes("https://golddotsouth.example/idx/featured"), "IDX featured path is included when the site is known");
 assert(
   listingUrls[0] === "https://golddotsouth.example/about",
   "the office website is asked first",
 );
 const portalUrls = listingUrlsForOffice({ name: "Seabrooke Realty", address: "Oklahoma City, OK" });
-assert(portalUrls.some((u) => /realtor\.com/.test(u)), "offices without a site still try the agent page");
-assert(portalUrls.some((u) => /zillow\.com/.test(u)), "offices without a site still try zillow");
+assert(!portalUrls.some((u) => /realtor\.com|zillow\.com/.test(u)), "no website must not scrape a city-wide Zillow dump as that office");
+assert(portalUrls.length === 0, "without a site, listing URLs wait on website discovery");
 assert(
   officeWebsiteFromOsm(
     { name: "Verbode", lat: 35.47, lon: -97.52 },
@@ -612,9 +620,53 @@ assert(
   ) === "https://verbode.com/",
   "OSM website is used for listing scrape without waiting on contacts",
 );
+assert(investorCity({ address: "Oklahoma City, OK" }) === "Oklahoma City", "Oklahoma City, OK is not slugged as a state abbreviation");
+
+const idxUrls = idxJsonUrlsForOffice("https://www.mcgrawrealtors.com/");
 assert(
-  listingUrlsForOffice({ name: "Seabrooke Realty", address: "Oklahoma City, OK" }).some((u) => /oklahoma-city/.test(u)),
-  "Oklahoma City, OK is not slugged as a state abbreviation",
+  idxUrls[0] === "https://www.mcgrawrealtors.com/wp-json/kvcoreidx/v1/api/public/listings?limit=40",
+  "kvCORE public listings JSON is asked for an office site",
 );
+const idxWrapped = parseJsonPayload(
+  'Title: x\nURL Source: https://example.com\nMarkdown Content:\n{"current_page":1,"data":[{"address":"7921 NW 101st Street","city":"Oklahoma City","state":"OK","zip":"73162","lat":35.57,"long":-97.65,"price":269900,"brokername":"McGraw Realtors","agentname":"Pat"}]}',
+);
+assert(idxWrapped?.data?.[0]?.brokername === "McGraw Realtors", "Jina markdown wrapper peels off JSON");
+const idxOffice = parseIdxListingsFromJson(idxWrapped, { officeName: "McGraw Realtors" });
+assert(idxOffice.length === 1 && listingIsOfficeOwned(idxOffice[0]), "broker-matched IDX row is this office's listing");
+assert(/101st/i.test(idxOffice[0].address) && idxOffice[0].lat === 35.57, "IDX JSON keeps street and coordinates");
+const idxNearby = parseIdxListingsFromJson(
+  {
+    data: [
+      {
+        address: "422 SE 17th Street",
+        city: "Oklahoma City",
+        state: "OK",
+        zip: "73129",
+        lat: 35.45,
+        long: -97.48,
+        brokername: "Home Place Real Estate",
+      },
+    ],
+  },
+  { officeName: "McGraw Realtors" },
+);
+assert(idxNearby.length === 1 && !listingIsOfficeOwned(idxNearby[0]), "unmatched IDX row is nearby, not this agent's");
+assert(idxRowBelongsToOffice("Keller Williams Realty", { brokername: "Keller Williams Central OK" }), "KW brand matches KW broker");
+assert(!idxRowBelongsToOffice("McGraw Realtors", { brokername: "eXp Realty, LLC" }), "McGraw does not claim eXp MLS rows");
+const pickedOffice = pickOfficeListings([{ address: "1711 Spoke St, Oklahoma City, OK", attribution: "office" }], idxNearby);
+assert(pickedOffice.length === 1 && /Spoke/i.test(pickedOffice[0].address), "office-site homes beat a nearby MLS dump");
+const pickedNearby = pickOfficeListings([], idxNearby);
+assert(pickedNearby.length === 1 && !listingIsOfficeOwned(pickedNearby[0]), "nearby MLS is kept only when this office has no public homes");
+const counted = normalizeInvestor({
+  kind: "realestate",
+  name: "McGraw Realtors",
+  lat: 35.47,
+  lon: -97.52,
+  listings: [
+    { address: "1711 Spoke St", lat: 35.46, lon: -97.53, attribution: "office" },
+    { address: "422 SE 17th Street", lat: 35.45, lon: -97.48, attribution: "nearby" },
+  ],
+});
+assert(investorPropertyCount(counted) === 1, "nearby MLS leftovers do not count as this office's property total");
 
 console.log("investors ok");

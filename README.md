@@ -52,9 +52,9 @@ https://joshuagwatts.github.io/ground-control/?v=0.2.307
 
 This is the working crew link. Hail Search storms lives here. Hearts and stars do **not**.
 
-**Alpha sandbox (hearts, stars, and hail — v0.2.335)**
+**Alpha sandbox (hearts, stars, and hail — v0.2.336)**
 
-https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.335
+https://joshuagwatts.github.io/ground-control/alpha/?v=0.2.336
 
 Hearts and Stars stay **off** until you tap them. Offices in the map frame preload public phones from OSM. A selected star opens an office card in the HailScope peek (phone, listings, no storms). Gold listing dots open that house's county assessor record in the same peek. House taps show the full parcel card (year built, sf, roof, sale, market, mailing, permits) instead of a one-line chip. Search storms uses the same NCEI hail fetch as the working 0.2.307 / APK 2.309 zones. Hard-refresh once if a phone still shows an older build.
 

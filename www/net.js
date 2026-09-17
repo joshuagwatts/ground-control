@@ -326,6 +326,14 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
 export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}, opts = {}) {
   const target = assertPublic(rewriteNoaaSwdiUrl(url));
   const headers = { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...extraHeaders };
+  try {
+    if (new URL(target).hostname.toLowerCase() === "r.jina.ai") {
+      // Cloudflare challenges the spoofed Pixel UA on the listing reader.
+      headers["User-Agent"] = "GroundControl/1.0 (listings)";
+    }
+  } catch {
+    /* keep default UA */
+  }
   const skipPublicRelays = opts.skipPublicRelays === true;
   const ms = Number(timeoutMs) || 14000;
 

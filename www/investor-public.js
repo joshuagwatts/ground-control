@@ -265,10 +265,6 @@ function citySlug(city) {
     .replace(/^-|-$/g, "");
 }
 
-function officeSlug(name) {
-  return nameKey(name).replace(/\s+/g, "-").slice(0, 48);
-}
-
 export function isPeopleSearchUrl(url) {
   return PEOPLE_SEARCH.test(String(url || ""));
 }
@@ -1022,28 +1018,144 @@ export async function enrichInvestorContacts(inv, { deep = false, osmHits = [], 
 }
 
 export function listingUrlsForOffice(inv) {
-  const name = inv?.name || inv?.company;
-  const city = citySlug(investorCity(inv));
-  const slug = officeSlug(name);
   const urls = [];
   if (inv?.website) {
     urls.push(inv.website);
     try {
       const origin = new URL(inv.website).origin;
-      for (const path of ["/listings", "/homes", "/properties", "/featured-listings"]) {
+      for (const path of ["/listings", "/homes", "/properties", "/featured-listings", "/idx/featured", "/idx"]) {
         urls.push(`${origin}${path}`);
       }
     } catch {
       /* ignore */
     }
-    // Realtor/Zillow 429 through every reader and hold Promise.all open.
-    return [...new Set(urls.filter(Boolean))].slice(0, 5);
+    // Realtor/Zillow city dumps are not this office's homes — never attribute them.
+    return [...new Set(urls.filter(Boolean))].slice(0, 7);
   }
-  urls.push(
-    `https://www.realtor.com/realestateagents/${slug}_${city}_ok`,
-    `https://www.zillow.com/${city}-ok/realtor/${slug}/`,
+  return [];
+}
+
+/** kvCORE (and similar) public JSON — lat/lon already on the row, no geocode wait. */
+export function idxJsonUrlsForOffice(website) {
+  const href = String(website || "").trim();
+  if (!isOfficeWebsite(href)) return [];
+  try {
+    const origin = new URL(href).origin;
+    return [`${origin}/wp-json/kvcoreidx/v1/api/public/listings?limit=40`];
+  } catch {
+    return [];
+  }
+}
+
+/** Jina wraps JSON in a markdown reader page — peel that off before JSON.parse. */
+export function parseJsonPayload(text) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  let raw = fence ? fence[1].trim() : t;
+  const md = raw.match(/Markdown Content:\s*([\s\S]+)/i);
+  if (md) raw = md[1].trim();
+  const start = raw.search(/[\[{]/);
+  if (start < 0) return null;
+  raw = raw.slice(start);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function formatListingPrice(n) {
+  const x = Number(n);
+  if (Number.isFinite(x) && x > 0) return `$${Math.round(x).toLocaleString("en-US")}`;
+  return String(n || "").trim();
+}
+
+export function idxRowBelongsToOffice(officeName, row) {
+  const name = String(officeName || "").trim();
+  if (!name) return false;
+  const broker = String(row?.brokername || "").trim();
+  const agent = String(row?.agentname || "").trim();
+  return (
+    namesLikelySame(name, broker) ||
+    officesLikelySame(name, broker) ||
+    namesLikelySame(name, agent) ||
+    namesLikelySame(name, `${broker} ${agent}`.trim())
   );
-  return [...new Set(urls.filter(Boolean))].slice(0, 4);
+}
+
+function collectIdxListingNodes(node, out = []) {
+  if (!node) return out;
+  if (Array.isArray(node)) {
+    for (const n of node) collectIdxListingNodes(n, out);
+    return out;
+  }
+  if (typeof node !== "object") return out;
+  if (Array.isArray(node.data)) collectIdxListingNodes(node.data, out);
+  if (Array.isArray(node.listings)) collectIdxListingNodes(node.listings, out);
+  if (Array.isArray(node.results)) collectIdxListingNodes(node.results, out);
+  const address = String(node.address || node.street_address || node.unparsedAddress || node.line || "").trim();
+  const lat = Number(node.lat ?? node.latitude ?? node.geo_lat);
+  const lon = Number(node.long ?? node.lng ?? node.lon ?? node.longitude ?? node.geo_lon);
+  const hasAddr = Boolean(address && /\d/.test(address));
+  const mapped = Number.isFinite(lat) && Number.isFinite(lon);
+  if (!hasAddr && !mapped) return out;
+  const city = String(node.city || node.addressLocality || "").trim();
+  const state = String(node.state || node.state_code || "OK").trim() || "OK";
+  const zip = String(node.zip || node.zipcode || node.postal_code || "").replace(/\D/g, "").slice(0, 5);
+  out.push({
+    address: joinAddressParts({ street: address, city, state, zip }),
+    house: houseFromStreet(address),
+    street: address,
+    city,
+    state,
+    zip,
+    lat: mapped ? lat : null,
+    lon: mapped ? lon : null,
+    price: formatListingPrice(node.price || node.list_price),
+    url: String(node.url || node.listing_url || "").trim(),
+    brokername: String(node.brokername || node.broker_name || node.office || "").trim(),
+    agentname: String(node.agentname || node.agent_name || "").trim(),
+    source: "idx",
+    precision: mapped ? "rooftop" : "approx",
+    geoSource: mapped ? "listing" : "",
+  });
+  return out;
+}
+
+/** Homes from an IDX JSON dump. Broker/agent match = this office; otherwise nearby. */
+export function parseIdxListingsFromJson(json, { officeName = "" } = {}) {
+  const out = [];
+  const seen = new Set();
+  for (const row of collectIdxListingNodes(json)) {
+    const attribution = idxRowBelongsToOffice(officeName, row) ? "office" : "nearby";
+    pushListing(out, seen, { ...row, attribution });
+  }
+  return out.slice(0, MAX_LISTINGS);
+}
+
+/**
+ * Office-site HTML and broker-matched IDX rows beat a city MLS dump.
+ * Only when this office has no public homes do we keep nearby sales (labeled nearby).
+ */
+export function pickOfficeListings(htmlRows, idxRows) {
+  const office = [];
+  const nearby = [];
+  const officeSeen = new Set();
+  const nearSeen = new Set();
+  for (const row of htmlRows || []) {
+    const attr = String(row?.attribution || "office").toLowerCase() === "nearby" ? "nearby" : "office";
+    pushListing(attr === "nearby" ? nearby : office, attr === "nearby" ? nearSeen : officeSeen, {
+      ...row,
+      attribution: attr,
+    });
+  }
+  for (const row of idxRows || []) {
+    const attr = String(row?.attribution || "").toLowerCase() === "office" ? "office" : "nearby";
+    if (attr === "office") pushListing(office, officeSeen, { ...row, attribution: "office" });
+    else pushListing(nearby, nearSeen, { ...row, attribution: "nearby" });
+  }
+  return office.length ? office : nearby;
 }
 
 /** Website already on the OSM pin — listing scrape must not wait on the contact hunt. */
@@ -1450,7 +1562,7 @@ async function listingsFromPages(urls, inv) {
   const absorb = (page) => {
     if (!page?.html) return;
     for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company })) {
-      pushListing(out, seen, { ...row, url: row.url || page.url });
+      pushListing(out, seen, { ...row, url: row.url || page.url, attribution: "office" });
     }
   };
   const list = urls.filter(Boolean).slice(0, 7);
@@ -1459,6 +1571,22 @@ async function listingsFromPages(urls, inv) {
   if (out.length < 2 && list.length > 1) {
     const pages = await Promise.all(list.slice(1).map((url) => fetchListingPage(url, LISTING_PAGE_MS)));
     for (const page of pages) absorb(page);
+  }
+  return out;
+}
+
+async function listingsFromIdxJson(website, inv) {
+  const out = [];
+  const seen = new Set();
+  for (const url of idxJsonUrlsForOffice(website)) {
+    const page = await fetchListingPage(url, LISTING_PAGE_MS);
+    if (!page?.html) continue;
+    const json = parseJsonPayload(page.html);
+    if (!json) continue;
+    for (const row of parseIdxListingsFromJson(json, { officeName: inv?.name || inv?.company })) {
+      pushListing(out, seen, row);
+    }
+    if (out.length) break;
   }
   return out;
 }
@@ -1508,6 +1636,7 @@ async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, work
         continue;
       }
       if (!listingNearOffice(office, next)) {
+        if (String(next.attribution || "") === "nearby") continue;
         if (next.address) out.push(normalizeListing({ ...next, lat: null, lon: null, precision: "street" }));
         continue;
       }
@@ -1530,18 +1659,39 @@ async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, work
 
 export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMapped } = {}) {
   if (!inv || String(inv.kind) !== "realestate") return [];
+  const notify = (rows) => {
+    if (typeof onScraped === "function" && rows.length) {
+      try {
+        onScraped(rows);
+      } catch {
+        /* peek optional */
+      }
+    }
+  };
+  async function hunt(site) {
+    if (!isOfficeWebsite(site)) return [];
+    const idxP = listingsFromIdxJson(site, inv);
+    const homeP = listingsFromPages([site], inv);
+    const [idxRows, homeRows] = await Promise.all([idxP, homeP]);
+    let picked = pickOfficeListings(homeRows, idxRows);
+    if (!picked.length) {
+      const extraUrls = listingUrlsForOffice({ ...inv, website: site }).filter((u) => u !== site);
+      const extra = extraUrls.length ? await listingsFromPages(extraUrls, inv) : [];
+      picked = pickOfficeListings(extra, idxRows);
+    }
+    picked = picked.filter((row) => {
+      if (String(row?.attribution || "") !== "nearby") return true;
+      if (!validInvestorCoord(row.lat, row.lon)) return true;
+      return listingNearOffice(inv, row);
+    });
+    notify(picked);
+    return picked;
+  }
   const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
-  let rows = await listingsFromPages(listingUrlsForOffice({ ...inv, website }), inv);
+  let rows = await hunt(website);
   if (!rows.length && !website) {
     const found = await discoverOfficeWebsite(inv);
-    if (found) rows = await listingsFromPages(listingUrlsForOffice({ ...inv, website: found }), inv);
-  }
-  if (typeof onScraped === "function" && rows.length) {
-    try {
-      onScraped(rows);
-    } catch {
-      /* peek optional */
-    }
+    if (found) rows = await hunt(found);
   }
   return geocodeListingRows(inv, rows, { onMapped });
 }

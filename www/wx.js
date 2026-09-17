@@ -52,6 +52,7 @@ import {
   investorPropertyCount,
   investorPropertyCountLabel,
   listingIsExact,
+  listingIsOfficeOwned,
   mappedInvestorListings,
   listingsForSelectedOffice,
   unmappedInvestorListings,
@@ -9351,7 +9352,10 @@ function investorPopupHtml(inv) {
   let listingLine = "";
   if (isRe) {
     const bits = [];
-    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+    const officeHomes = homes.filter(listingIsOfficeOwned);
+    const nearbyHomes = homes.filter((h) => !listingIsOfficeOwned(h));
+    if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
+    else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
     // Addresses we refused to place are still worth showing — silently dropping them looks like a bug.
     if (unmapped) bits.push(`${unmapped} we could not pin to a house`);
     listingLine = bits.length ? bits.join(" · ") : looking ? "Looking up this office's listings…" : "";
@@ -9414,7 +9418,9 @@ function listingPopupHtml(home, inv) {
   const addr = String(home?.address || "Listed home").trim();
   const price = String(home?.price || "").trim();
   const url = String(home?.url || "").trim();
-  const who = investorDisplayName(inv);
+  const who = listingIsOfficeOwned(home)
+    ? investorDisplayName(inv)
+    : `For sale near ${investorDisplayName(inv)}`;
   const check = zillowSearchUrl(addr);
   const link = url
     ? `<a class="hs-list" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
@@ -9461,12 +9467,15 @@ function investorHomeRowHtml(home, mapped) {
   const a = listingAttr(home);
   const exact = listingIsExact(home);
   const lab = [a.addr || "Listed home", a.price].filter(Boolean).join(" · ");
-  const hint = mapped
-    ? exact
-      ? "On the map"
-      : "Approximate pin"
-    : "Address only — not on the map";
-  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}</strong><span>${escHousePop(hint)}</span></button>`;
+  const nearby = !listingIsOfficeOwned(home);
+  const hint = nearby
+    ? "For sale near this office — not listed as this agent's"
+    : mapped
+      ? exact
+        ? "On the map"
+        : "Approximate pin"
+      : "Address only — not on the map";
+  return `<button type="button" class="hs-inv-home${mapped ? "" : " loose"}${nearby ? " nearby" : ""}" data-inv-home="1" data-lat="${escHousePop(a.lat)}" data-lon="${escHousePop(a.lon)}" data-addr="${escHousePop(a.addr)}" data-url="${escHousePop(a.url)}" data-price="${escHousePop(a.price)}"><strong>${escHousePop(lab)}</strong><span>${escHousePop(hint)}</span></button>`;
 }
 
 function investorPeekHtml(inv) {
@@ -9485,7 +9494,10 @@ function investorPeekHtml(inv) {
   let listingLine = "";
   if (isRe) {
     const bits = [];
-    if (mapped.length) bits.push(`${mapped.length} on the map`);
+    const officeHomes = mapped.filter(listingIsOfficeOwned);
+    const nearbyHomes = mapped.filter((h) => !listingIsOfficeOwned(h));
+    if (officeHomes.length) bits.push(`${officeHomes.length} of this office's listings on the map`);
+    else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
     if (unmapped.length) bits.push(`${unmapped.length} address-only`);
     if (bits.length) listingLine = bits.join(" · ");
     else if (looking) listingLine = "Looking up this office's listings…";
@@ -9529,7 +9541,9 @@ function listingPeekHtml(home, inv, place = {}) {
   const addr = String(home?.address || place.address || "Listed home").trim();
   const price = String(home?.price || "").trim();
   const url = String(home?.url || "").trim();
-  const who = investorDisplayName(inv);
+  const who = listingIsOfficeOwned(home)
+    ? investorDisplayName(inv)
+    : `For sale near ${investorDisplayName(inv)}`;
   const check = zillowSearchUrl(addr);
   const link = url
     ? `<a class="hs-list hs-zillow" href="${escHousePop(url)}" target="_blank" rel="noopener">Open listing</a>`
@@ -9623,8 +9637,8 @@ export function fillInvestorStormDates(root, data, esc, { onRefetch } = {}) {
   const waiting = Boolean(live?._meta?.loading);
   if (!days.length) {
     const hint = waiting
-      ? "Loading storm dates for these homes…"
-      : "Homes are on the map. Search storms, then tap a date to overlay hail for this agent.";
+      ? "Loading storm dates…"
+      : "Search storms, then tap a date to overlay hail on this office.";
     slot.innerHTML = `<p class="hs-inv-storm-hint">${esc(hint)}</p>${
       waiting ? "" : `<button type="button" class="hs-inv-storm-search" data-hs-storm-search>Search storms</button>`
     }<div class="hs-dates" hidden></div>`;
@@ -9637,7 +9651,7 @@ export function fillInvestorStormDates(root, data, esc, { onRefetch } = {}) {
       const run = root._hsOnRefetch;
       if (typeof run === "function") {
         const hintEl = slot.querySelector(".hs-inv-storm-hint");
-        if (hintEl) hintEl.textContent = "Loading storm dates for these homes…";
+        if (hintEl) hintEl.textContent = "Loading storm dates…";
         void Promise.resolve(run())
           .then((fresh) => {
             if (fresh) fillInvestorStormDates(root, fresh, esc, { onRefetch: run });
@@ -9653,7 +9667,7 @@ export function fillInvestorStormDates(root, data, esc, { onRefetch } = {}) {
     });
     return;
   }
-  slot.innerHTML = `<p class="hs-inv-storm-hint">Tap a storm date to overlay hail on this agent's homes</p>
+  slot.innerHTML = `<p class="hs-inv-storm-hint">Tap a storm date to overlay hail on these homes</p>
     <div class="hs-dates">${hailScopeDateRows(days, esc, { viewport: true, data: live })}</div>`;
   bindHailScopeDates(root, live, esc, { onRefetch: root._hsOnRefetch });
 }

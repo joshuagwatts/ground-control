@@ -78,7 +78,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.335";
+} from "./wx.js?v=0.2.336";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -106,6 +106,7 @@ import {
   investorInBounds,
   mappedInvestorListings,
   unmappedInvestorListings,
+  listingIsOfficeOwned,
 } from "./investors.js";
 import {
   applyOsmOfficesToInvestors,
@@ -1468,10 +1469,13 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
       const homes = mappedInvestorListings(cur);
       if (homes.length) {
         const bits = [cur.phone, cur.email].filter(Boolean);
-        bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+        const officeHomes = homes.filter(listingIsOfficeOwned);
+        const nearbyHomes = homes.filter((h) => !listingIsOfficeOwned(h));
+        if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
+        else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
         setStatus(`${investorDisplayName(cur)} · ${bits.join(" · ")}`);
         if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(cur);
-        if (homes.length) offerStormsForSelectedOffice(cur);
+        offerStormsForSelectedOffice(cur);
       }
       paintInvestorMap();
     };
@@ -1492,13 +1496,16 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     const homes = mappedInvestorListings(next);
     const unmapped = unmappedInvestorListings(next).length;
     const bits = [next.phone, next.email].filter(Boolean);
-    if (homes.length) bits.push(`${homes.length} listing${homes.length === 1 ? "" : "s"} on the map`);
+    const officeHomes = homes.filter(listingIsOfficeOwned);
+    const nearbyHomes = homes.filter((h) => !listingIsOfficeOwned(h));
+    if (officeHomes.length) bits.push(`${officeHomes.length} listing${officeHomes.length === 1 ? "" : "s"} on the map`);
+    else if (nearbyHomes.length) bits.push(`${nearbyHomes.length} for sale near this office`);
     if (unmapped) bits.push(`${unmapped} address-only`);
     if (bits.length) setStatus(`${investorDisplayName(next)} · ${bits.join(" · ")}`);
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(next);
     if (homes.length > mappedInvestorListings(inv).length) frameInvestorListings(next);
-    if (homes.length) offerStormsForSelectedOffice(next);
+    offerStormsForSelectedOffice(next);
   } finally {
     investorPublicBusy.delete(id);
     paintInvestorMap();
@@ -1595,7 +1602,8 @@ function paintFieldMap() {
       setStatus(
         [investorDisplayName(inv), investorPropertyCountLabel(investorPropertyCount(inv))].filter(Boolean).join(" · "),
       );
-      showInvestorPeek(inv);
+      if (String(inv?.kind) === "realestate") offerStormsForSelectedOffice(inv);
+      else showInvestorPeek(inv);
     },
     onListingSelect: (home, inv) => {
       hailTapGen += 1;
@@ -2565,13 +2573,12 @@ function officeStormOnRefetch(gen) {
   };
 }
 
-/** After gold dots land, open storm dates under the office so a date tap can overlay hail. */
+/** Open storm dates under the office so a date tap can overlay hail on their homes. */
 function offerStormsForSelectedOffice(inv) {
   if (String(inv?.kind) !== "realestate") return;
-  if (!mappedInvestorListings(inv).length) return;
+  showInvestorPeek(inv);
   const sheet = $("#hs-sheet");
   if (!sheet?.querySelector(`.hs-pin-office[data-inv="${inv.id}"]`)) return;
-  showInvestorPeek(inv);
   revealHailStormSheet({ interactive: true, scroll: false });
   const onRefetch = officeStormOnRefetch(hailTapGen);
   if (wxState.data) fillInvestorStormDates(sheet, wxState.data, esc, { onRefetch });
