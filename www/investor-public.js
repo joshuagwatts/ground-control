@@ -25,6 +25,7 @@ import {
   listingIsOfficeOwned,
   mappedInvestorListings,
   officeOwnedMappedCount,
+  OFFICE_LISTING_HUNT_BELOW,
   normalizeInvestor,
   normalizeListing,
   osmInvestorKind,
@@ -343,18 +344,20 @@ function listingReaderBlocked(body) {
 async function fetchListingPage(url, ms = LISTING_PAGE_MS) {
   const href = String(url || "").trim();
   if (!/^https?:\/\//i.test(href) || isPeopleSearchUrl(href)) return null;
-  const reader = listingReaderUrl(href);
-  if (reader) {
-    try {
-      const { body } = await httpGet(reader, Math.min(Number(ms) || LISTING_PAGE_MS, 4500), {
-        Accept: "text/plain,*/*",
-      });
-      if (!listingReaderBlocked(body)) return { html: String(body), url: href };
-    } catch {
-      /* native / direct next — never wait on cors.sh for listing HTML */
-    }
-  }
-  return fetchPage(href, Math.min(Number(ms) || LISTING_PAGE_MS, 3000), listingBrowserHeaders({ zillow: /zillow/i.test(href) }), {
+  const budget = Math.min(Number(ms) || LISTING_PAGE_MS, 4500);
+  const readers = [
+    listingReaderUrl(href),
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(href)}`,
+  ].filter(Boolean);
+  const hit = await Promise.any(
+    readers.map(async (reader) => {
+      const { body } = await httpGet(reader, budget, { Accept: "text/plain,*/*" });
+      if (listingReaderBlocked(body)) throw new Error("blocked");
+      return { html: String(body), url: href };
+    }),
+  ).catch(() => null);
+  if (hit) return hit;
+  return fetchPage(href, Math.min(budget, 3000), listingBrowserHeaders({ zillow: /zillow/i.test(href) }), {
     skipPublicRelays: true,
   });
 }
@@ -1643,7 +1646,7 @@ async function listingsFromPages(urls, inv) {
   const list = urls.filter(Boolean).slice(0, 7);
   if (!list.length) return out;
   absorb(await fetchListingPage(list[0], LISTING_PAGE_MS));
-  if (out.length < 2 && list.length > 1) {
+  if (out.length < 6 && list.length > 1) {
     const pages = await Promise.all(list.slice(1).map((url) => fetchListingPage(url, LISTING_PAGE_MS)));
     for (const page of pages) absorb(page);
   }
@@ -1837,8 +1840,10 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
   };
   let hunted = 0;
   if (sites.length) {
-    absorb(await hunt(sites[0]));
-    hunted = 1;
+    const batch = sites.slice(0, 2);
+    const rows = await Promise.all(batch.map((site) => hunt(site)));
+    for (const row of rows) absorb(row);
+    hunted = batch.length;
   }
   if (bag.length < 6) {
     if (!bag.length) {
@@ -1867,7 +1872,7 @@ export async function enrichInvestorFromPublic(inv, { deep = false, osmHits = []
   if (!inv) return null;
   const budget = Number(budgetMs) || (deep ? DEEP_LOOKUP_MS : SHALLOW_LOOKUP_MS);
   const mappedCount = officeOwnedMappedCount(inv);
-  const wantListings = String(inv.kind) === "realestate" && deep && mappedCount < 2;
+  const wantListings = String(inv.kind) === "realestate" && deep && mappedCount < OFFICE_LISTING_HUNT_BELOW;
   const website = inv.website || officeWebsiteFromOsm(inv, osmHits);
   const seeded = website && website !== inv.website ? { ...inv, website } : inv;
   const listingsP = wantListings

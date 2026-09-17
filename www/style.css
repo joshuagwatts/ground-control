@@ -3457,20 +3457,23 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 }
 .hs-inv-listing-dot {
   display: block;
-  width: 14px;
-  height: 14px;
-  border-radius: 3px 3px 4px 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px 4px 5px 5px;
   background: #fbbf24;
-  box-shadow: 0 0 0 2px #0b0b0d, 0 1px 3px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 0 2px #0b0b0d, 0 0 10px 2px rgba(251, 191, 36, 0.85), 0 2px 4px rgba(0, 0, 0, 0.55);
   position: relative;
+}
+.hs-inv-listing.loose .hs-inv-listing-dot {
+  background: #f59e0b;
 }
 .hs-inv-listing-dot::before {
   content: "";
   position: absolute;
-  left: 3px;
-  right: 3px;
-  top: 4px;
-  height: 5px;
+  left: 4px;
+  right: 4px;
+  top: 5px;
+  height: 6px;
   background: #0b0b0d;
   border-radius: 1px;
 }

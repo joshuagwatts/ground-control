@@ -26,6 +26,8 @@ export const INVESTOR_KINDS = [
 export const MAX_INVESTORS = 200;
 export const MAX_LISTED_INVESTORS = 400;
 export const MAX_INVESTOR_LISTINGS = 40;
+/** Hunt this office's public homes until we have this many mapped gold dots. */
+export const OFFICE_LISTING_HUNT_BELOW = 8;
 
 const KIND_IDS = new Set(INVESTOR_KINDS.map((k) => k.id));
 

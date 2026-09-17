@@ -56,6 +56,7 @@ import {
   listingDotKey,
   mappedInvestorListings,
   officeOwnedMappedCount,
+  OFFICE_LISTING_HUNT_BELOW,
   listingsForSelectedOffice,
   unmappedInvestorListings,
   shouldShowInvestorPin,
@@ -9319,7 +9320,9 @@ function ensureFieldPanes() {
   }
   if (!map.getPane("investorListings")) {
     map.createPane("investorListings");
-    map.getPane("investorListings").style.zIndex = 675;
+    const pane = map.getPane("investorListings");
+    pane.style.zIndex = 690;
+    pane.style.pointerEvents = "auto";
   }
 }
 
@@ -9762,7 +9765,17 @@ function listingDotStyle(home) {
   };
 }
 
-/** Gold dots stay on the map across pan/zoom — add/remove only when the home set changes. */
+function listingDivIcon(home) {
+  const exact = listingIsExact(home);
+  return window.L.divIcon({
+    className: `hs-inv-listing ${exact ? "exact" : "loose"}`,
+    html: `<span class="hs-inv-listing-dot" title=""></span>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
+}
+
+/** Gold house dots stay on the map across pan/zoom — add/remove only when the home set changes. */
 function paintInvestorRegions(inv) {
   if (!investorRegionLayer) return;
   const homes = inv && String(inv.kind) === "realestate" ? listingsToDraw(inv) : [];
@@ -9772,34 +9785,30 @@ function paintInvestorRegions(inv) {
     if (!key) continue;
     next.add(key);
     const prev = listingMarkers.get(key);
+    const title = `${home.address || "Listed home"}${listingIsExact(home) ? "" : " (approximate)"}`;
     if (prev) {
       prev.home = home;
       prev.inv = inv;
       const style = listingDotStyle(home);
-      if (prev.exact !== style.exact || prev.fillOpacity !== style.fillOpacity) {
-        prev.marker.setStyle({
-          radius: style.radius,
-          weight: style.weight,
-          fillOpacity: style.fillOpacity,
-          dashArray: style.dashArray,
-        });
+      if (prev.exact !== style.exact) {
+        prev.marker.setIcon(listingDivIcon(home));
         prev.exact = style.exact;
-        prev.fillOpacity = style.fillOpacity;
+      }
+      try {
+        prev.marker.setTooltipContent?.(title);
+        const el = prev.marker.getElement?.();
+        if (el) el.setAttribute("title", title);
+      } catch {
+        /* title optional */
       }
       continue;
     }
-    const style = listingDotStyle(home);
-    const marker = window.L.circleMarker([home.lat, home.lon], {
+    const marker = window.L.marker([home.lat, home.lon], {
       pane: "investorListings",
-      className: "hs-inv-listing-hit",
-      radius: style.radius,
-      color: "#0b0b0d",
-      weight: style.weight,
-      fillColor: "#fbbf24",
-      fillOpacity: style.fillOpacity,
-      dashArray: style.dashArray,
+      icon: listingDivIcon(home),
       keyboard: false,
-      title: `${home.address || "Listed home"}${style.exact ? "" : " (approximate)"}`,
+      title,
+      zIndexOffset: 600,
     })
       .on("click", (e) => {
         window.L.DomEvent.stop(e);
@@ -9808,7 +9817,7 @@ function paintInvestorRegions(inv) {
         handleListingTap(hit?.home || home, hit?.inv || inv);
       })
       .addTo(investorRegionLayer);
-    listingMarkers.set(key, { marker, exact: style.exact, fillOpacity: style.fillOpacity, home, inv });
+    listingMarkers.set(key, { marker, exact: listingIsExact(home), home, inv });
   }
   for (const [key, row] of listingMarkers) {
     if (next.has(key)) continue;
@@ -9865,8 +9874,8 @@ function frameSelectedOffice(inv) {
 
 function officeNeedsPublic(inv) {
   if (!inv) return false;
-  if (!investorHasContact(inv)) return true;
-  return String(inv.kind) === "realestate" && officeOwnedMappedCount(inv) < 1;
+  if (String(inv.kind) === "realestate") return officeOwnedMappedCount(inv) < OFFICE_LISTING_HUNT_BELOW;
+  return !investorHasContact(inv);
 }
 
 function selectInvestorOnMap(inv, marker) {
@@ -9996,6 +10005,8 @@ function paintInvestorLayer({ force = false } = {}) {
     list.map((inv) => `${inv.id}:${inv.phone || ""}`).join(","),
     investorViewBucket(),
     selectedInvestorId && fieldOverlay.lookingInvestorIds?.has?.(String(selectedInvestorId)) ? 1 : 0,
+    selectedInvestorId && fieldOverlay.huntingListingsIds?.has?.(String(selectedInvestorId)) ? 1 : 0,
+    selected ? officeOwnedMappedCount(selected) : 0,
   ].join("|");
   if (!force && sig === lastInvestorPaintSig) return;
   lastInvestorPaintSig = sig;

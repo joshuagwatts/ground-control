@@ -80,7 +80,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.342";
+} from "./wx.js?v=0.2.343";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -110,6 +110,7 @@ import {
   unmappedInvestorListings,
   officeOwnedMappedCount,
   listingIsOfficeOwned,
+  OFFICE_LISTING_HUNT_BELOW,
 } from "./investors.js";
 import {
   applyOsmOfficesToInvestors,
@@ -1484,7 +1485,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
   const runDeep = deep || pendingDeepLookups.has(id);
   pendingDeepLookups.delete(id);
   investorPublicBusy.add(id);
-  const huntListings = runDeep && String(inv.kind) === "realestate" && officeOwnedMappedCount(inv) < 2;
+  const huntListings = runDeep && String(inv.kind) === "realestate" && officeOwnedMappedCount(inv) < OFFICE_LISTING_HUNT_BELOW;
   if (huntListings) listingHuntBusy.add(id);
   paintInvestorMap();
   const listingsSettled = () => {
