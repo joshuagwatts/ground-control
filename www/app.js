@@ -2626,6 +2626,8 @@ function offerStormsForSelectedOffice(inv) {
   const sheet = $("#hs-sheet");
   if (!sheet?.querySelector(`.hs-pin-office[data-inv="${inv.id}"]`)) return;
   revealHailStormSheet({ interactive: true, scroll: false });
+  refreshMapSize();
+  setTimeout(() => refreshMapSize(), 280);
   const onRefetch = officeStormOnRefetch(hailTapGen);
   if (wxState.data) fillInvestorStormDates(sheet, wxState.data, esc, { onRefetch });
   if (wxState.data && hailScopeDays(wxState.data).length) return;
@@ -2648,6 +2650,7 @@ async function loadStormsForOfficeListings(inv, onRefetch) {
         const sheet = $("#hs-sheet");
         if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) {
           fillInvestorStormDates(sheet, partial, esc, { onRefetch: refetch });
+          refreshMapSize();
         }
       },
     });
@@ -2656,6 +2659,7 @@ async function loadStormsForOfficeListings(inv, onRefetch) {
     const sheet = $("#hs-sheet");
     if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) {
       fillInvestorStormDates(sheet, data, esc, { onRefetch: refetch });
+      refreshMapSize();
     }
   } catch {
     /* keep the office card even if storms miss */
