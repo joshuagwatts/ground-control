@@ -657,7 +657,7 @@ export function parseStreetAddressesFromText(text, { officeAddress = "", cityHin
 }
 
 /** Homes attributed to this office/agent — never a city-wide dump. */
-export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
+export function parseSaleListingsFromHtml(html, { officeName = "", officeAddress = "" } = {}) {
   const blob = String(html || "");
   const out = [];
   const seen = new Set();
@@ -744,7 +744,7 @@ export function parseSaleListingsFromHtml(html, { officeName = "" } = {}) {
       const named = blob.match(OK_CITY_RE);
       return named ? named[1] : "";
     })();
-    for (const row of parseStreetAddressesFromText(blob, { cityHint })) {
+    for (const row of parseStreetAddressesFromText(blob, { cityHint, officeAddress })) {
       pushListing(out, seen, row);
     }
   }
@@ -1634,12 +1634,22 @@ export function listingNearOffice(office, home, maxKm = MAX_LISTING_KM) {
   return meters <= maxKm * 1000;
 }
 
+function listingMatchesOffice(inv, row) {
+  const officeHouse = houseFromAddress(inv?.address);
+  if (!officeHouse) return false;
+  const officeStreet = streetKey(parseStreetAddress(inv.address || "").street || inv.address || "");
+  const house = houseFromStreet(row?.street || row?.address || "");
+  const street = streetKey(String(row?.street || row?.address || "").replace(/^\d+[A-Za-z]?\s+/, ""));
+  return house === officeHouse && Boolean(officeStreet) && street === officeStreet;
+}
+
 async function listingsFromPages(urls, inv) {
   const out = [];
   const seen = new Set();
   const absorb = (page) => {
     if (!page?.html) return;
-    for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company })) {
+    for (const row of parseSaleListingsFromHtml(page.html, { officeName: inv.name || inv.company, officeAddress: inv.address || "" })) {
+      if (listingMatchesOffice(inv, row)) continue;
       pushListing(out, seen, { ...row, url: row.url || page.url, attribution: "office" });
     }
   };
@@ -1815,7 +1825,7 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
       const extra = extraUrls.length ? await listingsFromPages(extraUrls, inv) : [];
       picked = pickOfficeListings([...homeRows, ...extra], idxRows);
     }
-    picked = picked.filter((row) => String(row?.attribution || "") !== "nearby");
+    picked = picked.filter((row) => String(row?.attribution || "") !== "nearby" && !listingMatchesOffice(inv, row));
     notify(picked);
     return picked;
   }

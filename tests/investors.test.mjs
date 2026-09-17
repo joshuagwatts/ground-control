@@ -687,6 +687,12 @@ assert(
 );
 assert(!parseStreetAddressesFromText("000 636 Hunters Hill Road Oklahoma City OK").length, "a $000 stub is not a house");
 assert(
+  !parseStreetAddressesFromText("Listed 3421 W Rock Creek Road Norman OK", {
+    officeAddress: "3421 West Rock Creek Road, Norman, OK, 73072",
+  }).length,
+  "the office street is not one of this office's sale homes",
+);
+assert(
   knownOfficeListingSites({ name: "Seabrooke Realty" }).some((u) => /keyrealtyokc\.com/i.test(u)) &&
     knownOfficeListingSites({ name: "Seabrooke Realty" }).some((u) => /seabrooke\.appfolio\.com/i.test(u)),
   "Seabrooke hunts Key Realty sales and its Appfolio rentals",
