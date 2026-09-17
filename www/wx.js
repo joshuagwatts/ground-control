@@ -10052,6 +10052,17 @@ export function hasSelectedInvestor() {
 }
 
 /**
+ * Async enrichment (listing hunt, portfolio scrape) swaps the investor object
+ * via upsert — point the selected ref at the fresh copy so storm-hit
+ * intersection and repaints use the new listings, not the stale ones.
+ */
+export function refreshSelectedInvestor(inv) {
+  if (inv && String(inv?.id || "") && String(inv.id) === String(selectedInvestorId)) {
+    selectedInvestorRef = inv;
+  }
+}
+
+/**
  * Storm-hit intersection: which of the selected investor's listings fall inside
  * the hail swath rings of each selected storm date. Uses the same rings the map
  * draws (buildHailTraceDayBands), so the highlight always matches the overlay.

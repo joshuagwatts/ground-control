@@ -67,6 +67,7 @@ import {
   mapIsLive,
   isInvestorSelected,
   hasSelectedInvestor,
+  refreshSelectedInvestor,
   refreshMapSize,
   defaultMapCenter,
   mapCenterCoords,
@@ -1556,6 +1557,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
       if (!partial) return;
       const hit = upsertInvestor(savedInvestors(), partial);
       db.investors = hit.list;
+      refreshSelectedInvestor(hit.investor);
       invalidateInvestorCache();
       persistSoon();
       paintFieldSheetSoon();
@@ -1587,6 +1589,16 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     });
     officeContactTried.add(id);
     if (!next) return;
+    // Portfolio scrape on tap: county parcels under the investor's owner name(s)
+    // become gold dots, so one tap shows the locations they control. Gated like
+    // the website hunt — no re-scrape when listings are already on the map.
+    if (runDeep && String(next.kind) === "realestate" && officeOwnedMappedCount(next) < OFFICE_LISTING_HUNT_BELOW) {
+      try {
+        await scrapePortfolioForInvestor(next);
+      } catch (err) {
+        console.warn("portfolio scrape failed", err);
+      }
+    }
     // Fold county parcels + hunt listings by address: verified / owned / listed.
     try {
       reconcileInvestorListings(next);
@@ -1595,6 +1607,7 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
     }
     const hit = upsertInvestor(savedInvestors(), next);
     db.investors = hit.list;
+    refreshSelectedInvestor(hit.investor);
     invalidateInvestorCache();
     // Several lookups finish at once — batch the write and the sheet redraw.
     persistSoon();
