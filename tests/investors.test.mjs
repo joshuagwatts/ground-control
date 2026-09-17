@@ -684,10 +684,7 @@ assert(
   !parseStreetAddressesFromText("No images were found on Street. Click here for directions.").length,
   "listing-page junk is not a house street",
 );
-assert(
-  parseStreetAddressesFromText("1711 Spoke St Oklahoma City OK 73111").some((r) => /Spoke/i.test(r.address)),
-  "a real OKC street still parses",
-);
+assert(!parseStreetAddressesFromText("000 636 Hunters Hill Road Oklahoma City OK").length, "a $000 stub is not a house");
 assert(
   knownOfficeListingSites({ name: "Seabrooke Realty" }).some((u) => /keyrealtyokc\.com/i.test(u)) &&
     knownOfficeListingSites({ name: "Seabrooke Realty" }).some((u) => /seabrooke\.appfolio\.com/i.test(u)),

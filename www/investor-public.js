@@ -638,6 +638,7 @@ export function parseStreetAddressesFromText(text, { officeAddress = "", cityHin
       continue;
     }
     if (/images? were found|no images|directions|click here|^beds$|^baths$/i.test(street)) continue;
+    if (/^0+$/.test(m[1])) continue;
     let city = String(m[5] || "").trim();
     if (/^(ok|oklahoma|united|states|suite|apt|unit|the|and|for|sale|listed)$/i.test(city)) city = "";
     if (city && !OK_CITY_RE.test(city)) city = "";
@@ -969,7 +970,7 @@ export async function fetchOsmOfficesInBounds(bounds) {
 export const SHALLOW_LOOKUP_MS = 7000;
 export const DEEP_LOOKUP_MS = 20000;
 /** Wall clock for a selected star's sale homes — contacts can keep running after this. */
-export const LISTING_LOOKUP_MS = 32000;
+export const LISTING_LOOKUP_MS = 36000;
 const LISTING_PAGE_MS = 5000;
 const LISTING_GEO_WORKERS = 4;
 const LISTING_READER = "https://r.jina.ai/";
@@ -1740,7 +1741,12 @@ function pinListingGeo(next, geo) {
 
 async function geocodeListingRows(inv, rows, { limit = MAX_LISTING_GEOCODE, workers = LISTING_GEO_WORKERS, onMapped } = {}) {
   const office = { lat: Number(inv?.lat), lon: Number(inv?.lon) };
-  const todo = (rows || []).slice(0, MAX_FETCH_LISTINGS);
+  const cityHint = nameKey(investorCity(inv));
+  const todo = (rows || []).slice(0, MAX_FETCH_LISTINGS).sort((a, b) => {
+    const ac = nameKey(`${a.city || ""} ${a.address || ""}`).includes(cityHint) ? 0 : 1;
+    const bc = nameKey(`${b.city || ""} ${b.address || ""}`).includes(cityHint) ? 0 : 1;
+    return ac - bc;
+  });
   const out = [];
   let cursor = 0;
   let geoLeft = limit;
@@ -1824,7 +1830,6 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
   pushSite(inv.website);
   pushSite(officeWebsiteFromOsm(inv, osmHits));
   for (const u of knownOfficeListingSites(inv)) pushSite(u);
-  const foundP = discoverOfficeListingSources(inv);
   let bag = [];
   const bagSeen = new Set();
   const absorb = (rows) => {
@@ -1836,7 +1841,9 @@ export async function fetchInvestorListings(inv, { osmHits = [], onScraped, onMa
     hunted = 1;
   }
   if (bag.length < 6) {
-    for (const u of await foundP) pushSite(u);
+    if (!bag.length) {
+      for (const u of await discoverOfficeListingSources(inv)) pushSite(u);
+    }
     for (const site of sites.slice(hunted)) {
       absorb(await hunt(site));
       if (bag.length >= 8) break;
