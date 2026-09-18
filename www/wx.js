@@ -9811,8 +9811,9 @@ function listingDivIcon(home) {
   return window.L.divIcon({
     className: `hs-inv-listing ${exact ? "exact" : "loose"}${hit ? " storm-hit" : ""}${verified ? " verified" : ""}`,
     html: `<span class="hs-inv-listing-dot" title=""></span>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    // 32px touch target around the 18px visual dot — phone-friendly, same look.
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
   });
 }
 
@@ -9968,13 +9969,46 @@ function frameSelectedOffice(inv) {
   if (regionBox) pts.push([regionBox.south, regionBox.west], [regionBox.north, regionBox.east]);
   if (!pts.length) return false;
   try {
-    listingHomesFramedFor = id;
-    listingCameraFor = id;
     map.fitBounds(pts, {
       padding: [48, 48],
       maxZoom: regionBox ? 12 : 15,
       animate: Boolean(regionBox),
     });
+    // Flag only after the camera actually moved — a failed fitBounds used to
+    // mark this office as framed and block every retry.
+    listingHomesFramedFor = id;
+    listingCameraFor = id;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Pure camera decision for a selected office pin: null when it is already on
+ * camera, otherwise the lat/lon/zoom to fly to. Testable without a map. */
+export function investorPinFrameTarget(inv, view, zoom) {
+  if (!validInvestorCoord(inv?.lat, inv?.lon)) return null;
+  const lat = Number(inv.lat);
+  const lon = Number(inv.lon);
+  const z = Math.max(Number(zoom) || 14, 14);
+  if (view && typeof view.contains === "function") {
+    try {
+      const shrunk = typeof view.pad === "function" ? view.pad(-0.1) : view;
+      if (shrunk.contains([lat, lon])) return null;
+    } catch {
+      /* fall through — frame it */
+    }
+  }
+  return { lat, lon, zoom: z };
+}
+
+/** Selected insurance hearts have no listings to frame — just bring the pin on camera. */
+function frameInvestorPin(inv) {
+  if (!map || !window.L) return false;
+  const target = investorPinFrameTarget(inv, map.getBounds?.(), map.getZoom?.());
+  if (!target) return true;
+  try {
+    map.flyTo([target.lat, target.lon], target.zoom, { duration: 0.6 });
     return true;
   } catch {
     return false;
@@ -10019,7 +10053,7 @@ function selectInvestorOnMap(inv, marker) {
   requestAnimationFrame(() => {
     if (String(inv?.id) !== selectedInvestorId) return;
     refreshMapSize();
-    frameSelectedOffice(inv);
+    frameSelectedOffice(inv) || frameInvestorPin(inv);
     paintInvestorLayer();
   });
 }
@@ -10270,7 +10304,7 @@ export function focusInvestorPin(id, { popup = true } = {}) {
   paintInvestorRegions(inv);
   requestAnimationFrame(() => {
     if (String(inv.id) !== selectedInvestorId) return;
-    frameSelectedOffice(inv);
+    frameSelectedOffice(inv) || frameInvestorPin(inv);
     paintInvestorLayer();
   });
 }

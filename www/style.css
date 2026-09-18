@@ -3456,6 +3456,9 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 .leaflet-div-icon.hs-inv-listing {
   background: transparent;
   border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .hs-inv-listing-dot {
   display: block;

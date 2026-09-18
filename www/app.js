@@ -81,7 +81,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.346";
+} from "./wx.js?v=0.2.347";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -1588,7 +1588,19 @@ async function enrichInvestorPublic(inv, { deep = false } = {}) {
         : undefined,
     });
     officeContactTried.add(id);
-    if (!next) return;
+    if (!next) {
+      // Lookup found nothing: clear the "Looking up…" state first, then
+      // re-render the open peek so it stops promising a phone that never arrives.
+      investorPublicBusy.delete(id);
+      if (huntListings) listingHuntBusy.delete(id);
+      paintInvestorMap();
+      if (isInvestorSelected(id)) {
+        const cur = fieldInvestors().find((x) => String(x.id) === id) || inv;
+        const sheet = $("#hs-sheet");
+        if (sheet?.querySelector(`.hs-pin-office[data-inv="${id}"]`)) showInvestorPeek(cur);
+      }
+      return;
+    }
     // Portfolio scrape on tap: county parcels under the investor's owner name(s)
     // become gold dots, so one tap shows the locations they control. Gated like
     // the website hunt — no re-scrape when listings are already on the map.
