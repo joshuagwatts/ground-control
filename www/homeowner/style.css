@@ -1328,6 +1328,49 @@ body.ho-deep-open {
   touch-action: manipulation;
 }
 
+/* Lead rescue — "text this to High Ground" when the CRM webhook isn't wired. */
+.ho-lead-rescue {
+  margin: 0.85rem 0 0;
+  padding: 0.95rem 1rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--phos) 40%, transparent);
+  border-radius: var(--radius);
+  background: rgba(255, 204, 0, 0.07);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  align-items: stretch;
+}
+
+.ho-lead-rescue[hidden] {
+  display: none !important;
+}
+
+.ho-sms-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  padding: 0.85rem 1.1rem;
+  border-radius: 10px;
+  background: var(--phos);
+  color: #1c1400;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(255, 204, 0, 0.35);
+}
+
+.ho-mini {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  text-align: center;
+}
+
 .ho-report-cta-panel .lead {
   margin-bottom: 0.65rem;
 }

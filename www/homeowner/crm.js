@@ -86,3 +86,30 @@ export async function submitHomescopeLeadToCrm(payload) {
     return { ok: false, status: "webhook_error", error: String(err?.message || err), detail };
   }
 }
+
+/**
+ * Compact lead text for the "text this to High Ground" fallback.
+ * Used when the CRM webhook isn't wired (or the post failed) so the lead
+ * still reaches the office as an SMS from the homeowner's own phone.
+ * Pure function — safe to unit test.
+ */
+export function buildLeadSmsBody({ name = "", address = "", phone = "", roofAgeLabel = "", rec = null, storms = [] } = {}) {
+  const who = String(name || "Homeowner").trim().slice(0, 40) || "Homeowner";
+  const where = String(address || "Oklahoma home").trim().slice(0, 80) || "Oklahoma home";
+  const roof = String(roofAgeLabel || "Not sure").trim().slice(0, 24) || "Not sure";
+  const list = Array.isArray(storms) ? storms : [];
+  const inchPlus = list.filter((s) => Number(s?.maxSizeIn) >= 1).length;
+  const stat = list.length
+    ? `${list.length} covering storm${list.length === 1 ? "" : "s"}${inchPlus ? `, ${inchPlus} at 1"+` : ""}`
+    : "no verified covering storms on record";
+  const headline = String(rec?.headline || "").trim().slice(0, 90);
+  const parts = [
+    `Hi, this is ${who} at ${where}.`,
+    `My HomeScope hail report: ${stat}.`,
+    `Roof: ${roof}.`,
+    headline ? `Verdict: ${headline}.` : "",
+    `Please call me about a free inspection — ${String(phone || "").trim()}.`,
+  ].filter(Boolean);
+  const body = parts.join(" ");
+  return body.length > 480 ? `${body.slice(0, 477)}…` : body;
+}

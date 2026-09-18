@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./style.css?v=0.2.347" />
+  <link rel="stylesheet" href="./style.css?v=0.2.348" />
 </head>
 <body>
   <header class="ho-top">
@@ -33,8 +33,8 @@
       </ol>
       <h1>See the hail that hit your roof</h1>
       <p>
-        Find your Oklahoma roof on the map, by search, or with GPS. Unlock a free High Ground hail report with roof age
-        and contact info — emailed from our CRM.
+        Find your Oklahoma roof on the map, by search, or with GPS — then get a free High Ground
+        hail report emailed to you.
       </p>
     </section>
 
@@ -137,6 +137,10 @@
         <button type="button" id="dl-html">Download report</button>
         <button type="button" id="share-report">Share link</button>
       </div>
+      <div class="ho-lead-rescue no-print" id="lead-rescue" hidden>
+        <a class="ho-sms-btn" id="sms-lead" href="#">Text this report to High Ground</a>
+        <p class="ho-mini">Tap it — opens a text to our office with your report summary. Hit send and we&rsquo;ll reach out.</p>
+      </div>
       <p class="ho-status no-print" id="share-status" role="status"></p>
     </section>
   </main>
@@ -206,6 +210,6 @@
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script type="module" src="./boot.js?v=0.2.347"></script>
+  <script type="module" src="./boot.js?v=0.2.348"></script>
 </body>
 </html>

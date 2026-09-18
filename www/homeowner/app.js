@@ -14,7 +14,7 @@ import {
   mergeHailRows,
   isSwdiHail,
 } from "../wx.js";
-import { buildCrmEmailPackage, submitHomescopeLeadToCrm } from "./crm.js";
+import { buildCrmEmailPackage, submitHomescopeLeadToCrm, buildLeadSmsBody } from "./crm.js";
 import { loadHomeStorms, filterCachedHomeStorms, clearHomeHailCache, getHomeHailCache, onHomeHailCache, deepenHomeHailForReport } from "./hail-load.js";
 
 const LEAD_KEY = "homescope_lead_v1";
@@ -1178,9 +1178,11 @@ function paintStormList({ loading = false, skipMap = false } = {}) {
     li.style.opacity = "0.75";
     li.innerHTML = loading
       ? `<span class="sz">…</span><span>Loading verified hail cover…<br/><span class="meta">NOAA SWDI radar + SPC / IEM — keep this tab open</span></span><span></span>`
-      : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤1.6 km) or storm footprint over this pin</span></span><span></span>`;
+      : `<span class="sz">—</span><span>No storms with verified cover yet<br/><span class="meta">Near-roof (≤1.6 km) or storm footprint over this pin · your free report still documents the baseline</span></span><span></span>`;
     list.appendChild(li);
-    if (btn) btn.disabled = true;
+    // Settled with zero covering storms: the report still documents the baseline,
+    // so keep the path to the gate open — a dead button is a lost lead.
+    if (btn) btn.disabled = loading;
     if (!skipMap) paintOverlays();
     return;
   }
@@ -1862,12 +1864,32 @@ async function generateReport({ emailViaCrm = true } = {}) {
             state.lead.crmAt = new Date().toISOString();
             saveLead(state.lead);
           }
-          setStatus(
-            $("#share-status"),
-            crmResult.status === "sent"
-              ? `Report emailed to ${state.lead.email} via High Ground CRM`
-              : `Report ready — High Ground CRM will email ${state.lead.email}`,
-          );
+          const rescue = $("#lead-rescue");
+          const smsBtn = $("#sms-lead");
+          if (crmResult.status === "sent") {
+            if (rescue) rescue.hidden = true;
+            setStatus($("#share-status"), `Report emailed to ${state.lead.email} via High Ground CRM`);
+          } else {
+            // No wired CRM (or the post failed): without this, the lead only exists
+            // on the homeowner's phone. One tap texts the report summary to the
+            // office — that SMS is the lead, sent from the homeowner's own number.
+            const body = buildLeadSmsBody({
+              name: state.lead?.name,
+              address: state.address,
+              phone: state.lead?.phone,
+              roofAgeLabel: state.roofAgeLabel,
+              rec,
+              storms: finalReportStorms,
+            });
+            if (smsBtn) smsBtn.href = `sms:${PRODUCT.brand.phoneTel}?&body=${encodeURIComponent(body)}`;
+            if (rescue) rescue.hidden = false;
+            setStatus(
+              $("#share-status"),
+              crmResult.status === "queued_local"
+                ? "Report ready below. Tap the text button to send it straight to High Ground — we’ll reach out."
+                : "Report ready, but the email didn’t go through. Tap the text button below, or save/share it here.",
+            );
+          }
         } catch (err) {
           console.warn("[HomeScope] CRM email", err);
           setStatus($("#share-status"), "Report ready (email queue skipped)");
