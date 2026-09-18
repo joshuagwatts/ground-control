@@ -115,6 +115,10 @@ export const HOMEOWNER_FAQ = {
           a: "Architectural (dimensional) shingles are what most Oklahoma homeowners land on — they look good and hold up to our weather. Impact-resistant (Class 4) shingles cost more up front but can earn you a discount on your homeowner's insurance. We'll walk you through both, no pressure.",
         },
         {
+          q: "Why does High Ground prefer Owens Corning shingles?",
+          a: "There's a reason — Owens Corning manufactures everything themselves, the fiberglass and the whole roofing system, so the quality is consistent in a way most brands can't match. Their materials are trusted by the U.S. military. When a company operates at that level, we're comfortable putting their name on your roof.",
+        },
+        {
           q: "How long will a new roof last?",
           a: "In Oklahoma weather, a quality architectural shingle roof typically runs 15–20 years. The wind rating and the quality of the install matter more than the number on the brochure.",
         },

@@ -52,7 +52,9 @@ test("faq: two groups, every question answered", async () => {
   const groups = faqGroups();
   assert.equal(groups.length, 2);
   const total = groups.reduce((n, g) => n + g.items.length, 0);
-  assert.equal(total, 12);
+  assert.equal(total, 13);
+  const html = homeownerFaqHtml();
+  assert.ok(html.includes("Owens Corning"), "preferred-shingle note is in the FAQ");
   for (const g of groups) {
     assert.ok(g.label.trim());
     for (const it of g.items) {
@@ -60,7 +62,6 @@ test("faq: two groups, every question answered", async () => {
       assert.ok(it.body.trim().length > 20, "answer should actually answer");
     }
   }
-  const html = homeownerFaqHtml();
   assert.ok(html.includes("Roofing basics"));
   assert.ok(html.includes("Insurance basics"));
   assert.ok(html.includes("deductible"));
