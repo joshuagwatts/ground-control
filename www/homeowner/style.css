@@ -761,19 +761,113 @@ a {
   font-weight: 650;
 }
 
-.hg-edu-list {
-  margin: 0.45rem 0 0;
-  padding: 0 0 0 1.1rem;
+.hg-accordion {
+  margin: 0.6rem 0 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  font-size: 0.88rem;
-  line-height: 1.45;
-  color: var(--text);
+  gap: 0.5rem;
 }
 
-.hg-edu-list li::marker {
+.hg-acc-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--inset);
+  overflow: hidden;
+}
+
+.hg-acc-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.7rem 0.9rem;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: 600 0.9rem/1.35 Outfit, system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hg-acc-btn:focus-visible {
+  outline: 2px solid var(--phos);
+  outline-offset: -2px;
+}
+
+.hg-acc-title {
+  flex: 1;
+}
+
+.hg-acc-chev {
+  position: relative;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.hg-acc-chev::before,
+.hg-acc-chev::after {
+  content: "";
+  position: absolute;
+  background: var(--phos);
+  border-radius: 1px;
+}
+
+.hg-acc-chev::before {
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 2px;
+}
+
+.hg-acc-chev::after {
+  top: 0;
+  bottom: 0;
+  left: 6px;
+  width: 2px;
+  transition: transform 0.15s ease;
+}
+
+.hg-acc-item.open .hg-acc-chev::after {
+  transform: rotate(90deg);
+}
+
+.hg-acc-panel {
+  display: none;
+  padding: 0 0.9rem 0.9rem;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.hg-acc-item.open .hg-acc-panel {
+  display: block;
+}
+
+.hg-faq-group {
+  margin: 1rem 0 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--phos);
+  font-weight: 650;
+}
+
+.hg-faq-group:first-of-type {
+  margin-top: 0.25rem;
+}
+
+@media print {
+  .hg-acc-panel {
+    display: block !important;
+  }
+  .hg-acc-chev {
+    display: none;
+  }
 }
 
 .hg-foot-meta {

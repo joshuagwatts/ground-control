@@ -3,7 +3,7 @@
  */
 import { APP_VERSION } from "../version.js";
 import { geocodeCandidates, biasAddressQuery, inOklahoma, suggestOklahomaAddresses, resolveAddressSuggestion } from "../geocode.js";
-import { PRODUCT, CLAIM_RULES, homescopeRecommendation, hailWindowSummaries, ROOF_HAIL_EDUCATION } from "./product.js";
+import { PRODUCT, CLAIM_RULES, homescopeRecommendation, hailWindowSummaries, ROOF_HAIL_EDUCATION, HOMEOWNER_FAQ, educationItems, faqGroups, educationAccordionHtml, homeownerFaqHtml, expandAccordionsHtml } from "./product.js";
 import {
   buildHailTraceDayBands,
   hailRadarBandColor,
@@ -1458,8 +1458,22 @@ function buildReportText(rec) {
   }
   lines.push(
     "",
-    "What homeowners should know:",
-    ...(ROOF_HAIL_EDUCATION.bullets || []).map((x) => `• ${x}`),
+    `${ROOF_HAIL_EDUCATION.title}:`,
+  );
+  for (const it of educationItems()) {
+    lines.push(`• ${it.title}`);
+    if (it.body.trim()) lines.push(`  ${it.body}`);
+  }
+  lines.push("", `${HOMEOWNER_FAQ.title} — ${HOMEOWNER_FAQ.blurb}`);
+  for (const g of faqGroups()) {
+    lines.push("", `${g.label}:`);
+    for (const it of g.items) {
+      lines.push(`Q: ${it.title}`);
+      if (it.body.trim()) lines.push(`A: ${it.body}`);
+      lines.push("");
+    }
+  }
+  lines.push(
     "",
     `Review window${rec.roofAgeConfirmed ? " (matches roof age)" : ""}: ${rec.windowStart} → ${rec.windowEnd}`,
     `Covering: ${(rec.covering || []).length} · ${formatHailIn(CLAIM_RULES.minHailInches)}″+: ${(rec.qualifying || []).length}`,
@@ -1540,10 +1554,12 @@ function hailSummaryRowsHtml(summaries, minHailIn) {
     .join("");
 }
 
-function educationBulletsHtml(edu = ROOF_HAIL_EDUCATION) {
-  const bullets = edu?.bullets || [];
-  if (!bullets.length) return "";
-  return `<ul class="hg-edu-list">${bullets.map((b) => `<li>${escHtml(b)}</li>`).join("")}</ul>`;
+function educationAccordion(edu = ROOF_HAIL_EDUCATION, opts = {}) {
+  return educationAccordionHtml(edu, { ...opts, esc: escHtml });
+}
+
+function faqAccordion(faq = HOMEOWNER_FAQ, opts = {}) {
+  return homeownerFaqHtml(faq, { ...opts, esc: escHtml });
 }
 
 function renderReportDocument(rec) {
@@ -1629,8 +1645,17 @@ function renderReportDocument(rec) {
       <div class="hg-section-head">
         <h2 class="hg-section-label">${escHtml(edu.title || "What homeowners should know")}</h2>
       </div>
-      ${educationBulletsHtml(edu)}
+      ${edu.blurb ? `<p class="hg-storm-blurb">${escHtml(edu.blurb)}</p>` : ""}
+      ${educationAccordion(edu)}
       <p class="hg-storm-blurb" style="margin-top:0.75rem">Bottom line: <strong>hail around 1″ and up can leave significant functional damage</strong> on asphalt — weather history shows the events; High Ground shows the shingles.</p>
+    </section>
+
+    <section class="hg-card">
+      <div class="hg-section-head">
+        <h2 class="hg-section-label">${escHtml(HOMEOWNER_FAQ.title)}</h2>
+      </div>
+      <p class="hg-storm-blurb">${escHtml(HOMEOWNER_FAQ.blurb)}</p>
+      ${faqAccordion(HOMEOWNER_FAQ)}
     </section>
 
     ${
@@ -1927,7 +1952,8 @@ function downloadBlob(filename, mime, text) {
 }
 
 function reportHtmlDoc() {
-  const inner = $("#hg-doc")?.innerHTML || "";
+  // Downloaded file has no JS to toggle with — ship every accordion expanded.
+  const inner = expandAccordionsHtml($("#hg-doc")?.innerHTML || "");
   const b = PRODUCT.brand;
   return `<!DOCTYPE html>
 <html lang="en"><head>
@@ -1964,6 +1990,19 @@ function reportHtmlDoc() {
   .hg-section-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem}
   .hg-count{font-size:.75rem;color:var(--muted)}
   .hg-storm-blurb{margin:.35rem 0 0;font-size:.85rem;color:var(--muted);line-height:1.4}
+  .hg-accordion{margin:.6rem 0 0;padding:0;display:flex;flex-direction:column;gap:.5rem}
+  .hg-acc-item{border:1px solid var(--line);border-radius:12px;background:var(--inset);overflow:hidden}
+  .hg-acc-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.7rem .9rem;background:none;border:0;color:var(--text);font:600 .9rem/1.35 Outfit,system-ui,sans-serif;text-align:left;cursor:pointer}
+  .hg-acc-title{flex:1}
+  .hg-acc-chev{position:relative;flex:none;width:14px;height:14px}
+  .hg-acc-chev::before,.hg-acc-chev::after{content:"";position:absolute;background:var(--phos);border-radius:1px}
+  .hg-acc-chev::before{left:0;right:0;top:6px;height:2px}
+  .hg-acc-chev::after{top:0;bottom:0;left:6px;width:2px}
+  .hg-acc-item.open .hg-acc-chev::after{transform:rotate(90deg)}
+  .hg-acc-panel{display:none;padding:0 .9rem .9rem;font-size:.86rem;line-height:1.5;color:var(--muted)}
+  .hg-acc-item.open .hg-acc-panel{display:block}
+  .hg-faq-group{margin:1rem 0 0;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--phos);font-weight:650}
+  @media print{.hg-acc-panel{display:block!important}.hg-acc-chev{display:none}}
   .hg-storm-group{margin:1rem 0 .35rem;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--phos);font-weight:650}
   .hg-storm-list{list-style:none;margin:.45rem 0 0;padding:0;display:flex;flex-direction:column;gap:.4rem}
   .hg-storm{display:grid;grid-template-columns:auto 1fr auto;gap:.55rem .75rem;align-items:center;padding:.65rem .75rem;background:var(--inset);border-radius:12px;border:1px solid transparent}
@@ -2243,6 +2282,17 @@ function boot() {
     } catch {
       setStatus($("#share-status"), url);
     }
+  });
+
+  // One delegated handler for every accordion (education + FAQ), including
+  // re-rendered report documents.
+  document.addEventListener("click", (e) => {
+    const btn = e.target?.closest?.("[data-acc]");
+    if (!btn) return;
+    const item = btn.closest(".hg-acc-item");
+    if (!item) return;
+    const open = item.classList.toggle("open");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
   });
 
   setStep("address");
