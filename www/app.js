@@ -81,12 +81,18 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.350";
+} from "./wx.js?v=0.2.351";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
+import {
+  pickVideoFile,
+  uploadVideoToDrive,
+  driveVideosConfigured,
+  formatBytes,
+} from "./field-video.js";
 import { openMarkEditor } from "./damage.js";
 import { COMPOSE_KINDS, kindMeta, newMark, upsertMark, removeMark, filterMarks, marksCsv, marksPlainList, outreachDraft, isProductPing, productIdOf, productForMark, customProductId, mailerProducts, clampPinScale, mergeMarksPack, serializeTeamMarksPack, markListIconHtml } from "./marks.js";
 import {
@@ -3205,6 +3211,56 @@ async function onWxTap(lat, lon) {
   return onHailTap(lat, lon);
 }
 
+/**
+ * Job video flow: tap 🎥 → native camera → auto-upload to Drive.
+ * Progress shows inline on the job card; the Drive link lands on the job.
+ */
+async function jobCaptureVideo(jobId) {
+  const job = (db.jobs || []).find((j) => String(j.id) === String(jobId));
+  if (!job) return;
+  if (!driveVideosConfigured(db.settings)) {
+    setStatus("Field Videos not set up — paste the Drive bridge URL in DATA");
+    if (confirm("Field Videos needs one-time setup (Drive bridge URL). Open DATA now?")) {
+      switchTab("keys");
+    }
+    return;
+  }
+  let file;
+  try {
+    setStatus("Opening camera…");
+    file = await pickVideoFile();
+  } catch (e) {
+    if (String(e.message || e) !== "cancelled") setStatus("Video cancelled");
+    return;
+  }
+  const bar = document.querySelector(`#jvp-${CSS.escape(String(jobId))}`);
+  const fill = bar?.querySelector(".jvp-fill");
+  const label = bar?.querySelector(".jvp-label");
+  if (bar) bar.style.display = "block";
+  const say = (p, text) => {
+    if (fill) fill.style.width = `${Math.round(p * 100)}%`;
+    if (label) label.textContent = text || "";
+    setStatus(text || "");
+  };
+  try {
+    say(0.01, `Uploading ${formatBytes(file.size)}…`);
+    const rec = await uploadVideoToDrive(db.settings, file, {
+      jobLabel: job.address || "Field",
+      onProgress: say,
+    });
+    if (!Array.isArray(job.videos)) job.videos = [];
+    job.videos.unshift(rec);
+    upsertJob(db, job);
+    persist();
+    say(1, "Video in Drive ✓");
+    setTimeout(() => renderJobs(), 800);
+  } catch (e) {
+    say(0, "");
+    if (bar) bar.style.display = "none";
+    setStatus(`Video upload failed: ${String(e.message || e).slice(0, 140)}`);
+  }
+}
+
 function renderJobs() {
   leaveWx();
   document.body.classList.remove("comm");
@@ -3220,18 +3276,27 @@ function renderJobs() {
     <div class="job-list">${
       jobs.length
         ? jobs
-            .map(
-              (j) =>
-                `<article class="job-card" data-id="${esc(j.id)}">
+            .map((j) => {
+              const vids = Array.isArray(j.videos) ? j.videos : [];
+              const vidLine = vids.length
+                ? `<p class="muted">🎥 ${vids.length} video${vids.length === 1 ? "" : "s"} in Drive</p>`
+                : "";
+              return `<article class="job-card" data-id="${esc(j.id)}">
                   <strong>${esc(j.address || "Unpinned")}</strong>
                   <p class="muted">${esc(jobSummary(j))}</p>
                   <p class="muted">${esc(String(j.created || "").slice(0, 10))}</p>
+                  ${vidLine}
                   <div class="actions job-card-actions">
+                    <button type="button" data-job-video="${esc(j.id)}" class="primary">🎥 Video</button>
                     <button type="button" data-job-edit="${esc(j.id)}">Edit</button>
                     <button type="button" data-job-del="${esc(j.id)}">Delete</button>
                   </div>
-                </article>`,
-            )
+                  <div class="job-video-progress" id="jvp-${esc(j.id)}" style="display:none">
+                    <div class="jvp-bar"><div class="jvp-fill"></div></div>
+                    <p class="muted jvp-label"></p>
+                  </div>
+                </article>`;
+            })
             .join("")
         : `<p class="muted">No local jobs yet. Identify a shingle, mark damage, or pin hail — then save to a job.</p>`
     }</div>
@@ -3270,6 +3335,12 @@ function renderJobs() {
     btn.onclick = (e) => {
       e.stopPropagation();
       openJobEditor(btn.getAttribute("data-job-edit"));
+    };
+  });
+  document.querySelectorAll("[data-job-video]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      void jobCaptureVideo(btn.getAttribute("data-job-video"));
     };
   });
   document.querySelectorAll("[data-job-del]").forEach((btn) => {
@@ -3330,6 +3401,20 @@ function openJobEditor(id) {
   if (!job) return;
   leaveWx();
   document.body.classList.remove("comm");
+  const vids = Array.isArray(job.videos) ? job.videos : [];
+  const vidRows = vids.length
+    ? vids
+        .map(
+          (v) =>
+            `<article class="job-card"><strong>🎥 ${esc(v.fileName || "video")}</strong>` +
+            `<p class="muted">${esc(formatBytes(v.size))} · ${esc(String(v.at || "").slice(0, 10))}</p>` +
+            (v.webViewLink
+              ? `<p><a href="${esc(v.webViewLink)}" target="_blank" rel="noopener">Open in Drive</a></p>`
+              : `<p class="muted">Uploading…</p>`) +
+            `</article>`,
+        )
+        .join("")
+    : `<p class="muted">No videos yet — tap 🎥 Video to record one. It uploads to Drive automatically.</p>`;
   $("#view").innerHTML = `
     <h3>Edit job</h3>
     <label class="muted">Address</label>
@@ -3342,11 +3427,56 @@ function openJobEditor(id) {
       <option value="done"${job.status === "done" ? " selected" : ""}>Done</option>
       <option value="hold"${job.status === "hold" ? " selected" : ""}>On hold</option>
     </select>
+    <h3 style="margin-top:1.2rem">Field videos</h3>
+    <div class="actions"><button type="button" class="primary" id="job-edit-video">🎥 Record video</button></div>
+    <div class="job-video-progress" id="jvp-edit" style="display:none">
+      <div class="jvp-bar"><div class="jvp-fill"></div></div>
+      <p class="muted jvp-label"></p>
+    </div>
+    <div class="job-list">${vidRows}</div>
     <div class="actions" style="margin-top:0.8rem">
       <button type="button" class="primary" id="job-edit-save">Save</button>
       <button type="button" id="job-edit-back">Back</button>
       <button type="button" id="job-edit-del">Delete</button>
     </div>`;
+  $("#job-edit-video").onclick = async () => {
+    if (!driveVideosConfigured(db.settings)) {
+      setStatus("Field Videos not set up — paste the Drive bridge URL in DATA");
+      return;
+    }
+    let file;
+    try {
+      file = await pickVideoFile();
+    } catch {
+      return;
+    }
+    const bar = $("#jvp-edit");
+    const fill = bar?.querySelector(".jvp-fill");
+    const label = bar?.querySelector(".jvp-label");
+    if (bar) bar.style.display = "block";
+    try {
+      const rec = await uploadVideoToDrive(db.settings, file, {
+        jobLabel: ($("#job-edit-addr")?.value || job.address || "Field").trim(),
+        onProgress: (p, text) => {
+          if (fill) fill.style.width = `${Math.round(p * 100)}%`;
+          if (label) label.textContent = text || "";
+          setStatus(text || "");
+        },
+      });
+      if (!Array.isArray(job.videos)) job.videos = [];
+      job.videos.unshift(rec);
+      job.address = ($("#job-edit-addr")?.value || "").trim();
+      job.notes = ($("#job-edit-notes")?.value || "").trim();
+      job.status = $("#job-edit-status")?.value || "open";
+      upsertJob(db, job);
+      persist();
+      setStatus("Video in Drive ✓");
+      openJobEditor(job.id);
+    } catch (e) {
+      setStatus(`Video upload failed: ${String(e.message || e).slice(0, 140)}`);
+      if (bar) bar.style.display = "none";
+    }
+  };
   $("#job-edit-save").onclick = () => {
     job.address = ($("#job-edit-addr")?.value || "").trim();
     job.notes = ($("#job-edit-notes")?.value || "").trim();
@@ -3412,6 +3542,11 @@ function renderKeys() {
     <h3>Team sync</h3>
     <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
     <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
+    <h3>Field videos → Drive</h3>
+    <p class="muted">One-time setup: deploy <code>workers/drive-upload.gs</code> as a Web App (script.google.com, Execute as: Me), then paste the /exec URL + secret. Crew taps 🎥 Video on any job — it records and auto-uploads to <code>High Ground Field Videos/&lt;address&gt;</code>.</p>
+    <div class="field"><span>Bridge URL</span><input id="set-drive-url" type="url" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_url || "")}" placeholder="https://script.google.com/macros/s/…/exec" /></div>
+    <div class="field"><span>Bridge secret</span><input id="set-drive-secret" type="password" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_secret || "")}" placeholder="Same as SHARED_SECRET in the script" /></div>
+    <p class="muted">${driveVideosConfigured(s) ? "✓ Field Videos ready — 🎥 buttons upload automatically." : "Not configured yet — videos will prompt for setup."}</p>
     <h3>Discontinued lookup</h3>
     <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>
     <p class="muted">${esc(String(discontinuedFor().length))} discontinued color/line rows on this device.</p>`;
@@ -3442,6 +3577,20 @@ function renderKeys() {
   if (ghTok) {
     ghTok.oninput = () => {
       db.settings.github_token = ghTok.value.trim();
+      persist();
+    };
+  }
+  const driveUrl = $("#set-drive-url");
+  if (driveUrl) {
+    driveUrl.oninput = () => {
+      db.settings.drive_upload_url = driveUrl.value.trim();
+      persist();
+    };
+  }
+  const driveSecret = $("#set-drive-secret");
+  if (driveSecret) {
+    driveSecret.oninput = () => {
+      db.settings.drive_upload_secret = driveSecret.value.trim();
       persist();
     };
   }

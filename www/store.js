@@ -63,6 +63,8 @@ function blank() {
       desktop_auto: true,
       desktop_model: "",
       github_token: "",
+      drive_upload_url: "",
+      drive_upload_secret: "",
       lat: "",
       lon: "",
       city: "",

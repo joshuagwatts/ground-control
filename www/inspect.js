@@ -14,6 +14,7 @@ export function newJob(partial = {}) {
     hail: null,
     lens: null,
     photos: [],
+    videos: [],
     status: "open",
     ...partial,
   };
