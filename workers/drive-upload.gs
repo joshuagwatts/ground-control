@@ -5,6 +5,8 @@
  * this script creates a Drive resumable-upload session (using the account's
  * own OAuth token — no secrets on crew phones), and the phone uploads video
  * bytes DIRECTLY to Google. This script never sees the video bytes.
+ * Files land in High Ground's shared field-videos folder (TARGET_FOLDER_ID),
+ * named "<job address> <timestamp>.mp4".
  *
  * SETUP (once, ~5 min):
  *  1. https://script.google.com → New project → paste this file.
@@ -22,7 +24,9 @@
  */
 
 var SHARED_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
-var ROOT_FOLDER = "High Ground Field Videos";
+// High Ground's shared field-videos folder — Joshua's pick 2026-09-19.
+// The josh@highgroundokc.com account running this script needs Editor access.
+var TARGET_FOLDER_ID = "1y-EPkLANnmlpOgTDhFWFERd7EHPQtR2D";
 
 function doPost(e) {
   try {
@@ -45,31 +49,9 @@ function json(obj) {
   );
 }
 
-/** Find-or-create a folder path like "High Ground Field Videos/123 Main St". */
-function ensureFolder(path) {
-  var parts = String(path || ROOT_FOLDER)
-    .split("/")
-    .map(function (p) { return p.trim(); })
-    .filter(Boolean);
-  if (!parts.length) parts = [ROOT_FOLDER];
-  var parent = null;
-  var folder = null;
-  for (var i = 0; i < parts.length; i++) {
-    var name = parts[i];
-    var it;
-    if (!parent) {
-      it = DriveApp.getFoldersByName(name);
-    } else {
-      it = parent.getFoldersByName(name);
-    }
-    if (it.hasNext()) {
-      folder = it.next();
-    } else {
-      folder = parent ? parent.createFolder(name) : DriveApp.createFolder(name);
-    }
-    parent = folder;
-  }
-  return folder;
+/** The shared High Ground folder every video lands in. */
+function targetFolder() {
+  return DriveApp.getFolderById(TARGET_FOLDER_ID);
 }
 
 function handleStart(body) {
@@ -77,7 +59,7 @@ function handleStart(body) {
   var mimeType = String(body.mimeType || "video/mp4").slice(0, 80);
   var size = Number(body.size || 0);
   if (!(size > 0)) return json({ ok: false, error: "bad size" });
-  var folder = ensureFolder(body.folderPath);
+  var folder = targetFolder();
 
   // Ask Drive for a resumable upload session.
   var token = ScriptApp.getOAuthToken();

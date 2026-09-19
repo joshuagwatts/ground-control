@@ -14,6 +14,8 @@
  *
  * Crew flow: Jobs → job card → 🎥 Video → native camera records →
  * upload starts automatically → progress bar → Drive link saved on the job.
+ * Files land in High Ground's shared Drive folder (TARGET_FOLDER_ID in the
+ * script), named "<job address> <timestamp>.mp4".
  */
 
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB chunks to Google
