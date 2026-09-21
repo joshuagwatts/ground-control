@@ -112,9 +112,14 @@ export function chooseVideoSource() {
  *
  * Default-camera-grade controls (via the web camera API — Galaxy-class
  * phones support all of these):
- *   tap-to-focus with exposure slider · pinch-to-zoom + zoom stops · torch ·
- *   pause/resume · rule-of-thirds grid · 720p/1080p + 30/60fps · mic toggle ·
- *   clip tray with per-clip delete · mirrored selfie preview
+ *   tap-to-focus with exposure slider · pinch-to-zoom 1x-20x + zoom stops
+ *   (canvas pipeline: hardware zoom to the phone's max, digital crop beyond)
+ *   · torch · pause/resume · rule-of-thirds grid · 720p/1080p + 30/60fps ·
+ *   mic toggle · clip tray with per-clip delete · mirrored selfie preview
+ *
+ * NOTE: the ultra-wide / telephoto lenses can't be reached from any browser —
+ * Android doesn't expose physical lenses to the web. For true ultra-wide,
+ * shoot in the Samsung camera app and use "Pick from phone" to upload.
  */
 const FV_PREFS_KEY = "hg_fv_cam";
 
@@ -194,7 +199,8 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     const overlay = document.createElement("div");
     overlay.className = "fv-rec";
     overlay.innerHTML = `
-      <video class="fv-view" muted playsinline autoplay></video>
+      <canvas class="fv-view"></canvas>
+      <video class="fv-src" muted playsinline autoplay aria-hidden="true"></video>
       <div class="fv-grid"></div>
       <div class="fv-reticle" hidden><input type="range" class="fv-exp" aria-label="Exposure" tabindex="-1"></div>
       <div class="fv-top">
@@ -230,7 +236,8 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
         </div>
       </div>`;
     document.body.appendChild(overlay);
-    const video = overlay.querySelector(".fv-view");
+    const view = overlay.querySelector(".fv-view");
+    const video = overlay.querySelector(".fv-src");
     const grid = overlay.querySelector(".fv-grid");
     const reticle = overlay.querySelector(".fv-reticle");
     const expSlider = overlay.querySelector(".fv-exp");
@@ -246,8 +253,59 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     const gearBtn = overlay.querySelector(".fv-gear");
     const settingsSheet = overlay.querySelector(".fv-settings");
     video.srcObject = stream;
+    try {
+      await video.play();
+    } catch {
+      /* ignore */
+    }
+
+    // ---- canvas pipeline: unlimited digital zoom, WYSIWYG viewfinder ----
+    // The canvas is both the viewfinder and the recording source. Hardware
+    // zoom handles up to the phone's reported max; the canvas center-crops
+    // the rest, so pinch zoom runs 1x-20x no matter what the phone reports.
+    const EXT_ZOOM_MAX = 20;
+    const ctx = view.getContext("2d");
+    let rafId = 0;
+    let hwZoomMax = 1;
+    const sizeCanvas = () => {
+      const d = dimsFor();
+      if (view.width !== d.w || view.height !== d.h) {
+        view.width = d.w;
+        view.height = d.h;
+      }
+    };
+    const hwMax = () => {
+      const m = caps.zoom?.max ?? 1;
+      return m > 1 ? m : 1;
+    };
+    const drawFrame = () => {
+      rafId = requestAnimationFrame(drawFrame);
+      if (video.readyState < 2 || !video.videoWidth) return;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const outW = view.width;
+      const outH = view.height;
+      const hw = Math.min(zoom, hwZoomMax);
+      const dig = Math.max(1, zoom / Math.max(1, hw));
+      // centered crop for the beyond-hardware part, cover-fit to output
+      let sw = vw / dig;
+      let sh = vh / dig;
+      const targetAspect = outW / outH;
+      if (sw / sh > targetAspect) sw = sh * targetAspect;
+      else sh = sw / targetAspect;
+      const sx = (vw - sw) / 2;
+      const sy = (vh - sh) / 2;
+      ctx.save();
+      if (facingMode === "user") {
+        ctx.translate(outW, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, outW, outH);
+      ctx.restore();
+    };
 
     let rec = null;
+    let recStream = null;
     let parts = [];
     let recording = false;
     let paused = false;
@@ -271,9 +329,11 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     const cleanup = () => {
       try { clearInterval(tickTimer); } catch { /* ignore */ }
       try { clearTimeout(focusTimer); } catch { /* ignore */ }
+      try { cancelAnimationFrame(rafId); } catch { /* ignore */ }
       revokeAllUrls();
       saveOnStop = false;
       try { rec && rec.state !== "inactive" && rec.stop(); } catch { /* ignore */ }
+      try { recStream?.getVideoTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
       try { stream?.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
       overlay.remove();
     };
@@ -318,27 +378,25 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     };
 
     const applyZoom = async (z) => {
-      if (!videoTrack || !caps.zoom) return;
-      const zc = caps.zoom;
-      const min = zc.min ?? 1;
-      const max = zc.max ?? 1;
-      const step = zc.step ?? 0.1;
-      let nz = Math.min(max, Math.max(min, z));
-      if (step > 0) nz = Math.round(nz / step) * step;
+      const nz = Math.min(EXT_ZOOM_MAX, Math.max(1, z));
       zoom = nz;
-      try {
-        await videoTrack.applyConstraints({ advanced: [{ zoom: nz }] });
-      } catch {
-        /* ignore */
+      // hardware handles up to its max; the canvas crops the rest
+      if (videoTrack && caps.zoom) {
+        const zc = caps.zoom;
+        const min = zc.min ?? 1;
+        const step = zc.step ?? 0.1;
+        let hz = Math.min(hwZoomMax, Math.max(min, nz));
+        if (step > 0) hz = Math.round(hz / step) * step;
+        try {
+          await videoTrack.applyConstraints({ advanced: [{ zoom: hz }] });
+        } catch {
+          /* ignore */
+        }
       }
       zoomPill.textContent = `${trimZoom(nz)}×`;
     };
 
-    const zoomStops = () => {
-      const max = caps.zoom?.max ?? 1;
-      const stops = [1, 2, 5].filter((s) => s <= max + 1e-6);
-      return stops.length ? stops : [1];
-    };
+    const zoomStops = () => [1, 2, 5, 10, EXT_ZOOM_MAX];
 
     const setTorch = async (on) => {
       if (!videoTrack || !caps.torch) return;
@@ -355,11 +413,10 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       const showTorch = Boolean(caps.torch) && facingMode === "environment";
       torchBtn.hidden = !showTorch;
       torchBtn.classList.toggle("on", torchOn);
-      const zmax = caps.zoom?.max ?? 1;
-      zoomPill.hidden = !(zmax > 1.01);
+      hwZoomMax = hwMax();
+      zoomPill.hidden = false;
       zoomPill.textContent = `${trimZoom(zoom)}×`;
       grid.classList.toggle("show", prefs.grid);
-      video.classList.toggle("mirror", facingMode === "user");
       overlay.querySelectorAll(".fv-seg").forEach((seg) => {
         const k = seg.dataset.k;
         const cur = String(prefs[k]);
@@ -382,8 +439,14 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       try {
         await openStream();
         video.srcObject = stream;
-        await applyZoom(1);
+        try {
+          await video.play();
+        } catch {
+          /* ignore */
+        }
+        sizeCanvas();
         syncControls();
+        await applyZoom(1);
       } catch {
         /* ignore */
       }
@@ -455,7 +518,7 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     let downY = 0;
     let tapId = null;
     const pdist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-    video.addEventListener("pointerdown", (e) => {
+    view.addEventListener("pointerdown", (e) => {
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointers.size === 1) {
         downAt = Date.now();
@@ -469,7 +532,7 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
         tapId = null;
       }
     });
-    video.addEventListener("pointermove", (e) => {
+    view.addEventListener("pointermove", (e) => {
       if (!pointers.has(e.pointerId)) return;
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointers.size === 2 && pinchD0 > 0) {
@@ -484,7 +547,7 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       pointers.delete(e.pointerId);
       if (pointers.size < 2) pinchD0 = 0;
       if (wasTap && pointers.size === 0) {
-        const r = video.getBoundingClientRect();
+        const r = view.getBoundingClientRect();
         focusAt(
           Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
           Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))
@@ -492,8 +555,8 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       }
       if (pointers.size === 0) tapId = null;
     };
-    video.addEventListener("pointerup", pointerEnd);
-    video.addEventListener("pointercancel", pointerEnd);
+    view.addEventListener("pointerup", pointerEnd);
+    view.addEventListener("pointercancel", pointerEnd);
 
     zoomPill.onclick = () => {
       const stops = zoomStops();
@@ -524,7 +587,21 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     const makeRecorder = () => {
       parts = [];
       saveOnStop = false;
-      const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrateFor() });
+      try {
+        recStream?.getVideoTracks().forEach((t) => t.stop());
+      } catch {
+        /* ignore */
+      }
+      // record the canvas (what you see is what uploads) + the mic track
+      const out = view.captureStream();
+      try {
+        const at = stream.getAudioTracks()[0];
+        if (at) out.addTrack(at);
+      } catch {
+        /* ignore */
+      }
+      recStream = out;
+      const r = new MediaRecorder(out, { mimeType: mime, videoBitsPerSecond: bitrateFor() });
       r.ondataavailable = (e) => {
         if (e.data && e.data.size) parts.push(e.data);
       };
@@ -647,10 +724,12 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       resolve(clips);
     };
 
+    sizeCanvas();
     refreshCount();
     refreshTray();
     syncControls();
     applyZoom(1);
+    drawFrame();
   });
 }
 

@@ -3601,6 +3601,7 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 
 /* Field video pro recorder controls (v0.2.358) */
 .fv-view { touch-action: none; }
+.fv-src { display: none; }
 .fv-topbtns { display: flex; gap: .5rem; align-items: center; }
 .fv-gear { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.2rem; width: 2.4rem; height: 2.4rem; border-radius: 50%; }
 .fv-grid { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .2s;
