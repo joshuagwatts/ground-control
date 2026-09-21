@@ -81,7 +81,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.354";
+} from "./wx.js?v=0.2.355";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -3571,9 +3571,9 @@ function renderKeys() {
     <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
     <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
     <h3>Field videos → Drive</h3>
-    <p class="muted">One-time setup: deploy <code>workers/drive-upload.gs</code> as a Web App (script.google.com, Execute as: Me), then paste the /exec URL + secret. Crew taps 🎥 Video on any job — it records and auto-uploads to the High Ground shared Drive folder, named <code>&lt;address&gt; &lt;time&gt;.mp4</code>.</p>
-    <div class="field"><span>Bridge URL</span><input id="set-drive-url" type="url" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_url || "")}" placeholder="https://script.google.com/macros/s/…/exec" /></div>
-    <div class="field"><span>Bridge secret</span><input id="set-drive-secret" type="password" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_secret || "")}" placeholder="Same as SHARED_SECRET in the script" /></div>
+    <p class="muted">The upload bridge is already set up for High Ground (built in, zero setup on crew phones). Crew taps 🎥 Video on any job — it records and auto-uploads to the shared Drive folder, named <code>&lt;address&gt; &lt;time&gt;.mp4</code>. The fields below are only for overriding with a different bridge.</p>
+    <div class="field"><span>Bridge URL</span><input id="set-drive-url" type="url" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_url || "")}" placeholder="Built in — leave blank" /></div>
+    <div class="field"><span>Bridge secret</span><input id="set-drive-secret" type="password" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_secret || "")}" placeholder="Built in — leave blank" /></div>
     <p class="muted">${driveVideosConfigured(s) ? "✓ Field Videos ready — 🎥 buttons upload automatically." : "Not configured yet — videos will prompt for setup."}</p>
     <h3>Discontinued lookup</h3>
     <p class="muted">Catalog includes GAF Timberline HD, CertainTeed Independence/Hatteras, OC Duration COOL, Atlas GlassMaster, and more. Lens only claims a discontinued line when the match is unique.</p>

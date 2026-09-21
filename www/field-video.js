@@ -6,11 +6,9 @@
  * resumable-upload session; video bytes go straight from the phone to Google.
  * Handles big files (chunked), retries, and progress.
  *
- * Setup (Joshua, once):
- *  1. script.google.com → New project → paste workers/drive-upload.gs
- *  2. Project Settings → enable Drive scope, Deploy → New deployment → Web app
- *     (Execute as: Me, Who has access: Anyone)
- *  3. In Ground Control → DATA → Field Videos: paste the Web App URL + secret.
+ * Setup (Joshua, once): deploy workers/drive-upload.gs as a Web App
+ * (script.google.com, Execute as: Me, Who has access: Anyone) and paste the
+ * /exec URL + secret below. DONE 2026-09-21 — baked in as built-in defaults.
  *
  * Crew flow: Jobs → job card → 🎥 Upload video → pick one or more clips
  * from the phone (camera or gallery) → upload starts automatically →
@@ -22,9 +20,16 @@
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB chunks to Google
 const MAX_RETRIES = 3;
 
+// Built-in bridge credentials — the holomuse Web App deployed 2026-09-21,
+// so Field Videos works on every phone with zero setup. DATA → Field Videos
+// fields still override these if a phone ever needs a different bridge.
+const BUILTIN_BRIDGE_URL =
+  "https://script.google.com/macros/s/AKfycbzJleNLlxV8-VHqaU5UT8Bot26W5dwiqg68rA2VBQm7_Z8IOI8H7nWH0my-1wUNhR2h/exec";
+const BUILTIN_BRIDGE_SECRET = "yf4flCzVvZSPgNSWNKb8LWzX9LJrZoJ-IdLMkao-G4c";
+
 function settingsOk(settings) {
-  const url = String(settings?.drive_upload_url || "").trim();
-  const secret = String(settings?.drive_upload_secret || "").trim();
+  const url = String(settings?.drive_upload_url || BUILTIN_BRIDGE_URL).trim();
+  const secret = String(settings?.drive_upload_secret || BUILTIN_BRIDGE_SECRET).trim();
   return url && secret ? { url, secret } : null;
 }
 
