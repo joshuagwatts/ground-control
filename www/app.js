@@ -81,7 +81,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.353";
+} from "./wx.js?v=0.2.354";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -89,6 +89,8 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import {
   pickVideoFiles,
+  chooseVideoSource,
+  recordClipsSession,
   uploadVideoToDrive,
   driveVideosConfigured,
   formatBytes,
@@ -3212,8 +3214,9 @@ async function onWxTap(lat, lon) {
 }
 
 /**
- * Job video flow: tap 🎥 → pick clips (camera or gallery) → auto-upload to Drive.
- * Progress shows inline on the job card; the Drive links land on the job.
+ * Job video flow: tap 🎥 → choose Record clips (shoot several in-app, one
+ * Upload) or Pick from phone → auto-upload to Drive. Progress shows inline
+ * on the job card; the Drive links land on the job.
  */
 async function jobCaptureVideo(jobId) {
   const job = (db.jobs || []).find((j) => String(j.id) === String(jobId));
@@ -3225,12 +3228,18 @@ async function jobCaptureVideo(jobId) {
     }
     return;
   }
+  let src;
+  try {
+    src = await chooseVideoSource();
+  } catch {
+    return;
+  }
   let files;
   try {
-    setStatus("Pick footage to upload…");
-    files = await pickVideoFiles();
+    setStatus(src === "record" ? "Opening recorder…" : "Pick footage to upload…");
+    files = src === "record" ? await recordClipsSession() : await pickVideoFiles();
   } catch (e) {
-    if (String(e.message || e) !== "cancelled") setStatus("Video cancelled");
+    if (String(e.message || e) !== "cancelled") setStatus(`Video: ${String(e.message || e).slice(0, 120)}`);
     return;
   }
   const bar = document.querySelector(`#jvp-${CSS.escape(String(jobId))}`);
@@ -3450,10 +3459,18 @@ function openJobEditor(id) {
       setStatus("Field Videos not set up — paste the Drive bridge URL in DATA");
       return;
     }
+    let src;
+    try {
+      src = await chooseVideoSource();
+    } catch {
+      return;
+    }
     let files;
     try {
-      files = await pickVideoFiles();
-    } catch {
+      files = src === "record" ? await recordClipsSession() : await pickVideoFiles();
+    } catch (e) {
+      if (String(e.message || e) !== "cancelled")
+        setStatus(`Video: ${String(e.message || e).slice(0, 120)}`);
       return;
     }
     const bar = $("#jvp-edit");

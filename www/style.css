@@ -3578,3 +3578,23 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 .hs-inv-rel { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.35rem 0 0.55rem; }
 .hs-inv-row .hs-inv-glyph { flex-shrink: 0; margin-top: 2px; }
 .hs-inv-list .hs-mark-row { align-items: flex-start; }
+
+/* Field Videos — in-app clip recorder + source chooser */
+.fv-sheet { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
+.fv-sheet-card { width: 100%; max-width: 26rem; background: #141414; border-radius: 1rem 1rem 0 0; padding: 1rem; display: flex; flex-direction: column; gap: .6rem; }
+.fv-sheet-card button { padding: .9rem; font-size: 1rem; border-radius: .6rem; border: 1px solid #333; background: #222; color: #fff; }
+.fv-sheet-card button.primary { background: var(--trim); border-color: var(--trim); color: #1c1400; font-weight: 700; }
+.fv-sheet-card .fv-cancel { background: transparent; border: none; color: #999; }
+.fv-rec { position: fixed; inset: 0; z-index: 95; background: #000; display: flex; flex-direction: column; }
+.fv-view { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.fv-top { position: relative; z-index: 2; display: flex; justify-content: space-between; align-items: center; padding: .9rem 1rem; }
+.fv-count { color: #fff; font-weight: 700; background: rgba(0,0,0,.5); padding: .35rem .7rem; border-radius: 2rem; }
+.fv-x { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.2rem; width: 2.4rem; height: 2.4rem; border-radius: 50%; }
+.fv-timer { position: relative; z-index: 2; text-align: center; color: #fff; font-size: 1.4rem; font-variant-numeric: tabular-nums; text-shadow: 0 1px 4px #000; margin-top: .4rem; }
+.fv-bottom { position: relative; z-index: 2; margin-top: auto; display: flex; align-items: center; justify-content: space-around; padding: 1.2rem 1rem 2rem; }
+.fv-shutter { width: 4.6rem; height: 4.6rem; border-radius: 50%; border: .35rem solid #fff; background: #c0392b; }
+.fv-shutter.on { background: #ff3b30; animation: fv-pulse 1s infinite; }
+@keyframes fv-pulse { 50% { transform: scale(.92); } }
+.fv-flip { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.4rem; width: 3rem; height: 3rem; border-radius: 50%; }
+.fv-done { background: var(--trim); color: #1c1400; font-weight: 700; border: none; border-radius: .6rem; padding: .8rem 1rem; font-size: 1rem; min-width: 6.5rem; }
+.fv-done:disabled { opacity: .35; }

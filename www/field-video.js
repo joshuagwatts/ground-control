@@ -73,6 +73,185 @@ export function pickVideoFile() {
   return pickVideoFiles({ multiple: false }).then((files) => files[0]);
 }
 
+/**
+ * Bottom sheet: record fresh clips in-app, or pick existing footage.
+ * Resolves "record" | "pick"; rejects on cancel.
+ */
+export function chooseVideoSource() {
+  return new Promise((resolve, reject) => {
+    const sheet = document.createElement("div");
+    sheet.className = "fv-sheet";
+    sheet.innerHTML = `
+      <div class="fv-sheet-card">
+        <button type="button" data-src="record" class="primary">🎬 Record clips</button>
+        <button type="button" data-src="pick">📁 Pick from phone</button>
+        <button type="button" data-src="" class="fv-cancel">Cancel</button>
+      </div>`;
+    const done = (val) => {
+      sheet.remove();
+      if (val) resolve(val);
+      else reject(new Error("cancelled"));
+    };
+    sheet.addEventListener("click", (e) => {
+      if (e.target === sheet) return done(null); // tap backdrop = cancel
+      const btn = e.target.closest("[data-src]");
+      if (btn) done(btn.getAttribute("data-src"));
+    });
+    document.body.appendChild(sheet);
+  });
+}
+
+/**
+ * In-app multi-clip recorder. Shoot clip after clip without leaving the app,
+ * then hit Upload once. Returns File[]; throws on cancel.
+ */
+export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
+  return new Promise(async (resolve, reject) => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      reject(new Error("camera unavailable"));
+      return;
+    }
+    const mime = MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "video/webm";
+    const ext = mime.includes("mp4") ? "mp4" : "webm";
+    let facingMode = "environment";
+    let stream = null;
+    const openStream = async () => {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode },
+        audio: true,
+      });
+    };
+    try {
+      await openStream();
+    } catch (e) {
+      reject(new Error("camera unavailable"));
+      return;
+    }
+
+    const clips = [];
+    const overlay = document.createElement("div");
+    overlay.className = "fv-rec";
+    overlay.innerHTML = `
+      <video class="fv-view" muted playsinline autoplay></video>
+      <div class="fv-top">
+        <span class="fv-count">0 clips</span>
+        <button type="button" class="fv-x" aria-label="Cancel">✕</button>
+      </div>
+      <div class="fv-timer">0:00</div>
+      <div class="fv-bottom">
+        <button type="button" class="fv-flip" aria-label="Flip camera">🔄</button>
+        <button type="button" class="fv-shutter" aria-label="Record"></button>
+        <button type="button" class="fv-done" disabled>Upload</button>
+      </div>`;
+    document.body.appendChild(overlay);
+    const video = overlay.querySelector(".fv-view");
+    const countEl = overlay.querySelector(".fv-count");
+    const timerEl = overlay.querySelector(".fv-timer");
+    const shutter = overlay.querySelector(".fv-shutter");
+    const doneBtn = overlay.querySelector(".fv-done");
+    const flipBtn = overlay.querySelector(".fv-flip");
+    video.srcObject = stream;
+
+    let rec = null;
+    let parts = [];
+    let recording = false;
+    let saveOnStop = false;
+    let pendingFinish = false;
+    let startedAt = 0;
+    let tickTimer = null;
+    const cleanup = () => {
+      try { clearInterval(tickTimer); } catch { /* ignore */ }
+      saveOnStop = false;
+      try { rec && rec.state !== "inactive" && rec.stop(); } catch { /* ignore */ }
+      try { stream?.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      overlay.remove();
+    };
+    const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    const refreshCount = () => {
+      countEl.textContent = `${clips.length} clip${clips.length === 1 ? "" : "s"}`;
+      doneBtn.disabled = clips.length === 0;
+      doneBtn.textContent = clips.length ? `Upload ${clips.length} clip${clips.length === 1 ? "" : "s"}` : "Upload";
+    };
+    const stopRecording = (save) => {
+      if (!recording) return;
+      recording = false;
+      clearInterval(tickTimer);
+      shutter.classList.remove("on");
+      timerEl.textContent = "0:00";
+      saveOnStop = save !== false;
+      try { rec.stop(); } catch { saveOnStop = false; parts = []; }
+    };
+    const makeRecorder = () => {
+      parts = [];
+      saveOnStop = false;
+      const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+      r.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+      r.onstop = () => {
+        if (saveOnStop) {
+          const blob = new Blob(parts, { type: mime });
+          if (blob.size > 0) {
+            clips.push(new File([blob], `clip-${clips.length + 1}-${Date.now()}.${ext}`, { type: mime }));
+            refreshCount();
+          }
+        }
+        parts = [];
+        saveOnStop = false;
+        if (pendingFinish) {
+          pendingFinish = false;
+          cleanup();
+          resolve(clips);
+        }
+      };
+      r.onerror = () => stopRecording(false);
+      return r;
+    };
+    shutter.onclick = () => {
+      if (recording) {
+        stopRecording(true);
+        return;
+      }
+      try {
+        rec = makeRecorder();
+      } catch (e) {
+        return;
+      }
+      rec.start(1000);
+      recording = true;
+      startedAt = Date.now();
+      shutter.classList.add("on");
+      tickTimer = setInterval(() => {
+        const s = Math.floor((Date.now() - startedAt) / 1000);
+        timerEl.textContent = fmt(s);
+        if (s >= maxSecondsPerClip) stopRecording(true);
+      }, 500);
+    };
+    flipBtn.onclick = async () => {
+      if (recording) return;
+      facingMode = facingMode === "environment" ? "user" : "environment";
+      try {
+        stream.getTracks().forEach((t) => t.stop());
+        await openStream();
+        video.srcObject = stream;
+      } catch { /* ignore */ }
+    };
+    overlay.querySelector(".fv-x").onclick = () => {
+      cleanup();
+      reject(new Error("cancelled"));
+    };
+    doneBtn.onclick = () => {
+      if (!clips.length && !recording) return;
+      if (recording) {
+        pendingFinish = true;
+        stopRecording(true);
+        return;
+      }
+      cleanup();
+      resolve(clips);
+    };
+    refreshCount();
+  });
+}
+
 /** In-browser recorder fallback (MediaRecorder) — returns a File when stopped. */
 export function recordVideoInBrowser({ maxSeconds = 120, onTick } = {}) {
   return new Promise(async (resolve, reject) => {
