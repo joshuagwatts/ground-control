@@ -3598,3 +3598,40 @@ body.gc-desktop .hs-map-shell .leaflet-control-zoom {
 .fv-flip { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.4rem; width: 3rem; height: 3rem; border-radius: 50%; }
 .fv-done { background: var(--trim); color: #1c1400; font-weight: 700; border: none; border-radius: .6rem; padding: .8rem 1rem; font-size: 1rem; min-width: 6.5rem; }
 .fv-done:disabled { opacity: .35; }
+
+/* Field video pro recorder controls (v0.2.358) */
+.fv-view { touch-action: none; }
+.fv-topbtns { display: flex; gap: .5rem; align-items: center; }
+.fv-gear { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.2rem; width: 2.4rem; height: 2.4rem; border-radius: 50%; }
+.fv-grid { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .2s;
+  background:
+    linear-gradient(to right, transparent calc(33.33% - 1px), rgba(255,255,255,.35) calc(33.33% - 1px), rgba(255,255,255,.35) calc(33.33% + 1px), transparent calc(33.33% + 1px)),
+    linear-gradient(to right, transparent calc(66.66% - 1px), rgba(255,255,255,.35) calc(66.66% - 1px), rgba(255,255,255,.35) calc(66.66% + 1px), transparent calc(66.66% + 1px)),
+    linear-gradient(to bottom, transparent calc(33.33% - 1px), rgba(255,255,255,.35) calc(33.33% - 1px), rgba(255,255,255,.35) calc(33.33% + 1px), transparent calc(33.33% + 1px)),
+    linear-gradient(to bottom, transparent calc(66.66% - 1px), rgba(255,255,255,.35) calc(66.66% - 1px), rgba(255,255,255,.35) calc(66.66% + 1px), transparent calc(66.66% + 1px));
+}
+.fv-grid.show { opacity: 1; }
+.fv-view.mirror { transform: scaleX(-1); }
+.fv-reticle { position: absolute; z-index: 3; width: 4.5rem; height: 4.5rem; border: 2px solid #ffd60a; border-radius: .4rem; transform: translate(-50%,-50%); pointer-events: none; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+.fv-exp { position: absolute; top: calc(100% + .4rem); left: 50%; transform: translateX(-50%); width: 6.5rem; pointer-events: auto; accent-color: #ffd60a; }
+.fv-side { position: absolute; z-index: 2; right: .8rem; top: 38%; display: flex; flex-direction: column; gap: .7rem; }
+.fv-tool { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.3rem; width: 2.8rem; height: 2.8rem; border-radius: 50%; }
+.fv-tool.on { background: #ffd60a; }
+.fv-zoom { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); bottom: 11.6rem; background: rgba(0,0,0,.55); color: #fff; border: 1px solid rgba(255,255,255,.25); border-radius: 2rem; padding: .35rem .9rem; font-size: .95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fv-tray { position: relative; z-index: 2; display: none; gap: .5rem; padding: .4rem .8rem; overflow-x: auto; }
+.fv-clip { position: relative; flex: 0 0 auto; }
+.fv-clip video { width: 4.2rem; height: 3rem; object-fit: cover; border-radius: .4rem; border: 1px solid rgba(255,255,255,.3); background: #111; }
+.fv-clip button { position: absolute; top: -.45rem; right: -.45rem; width: 1.4rem; height: 1.4rem; border-radius: 50%; border: none; background: rgba(0,0,0,.75); color: #fff; font-size: .7rem; }
+.fv-pausebtn { background: rgba(0,0,0,.5); color: #fff; border: none; font-size: 1.2rem; width: 3rem; height: 3rem; border-radius: 50%; }
+.fv-timer.is-paused { color: #ffd60a; animation: fv-blink 1s infinite; }
+@keyframes fv-blink { 50% { opacity: .35; } }
+.fv-settings { position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
+.fv-settings[hidden] { display: none; }
+.fv-set-card { width: 100%; max-width: 26rem; background: #141414; border-radius: 1rem 1rem 0 0; padding: 1rem 1rem 1.6rem; display: flex; flex-direction: column; gap: .8rem; }
+.fv-set-row { display: flex; align-items: center; justify-content: space-between; color: #fff; font-size: 1rem; }
+.fv-seg { display: flex; background: #222; border-radius: .6rem; padding: .2rem; gap: .2rem; }
+.fv-seg button { border: none; background: transparent; color: #bbb; padding: .5rem .9rem; border-radius: .45rem; font-size: .95rem; }
+.fv-seg button.sel { background: var(--trim); color: #1c1400; font-weight: 700; }
+.fv-toggle { background: #222; color: #bbb; border: none; border-radius: .6rem; padding: .55rem 1.1rem; font-size: .95rem; min-width: 4.5rem; }
+.fv-toggle.sel { background: var(--trim); color: #1c1400; font-weight: 700; }
+.fv-set-close { margin-top: .4rem; padding: .9rem; border-radius: .6rem; border: none; background: var(--trim); color: #1c1400; font-weight: 700; font-size: 1rem; }

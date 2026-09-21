@@ -107,25 +107,81 @@ export function chooseVideoSource() {
 }
 
 /**
- * In-app multi-clip recorder. Shoot clip after clip without leaving the app,
- * then hit Upload once. Returns File[]; throws on cancel.
+ * Pro in-app multi-clip recorder. Shoot clip after clip without leaving the
+ * app, then hit Upload once. Returns File[]; throws on cancel.
+ *
+ * Default-camera-grade controls (via the web camera API — Galaxy-class
+ * phones support all of these):
+ *   tap-to-focus with exposure slider · pinch-to-zoom + zoom stops · torch ·
+ *   pause/resume · rule-of-thirds grid · 720p/1080p + 30/60fps · mic toggle ·
+ *   clip tray with per-clip delete · mirrored selfie preview
  */
+const FV_PREFS_KEY = "hg_fv_cam";
+
+function fvLoadPrefs() {
+  let p = {};
+  try {
+    p = JSON.parse(localStorage.getItem(FV_PREFS_KEY) || "{}");
+  } catch {
+    /* ignore */
+  }
+  return {
+    quality: p.quality === "720p" ? "720p" : "1080p",
+    fps: p.fps === 60 ? 60 : 30,
+    grid: p.grid === true,
+    mic: p.mic !== false,
+  };
+}
+
+function fvSavePrefs(p) {
+  try {
+    localStorage.setItem(FV_PREFS_KEY, JSON.stringify(p));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
   return new Promise(async (resolve, reject) => {
     if (!navigator.mediaDevices?.getUserMedia) {
       reject(new Error("camera unavailable"));
       return;
     }
+    const prefs = fvLoadPrefs();
     const mime = MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "video/webm";
     const ext = mime.includes("mp4") ? "mp4" : "webm";
     let facingMode = "environment";
     let stream = null;
+    let videoTrack = null;
+    let caps = {};
+    let zoom = 1;
+    let torchOn = false;
+
+    const dimsFor = () => (prefs.quality === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 });
+    const bitrateFor = () => (prefs.quality === "720p" ? 8_000_000 : prefs.fps === 60 ? 20_000_000 : 14_000_000);
+    const trimZoom = (z) => (z < 10 ? z.toFixed(1) : String(Math.round(z)));
+
     const openStream = async () => {
+      const d = dimsFor();
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode },
-        audio: true,
+        video: {
+          facingMode,
+          width: { ideal: d.w },
+          height: { ideal: d.h },
+          frameRate: { ideal: prefs.fps },
+        },
+        audio: prefs.mic,
       });
+      videoTrack = stream.getVideoTracks()[0] || null;
+      try {
+        caps = videoTrack?.getCapabilities?.() || {};
+      } catch {
+        caps = {};
+      }
+      zoom = 1;
+      torchOn = false;
     };
+
     try {
       await openStream();
     } catch (e) {
@@ -134,73 +190,356 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
     }
 
     const clips = [];
+    const urlByClip = new Map();
     const overlay = document.createElement("div");
     overlay.className = "fv-rec";
     overlay.innerHTML = `
       <video class="fv-view" muted playsinline autoplay></video>
+      <div class="fv-grid"></div>
+      <div class="fv-reticle" hidden><input type="range" class="fv-exp" aria-label="Exposure" tabindex="-1"></div>
       <div class="fv-top">
         <span class="fv-count">0 clips</span>
-        <button type="button" class="fv-x" aria-label="Cancel">✕</button>
+        <div class="fv-topbtns">
+          <button type="button" class="fv-gear" aria-label="Camera settings">⚙</button>
+          <button type="button" class="fv-x" aria-label="Cancel">✕</button>
+        </div>
       </div>
       <div class="fv-timer">0:00</div>
+      <div class="fv-side">
+        <button type="button" class="fv-tool fv-torch" aria-label="Flash" hidden>🔦</button>
+      </div>
+      <button type="button" class="fv-zoom" hidden>1.0×</button>
+      <div class="fv-tray"></div>
       <div class="fv-bottom">
         <button type="button" class="fv-flip" aria-label="Flip camera">🔄</button>
+        <button type="button" class="fv-pausebtn" aria-label="Pause" hidden>⏸</button>
         <button type="button" class="fv-shutter" aria-label="Record"></button>
         <button type="button" class="fv-done" disabled>Upload</button>
+      </div>
+      <div class="fv-settings" hidden>
+        <div class="fv-set-card">
+          <div class="fv-set-row"><span>Quality</span><div class="fv-seg" data-k="quality">
+            <button type="button" data-v="720p">720p</button><button type="button" data-v="1080p">1080p</button>
+          </div></div>
+          <div class="fv-set-row"><span>Frame rate</span><div class="fv-seg" data-k="fps">
+            <button type="button" data-v="30">30</button><button type="button" data-v="60">60</button>
+          </div></div>
+          <div class="fv-set-row"><span>Grid</span><button type="button" class="fv-toggle" data-k="grid">Off</button></div>
+          <div class="fv-set-row"><span>Mic</span><button type="button" class="fv-toggle" data-k="mic">On</button></div>
+          <button type="button" class="fv-set-close">Done</button>
+        </div>
       </div>`;
     document.body.appendChild(overlay);
     const video = overlay.querySelector(".fv-view");
+    const grid = overlay.querySelector(".fv-grid");
+    const reticle = overlay.querySelector(".fv-reticle");
+    const expSlider = overlay.querySelector(".fv-exp");
     const countEl = overlay.querySelector(".fv-count");
     const timerEl = overlay.querySelector(".fv-timer");
     const shutter = overlay.querySelector(".fv-shutter");
+    const pauseBtn = overlay.querySelector(".fv-pausebtn");
     const doneBtn = overlay.querySelector(".fv-done");
     const flipBtn = overlay.querySelector(".fv-flip");
+    const torchBtn = overlay.querySelector(".fv-torch");
+    const zoomPill = overlay.querySelector(".fv-zoom");
+    const tray = overlay.querySelector(".fv-tray");
+    const gearBtn = overlay.querySelector(".fv-gear");
+    const settingsSheet = overlay.querySelector(".fv-settings");
     video.srcObject = stream;
 
     let rec = null;
     let parts = [];
     let recording = false;
+    let paused = false;
     let saveOnStop = false;
     let pendingFinish = false;
-    let startedAt = 0;
+    let elapsedBase = 0;
+    let segmentStart = 0;
     let tickTimer = null;
+    let focusTimer = null;
+
+    const revokeAllUrls = () => {
+      urlByClip.forEach((u) => {
+        try {
+          URL.revokeObjectURL(u);
+        } catch {
+          /* ignore */
+        }
+      });
+      urlByClip.clear();
+    };
     const cleanup = () => {
       try { clearInterval(tickTimer); } catch { /* ignore */ }
+      try { clearTimeout(focusTimer); } catch { /* ignore */ }
+      revokeAllUrls();
       saveOnStop = false;
       try { rec && rec.state !== "inactive" && rec.stop(); } catch { /* ignore */ }
       try { stream?.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
       overlay.remove();
     };
-    const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s) % 60).padStart(2, "0")}`;
+    const elapsed = () => elapsedBase + (recording && !paused ? (Date.now() - segmentStart) / 1000 : 0);
+
     const refreshCount = () => {
       countEl.textContent = `${clips.length} clip${clips.length === 1 ? "" : "s"}`;
       doneBtn.disabled = clips.length === 0;
       doneBtn.textContent = clips.length ? `Upload ${clips.length} clip${clips.length === 1 ? "" : "s"}` : "Upload";
     };
+
+    const refreshTray = () => {
+      revokeAllUrls();
+      tray.innerHTML = "";
+      clips.forEach((file) => {
+        const url = URL.createObjectURL(file);
+        urlByClip.set(file, url);
+        const cell = document.createElement("div");
+        cell.className = "fv-clip";
+        const v = document.createElement("video");
+        v.muted = true;
+        v.playsInline = true;
+        v.preload = "metadata";
+        v.src = url;
+        const del = document.createElement("button");
+        del.type = "button";
+        del.textContent = "✕";
+        del.setAttribute("aria-label", "Delete clip");
+        del.onclick = (e) => {
+          e.stopPropagation();
+          const i = clips.indexOf(file);
+          if (i >= 0) clips.splice(i, 1);
+          refreshTray();
+          refreshCount();
+        };
+        cell.appendChild(v);
+        cell.appendChild(del);
+        tray.appendChild(cell);
+      });
+      tray.style.display = clips.length ? "flex" : "none";
+    };
+
+    const applyZoom = async (z) => {
+      if (!videoTrack || !caps.zoom) return;
+      const zc = caps.zoom;
+      const min = zc.min ?? 1;
+      const max = zc.max ?? 1;
+      const step = zc.step ?? 0.1;
+      let nz = Math.min(max, Math.max(min, z));
+      if (step > 0) nz = Math.round(nz / step) * step;
+      zoom = nz;
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ zoom: nz }] });
+      } catch {
+        /* ignore */
+      }
+      zoomPill.textContent = `${trimZoom(nz)}×`;
+    };
+
+    const zoomStops = () => {
+      const max = caps.zoom?.max ?? 1;
+      const stops = [1, 2, 5].filter((s) => s <= max + 1e-6);
+      return stops.length ? stops : [1];
+    };
+
+    const setTorch = async (on) => {
+      if (!videoTrack || !caps.torch) return;
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ torch: on }] });
+        torchOn = on;
+        torchBtn.classList.toggle("on", on);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const syncControls = () => {
+      const showTorch = Boolean(caps.torch) && facingMode === "environment";
+      torchBtn.hidden = !showTorch;
+      torchBtn.classList.toggle("on", torchOn);
+      const zmax = caps.zoom?.max ?? 1;
+      zoomPill.hidden = !(zmax > 1.01);
+      zoomPill.textContent = `${trimZoom(zoom)}×`;
+      grid.classList.toggle("show", prefs.grid);
+      video.classList.toggle("mirror", facingMode === "user");
+      overlay.querySelectorAll(".fv-seg").forEach((seg) => {
+        const k = seg.dataset.k;
+        const cur = String(prefs[k]);
+        seg.querySelectorAll("button").forEach((b) => b.classList.toggle("sel", b.dataset.v === cur));
+      });
+      const gridT = overlay.querySelector('[data-k="grid"]');
+      gridT.textContent = prefs.grid ? "On" : "Off";
+      gridT.classList.toggle("sel", prefs.grid);
+      const micT = overlay.querySelector('[data-k="mic"]');
+      micT.textContent = prefs.mic ? "On" : "Off";
+      micT.classList.toggle("sel", prefs.mic);
+    };
+
+    const reopen = async () => {
+      try {
+        stream?.getTracks().forEach((t) => t.stop());
+      } catch {
+        /* ignore */
+      }
+      try {
+        await openStream();
+        video.srcObject = stream;
+        await applyZoom(1);
+        syncControls();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    // ---- tap-to-focus + exposure slider ----
+    const hideReticle = () => {
+      reticle.hidden = true;
+    };
+    const focusAt = async (x, y) => {
+      reticle.style.left = `${x * 100}%`;
+      reticle.style.top = `${y * 100}%`;
+      const ec = caps.exposureCompensation;
+      if (ec && typeof ec.min === "number") {
+        expSlider.min = ec.min;
+        expSlider.max = ec.max;
+        expSlider.step = ec.step || 0.1;
+        try {
+          const s = videoTrack?.getSettings?.() || {};
+          if (typeof s.exposureCompensation === "number") expSlider.value = s.exposureCompensation;
+        } catch {
+          /* ignore */
+        }
+        expSlider.style.display = "";
+      } else {
+        expSlider.style.display = "none";
+      }
+      reticle.hidden = false;
+      if (videoTrack) {
+        const modes = caps.focusMode || [];
+        const mode = modes.includes("manual") ? "manual" : modes.includes("single-shot") ? "single-shot" : null;
+        if (mode) {
+          try {
+            await videoTrack.applyConstraints({ advanced: [{ focusMode: mode, pointsOfInterest: [{ x, y }] }] });
+          } catch {
+            /* phone ignored it — reticle still showed */
+          }
+        }
+      }
+      clearTimeout(focusTimer);
+      focusTimer = setTimeout(async () => {
+        try {
+          if (videoTrack && (caps.focusMode || []).includes("continuous")) {
+            await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+          }
+        } catch {
+          /* ignore */
+        }
+        hideReticle();
+      }, 5000);
+    };
+    expSlider.addEventListener("input", async () => {
+      if (!videoTrack || !caps.exposureCompensation) return;
+      clearTimeout(focusTimer);
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ exposureCompensation: Number(expSlider.value) }] });
+      } catch {
+        /* ignore */
+      }
+      focusTimer = setTimeout(hideReticle, 5000);
+    });
+
+    // ---- tap vs pinch on the viewfinder ----
+    const pointers = new Map();
+    let pinchD0 = 0;
+    let pinchZ0 = 1;
+    let downAt = 0;
+    let downX = 0;
+    let downY = 0;
+    let tapId = null;
+    const pdist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    video.addEventListener("pointerdown", (e) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 1) {
+        downAt = Date.now();
+        downX = e.clientX;
+        downY = e.clientY;
+        tapId = e.pointerId;
+      } else if (pointers.size === 2) {
+        const [a, b] = [...pointers.values()];
+        pinchD0 = pdist(a, b);
+        pinchZ0 = zoom;
+        tapId = null;
+      }
+    });
+    video.addEventListener("pointermove", (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2 && pinchD0 > 0) {
+        const [a, b] = [...pointers.values()];
+        applyZoom((pinchZ0 * pdist(a, b)) / pinchD0);
+      } else if (tapId === e.pointerId && Math.hypot(e.clientX - downX, e.clientY - downY) > 14) {
+        tapId = null; // it was a drag, not a tap
+      }
+    });
+    const pointerEnd = (e) => {
+      const wasTap = tapId === e.pointerId && Date.now() - downAt < 350;
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinchD0 = 0;
+      if (wasTap && pointers.size === 0) {
+        const r = video.getBoundingClientRect();
+        focusAt(
+          Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+          Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))
+        );
+      }
+      if (pointers.size === 0) tapId = null;
+    };
+    video.addEventListener("pointerup", pointerEnd);
+    video.addEventListener("pointercancel", pointerEnd);
+
+    zoomPill.onclick = () => {
+      const stops = zoomStops();
+      const i = stops.findIndex((s) => Math.abs(s - zoom) < 0.05);
+      applyZoom(stops[(i + 1) % stops.length]);
+    };
+    torchBtn.onclick = () => setTorch(!torchOn);
+
+    // ---- recording: pause/resume, clip tray ----
     const stopRecording = (save) => {
       if (!recording) return;
       recording = false;
+      paused = false;
       clearInterval(tickTimer);
       shutter.classList.remove("on");
+      pauseBtn.hidden = true;
+      flipBtn.style.visibility = "";
+      timerEl.classList.remove("is-paused");
       timerEl.textContent = "0:00";
       saveOnStop = save !== false;
-      try { rec.stop(); } catch { saveOnStop = false; parts = []; }
+      try {
+        rec.stop();
+      } catch {
+        saveOnStop = false;
+        parts = [];
+      }
     };
     const makeRecorder = () => {
       parts = [];
       saveOnStop = false;
-      const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
-      r.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+      const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrateFor() });
+      r.ondataavailable = (e) => {
+        if (e.data && e.data.size) parts.push(e.data);
+      };
       r.onstop = () => {
         if (saveOnStop) {
           const blob = new Blob(parts, { type: mime });
           if (blob.size > 0) {
             clips.push(new File([blob], `clip-${clips.length + 1}-${Date.now()}.${ext}`, { type: mime }));
+            refreshTray();
             refreshCount();
           }
         }
         parts = [];
         saveOnStop = false;
+        elapsedBase = 0;
         if (pendingFinish) {
           pendingFinish = false;
           cleanup();
@@ -222,23 +561,77 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       }
       rec.start(1000);
       recording = true;
-      startedAt = Date.now();
+      paused = false;
+      elapsedBase = 0;
+      segmentStart = Date.now();
       shutter.classList.add("on");
+      pauseBtn.hidden = false;
+      pauseBtn.textContent = "⏸";
+      flipBtn.style.visibility = "hidden";
+      timerEl.classList.remove("is-paused");
       tickTimer = setInterval(() => {
-        const s = Math.floor((Date.now() - startedAt) / 1000);
+        const s = elapsed();
         timerEl.textContent = fmt(s);
         if (s >= maxSecondsPerClip) stopRecording(true);
       }, 500);
     };
+    pauseBtn.onclick = () => {
+      if (!recording || !rec) return;
+      try {
+        if (paused) {
+          if (typeof rec.resume === "function") rec.resume();
+          paused = false;
+          segmentStart = Date.now();
+          pauseBtn.textContent = "⏸";
+          timerEl.classList.remove("is-paused");
+        } else {
+          if (typeof rec.pause !== "function") return;
+          rec.pause();
+          paused = true;
+          elapsedBase = elapsed();
+          pauseBtn.textContent = "▶";
+          timerEl.classList.add("is-paused");
+        }
+      } catch {
+        /* ignore */
+      }
+    };
     flipBtn.onclick = async () => {
       if (recording) return;
       facingMode = facingMode === "environment" ? "user" : "environment";
-      try {
-        stream.getTracks().forEach((t) => t.stop());
-        await openStream();
-        video.srcObject = stream;
-      } catch { /* ignore */ }
+      await reopen();
     };
+
+    // ---- settings sheet ----
+    gearBtn.onclick = () => {
+      syncControls();
+      settingsSheet.hidden = false;
+    };
+    settingsSheet.querySelector(".fv-set-close").onclick = () => {
+      settingsSheet.hidden = true;
+    };
+    settingsSheet.addEventListener("click", (e) => {
+      if (e.target === settingsSheet) settingsSheet.hidden = true;
+    });
+    settingsSheet.querySelectorAll(".fv-seg button").forEach((b) => {
+      b.onclick = async () => {
+        const k = b.closest(".fv-seg").dataset.k;
+        prefs[k] = k === "fps" ? Number(b.dataset.v) : b.dataset.v;
+        fvSavePrefs(prefs);
+        syncControls();
+        if (!recording) await reopen();
+      };
+    });
+    settingsSheet.querySelectorAll(".fv-toggle").forEach((b) => {
+      b.onclick = async () => {
+        const k = b.dataset.k;
+        prefs[k] = !prefs[k];
+        fvSavePrefs(prefs);
+        syncControls();
+        if (k === "mic" && !recording) await reopen();
+      };
+    });
+
     overlay.querySelector(".fv-x").onclick = () => {
       cleanup();
       reject(new Error("cancelled"));
@@ -253,7 +646,11 @@ export function recordClipsSession({ maxSecondsPerClip = 180 } = {}) {
       cleanup();
       resolve(clips);
     };
+
     refreshCount();
+    refreshTray();
+    syncControls();
+    applyZoom(1);
   });
 }
 
