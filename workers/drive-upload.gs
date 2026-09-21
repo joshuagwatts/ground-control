@@ -21,6 +21,9 @@
  * ACTIONS (POST JSON: {secret, action, ...}):
  *  - start:  {fileName, mimeType, size, folderPath} → {uploadUrl, fileId}
  *  - finish: {fileId} → {webViewLink}
+ *  - vision: {prompt, images[], maxTokens, temperature} → {text, provider, model}
+ *    Shingle identifier via Gemini. The GEMINI_API_KEY lives in the project's
+ *    Script Properties (never on crew phones, never in the repo).
  */
 
 var SHARED_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
@@ -37,6 +40,7 @@ function doPost(e) {
     var action = String(body.action || "");
     if (action === "start") return handleStart(body);
     if (action === "finish") return handleFinish(body);
+    if (action === "vision") return handleVision(body);
     return json({ ok: false, error: "unknown action: " + action });
   } catch (err) {
     return json({ ok: false, error: "bridge error: " + String(err).slice(0, 200) });
@@ -118,4 +122,74 @@ function handleFinish(body) {
     fileId: latest.getId(),
     webViewLink: "https://drive.google.com/file/d/" + latest.getId() + "/view",
   });
+}
+
+/** Gemini key from Script Properties — set once in the Apps Script editor. */
+function geminiKey() {
+  return String(
+    PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY") || ""
+  );
+}
+
+function stripDataUrl(u) {
+  var s = String(u || "");
+  var i = s.indexOf("base64,");
+  return i >= 0 ? s.slice(i + 7) : s;
+}
+
+/**
+ * Vision via Gemini (shingle identifier). The phone POSTs the prompt +
+ * images; the key never leaves this script.
+ */
+function handleVision(body) {
+  var key = geminiKey();
+  if (!key) return json({ ok: false, error: "no GEMINI_API_KEY in Script Properties" });
+  var prompt = String(body.prompt || "").slice(0, 20000);
+  var images = Array.isArray(body.images) ? body.images.slice(0, 8) : [];
+  if (!prompt || !images.length) return json({ ok: false, error: "need prompt + images" });
+  var maxTokens = Math.min(Math.max(Number(body.maxTokens) || 1200, 100), 4000);
+  var temperature =
+    body.temperature == null ? 0.2 : Math.min(Math.max(Number(body.temperature), 0), 1);
+
+  var parts = [{ text: prompt }];
+  for (var i = 0; i < images.length; i++) {
+    parts.push({ inline_data: { mime_type: "image/jpeg", data: stripDataUrl(images[i]) } });
+  }
+  var resp = UrlFetchApp.fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" +
+      encodeURIComponent(key),
+    {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({
+        contents: [{ role: "user", parts: parts }],
+        generationConfig: { temperature: temperature, maxOutputTokens: maxTokens },
+      }),
+      muteHttpExceptions: true,
+    }
+  );
+  var code = resp.getResponseCode();
+  var data = null;
+  try {
+    data = JSON.parse(resp.getContentText());
+  } catch (e) {
+    data = null;
+  }
+  if (code !== 200 || !data) {
+    var msg =
+      data && data.error ? String(data.error.message || "").slice(0, 160) : "HTTP " + code;
+    return json({ ok: false, error: "gemini: " + msg });
+  }
+  var text = "";
+  try {
+    text = data.candidates[0].content.parts
+      .map(function (p) {
+        return p.text || "";
+      })
+      .join("");
+  } catch (e) {
+    text = "";
+  }
+  if (!text.trim()) return json({ ok: false, error: "empty gemini reply" });
+  return json({ ok: true, text: text.trim(), provider: "gemini", model: "gemini-3.6-flash", leaked: true });
 }

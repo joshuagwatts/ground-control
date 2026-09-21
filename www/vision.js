@@ -2,6 +2,7 @@
 
 import { PROVIDERS, privacyOn, markHealth } from "./cloud.js";
 import { httpPostJson } from "./net.js";
+import { bridgeVision } from "./field-video.js";
 
 const VISION_ORDER = ["gemini", "openai", "anthropic", "openrouter"];
 
@@ -227,7 +228,13 @@ export async function visionComplete(settings, prompt, dataUrls, { maxTokens = 1
   if (!urls.length) throw new Error("no images");
   const ready = cloudVisionReady(settings);
   if (!ready.length) {
-    throw new Error("Need a vision key in KEYS — Gemini, OpenAI, Anthropic, or OpenRouter");
+    // No vision key on this phone — use the built-in High Ground bridge
+    // (Gemini runs server-side, zero setup). Local keys still win when present.
+    try {
+      return await bridgeVision(settings, { prompt, images: urls, maxTokens, temperature });
+    } catch (e) {
+      throw new Error(`Bridge vision failed: ${String(e.message || e).slice(0, 140)}`);
+    }
   }
   const errors = [];
   const content = [

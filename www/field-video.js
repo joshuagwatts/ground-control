@@ -345,6 +345,24 @@ async function scriptPost(scriptUrl, secret, action, payload = {}) {
 }
 
 /**
+ * Vision via the High Ground bridge (zero setup on the phone): the Apps Script
+ * runs Gemini with its own key. Used by the shingle identifier when the phone
+ * has no vision key of its own. Local keys still take precedence — see vision.js.
+ */
+export async function bridgeVision(settings, { prompt, images, maxTokens = 1200, temperature = 0.2 } = {}) {
+  const cfg = settingsOk(settings);
+  if (!cfg) throw new Error("Field Videos bridge not configured");
+  const data = await scriptPost(cfg.url, cfg.secret, "vision", {
+    prompt: String(prompt || ""),
+    images: Array.isArray(images) ? images : [images].filter(Boolean),
+    maxTokens,
+    temperature,
+  });
+  if (!data.text) throw new Error("bridge vision: empty reply");
+  return { text: String(data.text), provider: data.provider || "gemini", model: data.model || "", leaked: true };
+}
+
+/**
  * Upload a video File to Drive via the Apps Script bridge.
  * onProgress(0..1, label) — label like "Uploading 12.4 / 48.1 MB".
  */
