@@ -12,8 +12,9 @@
  *     (Execute as: Me, Who has access: Anyone)
  *  3. In Ground Control → DATA → Field Videos: paste the Web App URL + secret.
  *
- * Crew flow: Jobs → job card → 🎥 Video → native camera records →
- * upload starts automatically → progress bar → Drive link saved on the job.
+ * Crew flow: Jobs → job card → 🎥 Upload video → pick one or more clips
+ * from the phone (camera or gallery) → upload starts automatically →
+ * progress bar → Drive links saved on the job.
  * Files land in High Ground's shared Drive folder (TARGET_FOLDER_ID in the
  * script), named "<job address> <timestamp>.mp4".
  */
@@ -31,13 +32,19 @@ export function driveVideosConfigured(settings) {
   return Boolean(settingsOk(settings));
 }
 
-/** Native camera video capture. Returns a File, or throws on cancel. */
-export function pickVideoFile() {
+/**
+ * Video picker — returns an array of Files, or throws on cancel.
+ *
+ * Deliberately NO `capture` attribute: Android shows a "Camera / Files"
+ * chooser, so the crew can either shoot new footage or pick clips they
+ * already recorded, then upload. `multiple` lets them batch a whole shoot.
+ */
+export function pickVideoFiles({ multiple = true } = {}) {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
-    input.setAttribute("capture", "environment");
+    if (multiple) input.multiple = true;
     input.style.display = "none";
     document.body.appendChild(input);
     const cleanup = () => {
@@ -48,24 +55,22 @@ export function pickVideoFile() {
       }
     };
     input.onchange = () => {
-      const file = (input.files || [])[0];
+      const files = Array.from(input.files || []);
       cleanup();
-      if (!file) reject(new Error("cancelled"));
-      else resolve(file);
+      if (!files.length) reject(new Error("cancelled"));
+      else resolve(files);
     };
     input.oncancel = () => {
       cleanup();
       reject(new Error("cancelled"));
     };
-    // iOS Safari fires cancel without oncancel in older versions — timeout guard
-    const fallback = setTimeout(() => {
-      if (document.body.contains(input) && !(input.files || []).length) {
-        // still open; leave it — user is recording
-      }
-    }, 30000);
-    input.addEventListener("change", () => clearTimeout(fallback), { once: true });
     setTimeout(() => input.click(), 0);
   });
+}
+
+/** Single-file wrapper for callers that only want one clip. */
+export function pickVideoFile() {
+  return pickVideoFiles({ multiple: false }).then((files) => files[0]);
 }
 
 /** In-browser recorder fallback (MediaRecorder) — returns a File when stopped. */
@@ -252,22 +257,19 @@ export async function uploadVideoToDrive(settings, file, { jobLabel = "", onProg
   };
 }
 
-/** One-tap flow: pick → auto-upload → return Drive record. */
+/** One-tap flow: pick clips → auto-upload each → return Drive records. */
 export async function captureAndUpload(settings, { jobLabel = "", onProgress, onFile } = {}) {
-  let file;
-  try {
-    file = await pickVideoFile();
-  } catch (e) {
-    // Fall back to in-browser recorder if native picker was cancelled with no file
-    // (some devices). Caller decides — rethrow cancel so UI stays quiet.
-    throw e;
+  const files = await pickVideoFiles();
+  const records = [];
+  for (const file of files) {
+    try {
+      onFile?.(file);
+    } catch {
+      /* ignore */
+    }
+    records.push(await uploadVideoToDrive(settings, file, { jobLabel, onProgress }));
   }
-  try {
-    onFile?.(file);
-  } catch {
-    /* ignore */
-  }
-  return uploadVideoToDrive(settings, file, { jobLabel, onProgress });
+  return records;
 }
 
 export function formatBytes(n) {

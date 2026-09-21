@@ -81,14 +81,14 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.352";
+} from "./wx.js?v=0.2.353";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
 import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./catalog.js";
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import {
-  pickVideoFile,
+  pickVideoFiles,
   uploadVideoToDrive,
   driveVideosConfigured,
   formatBytes,
@@ -3212,8 +3212,8 @@ async function onWxTap(lat, lon) {
 }
 
 /**
- * Job video flow: tap 🎥 → native camera → auto-upload to Drive.
- * Progress shows inline on the job card; the Drive link lands on the job.
+ * Job video flow: tap 🎥 → pick clips (camera or gallery) → auto-upload to Drive.
+ * Progress shows inline on the job card; the Drive links land on the job.
  */
 async function jobCaptureVideo(jobId) {
   const job = (db.jobs || []).find((j) => String(j.id) === String(jobId));
@@ -3225,10 +3225,10 @@ async function jobCaptureVideo(jobId) {
     }
     return;
   }
-  let file;
+  let files;
   try {
-    setStatus("Opening camera…");
-    file = await pickVideoFile();
+    setStatus("Pick footage to upload…");
+    files = await pickVideoFiles();
   } catch (e) {
     if (String(e.message || e) !== "cancelled") setStatus("Video cancelled");
     return;
@@ -3243,16 +3243,22 @@ async function jobCaptureVideo(jobId) {
     setStatus(text || "");
   };
   try {
-    say(0.01, `Uploading ${formatBytes(file.size)}…`);
-    const rec = await uploadVideoToDrive(db.settings, file, {
-      jobLabel: job.address || "Field",
-      onProgress: say,
-    });
+    const records = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const tag = files.length > 1 ? ` (clip ${i + 1}/${files.length})` : "";
+      const rec = await uploadVideoToDrive(db.settings, file, {
+        jobLabel: job.address || "Field",
+        onProgress: (p, text) => say(p, `${text}${tag}`),
+      });
+      records.push(rec);
+      say((i + 1) / files.length, `Uploaded ${i + 1} of ${files.length}${tag}`);
+    }
     if (!Array.isArray(job.videos)) job.videos = [];
-    job.videos.unshift(rec);
+    job.videos.unshift(...records);
     upsertJob(db, job);
     persist();
-    say(1, "Video in Drive ✓");
+    say(1, files.length > 1 ? `${files.length} videos in Drive ✓` : "Video in Drive ✓");
     setTimeout(() => renderJobs(), 800);
   } catch (e) {
     say(0, "");
@@ -3287,7 +3293,7 @@ function renderJobs() {
                   <p class="muted">${esc(String(j.created || "").slice(0, 10))}</p>
                   ${vidLine}
                   <div class="actions job-card-actions">
-                    <button type="button" data-job-video="${esc(j.id)}" class="primary">🎥 Video</button>
+                    <button type="button" data-job-video="${esc(j.id)}" class="primary">🎥 Upload video</button>
                     <button type="button" data-job-edit="${esc(j.id)}">Edit</button>
                     <button type="button" data-job-del="${esc(j.id)}">Delete</button>
                   </div>
@@ -3414,7 +3420,7 @@ function openJobEditor(id) {
             `</article>`,
         )
         .join("")
-    : `<p class="muted">No videos yet — tap 🎥 Video to record one. It uploads to Drive automatically.</p>`;
+    : `<p class="muted">No videos yet — tap 🎥 Upload to pick footage from your phone. It goes to Drive automatically.</p>`;
   $("#view").innerHTML = `
     <h3>Edit job</h3>
     <label class="muted">Address</label>
@@ -3428,7 +3434,7 @@ function openJobEditor(id) {
       <option value="hold"${job.status === "hold" ? " selected" : ""}>On hold</option>
     </select>
     <h3 style="margin-top:1.2rem">Field videos</h3>
-    <div class="actions"><button type="button" class="primary" id="job-edit-video">🎥 Record video</button></div>
+    <div class="actions"><button type="button" class="primary" id="job-edit-video">🎥 Upload video</button></div>
     <div class="job-video-progress" id="jvp-edit" style="display:none">
       <div class="jvp-bar"><div class="jvp-fill"></div></div>
       <p class="muted jvp-label"></p>
@@ -3444,9 +3450,9 @@ function openJobEditor(id) {
       setStatus("Field Videos not set up — paste the Drive bridge URL in DATA");
       return;
     }
-    let file;
+    let files;
     try {
-      file = await pickVideoFile();
+      files = await pickVideoFiles();
     } catch {
       return;
     }
@@ -3455,22 +3461,27 @@ function openJobEditor(id) {
     const label = bar?.querySelector(".jvp-label");
     if (bar) bar.style.display = "block";
     try {
-      const rec = await uploadVideoToDrive(db.settings, file, {
-        jobLabel: ($("#job-edit-addr")?.value || job.address || "Field").trim(),
-        onProgress: (p, text) => {
-          if (fill) fill.style.width = `${Math.round(p * 100)}%`;
-          if (label) label.textContent = text || "";
-          setStatus(text || "");
-        },
-      });
+      const records = [];
+      for (let i = 0; i < files.length; i++) {
+        const tag = files.length > 1 ? ` (clip ${i + 1}/${files.length})` : "";
+        const rec = await uploadVideoToDrive(db.settings, files[i], {
+          jobLabel: ($("#job-edit-addr")?.value || job.address || "Field").trim(),
+          onProgress: (p, text) => {
+            if (fill) fill.style.width = `${Math.round(p * 100)}%`;
+            if (label) label.textContent = `${text || ""}${tag}`;
+            setStatus(`${text || ""}${tag}`);
+          },
+        });
+        records.push(rec);
+      }
       if (!Array.isArray(job.videos)) job.videos = [];
-      job.videos.unshift(rec);
+      job.videos.unshift(...records);
       job.address = ($("#job-edit-addr")?.value || "").trim();
       job.notes = ($("#job-edit-notes")?.value || "").trim();
       job.status = $("#job-edit-status")?.value || "open";
       upsertJob(db, job);
       persist();
-      setStatus("Video in Drive ✓");
+      setStatus(files.length > 1 ? `${files.length} videos in Drive ✓` : "Video in Drive ✓");
       openJobEditor(job.id);
     } catch (e) {
       setStatus(`Video upload failed: ${String(e.message || e).slice(0, 140)}`);
