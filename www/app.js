@@ -81,7 +81,7 @@ import {
   applyLoadedMapConfig,
   getFlagKindFilter,
   applyFlagKindFilters,
-} from "./wx.js?v=0.2.355";
+} from "./wx.js?v=0.2.356";
 import { pickImageFiles, fileToDataUrl, identifyImage, MAX_CHAT_PHOTOS, cloudVisionReady } from "./vision.js";
 import { SHOTS, identifyShingles, formatVerdict, buildSharePrompt } from "./shingle.js";
 import { shareToChatGpt } from "./share.js";
@@ -89,7 +89,6 @@ import { matchCatalog, discontinuedFor, SHINGLE_CORE, SHINGLE_EXTRA } from "./ca
 import { newJob, upsertJob, deleteJob, jobSummary } from "./inspect.js";
 import {
   pickVideoFiles,
-  chooseVideoSource,
   recordClipsSession,
   uploadVideoToDrive,
   driveVideosConfigured,
@@ -807,7 +806,7 @@ async function shareShinglePack({ auto = false } = {}) {
 
 function setLensMode(mode, { openCamera = false } = {}) {
   const L = lensPhotos();
-  L.mode = mode === "damage" ? "damage" : "shingle";
+  L.mode = mode === "damage" ? "damage" : mode === "video" ? "video" : "shingle";
   L.session = true;
   persist();
   pendingShot = L.mode === "shingle" ? nextShingleShot(L) || SHINGLE_CORE[0] : "damage";
@@ -880,9 +879,19 @@ function renderLens() {
           <strong>Damage highlighter</strong>
           <span>Circle bruises, granule loss, and lifts. We'll tighten this later.</span>
         </button>
+        <button type="button" class="lens-pick-card" id="pick-video">
+          <strong>Field video</strong>
+          <span>Record clips or pick footage — auto-uploads to the High Ground Drive folder.</span>
+        </button>
       </div>`;
     $("#pick-shingle").onclick = () => setLensMode("shingle", { openCamera: true });
     $("#pick-damage").onclick = () => setLensMode("damage", { openCamera: true });
+    $("#pick-video").onclick = () => setLensMode("video");
+    return;
+  }
+
+  if (mode === "video") {
+    renderLensVideo();
     return;
   }
 
@@ -1135,6 +1144,103 @@ function renderLens() {
     render();
     setStatus("Job saved");
   };
+}
+
+
+/**
+ * Lens video mode: record clips in-app or pick footage, upload to the High
+ * Ground Drive folder. Clips are named "Field <time>.mp4" — job addresses
+ * live on Jobs; Lens is where the camera lives.
+ */
+function renderLensVideo() {
+  document.body.classList.remove("comm");
+  const vids = Array.isArray(db.lens?.videos) ? db.lens.videos : [];
+  $("#view").innerHTML = `
+    <div class="lens-wrap">
+      <div class="lens-session-head">
+        <button type="button" id="lens-video-back">Back</button>
+        <strong>Field video → Drive</strong>
+      </div>
+      <p class="muted">Clips auto-upload to the High Ground shared Drive folder.</p>
+      <div class="actions">
+        <button type="button" id="lens-video-record" class="primary">🎬 Record clips</button>
+        <button type="button" id="lens-video-pick">📁 Pick from phone</button>
+      </div>
+      <div class="job-video-progress" id="lvp" style="display:none">
+        <div class="jvp-bar"><div class="jvp-fill"></div></div>
+        <p class="muted jvp-label"></p>
+      </div>
+      <div class="job-list" id="lens-video-list">${
+        vids.length
+          ? vids
+              .map(
+                (v) =>
+                  `<article class="job-card"><strong>🎥 ${esc(v.fileName || "video")}</strong>` +
+                  `<p class="muted">${esc(formatBytes(v.size))} · ${esc(String(v.at || "").slice(0, 10))}</p>` +
+                  (v.webViewLink
+                    ? `<p><a href="${esc(v.webViewLink)}" target="_blank" rel="noopener">Open in Drive</a></p>`
+                    : `<p class="muted">Uploading…</p>`) +
+                  `</article>`,
+              )
+              .join("")
+          : `<p class="muted">No videos yet — record or pick clips above.</p>`
+      }</div>
+    </div>`;
+  $("#lens-video-back").onclick = () => {
+    const L = lensPhotos();
+    L.session = false;
+    persist();
+    renderLens();
+  };
+  $("#lens-video-record").onclick = () => void lensVideoUpload({ record: true });
+  $("#lens-video-pick").onclick = () => void lensVideoUpload({ record: false });
+}
+
+async function lensVideoUpload({ record } = {}) {
+  if (!driveVideosConfigured(db.settings)) {
+    setStatus("Field Videos not ready — tell Joshua.");
+    return;
+  }
+  let files;
+  try {
+    setStatus(record ? "Opening recorder…" : "Pick footage to upload…");
+    files = record ? await recordClipsSession() : await pickVideoFiles();
+  } catch (e) {
+    if (String(e.message || e) !== "cancelled") setStatus(`Video: ${String(e.message || e).slice(0, 120)}`);
+    return;
+  }
+  const bar = $("#lvp");
+  const fill = bar?.querySelector(".jvp-fill");
+  const label = bar?.querySelector(".jvp-label");
+  if (bar) bar.style.display = "block";
+  const say = (p, text) => {
+    if (fill) fill.style.width = `${Math.round(p * 100)}%`;
+    if (label) label.textContent = text || "";
+    setStatus(text || "");
+  };
+  try {
+    const records = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const tag = files.length > 1 ? ` (clip ${i + 1}/${files.length})` : "";
+      const rec = await uploadVideoToDrive(db.settings, file, {
+        jobLabel: "Field",
+        onProgress: (p, text) => say(p, `${text}${tag}`),
+      });
+      records.push(rec);
+      say((i + 1) / files.length, `Uploaded ${i + 1} of ${files.length}${tag}`);
+    }
+    const L = lensPhotos();
+    if (!Array.isArray(L.videos)) L.videos = [];
+    L.videos.unshift(...records);
+    persist();
+    say(1, files.length > 1 ? `${files.length} videos in Drive ✓` : "Video in Drive ✓");
+    setTimeout(() => renderLensVideo(), 800);
+  } catch (e) {
+    say(0, "");
+    if (bar) bar.style.display = "none";
+    setStatus(`Video upload failed: ${String(e.message || e).slice(0, 140)}`);
+  }
 }
 
 
@@ -3213,69 +3319,6 @@ async function onWxTap(lat, lon) {
   return onHailTap(lat, lon);
 }
 
-/**
- * Job video flow: tap 🎥 → choose Record clips (shoot several in-app, one
- * Upload) or Pick from phone → auto-upload to Drive. Progress shows inline
- * on the job card; the Drive links land on the job.
- */
-async function jobCaptureVideo(jobId) {
-  const job = (db.jobs || []).find((j) => String(j.id) === String(jobId));
-  if (!job) return;
-  if (!driveVideosConfigured(db.settings)) {
-    setStatus("Field Videos not set up — paste the Drive bridge URL in DATA");
-    if (confirm("Field Videos needs one-time setup (Drive bridge URL). Open DATA now?")) {
-      switchTab("keys");
-    }
-    return;
-  }
-  let src;
-  try {
-    src = await chooseVideoSource();
-  } catch {
-    return;
-  }
-  let files;
-  try {
-    setStatus(src === "record" ? "Opening recorder…" : "Pick footage to upload…");
-    files = src === "record" ? await recordClipsSession() : await pickVideoFiles();
-  } catch (e) {
-    if (String(e.message || e) !== "cancelled") setStatus(`Video: ${String(e.message || e).slice(0, 120)}`);
-    return;
-  }
-  const bar = document.querySelector(`#jvp-${CSS.escape(String(jobId))}`);
-  const fill = bar?.querySelector(".jvp-fill");
-  const label = bar?.querySelector(".jvp-label");
-  if (bar) bar.style.display = "block";
-  const say = (p, text) => {
-    if (fill) fill.style.width = `${Math.round(p * 100)}%`;
-    if (label) label.textContent = text || "";
-    setStatus(text || "");
-  };
-  try {
-    const records = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const tag = files.length > 1 ? ` (clip ${i + 1}/${files.length})` : "";
-      const rec = await uploadVideoToDrive(db.settings, file, {
-        jobLabel: job.address || "Field",
-        onProgress: (p, text) => say(p, `${text}${tag}`),
-      });
-      records.push(rec);
-      say((i + 1) / files.length, `Uploaded ${i + 1} of ${files.length}${tag}`);
-    }
-    if (!Array.isArray(job.videos)) job.videos = [];
-    job.videos.unshift(...records);
-    upsertJob(db, job);
-    persist();
-    say(1, files.length > 1 ? `${files.length} videos in Drive ✓` : "Video in Drive ✓");
-    setTimeout(() => renderJobs(), 800);
-  } catch (e) {
-    say(0, "");
-    if (bar) bar.style.display = "none";
-    setStatus(`Video upload failed: ${String(e.message || e).slice(0, 140)}`);
-  }
-}
-
 function renderJobs() {
   leaveWx();
   document.body.classList.remove("comm");
@@ -3302,13 +3345,8 @@ function renderJobs() {
                   <p class="muted">${esc(String(j.created || "").slice(0, 10))}</p>
                   ${vidLine}
                   <div class="actions job-card-actions">
-                    <button type="button" data-job-video="${esc(j.id)}" class="primary">🎥 Upload video</button>
                     <button type="button" data-job-edit="${esc(j.id)}">Edit</button>
                     <button type="button" data-job-del="${esc(j.id)}">Delete</button>
-                  </div>
-                  <div class="job-video-progress" id="jvp-${esc(j.id)}" style="display:none">
-                    <div class="jvp-bar"><div class="jvp-fill"></div></div>
-                    <p class="muted jvp-label"></p>
                   </div>
                 </article>`;
             })
@@ -3350,12 +3388,6 @@ function renderJobs() {
     btn.onclick = (e) => {
       e.stopPropagation();
       openJobEditor(btn.getAttribute("data-job-edit"));
-    };
-  });
-  document.querySelectorAll("[data-job-video]").forEach((btn) => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      void jobCaptureVideo(btn.getAttribute("data-job-video"));
     };
   });
   document.querySelectorAll("[data-job-del]").forEach((btn) => {
@@ -3429,7 +3461,7 @@ function openJobEditor(id) {
             `</article>`,
         )
         .join("")
-    : `<p class="muted">No videos yet — tap 🎥 Upload to pick footage from your phone. It goes to Drive automatically.</p>`;
+    : `<p class="muted">No videos — record in Lens, they land in the Drive folder.</p>`;
   $("#view").innerHTML = `
     <h3>Edit job</h3>
     <label class="muted">Address</label>
@@ -3443,68 +3475,12 @@ function openJobEditor(id) {
       <option value="hold"${job.status === "hold" ? " selected" : ""}>On hold</option>
     </select>
     <h3 style="margin-top:1.2rem">Field videos</h3>
-    <div class="actions"><button type="button" class="primary" id="job-edit-video">🎥 Upload video</button></div>
-    <div class="job-video-progress" id="jvp-edit" style="display:none">
-      <div class="jvp-bar"><div class="jvp-fill"></div></div>
-      <p class="muted jvp-label"></p>
-    </div>
     <div class="job-list">${vidRows}</div>
     <div class="actions" style="margin-top:0.8rem">
       <button type="button" class="primary" id="job-edit-save">Save</button>
       <button type="button" id="job-edit-back">Back</button>
       <button type="button" id="job-edit-del">Delete</button>
     </div>`;
-  $("#job-edit-video").onclick = async () => {
-    if (!driveVideosConfigured(db.settings)) {
-      setStatus("Field Videos not set up — paste the Drive bridge URL in DATA");
-      return;
-    }
-    let src;
-    try {
-      src = await chooseVideoSource();
-    } catch {
-      return;
-    }
-    let files;
-    try {
-      files = src === "record" ? await recordClipsSession() : await pickVideoFiles();
-    } catch (e) {
-      if (String(e.message || e) !== "cancelled")
-        setStatus(`Video: ${String(e.message || e).slice(0, 120)}`);
-      return;
-    }
-    const bar = $("#jvp-edit");
-    const fill = bar?.querySelector(".jvp-fill");
-    const label = bar?.querySelector(".jvp-label");
-    if (bar) bar.style.display = "block";
-    try {
-      const records = [];
-      for (let i = 0; i < files.length; i++) {
-        const tag = files.length > 1 ? ` (clip ${i + 1}/${files.length})` : "";
-        const rec = await uploadVideoToDrive(db.settings, files[i], {
-          jobLabel: ($("#job-edit-addr")?.value || job.address || "Field").trim(),
-          onProgress: (p, text) => {
-            if (fill) fill.style.width = `${Math.round(p * 100)}%`;
-            if (label) label.textContent = `${text || ""}${tag}`;
-            setStatus(`${text || ""}${tag}`);
-          },
-        });
-        records.push(rec);
-      }
-      if (!Array.isArray(job.videos)) job.videos = [];
-      job.videos.unshift(...records);
-      job.address = ($("#job-edit-addr")?.value || "").trim();
-      job.notes = ($("#job-edit-notes")?.value || "").trim();
-      job.status = $("#job-edit-status")?.value || "open";
-      upsertJob(db, job);
-      persist();
-      setStatus(files.length > 1 ? `${files.length} videos in Drive ✓` : "Video in Drive ✓");
-      openJobEditor(job.id);
-    } catch (e) {
-      setStatus(`Video upload failed: ${String(e.message || e).slice(0, 140)}`);
-      if (bar) bar.style.display = "none";
-    }
-  };
   $("#job-edit-save").onclick = () => {
     job.address = ($("#job-edit-addr")?.value || "").trim();
     job.notes = ($("#job-edit-notes")?.value || "").trim();
@@ -3571,7 +3547,7 @@ function renderKeys() {
     <p class="muted">One-tap Push publishes marks / done targets to GitHub Pages for the whole crew. Use a fine-grained PAT with Contents write on <code>joshuagwatts/ground-control</code>. Teammates only need Pull.</p>
     <div class="field"><span>GitHub token</span><input id="set-gh-token" type="password" autocomplete="off" spellcheck="false" value="" placeholder="${esc(s.github_token ? "Saved — paste to replace" : "ghp_… or github_pat_…")}" /></div>
     <h3>Field videos → Drive</h3>
-    <p class="muted">The upload bridge is already set up for High Ground (built in, zero setup on crew phones). Crew taps 🎥 Video on any job — it records and auto-uploads to the shared Drive folder, named <code>&lt;address&gt; &lt;time&gt;.mp4</code>. The fields below are only for overriding with a different bridge.</p>
+    <p class="muted">The upload bridge is already set up for High Ground (built in, zero setup on crew phones). In Lens, crew taps 🎥 Field video — record clips or pick footage and it auto-uploads to the shared Drive folder, named <code>Field &lt;time&gt;.mp4</code>. The fields below are only for overriding with a different bridge.</p>
     <div class="field"><span>Bridge URL</span><input id="set-drive-url" type="url" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_url || "")}" placeholder="Built in — leave blank" /></div>
     <div class="field"><span>Bridge secret</span><input id="set-drive-secret" type="password" autocomplete="off" spellcheck="false" value="${esc(s.drive_upload_secret || "")}" placeholder="Built in — leave blank" /></div>
     <p class="muted">${driveVideosConfigured(s) ? "✓ Field Videos ready — 🎥 buttons upload automatically." : "Not configured yet — videos will prompt for setup."}</p>

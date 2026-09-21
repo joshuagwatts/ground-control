@@ -1,7 +1,7 @@
 {
   "name": "ground-control",
   "private": true,
-  "version": "0.2.355",
+  "version": "0.2.356",
   "description": "Ground Control — HailScope hail zoning, Lens (shingle / damage / field), Super Chat",
   "type": "module",
   "scripts": {

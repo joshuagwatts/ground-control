@@ -10,11 +10,11 @@
  * (script.google.com, Execute as: Me, Who has access: Anyone) and paste the
  * /exec URL + secret below. DONE 2026-09-21 — baked in as built-in defaults.
  *
- * Crew flow: Jobs → job card → 🎥 Upload video → pick one or more clips
- * from the phone (camera or gallery) → upload starts automatically →
- * progress bar → Drive links saved on the job.
+ * Crew flow: Lens → Field video → Record clips (in-app recorder) or Pick from
+ * phone → clips auto-upload in sequence → progress + Drive links on the
+ * Lens video screen.
  * Files land in High Ground's shared Drive folder (TARGET_FOLDER_ID in the
- * script), named "<job address> <timestamp>.mp4".
+ * script), named "Field <timestamp>.mp4".
  */
 
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB chunks to Google
