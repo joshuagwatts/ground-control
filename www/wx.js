@@ -5064,6 +5064,59 @@ function hailFootprintM(sizeIn, source) {
   return Math.max(480, Math.min(4800, base * 1.2));
 }
 
+/** Distance (km) from a point to the segment a→b, equirectangular approx. */
+function distToSegmentKm(lat, lon, aLat, aLon, bLat, bLon) {
+  const kx = 111.32 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));
+  const ky = 110.57;
+  const ax = 0;
+  const ay = 0;
+  const bx = (bLon - aLon) * kx;
+  const by = (bLat - aLat) * ky;
+  const px = (lon - aLon) * kx;
+  const py = (lat - aLat) * ky;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+/**
+ * True when the hail zone actually drawn for this storm date covers the pin.
+ * Mirrors the draw path: SWDI rings are tested exactly, single reports use the
+ * footprint circle, and clustered reports use the swath corridor between them.
+ */
+export function hailZoneCoversPin(dayRow, pin) {
+  if (!dayRow || !pin || !Number.isFinite(pin.lat) || !Number.isFinite(pin.lon)) return false;
+  const pts = Array.isArray(dayRow.zone_pts) ? dayRow.zone_pts : [];
+  for (const p of pts) {
+    if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+    if (Array.isArray(p.swdi_ring) && p.swdi_ring.length >= 3) {
+      if (pointInLatLonRing(pin.lat, pin.lon, p.swdi_ring)) return true;
+      continue;
+    }
+    const rM = hailFootprintM(p.size_in, p.source);
+    if (haversineKm(pin.lat, pin.lon, p.lat, p.lon) * 1000 <= rM) return true;
+  }
+  // Swath corridors bridge clustered reports — a pin between two reports can sit
+  // inside the drawn zone while outside each report's own footprint circle.
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    if (!a || !Number.isFinite(a.lat) || !Number.isFinite(a.lon)) continue;
+    for (let j = i + 1; j < pts.length; j++) {
+      const b = pts[j];
+      if (!b || !Number.isFinite(b.lat) || !Number.isFinite(b.lon)) continue;
+      if (haversineKm(a.lat, a.lon, b.lat, b.lon) > HAIL_LOBE_SPLIT_KM) continue;
+      const rM = Math.max(hailFootprintM(a.size_in, a.source), hailFootprintM(b.size_in, b.source));
+      if (distToSegmentKm(pin.lat, pin.lon, a.lat, a.lon, b.lat, b.lon) * 1000 <= rM) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Hailswath / MESH-style region builder (Cheresnick & Basara 2005; MRMS MESH contouring).
  * Rasterize size-weighted footprints onto a local km grid, lightly close stair-steps,
@@ -12479,7 +12532,17 @@ function hailDayStubForSelection(date, data) {
 
 export function hailScopeDays(data, filters = wxFilters, q = hailSearchQ) {
   const { hail } = filterDossier(data, filters);
-  const days = hail.filter((h) => hailDayMatchesQuery(h, q));
+  const viewport = Boolean(data?.viewport || data?._meta?.viewport);
+  // Pin mode: only dates whose drawn hail zone actually covers the selected pin.
+  const pin = viewport ? null : pinCoords();
+  const days = hail.filter((h) => {
+    if (!hailDayMatchesQuery(h, q)) return false;
+    if (pin) {
+      if (!hailZoneCoversPin(h, pin)) return false;
+      h._zoneCoversPin = true;
+    }
+    return true;
+  });
   const seen = new Set(days.map((h) => stormDateKey(h.date)));
   for (const d of selectedStormDateList()) {
     if (seen.has(d)) continue;
@@ -13153,7 +13216,7 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
         ? "Nothing matches that search — clear the search box or loosen filters."
         : viewport
           ? "Adjust filters to see dates — try a longer window or lower hail size."
-          : `Adjust filters to see dates — widen Near (${formatDistance(filterKm())}) or lower hail size.`;
+          : "No hail zones over this pin — try a longer window or lower hail size.";
       return `<p class="hs-empty">${msg}</p>`;
     }
     const empty = viewport
@@ -13169,6 +13232,7 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
     .map((h) => {
       const on = isStormDateSelected(h.date) ? " on" : "";
       const atRoof = (h.near_hits || 0) > 0;
+      const zoneOver = Boolean(h._zoneCoversPin);
       const sev = (h.severity || hailSeverityLabel(h.size_in) || "").toLowerCase();
       const src = hailSourceLabel(h);
       const far = h.size_far && h.far_km != null ? ` · ${h.size_far}″ also ${formatDistance(h.far_km)} out` : "";
@@ -13179,8 +13243,10 @@ function hailScopeDateRows(days, esc, { viewport = false, data = null } = {}) {
         ? `${sev} · ${src} · ${h.hits || 1} in view${span} · nearest ${formatDistance(h.distance_km)}${far}`
         : atRoof
           ? `${sev} · ${src} · ${h.near_hits} at this roof · ${h.hits || 1} sig${span} · nearest ${formatDistance(h.distance_km)}${far}`
-          : `No hail signature at this roof · ${h.hits || 1} sig${span} · nearest ${formatDistance(h.distance_km)}${far || ` · ${h.size_in}″`}`;
-      return `<button type="button" class="hs-date${on}${atRoof ? "" : " away"}" data-storm-date="${esc(h.date)}" aria-pressed="${on ? "true" : "false"}">
+          : zoneOver
+            ? `${sev} · ${src} · zone over this roof · ${h.hits || 1} sig${span} · nearest ${formatDistance(h.distance_km)}${far || ` · ${h.size_in}″`}`
+            : `No hail signature at this roof · ${h.hits || 1} sig${span} · nearest ${formatDistance(h.distance_km)}${far || ` · ${h.size_in}″`}`;
+      return `<button type="button" class="hs-date${on}${atRoof || zoneOver ? "" : " away"}" data-storm-date="${esc(h.date)}" aria-pressed="${on ? "true" : "false"}">
                 <span class="mark" aria-hidden="true"></span>
                 <span class="when">${esc(prettyStormDate(h.date))}</span>
                 <span class="size">${esc(h.size_in)}″</span>
