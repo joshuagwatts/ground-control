@@ -1999,6 +1999,7 @@ body.wx-map-expanded .hs-sheet {
 }
 .hs-goto {
   padding: 0.75rem 1rem 0.15rem;
+  position: relative;
 }
 .hs-goto input {
   width: 100%;
@@ -2006,6 +2007,72 @@ body.wx-map-expanded .hs-sheet {
   border: 1px solid var(--line);
   padding: 0.7rem 0.85rem;
   font-size: 15px;
+}
+/* Address typeahead dropdown (ArcGIS Suggest) */
+.hs-suggest-wrap {
+  position: absolute;
+  left: 1rem;
+  right: 1rem;
+  top: calc(100% - 0.1rem);
+  z-index: 60;
+  border: 1px solid color-mix(in srgb, var(--phos) 40%, transparent);
+  border-radius: 12px;
+  background: rgba(22, 22, 24, 0.98);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.hs-suggest-wrap[hidden] {
+  display: none !important;
+}
+.hs-suggest {
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: min(46vh, 320px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.hs-suggest-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: 1px solid transparent;
+  background: var(--inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 0.7rem 0.8rem;
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.hs-suggest-item:hover,
+.hs-suggest-item:focus-visible,
+.hs-suggest-item.active {
+  border-color: color-mix(in srgb, var(--phos) 50%, transparent);
+  background: rgba(255, 204, 0, 0.12);
+  outline: none;
+}
+.hs-suggest-item .hs-suggest-main {
+  display: block;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.hs-suggest-item .hs-suggest-meta {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 12px;
+  color: var(--phos);
+  font-weight: 500;
+}
+.hs-suggest-empty {
+  padding: 0.7rem 0.8rem;
+  font-size: 13px;
+  color: var(--muted);
 }
 .hs-goto + .hs-sheet { padding-top: 0.45rem; }
 @media (pointer: fine) {

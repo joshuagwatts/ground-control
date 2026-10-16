@@ -1,4 +1,5 @@
 import { load, save, uid } from "./store.js";
+import { suggestOklahomaAddresses, resolveAddressSuggestion } from "./geocode.js";
 import { chat, pipStatus, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import {
@@ -2945,6 +2946,123 @@ async function loadStormsForOfficeListings(inv, onRefetch) {
   }
 }
 
+/** Address typeahead on the HailScope search box — ArcGIS Suggest dropdown. */
+function wireAddressSuggest(searchForm) {
+  if (!searchForm || searchForm.dataset.hsSuggest) return;
+  const input = searchForm.querySelector("#hs-addr-q");
+  if (!input) return;
+  searchForm.dataset.hsSuggest = "1";
+  const wrap = document.createElement("div");
+  wrap.className = "hs-suggest-wrap";
+  wrap.hidden = true;
+  wrap.innerHTML = `<ul class="hs-suggest" role="listbox" aria-label="Address suggestions"></ul>`;
+  searchForm.appendChild(wrap);
+  const list = wrap.querySelector("ul");
+  let hits = [];
+  let idx = -1;
+  let timer = 0;
+  let gen = 0;
+  const clear = () => {
+    hits = [];
+    idx = -1;
+    list.innerHTML = "";
+    wrap.hidden = true;
+  };
+  const highlight = (i) => {
+    idx = i;
+    list.querySelectorAll(".hs-suggest-item").forEach((el, k) => el.classList.toggle("active", k === i));
+  };
+  const paint = (rows) => {
+    hits = rows || [];
+    idx = hits.length ? 0 : -1;
+    list.innerHTML = "";
+    if (!hits.length) {
+      wrap.hidden = true;
+      return;
+    }
+    hits.forEach((hit, i) => {
+      const li = document.createElement("li");
+      li.setAttribute("role", "option");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.sg = String(i);
+      btn.className = `hs-suggest-item${i === idx ? " active" : ""}`;
+      btn.innerHTML =
+        `<span class="hs-suggest-main">${esc(hit.text || hit.label || "")}</span>` +
+        `<span class="hs-suggest-meta">Tap to search this address</span>`;
+      // Keep focus in the field so blur doesn't dismiss before the tap lands.
+      btn.addEventListener("pointerdown", (e) => e.preventDefault());
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+    wrap.hidden = false;
+  };
+  const pick = async (hit) => {
+    if (!hit) return;
+    const text = String(hit.text || hit.label || "").trim();
+    clear();
+    const myGen = hailTapGen;
+    setStatus("Locking address…");
+    try {
+      const r = hit.magicKey ? await resolveAddressSuggestion(hit) : hit;
+      if (myGen !== hailTapGen) return;
+      if (!r || !Number.isFinite(Number(r.lat)) || !Number.isFinite(Number(r.lon)))
+        throw new Error("no match");
+      if (text) input.value = r.address || text;
+      flyToPin(Number(r.lat), Number(r.lon), 20);
+      await onHailTap(Number(r.lat), Number(r.lon), { address: r.address || text });
+    } catch (err) {
+      setStatus(String((err && err.message) || err).slice(0, 48));
+    }
+  };
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 3) {
+      clear();
+      return;
+    }
+    timer = setTimeout(async () => {
+      const myGen = ++gen;
+      let rows = [];
+      try {
+        rows = await suggestOklahomaAddresses(q, { max: 8 });
+      } catch {
+        rows = [];
+      }
+      if (myGen !== gen || document.activeElement !== input) return;
+      paint(rows);
+    }, 350);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (wrap.hidden) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (hits.length) highlight((idx + 1) % hits.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (hits.length) highlight((idx - 1 + hits.length) % hits.length);
+    } else if (e.key === "Enter" && idx >= 0 && hits[idx]) {
+      e.preventDefault();
+      e.stopPropagation();
+      void pick(hits[idx]);
+    } else if (e.key === "Escape") {
+      clear();
+    }
+  });
+  list.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-sg]");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void pick(hits[Number(btn.dataset.sg)]);
+  });
+  // Submit clears any open list; blur dismisses shortly after a tap elsewhere.
+  const formSubmit = () => clear();
+  searchForm.addEventListener("submit", formSubmit);
+  input.addEventListener("blur", () => setTimeout(clear, 150));
+}
+
 function wireHsShell(cfg) {
   const styles = $("#hs-styles");
   if (styles && cfg) {
@@ -2979,6 +3097,7 @@ function wireHsShell(cfg) {
     searchForm.addEventListener("click", (e) => e.stopPropagation());
     searchForm.addEventListener("mousedown", (e) => e.stopPropagation());
     searchForm.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
+    wireAddressSuggest(searchForm);
   }
   for (const id of ["hs-layers", "hs-composer", "hs-radar-top", "hs-radar-bar"]) {
     const el = $(`#${id}`);
