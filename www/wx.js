@@ -11978,17 +11978,23 @@ async function snapToHouse(hit, query) {
   const east = hit.lon + pad;
   const wait = (p, ms) =>
     Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
-  try {
-    const osm = await wait(fetchOsmHouseData(south, west, north, east), 6000);
-    const wantNum = String(want.house).replace(/^0+/, "").toLowerCase();
-    const match = (osm.nums || []).find((n) => String(n.num).replace(/^0+/, "").toLowerCase() === wantNum);
-    if (match) return { ...stamped, lat: match.lat, lon: match.lon, houseOk: true, source: `${hit.source}+osm` };
-  } catch {
-    /* rooftop footprints next */
+  const wantNum = String(want.house).replace(/^0+/, "").toLowerCase();
+  // OSM house numbers and structure footprints are independent — race them instead
+  // of waiting 6s then 7s in sequence on a slow phone connection.
+  const [osmRes, ringRes] = await Promise.allSettled([
+    wait(fetchOsmHouseData(south, west, north, east), 6000),
+    houseOk ? wait(fetchStructureFootprints(south, west, north, east), 7000) : Promise.resolve(null),
+  ]);
+  if (osmRes.status === "fulfilled" && osmRes.value) {
+    const match = (osmRes.value.nums || []).find(
+      (n) => String(n.num).replace(/^0+/, "").toLowerCase() === wantNum,
+    );
+    if (match)
+      return { ...stamped, lat: match.lat, lon: match.lon, houseOk: true, source: `${hit.source}+osm` };
   }
   if (!houseOk) return stamped;
   try {
-    const rings = await wait(fetchStructureFootprints(south, west, north, east), 7000);
+    const rings = ringRes.status === "fulfilled" ? ringRes.value : null;
     let best = null;
     let bestM = 40;
     for (const ring of rings || []) {

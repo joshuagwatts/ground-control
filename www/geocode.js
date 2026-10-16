@@ -378,60 +378,29 @@ async function fromMeteo(q) {
   }));
 }
 
-/** Ranked house-level candidates. Caller may snap the winner onto a rooftop. */
-export async function geocodeCandidates(query, { city = "", lat, lon } = {}) {
-  const raw = String(query || "").trim();
-  if (raw.length < 3) throw new Error("type a longer address");
-  const q = biasAddressQuery(raw, { city });
-  const parsed = parseStreetAddress(q);
-  const looksStreet = Boolean(parsed.house) || /,/.test(q) || /^\d/.test(q);
-  const loc = { lat: Number(lat), lon: Number(lon) };
-  const hits = [];
-  if (looksStreet) {
-    try {
-      hits.push(...(await arcgisWorld(q, loc)));
-    } catch {
-      /* census next */
-    }
-    try {
-      hits.push(...(await censusOneline(q)));
-    } catch {
-      /* nominatim next */
-    }
-    try {
-      hits.push(...(await nominatimStructured(parsed, q)));
-    } catch {
-      /* open-meteo last */
-    }
-    if (!hits.length) {
-      try {
-        hits.push(...(await fromMeteo(q)));
-      } catch {
-        /* empty */
-      }
-    }
-  } else {
-    try {
-      hits.push(...(await fromMeteo(q)));
-    } catch {
-      /* nominatim next */
-    }
-    try {
-      hits.push(...(await arcgisWorld(q, loc)));
-    } catch {
-      /* ignore */
-    }
-    if (!hits.length) {
-      try {
-        hits.push(...(await nominatimSearch({ q }, { boundOk: !queryAllowsOutOfState(q) })));
-      } catch {
-        /* empty */
-      }
-    }
-  }
+/** In-memory cache — repeat searches (and typeahead→submit) skip the network. */
+const GEO_MEMO = new Map();
+const GEO_MEMO_MAX = 40;
+function memoGet(key) {
+  const hit = GEO_MEMO.get(key);
+  if (!hit) return null;
+  GEO_MEMO.delete(key);
+  GEO_MEMO.set(key, hit);
+  return hit;
+}
+function memoSet(key, val) {
+  if (GEO_MEMO.size >= GEO_MEMO_MAX) GEO_MEMO.delete(GEO_MEMO.keys().next().value);
+  GEO_MEMO.set(key, val);
+}
+
+const GEO_DEADLINE_MS = 12000;
+/** House number + street agree — good enough to stop waiting on stragglers. */
+const GEO_GOOD_SCORE = 140;
+
+function rankWithLocBias(hits, q, loc) {
   let ranked = pickGeocodeHits(hits, q);
   // Prefer hits closer to the map center when scores are close.
-  if (Number.isFinite(loc.lat) && Number.isFinite(loc.lon)) {
+  if (Number.isFinite(loc.lat) && Number.isFinite(loc.lon) && ranked.length > 1) {
     ranked = [...ranked].sort((a, b) => {
       const ds = (b.score || 0) - (a.score || 0);
       if (Math.abs(ds) >= 12) return ds;
@@ -442,11 +411,91 @@ export async function geocodeCandidates(query, { city = "", lat, lon } = {}) {
   }
   // If OK filter wiped everything (rare), retry without hard filter but keep score bias.
   if (!ranked.length && hits.length && !queryAllowsOutOfState(q)) {
-    ranked = (hits || [])
+    ranked = hits
       .filter((h) => Number.isFinite(Number(h.lat)) && Number.isFinite(Number(h.lon)))
       .map((h) => ({ ...h, score: scoreGeocodeHit(h, q) }))
       .sort((a, b) => b.score - a.score);
   }
-  if (!ranked.length) throw new Error("address not found");
+  return ranked;
+}
+
+/**
+ * Fire every provider at once. First clearly-good house hit wins; stragglers
+ * keep filling in until the overall deadline. Built for slow phone networks —
+ * the old sequential waterfall could stack 10s+10s+9s before answering.
+ */
+function raceProviders(providers, q, loc, { looksStreet }) {
+  return new Promise((resolve, reject) => {
+    const all = [];
+    let done = 0;
+    let settled = false;
+    const timer = setTimeout(() => finish(), GEO_DEADLINE_MS);
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const ranked = rankWithLocBias(all, q, loc);
+      if (!ranked.length) {
+        reject(new Error("address not found"));
+        return;
+      }
+      resolve(ranked);
+    }
+    function onOne(hits) {
+      if (settled) return;
+      if (Array.isArray(hits) && hits.length) {
+        all.push(...hits);
+        if (looksStreet) {
+          const ranked = rankWithLocBias(all, q, loc);
+          if (ranked.length && Number(ranked[0].score) >= GEO_GOOD_SCORE) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(ranked);
+            return;
+          }
+        }
+      }
+      done += 1;
+      if (done >= providers.length) finish();
+    }
+    if (!providers.length) {
+      finish();
+      return;
+    }
+    for (const fn of providers) {
+      Promise.resolve()
+        .then(fn)
+        .then(onOne, () => onOne());
+    }
+  });
+}
+
+/** Ranked house-level candidates. Caller may snap the winner onto a rooftop. */
+export async function geocodeCandidates(query, { city = "", lat, lon } = {}) {
+  const raw = String(query || "").trim();
+  if (raw.length < 3) throw new Error("type a longer address");
+  const q = biasAddressQuery(raw, { city });
+  const loc = { lat: Number(lat), lon: Number(lon) };
+  const memoKey = `${q}⌁${Number.isFinite(loc.lat) ? loc.lat.toFixed(3) : ""},${
+    Number.isFinite(loc.lon) ? loc.lon.toFixed(3) : ""
+  }`;
+  const memo = memoGet(memoKey);
+  if (memo) return memo;
+  const parsed = parseStreetAddress(q);
+  const looksStreet = Boolean(parsed.house) || /,/.test(q) || /^\d/.test(q);
+  const providers = looksStreet
+    ? [
+        () => arcgisWorld(q, loc),
+        () => censusOneline(q),
+        () => nominatimStructured(parsed, q),
+        () => fromMeteo(q),
+      ]
+    : [
+        () => fromMeteo(q),
+        () => arcgisWorld(q, loc),
+        () => nominatimSearch({ q }, { boundOk: !queryAllowsOutOfState(q) }),
+      ];
+  const ranked = await raceProviders(providers, q, loc, { looksStreet });
+  memoSet(memoKey, ranked);
   return ranked;
 }
