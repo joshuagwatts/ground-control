@@ -85,6 +85,8 @@ let stormSwathDayLock = "";
 let stormSwdiFetchedBbox = null;
 let stormSwdiFetchedSig = "";
 let stormSwdiZoomTimer = 0;
+/** Day keys with a completed full-region SWDI fetch (stable zones, no refetch needed). */
+let stormSwdiCompleteDays = new Set();
 let windLayer = null;
 let layers = {};
 let activeLayer = "sat";
@@ -277,9 +279,10 @@ const STORM_SESSION_KEY = "gc-storm-session-v1";
 function persistStormSession() {
   try {
     const days = selectedStormDateList();
+    const dayKeys = new Set(days.map((d) => stormDateKey(d)).filter(Boolean));
     const swdi = (lastStormSwdiRows || [])
       .filter(isSwdiHail)
-      .slice(0, 400)
+      .slice(0, 2000)
       .map((h) => ({
         date: h.date,
         time: h.time || "",
@@ -291,7 +294,33 @@ function persistStormSession() {
         distance_km: h.distance_km,
         swdi_ring: Array.isArray(h.swdi_ring) && h.swdi_ring.length <= 24 ? h.swdi_ring : undefined,
       }));
-    sessionStorage.setItem(STORM_SESSION_KEY, JSON.stringify({ days, swdi, t: Date.now() }));
+    // Spotters seed the mesh too — persist the selected days' so a reload redraws identically.
+    const spotters = [];
+    for (const h of lastHailRows || []) {
+      if (spotters.length >= 1000) break;
+      if (!isSpotterHail(h)) continue;
+      if (!dayKeys.has(stormDateKey(h.date))) continue;
+      spotters.push({
+        date: h.date,
+        time: h.time || "",
+        lat: h.lat,
+        lon: h.lon,
+        size_in: h.size_in,
+        source: h.source || "",
+        location: h.location || "",
+      });
+    }
+    sessionStorage.setItem(
+      STORM_SESSION_KEY,
+      JSON.stringify({
+        days,
+        swdi,
+        spotters,
+        t: Date.now(),
+        completeDays: [...stormSwdiCompleteDays],
+        fetchedBbox: stormSwdiFetchedBbox,
+      }),
+    );
   } catch {
     /* quota / private mode */
   }
@@ -309,6 +338,20 @@ function hydrateStormSession() {
     }
     if (Array.isArray(parsed.swdi) && parsed.swdi.length) {
       lastStormSwdiRows = mergeHailRows(lastStormSwdiRows, parsed.swdi);
+    }
+    if (Array.isArray(parsed.spotters) && parsed.spotters.length) {
+      lastHailRows = mergeHailRows(lastHailRows, parsed.spotters);
+    }
+    // Restored days already have full-region data — draw them identically, no refetch.
+    if (Array.isArray(parsed.completeDays)) {
+      for (const d of parsed.completeDays) {
+        const k = stormDateKey(d);
+        if (k) stormSwdiCompleteDays.add(k);
+      }
+    }
+    if (typeof parsed.fetchedBbox === "string" && parsed.fetchedBbox) {
+      stormSwdiFetchedBbox = parsed.fetchedBbox;
+      stormSwdiFetchedSig = selectedStormDateSig();
     }
   } catch {
     /* ignore */
@@ -1191,6 +1234,8 @@ export function swdiApiDateRange(isoDays) {
 export const OK_SWDI_BBOX = "-103.0020,33.6150,-94.4310,37.0020";
 /** Selected-day fetch: Oklahoma plus a little outside the state lines. */
 export const OK_SWDI_BBOX_PADDED = "-103.55,33.05,-93.90,37.55";
+/** Spotter radius that covers the padded-OK fetch from any Oklahoma anchor. */
+const STATEWIDE_SPOTTER_KM = 1000;
 
 function parseSwdiBbox(bbox) {
   const parts = String(bbox || "")
@@ -1402,21 +1447,28 @@ async function ensureSwdiForSelectedStormDays() {
     lastZoneHailRows.length ? lastZoneHailRows : lastHailRows,
     lastDossierDataRef?.hail || [],
   );
-  const spotters = await ensureSpotterHailForSelectedStormDays(anchor, days, km, pool);
-  let livePool = pool;
-  if (spotters.length) {
-    lastHailRows = mergeHailRows(lastHailRows, spotters);
-    if (lastDossierDataRef) {
-      lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], spotters);
-    }
-    livePool = mergeHailRows(pool, spotters);
-  }
-  const need = days.filter((d) => {
-    const n = livePool.filter((h) => stormDayMatches(h.date, d) && isSwdiHail(h)).length;
-    return n < SWDI_DAY_MIN_SIGS;
-  });
   // Pin in Oklahoma: draw the whole day statewide, not just the pin radius.
   const pinInOk = wxPinSelected() && isOklahomaLatLon(anchor.lat, anchor.lon);
+  const need = days.filter((d) => {
+    // A completed full-region fetch draws identically every time — never refetch it.
+    if (stormSwdiCompleteDays.has(stormDateKey(d))) return false;
+    const n = pool.filter((h) => stormDayMatches(h.date, d) && isSwdiHail(h)).length;
+    return n < SWDI_DAY_MIN_SIGS;
+  });
+  // Spotters refetch only when radar does — a complete day keeps its exact pool.
+  let livePool = pool;
+  if (need.length) {
+    const spotters = await ensureSpotterHailForSelectedStormDays(anchor, need, km, pool, {
+      statewide: pinInOk,
+    });
+    if (spotters.length) {
+      lastHailRows = mergeHailRows(lastHailRows, spotters);
+      if (lastDossierDataRef) {
+        lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], spotters);
+      }
+      livePool = mergeHailRows(pool, spotters);
+    }
+  }
   if (!need.length) {
     // Day pool is complete — one stable paint, then freeze for pan/zoom.
     stormSwathLoadDone = true;
@@ -1530,6 +1582,10 @@ async function ensureSwdiForSelectedStormDays() {
   lastStormSwdiRows = mergeHailRows(lastStormSwdiRows, swdi);
   stormSwdiFetchedBbox = fetchedBbox;
   stormSwdiFetchedSig = selectedStormDateSig();
+  // Full-region fetch succeeded (or genuinely empty) — this day's zones are final.
+  if (!result.err || result.err === "empty" || result.err === "filtered") {
+    for (const d of need) stormSwdiCompleteDays.add(stormDateKey(d));
+  }
   persistStormSession();
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
@@ -2026,6 +2082,21 @@ export function hailSpotterZoneColor(sizeIn) {
   return { stroke: "#ffab91", fill: "#ff8a65", core: "#ffe0b2" };
 }
 
+/**
+ * Total order for hail rows — date desc, size desc, then position. Tie-breaking on
+ * coordinates (never input order) so decimation, caps, pools, and meshes are
+ * identical no matter what order the rows arrived in. A storm must draw the same
+ * every time.
+ */
+export function cmpHailRowsDesc(a, b) {
+  return (
+    String(b.date || "").localeCompare(String(a.date || "")) ||
+    (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0) ||
+    (Number(a.lat) || 0) - (Number(b.lat) || 0) ||
+    (Number(a.lon) || 0) - (Number(b.lon) || 0)
+  );
+}
+
 export function mergeHailRows(...groups) {
   const seen = new Set();
   const spots = [];
@@ -2038,16 +2109,15 @@ export function mergeHailRows(...groups) {
     if (isSpotterHail(h)) spots.push(h);
     else radar.push(h);
   }
+  // Sort BEFORE capping so the survivors never depend on fetch order.
+  radar.sort(cmpHailRowsDesc);
+  spots.sort(cmpHailRowsDesc);
   // Radar drives zones — never let a spotter flood push SWDI out of the cache.
   const maxTotal = 3200;
   const radarKeep = radar.slice(0, 2000);
   const spotKeep = spots.slice(0, Math.max(0, maxTotal - radarKeep.length));
   const uniq = [...radarKeep, ...spotKeep];
-  uniq.sort((a, b) => {
-    const ds = String(b.date || "").localeCompare(String(a.date || ""));
-    if (ds) return ds;
-    return (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0);
-  });
+  uniq.sort(cmpHailRowsDesc);
   return uniq;
 }
 
@@ -4603,12 +4673,17 @@ function spotterHitsInMapView(pool, day) {
   );
 }
 
-async function ensureSpottersForSelectedStormDays(anchor, days, km, pool) {
-  const need = days.filter((d) => !spotterHitsInMapView(pool, d));
+async function ensureSpottersForSelectedStormDays(anchor, days, km, pool, { clipView = true } = {}) {
+  // View-clipped need made the same date draw different zones at different zooms.
+  // Statewide mode keys off the pool instead — same date, same spotters, every time.
+  const need = clipView
+    ? days.filter((d) => !spotterHitsInMapView(pool, d))
+    : days.filter((d) => !pool.some((h) => stormDayMatches(h.date, d) && isSpotterHail(h)));
   if (!need.length) return [];
   const lsr = await fetchIemLsrHail(anchor.lat, anchor.lon, km, Number(wxFilters.days) || 730).catch(() => []);
   const daySet = new Set(need);
-  return clipHailToMapView(lsr.filter((h) => daySet.has(parseStormDay(h.date))));
+  const rows = lsr.filter((h) => daySet.has(parseStormDay(h.date)));
+  return clipView ? clipHailToMapView(rows) : rows;
 }
 
 function spcStampFromIso(iso) {
@@ -4620,7 +4695,7 @@ export function spcDayStamp(iso) {
 }
 
 /** Calendar picks need SPC for the exact day — viewport search only loads ~14 recent days. */
-async function fetchSpcHailForStormDays(anchor, days, km) {
+async function fetchSpcHailForStormDays(anchor, days, km, { clipView = true } = {}) {
   const out = [];
   for (const iso of days || []) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso).slice(0, 10))) continue;
@@ -4639,13 +4714,14 @@ async function fetchSpcHailForStormDays(anchor, days, km) {
       });
     }
   }
-  return clipHailToMapView(out);
+  return clipView ? clipHailToMapView(out) : out;
 }
 
-async function ensureSpotterHailForSelectedStormDays(anchor, days, km, pool) {
-  const spc = await fetchSpcHailForStormDays(anchor, days, km);
+async function ensureSpotterHailForSelectedStormDays(anchor, days, km, pool, { statewide = false } = {}) {
+  const wideKm = statewide ? STATEWIDE_SPOTTER_KM : km;
+  const spc = await fetchSpcHailForStormDays(anchor, days, wideKm, { clipView: !statewide });
   const merged = mergeHailRows(pool, spc);
-  const lsr = await ensureSpottersForSelectedStormDays(anchor, days, km, merged);
+  const lsr = await ensureSpottersForSelectedStormDays(anchor, days, wideKm, merged, { clipView: !statewide });
   return mergeHailRows(spc, lsr);
 }
 
@@ -4658,9 +4734,7 @@ function mapViewSwdiBbox(pad = 0.06) {
 }
 
 function capSwdiRowsForDraw(rows, max = SWDI_DRAW_CAP) {
-  const sorted = [...(rows || [])].sort(
-    (a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0),
-  );
+  const sorted = [...(rows || [])].sort(cmpHailRowsDesc);
   const out = [];
   const seen = new Set();
   for (const h of sorted) {
@@ -4682,16 +4756,14 @@ function capRadarPtsForMesh(pts, max = SWDI_MESH_PT_CAP) {
   // Spatial decimate (~1.1 km cells) keeping the strongest cell per bin — preserves statewide
   // coverage instead of size-sorting which collapses 300+ into a handful of metro-missing cores.
   const bins = new Map();
-  const ranked = [...radar].sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0));
+  const ranked = [...radar].sort(cmpHailRowsDesc);
   for (const h of ranked) {
     const k = `${h.lat.toFixed(2)}|${h.lon.toFixed(2)}`;
     if (!bins.has(k)) bins.set(k, h);
   }
   let picked = [...bins.values()];
   if (picked.length > max) {
-    picked = picked
-      .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
-      .slice(0, max);
+    picked = picked.sort(cmpHailRowsDesc).slice(0, max);
   }
   return mergeHailRows(spots, picked);
 }
@@ -5086,6 +5158,7 @@ function clearStormSwathGlue() {
     clearTimeout(stormSwdiZoomTimer);
     stormSwdiZoomTimer = 0;
   }
+  stormSwdiCompleteDays = new Set();
   stormSwathBandCache.clear();
   if (hailSwathLayer) {
     try {
@@ -5711,8 +5784,11 @@ export function calibrateRadarSizeIn(rawSize, lat, lon, day, spotters = []) {
 }
 
 function buildHailSwathRingsCluster(pts, zone = {}) {
-  const oLat = Math.round((pts.reduce((a, p) => a + p.lat, 0) / pts.length) * 4) / 4;
-  const oLon = Math.round((pts.reduce((a, p) => a + p.lon, 0) / pts.length) * 4) / 4;
+  // Fixed datum (not the cluster mean): the same points rasterize onto the same grid
+  // no matter what else was fetched or how the map is framed — a storm draws
+  // identically every time. Grid cells below still snap to this absolute grid.
+  const oLat = 33.0;
+  const oLon = -104.0;
   const cos = Math.cos((oLat * Math.PI) / 180);
   const toXY = (lat, lon) => ({
     x: (lon - oLon) * 111.32 * Math.max(0.2, cos),
@@ -11030,6 +11106,7 @@ export function destroyMap() {
     clearTimeout(stormSwdiZoomTimer);
     stormSwdiZoomTimer = 0;
   }
+  stormSwdiCompleteDays = new Set();
   windLayer = null;
   windFieldLayer = null;
   lastHailRows = [];
