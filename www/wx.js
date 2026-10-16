@@ -81,6 +81,10 @@ let stormSwathPaintSig = "";
 /** After selected-day radar/spotter load finishes, swaths stay frozen until the day changes. */
 let stormSwathLoadDone = false;
 let stormSwathDayLock = "";
+/** Widest bbox fetched for the current selected-day SWDI (zoom-out progressive load). */
+let stormSwdiFetchedBbox = null;
+let stormSwdiFetchedSig = "";
+let stormSwdiZoomTimer = 0;
 let windLayer = null;
 let layers = {};
 let activeLayer = "sat";
@@ -1185,6 +1189,38 @@ export function swdiApiDateRange(isoDays) {
 
 /** Oklahoma state bbox — storm-day SWDI fallback when pin ring is empty. */
 export const OK_SWDI_BBOX = "-103.0020,33.6150,-94.4310,37.0020";
+/** Selected-day fetch: Oklahoma plus a little outside the state lines. */
+export const OK_SWDI_BBOX_PADDED = "-103.55,33.05,-93.90,37.55";
+
+function parseSwdiBbox(bbox) {
+  const parts = String(bbox || "")
+    .split(",")
+    .map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+  return parts;
+}
+
+/** True when the outer bbox fully contains the inner (with a small slack). */
+function bboxContainsBbox(outer, inner) {
+  const o = parseSwdiBbox(outer);
+  const i = parseSwdiBbox(inner);
+  if (!o || !i) return false;
+  const m = 0.02;
+  return o[0] <= i[0] + m && o[1] <= i[1] + m && o[2] >= i[2] - m && o[3] >= i[3] - m;
+}
+
+/** Smallest bbox covering both ("w,s,e,n" strings). */
+function unionSwdiBbox(a, b) {
+  const pa = parseSwdiBbox(a);
+  const pb = parseSwdiBbox(b);
+  if (!pa) return b;
+  if (!pb) return a;
+  const w = Math.min(pa[0], pb[0]);
+  const s = Math.min(pa[1], pb[1]);
+  const e = Math.max(pa[2], pb[2]);
+  const n = Math.max(pa[3], pb[3]);
+  return `${w.toFixed(4)},${s.toFixed(4)},${e.toFixed(4)},${n.toFixed(4)}`;
+}
 
 function bboxCenter(bbox) {
   const [w, s, e, n] = String(bbox || "")
@@ -1379,9 +1415,15 @@ async function ensureSwdiForSelectedStormDays() {
     const n = livePool.filter((h) => stormDayMatches(h.date, d) && isSwdiHail(h)).length;
     return n < SWDI_DAY_MIN_SIGS;
   });
+  // Pin in Oklahoma: draw the whole day statewide, not just the pin radius.
+  const pinInOk = wxPinSelected() && isOklahomaLatLon(anchor.lat, anchor.lon);
   if (!need.length) {
     // Day pool is complete — one stable paint, then freeze for pan/zoom.
     stormSwathLoadDone = true;
+    if (!stormSwdiFetchedBbox) {
+      stormSwdiFetchedBbox = pinInOk ? OK_SWDI_BBOX_PADDED : null;
+      stormSwdiFetchedSig = selectedStormDateSig();
+    }
     if (!stormSwathsAreGlued()) {
       cancelScheduledStormRedraw();
       lastHailDrawSig = "";
@@ -1399,12 +1441,21 @@ async function ensureSwdiForSelectedStormDays() {
   const gen = ++pinStormSwdiGen;
   emitMapStatus(`Loading NOAA hail radar for ${need.length} day${need.length === 1 ? "" : "s"}…`);
   const spotBbox = spotterSwdiBbox(need, livePool, anchor);
-  const bboxOpt = mapBbox ? { bbox: mapBbox } : spotBbox ? { bbox: spotBbox } : {};
+  const bboxOpt = pinInOk
+    ? { bbox: OK_SWDI_BBOX_PADDED }
+    : mapBbox
+      ? { bbox: mapBbox }
+      : spotBbox
+        ? { bbox: spotBbox }
+        : {};
+  // Track the widest area actually fetched so zoom-out can progressively widen it.
+  let fetchedBbox = bboxOpt.bbox || bboxForKm(anchor.lat, anchor.lon, km);
   let result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, bboxOpt);
   let swdi = result.rows;
   if (!swdi.length && mapBbox) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need, { bbox: mapBbox });
     swdi = result.rows;
+    fetchedBbox = unionSwdiBbox(fetchedBbox, mapBbox);
   }
   if (!wxPinSelected() && isOklahomaLatLon(anchor.lat, anchor.lon)) {
     const viewN = (swdi || []).filter((h) => hailRowInMapView(h)).length;
@@ -1414,19 +1465,18 @@ async function ensureSwdiForSelectedStormDays() {
       });
       swdi = mergeHailRows(swdi, okResult.rows || []);
       if ((okResult.raw || 0) > (result.raw || 0)) result = okResult;
+      fetchedBbox = unionSwdiBbox(fetchedBbox, OK_SWDI_BBOX);
     }
   }
-  if (!swdi.length && wxPinSelected()) {
+  if (!swdi.length && wxPinSelected() && !pinInOk) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need);
     swdi = result.rows;
+    fetchedBbox = unionSwdiBbox(fetchedBbox, bboxForKm(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM));
   }
-  if (!swdi.length && wxPinSelected() && isOklahomaLatLon(anchor.lat, anchor.lon)) {
-    result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, need, { bbox: OK_SWDI_BBOX });
-    swdi = result.rows;
-  }
-  if (!swdi.length && spotBbox && wxPinSelected()) {
+  if (!swdi.length && spotBbox && wxPinSelected() && !pinInOk) {
     result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, km, need);
     swdi = result.rows;
+    fetchedBbox = unionSwdiBbox(fetchedBbox, bboxForKm(anchor.lat, anchor.lon, km));
   }
   if (gen !== pinStormSwdiGen || !hasSelectedStormDates()) return;
   if (!swdi.length) {
@@ -1478,6 +1528,8 @@ async function ensureSwdiForSelectedStormDays() {
   }
   swdi = capSwdiRowsForDraw(filterRowsToSelectedStormDays(swdi), SWDI_DRAW_CAP);
   lastStormSwdiRows = mergeHailRows(lastStormSwdiRows, swdi);
+  stormSwdiFetchedBbox = fetchedBbox;
+  stormSwdiFetchedSig = selectedStormDateSig();
   persistStormSession();
   lastHailFetchedKm = Math.max(lastHailFetchedKm, km);
   const merged = mergeHailRows(lastHailRows, swdi);
@@ -1506,6 +1558,67 @@ async function ensureSwdiForSelectedStormDays() {
   if (radAll) bits.push(`${radAll} radar`);
   if (spotAll) bits.push(`${spotAll} spotter${spotAll === 1 ? "" : "s"}`);
   emitMapStatus(bits.length ? `${dayLabel} · ${bits.join(" · ")}` : `${dayLabel} · hail loaded`);
+}
+
+/**
+ * Progressive storm load: as the user zooms out past the fetched region, pull the
+ * wider view for the selected days and merge it in. Pan/zoom inside fetched
+ * coverage is a no-op — the glued swaths stay frozen.
+ */
+function scheduleStormSwdiZoomFetch() {
+  if (stormSwdiZoomTimer) clearTimeout(stormSwdiZoomTimer);
+  stormSwdiZoomTimer = setTimeout(() => {
+    stormSwdiZoomTimer = 0;
+    void expandStormSwdiForView();
+  }, 900);
+}
+
+async function expandStormSwdiForView() {
+  if (!hasSelectedStormDates() || !map || !stormSwathLoadDone) return;
+  const sig = selectedStormDateSig();
+  if (!sig || sig !== stormSwdiFetchedSig || !stormSwdiFetchedBbox) return;
+  const viewBbox = mapViewSwdiBbox(0.12);
+  if (!viewBbox || bboxContainsBbox(stormSwdiFetchedBbox, viewBbox)) return;
+  const anchor = stormSwdiAnchor();
+  const days = selectedStormDateList();
+  if (!anchor || !days.length) return;
+  const gen = ++pinStormSwdiGen;
+  const targetBbox = unionSwdiBbox(stormSwdiFetchedBbox, viewBbox);
+  stormSwathLoadDone = false;
+  emitMapStatus("Loading wider hail radar…");
+  try {
+    const result = await fetchSwdiHailForDays(anchor.lat, anchor.lon, MAP_HAIL_MAX_KM, days, {
+      bbox: targetBbox,
+    });
+    if (gen !== pinStormSwdiGen || !hasSelectedStormDates() || selectedStormDateSig() !== sig) return;
+    const swdi = capSwdiRowsForDraw(filterRowsToSelectedStormDays(result.rows || []), SWDI_DRAW_CAP);
+    if (swdi.length) {
+      lastStormSwdiRows = mergeHailRows(lastStormSwdiRows, swdi);
+      const merged = mergeHailRows(lastHailRows, swdi);
+      lastHailRows = merged;
+      lastZoneHailRows = stormDrawZoneRows(zoneRowsFromHail(merged));
+      if (lastDossierDataRef) lastDossierDataRef.hail = mergeHailRows(lastDossierDataRef.hail || [], swdi);
+      persistStormSession();
+    }
+    // Mark the wider box covered even when empty — don't refetch it on every zoom.
+    stormSwdiFetchedBbox = targetBbox;
+  } finally {
+    if (gen === pinStormSwdiGen && hasSelectedStormDates() && selectedStormDateSig() === sig) {
+      stormSwathLoadDone = true;
+      cancelScheduledStormRedraw();
+      lastHailDrawSig = "";
+      const pools = resolvedStormDrawPools();
+      const viewZones = stormDrawZoneRows(pools.zoneRows);
+      drawHailMarkers(pools.dotRows, lastWindRows, {
+        requireDate: true,
+        zoneRows: viewZones,
+      });
+      const radAll = filterRowsToSelectedStormDays(mergeHailRows(lastStormSwdiRows, viewZones)).filter(
+        isSwdiHail,
+      ).length;
+      emitMapStatus(radAll ? `Wider radar · ${radAll} sigs` : "Wider radar loaded");
+    }
+  }
 }
 
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90, { onProgress } = {}) {
@@ -4967,6 +5080,12 @@ function clearStormSwathGlue() {
   stormSwathPaintSig = "";
   stormSwathLoadDone = false;
   stormSwathDayLock = "";
+  stormSwdiFetchedBbox = null;
+  stormSwdiFetchedSig = "";
+  if (stormSwdiZoomTimer) {
+    clearTimeout(stormSwdiZoomTimer);
+    stormSwdiZoomTimer = 0;
+  }
   stormSwathBandCache.clear();
   if (hailSwathLayer) {
     try {
@@ -10905,6 +11024,12 @@ export function destroyMap() {
   stormSwathPaintSig = "";
   stormSwathLoadDone = false;
   stormSwathDayLock = "";
+  stormSwdiFetchedBbox = null;
+  stormSwdiFetchedSig = "";
+  if (stormSwdiZoomTimer) {
+    clearTimeout(stormSwdiZoomTimer);
+    stormSwdiZoomTimer = 0;
+  }
   windLayer = null;
   windFieldLayer = null;
   lastHailRows = [];
@@ -11088,6 +11213,8 @@ export function mountMap(container, config, { onTap, onHold, center, product, ba
     }
     if (hasSelectedStormDates()) {
       keepStormSwathsOnMap();
+      // Zoomed/panned past the fetched storm region? Pull the wider view.
+      scheduleStormSwdiZoomFetch();
       return;
     }
     if (!wxPinSelected()) {
